@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills Helpdesk',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Services/Helpdesk',
     'summary': 'Module fil rouge du blog OdooSkills — tickets de support',
     'description': """

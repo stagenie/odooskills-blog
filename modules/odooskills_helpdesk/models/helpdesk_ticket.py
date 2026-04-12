@@ -10,8 +10,17 @@ class HelpdeskTicket(models.Model):
     _name = 'helpdesk.ticket'
     _description = 'Ticket Helpdesk'
     _inherit = ['mail.thread', 'mail.activity.mixin', 'odooskills.helpdesk.mixin']
+    _order = 'priority desc, create_date desc'
+    _rec_name = 'name'
+
+    # Contrainte d'unicité en Odoo 19 — remplace _sql_constraints
+    _unique_reference = models.Constraint(
+        'UNIQUE (reference)',
+        "La référence du ticket doit être unique.",
+    )
 
     name = fields.Char(string='Sujet', required=True, tracking=True)
+    reference = fields.Char(string='Référence', copy=False, index=True)
     description = fields.Text(string='Description')
     category_id = fields.Many2one(
         comodel_name='helpdesk.ticket.category',
