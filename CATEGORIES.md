@@ -28,8 +28,8 @@ cd blog-migration && python3 build_categories.py
 | 01 | **Installation & Administration** | 7 | 17,594 |
 | 02 | **Développement Odoo 19** | 13 | 31,795 |
 | 03 | **Gestion (ERP)** | 13 | 27,299 |
-| 04 | **Site Web & E-commerce** | 6 | 15,179 |
-| 05 | **Marketing & Communication** | 3 | 8,637 |
+| 04 | **Site Web, eCommerce & Engagement** | 9 | 21,896 |
+| 05 | **Marketing & Communication** | 1 | 1,920 |
 | 06 | **Editorial & Découverte** | 6 | 9,247 |
 
 ## 01. Installation & Administration
@@ -172,18 +172,19 @@ cd blog-migration && python3 build_categories.py
 
 </details>
 
-## 04. Site Web & E-commerce
+## 04. Site Web, eCommerce & Engagement
 
-`04-site-web-ecommerce` — **6 articles**
+`04-site-web-ecommerce` — **9 articles** (Saison 5 blog)
 
 | Statut | Slug cible | Template | Sources | Mots | Priorité |
 |--------|------------|----------|--------:|-----:|----------|
-| TODO | `creer-site-web-odoo-19` | fonctionnel | 🔀2 | 4,026 | P1 |
-| TODO | `elearning-cours-en-ligne-odoo-19` | fonctionnel | 🔀2 | 3,182 | P2 |
-| TODO | `gestion-ecommerce-odoo-19` | fonctionnel | 🔀2 | 2,692 | P2 |
-| TODO | `site-web-dynamique-ssl-odoo-19` | fonctionnel | 🔀2 | 2,366 | P2 |
-| TODO | `gestion-forums-odoo-19` | fonctionnel |   1 | 1,557 | P3 |
-| TODO | `creer-blog-pro-odoo-19` | fonctionnel |   1 | 1,356 | P3 |
+| ✅ DONE | `creer-site-vitrine-odoo-19` (Art 15) | fonctionnel | 🔀2 | 4,026 | P1 |
+| ✅ DONE | `blog-pro-forum-communautaire-odoo-19` (Art 16) | fonctionnel | 🔀2 | 2,913 | P3 |
+| ✅ DONE | `boutique-ecommerce-odoo-19` (Art 17) | fonctionnel | 🔀2 | 2,692 | P2 |
+| 🆕 TODO | `elearning-cours-en-ligne-odoo-19` (Art 18) | fonctionnel | 🔀2 | 3,182 | P2 |
+| TODO | `gestion-evenements-odoo-19` (Art 19) | fonctionnel | 🔀3 | 4,641 | P1 |
+| TODO | `gestion-sondages-odoo-19` (Art 20) | fonctionnel |   1 | 2,076 | P3 |
+| ⏭ TECH | `site-web-dynamique-ssl-odoo-19` → blog tech | technique | 🔀2 | 2,366 | P2 |
 
 <details>
 <summary>Détail des sources fusionnées (4 articles)</summary>
@@ -212,12 +213,10 @@ cd blog-migration && python3 build_categories.py
 
 ## 05. Marketing & Communication
 
-`05-marketing-communication` — **3 articles**
+`05-marketing-communication` — **1 article** (events/sondages déplacés en cat. 04 S5)
 
 | Statut | Slug cible | Template | Sources | Mots | Priorité |
 |--------|------------|----------|--------:|-----:|----------|
-| TODO | `gestion-evenements-odoo-19` | fonctionnel | 🔀3 | 4,641 | P1 |
-| TODO | `gestion-sondages-odoo-19` | fonctionnel |   1 | 2,076 | P3 |
 | TODO | `email-marketing-odoo-19` | fonctionnel |   1 | 1,920 | P3 |
 
 <details>
