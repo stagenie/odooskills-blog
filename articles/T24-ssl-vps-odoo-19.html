@@ -1,0 +1,462 @@
+<!--
+Article T24 — Sécuriser Odoo 19 en production — Nginx, SSL Let's Encrypt et VPS Debian
+Série Technique · Bloc 6 — Infrastructure & Website (Article 1/2)
+Auteur : BENHAMIDA Mustapha
+Date : 2026-04-15
+Slug : ssl-nginx-vps-odoo-19
+Meta : Déployer Odoo 19 CE en production sur VPS Debian — reverse proxy Nginx, SSL Let's Encrypt (certbot), headers de sécurité, systemd, auto-renouvellement. Guide terrain.
+Mot-clé cible : SSL odoo 19 nginx letsencrypt VPS production
+Catégorie : Développement Odoo
+Tags : odoo-19, nginx, ssl, letsencrypt, vps, deploiement, production, infrastructure
+Temps de lecture : ~13 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+  #o_wblog_post_main .container, .o_wblog_post .container { max-width: 1140px; }
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-nginx.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Bloc 6 · Infrastructure — Article 1/2</p>
+                <h1 class="text-white">Sécuriser Odoo 19 en production : Nginx, SSL Let's Encrypt, VPS Debian</h1>
+                <p class="lead mt-3 text-white">Passer d'un Odoo de dev en localhost à un <strong>Odoo
+                    exposé publiquement</strong> implique 3 couches — un <em>reverse proxy Nginx</em>,
+                    un <em>certificat TLS Let's Encrypt</em>, et un <em>service systemd robuste</em>.
+                    Guide terrain basé sur un VPS Debian 12 réel (mon propre VPS LWS qui héberge
+                    OdooSkills).</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · commandes vérifiées sur Debian 12 + Odoo 19 CE</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DIAGRAMME ARCHITECTURE ===== -->
+<section class="s_text_block pt32 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2 class="text-center mb-4">L'architecture cible</h2>
+                <p class="text-center text-muted mb-4">3 briques à configurer dans l'ordre —
+                    <em>Odoo liaison locale</em>, <em>Nginx reverse proxy</em>, <em>SSL via certbot</em>.
+                    Chacune ajoute une couche de sécurité sans impacter les autres.</p>
+                <div class="text-center">
+                    <img src="__IMG_DIAGRAM__" alt="Architecture Nginx SSL Let's Encrypt Odoo 19 VPS Debian"
+                         class="img-fluid shadow rounded" style="max-width:100%; background:#f8f9fa; padding:12px;"/>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. PRÉREQUIS ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1 — Prérequis : VPS Debian 12 + DNS prêt</h2>
+                <p>Avant toute chose, tu as besoin de :</p>
+                <ul>
+                    <li>Un <strong>VPS Debian 12</strong> (2 vCPU, 4 Go RAM minimum pour 20 utilisateurs)</li>
+                    <li>Un <strong>nom de domaine</strong> (ex. <code>erp.monentreprise.dz</code>) avec
+                        un <strong>enregistrement A</strong> pointant l'IP publique du VPS</li>
+                    <li>Un <strong>Odoo 19 CE déjà installé</strong> et tournant sur <code>127.0.0.1:8069</code>
+                        (cf. article T01 de la série)</li>
+                    <li>Un <strong>accès root SSH</strong> par clé publique</li>
+                </ul>
+                <p>Vérification rapide DNS :</p>
+                <pre><code class="language-bash"># Depuis ton poste local
+dig +short erp.monentreprise.dz
+# → doit retourner l'IP publique de ton VPS
+# Ex: 195.110.35.177</code></pre>
+                <div class="alert alert-warning mt-3">
+                    <strong>Pas de DNS, pas de Let's Encrypt.</strong> Certbot valide le domaine
+                    via une requête HTTP sur <code>/.well-known/acme-challenge/</code> — si le
+                    domaine ne pointe pas vers ton VPS, l'émission du cert échoue.
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ODOO EN LOCAL ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2 — Verrouiller Odoo sur l'interface loopback</h2>
+                <p>En prod, Odoo ne doit <strong>jamais</strong> écouter sur <code>0.0.0.0</code>
+                    (toutes les interfaces). Le reverse proxy Nginx est le seul interlocuteur
+                    externe — Odoo reste derrière. Éditer <code>/etc/odoo/odoo.conf</code> :</p>
+                <pre><code class="language-ini">[options]
+; Bind loopback seulement
+xmlrpc_interface = 127.0.0.1
+longpolling_port = 8072
+
+; Proxy mode : Odoo fait confiance au X-Forwarded-*
+proxy_mode = True
+
+; Filestore persistant
+data_dir = /var/lib/odoo/filestore
+
+; Log
+logfile = /var/log/odoo/odoo.log
+log_level = info
+log_handler = :INFO
+
+; DB
+db_host = localhost
+db_port = 5432
+db_user = odoo
+db_password = CHANGE_ME
+
+; Admin
+admin_passwd = CHANGE_ME_TOO_LONG
+list_db = False
+
+; Workers pour prod (nombre de vCPU × 2 + 1)
+workers = 5
+max_cron_threads = 2
+limit_memory_hard = 2684354560
+limit_memory_soft = 2147483648
+limit_time_cpu = 600
+limet_time_real = 1200</code></pre>
+                <p>Le flag <strong><code>proxy_mode = True</code></strong> est critique : sans
+                    lui, Odoo ignore les headers <code>X-Forwarded-Proto</code> et <code>X-Real-IP</code>
+                    que Nginx transmet, et génère des redirections HTTP incorrectes.</p>
+                <p>Redémarrer et vérifier :</p>
+                <pre><code class="language-bash">systemctl restart odoo
+ss -tlnp | grep -E '8069|8072'
+# → doit afficher 127.0.0.1:8069 et 127.0.0.1:8072 uniquement
+# Jamais 0.0.0.0:*
+</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. NGINX INSTALL ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3 — Installer et configurer Nginx</h2>
+                <pre><code class="language-bash">apt update
+apt install -y nginx
+systemctl enable --now nginx</code></pre>
+                <p>Créer le vhost pour Odoo. Fichier <code>/etc/nginx/sites-available/odoo</code> :</p>
+                <pre><code class="language-nginx">upstream odoo {
+    server 127.0.0.1:8069;
+}
+upstream odoo_chat {
+    server 127.0.0.1:8072;
+}
+
+# Bloc HTTP — redirection vers HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name erp.monentreprise.dz;
+
+    # ACME challenge reste en clair (exigence certbot)
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    # Tout le reste en HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# Bloc HTTPS — proxy vers Odoo
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name erp.monentreprise.dz;
+
+    # Certificats Let's Encrypt (ajoutés par certbot à l'étape 4)
+    # ssl_certificate     /etc/letsencrypt/live/erp.monentreprise.dz/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/erp.monentreprise.dz/privkey.pem;
+
+    # Sécurité TLS moderne (Mozilla Intermediate 2024)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Headers de sécurité
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header Referrer-Policy strict-origin-when-cross-origin;
+
+    # Logs dédiés
+    access_log /var/log/nginx/odoo.access.log;
+    error_log  /var/log/nginx/odoo.error.log;
+
+    # Limites upload (imports CSV lourds, photos produits)
+    client_max_body_size 100M;
+
+    # Proxy général vers Odoo
+    location / {
+        proxy_pass http://odoo;
+        proxy_read_timeout 720s;
+        proxy_connect_timeout 720s;
+        proxy_send_timeout 720s;
+        proxy_http_version 1.1;
+
+        # Headers pour proxy_mode=True côté Odoo
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        proxy_redirect off;
+    }
+
+    # Canal long-polling (notifications chatter temps réel)
+    location /longpolling {
+        proxy_pass http://odoo_chat;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 720s;
+    }
+
+    # Cache statique (assets compilés, images)
+    location ~* /web/static/ {
+        proxy_cache_valid 200 60m;
+        proxy_buffering on;
+        expires 864000;
+        proxy_pass http://odoo;
+    }
+
+    # Gzip
+    gzip on;
+    gzip_min_length 1100;
+    gzip_buffers 4 32k;
+    gzip_types text/css text/less text/plain text/xml application/xml application/json application/javascript;
+    gzip_vary on;
+}</code></pre>
+                <p>Activer le vhost et tester :</p>
+                <pre><code class="language-bash">ln -s /etc/nginx/sites-available/odoo /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+nginx -t   # vérification syntaxe
+systemctl reload nginx</code></pre>
+                <div class="alert alert-info mt-3">
+                    <strong>Note :</strong> à ce stade le bloc HTTPS référence des certificats
+                    qui n'existent pas encore — j'ai mis les lignes <code>ssl_certificate*</code>
+                    en commentaire pour que <code>nginx -t</code> passe. Décommente après
+                    l'étape 4.
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CERTBOT ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4 — Obtenir un certificat Let's Encrypt avec certbot</h2>
+                <p>Installer certbot + plugin Nginx :</p>
+                <pre><code class="language-bash">apt install -y certbot python3-certbot-nginx</code></pre>
+                <p>Lancer l'obtention du certificat :</p>
+                <pre><code class="language-bash">certbot --nginx -d erp.monentreprise.dz \
+    --email admin@monentreprise.dz \
+    --agree-tos --no-eff-email --redirect</code></pre>
+                <p>Certbot fait 3 choses automatiquement :</p>
+                <ol>
+                    <li>Génère une paire clé/cert via challenge HTTP-01 sur <code>/.well-known/acme-challenge/</code></li>
+                    <li>Stocke la clé dans <code>/etc/letsencrypt/live/erp.monentreprise.dz/</code></li>
+                    <li>Décommente les lignes <code>ssl_certificate*</code> dans le vhost Nginx
+                        et recharge le service</li>
+                </ol>
+                <p>Vérifier le résultat :</p>
+                <pre><code class="language-bash">curl -I https://erp.monentreprise.dz
+# → HTTP/2 303 (redirection web → /odoo)
+# → strict-transport-security: max-age=63072000; includeSubDomains
+# → server: nginx/1.22.1
+
+certbot certificates
+# → Certificate Name: erp.monentreprise.dz
+# → Domains: erp.monentreprise.dz
+# → Expiry Date: 2026-07-14 (90 jours)</code></pre>
+                <div class="alert alert-success mt-3">
+                    <strong>Cadenas vert dans le navigateur</strong> — notes cryptographiques :
+                    TLS 1.3, ECDHE-ECDSA-AES256-GCM-SHA384, chain complète via ISRG Root X1.
+                    Score SSL Labs visé : <strong>A ou A+</strong>.
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. AUTO-RENEW ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5 — Auto-renouvellement du certificat</h2>
+                <p>Let's Encrypt émet des certs valides <strong>90 jours</strong>. Les laisser
+                    expirer = site inaccessible en HTTPS. Certbot installe automatiquement
+                    un timer systemd :</p>
+                <pre><code class="language-bash">systemctl list-timers | grep certbot
+# → certbot.timer activé, tick 2×/jour
+
+# Tester le renouvellement à blanc (dry-run)
+certbot renew --dry-run
+# → Congratulations, all simulated renewals succeeded</code></pre>
+                <p>Le certbot renouvelle uniquement les certs expirant &lt; 30 jours. Donc
+                    <strong>2 fois par an</strong> dans la pratique. Zéro action manuelle
+                    nécessaire — mais <em>surveille quand même</em> les logs :</p>
+                <pre><code class="language-bash">journalctl -u certbot.service --since "7 days ago"</code></pre>
+                <p>Optionnel mais recommandé — recharger Nginx après chaque renouvellement.
+                    Créer <code>/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh</code> :</p>
+                <pre><code class="language-bash">#!/bin/bash
+systemctl reload nginx</code></pre>
+                <pre><code class="language-bash">chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. HARDENING ===== -->
+<section class="s_text_block pt48 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6 — Durcissement final (hardening)</h2>
+                <p>Le setup marche, SSL vert, Odoo accessible. 5 derniers gestes qui distinguent
+                    une prod sérieuse d'un déploiement dilettante :</p>
+                <h4 class="mt-4">6.1 — Firewall UFW</h4>
+                <pre><code class="language-bash">apt install -y ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp   # SSH (change le port en prod)
+ufw allow 80/tcp   # HTTP (pour redirection + ACME)
+ufw allow 443/tcp  # HTTPS
+ufw enable
+ufw status numbered</code></pre>
+                <p>Odoo reste invisible de l'extérieur — <code>8069</code> n'est jamais ouvert.</p>
+                <h4 class="mt-4">6.2 — Fail2ban sur Nginx</h4>
+                <pre><code class="language-bash">apt install -y fail2ban
+systemctl enable --now fail2ban</code></pre>
+                <p>Configuration <code>/etc/fail2ban/jail.local</code> :</p>
+                <pre><code class="language-ini">[sshd]
+enabled = true
+maxretry = 3
+bantime = 1h
+
+[nginx-http-auth]
+enabled = true
+filter = nginx-http-auth
+logpath = /var/log/nginx/odoo.error.log
+
+[nginx-noscript]
+enabled = true
+filter = nginx-noscript
+logpath = /var/log/nginx/odoo.access.log
+maxretry = 6</code></pre>
+                <h4 class="mt-4">6.3 — list_db = False</h4>
+                <p>Critique : dans <code>/etc/odoo/odoo.conf</code> tu as
+                    <strong><code>list_db = False</code></strong>. Sans ça, n'importe quel
+                    visiteur peut lister tes bases via <code>/web/database/manager</code> —
+                    risque de bruteforce sur <code>admin_passwd</code>.</p>
+                <h4 class="mt-4">6.4 — Backup automatique</h4>
+                <p>Cron quotidien vers un stockage distant (cf. article T07 de la série) :</p>
+                <pre><code class="language-bash"># /etc/cron.daily/backup-odoo
+#!/bin/bash
+set -e
+DATE=$(date +%Y%m%d)
+DEST=/var/backups/odoo
+
+mkdir -p $DEST
+pg_dump -U odoo -Fc mydb > $DEST/db-$DATE.dump
+tar czf $DEST/filestore-$DATE.tgz -C /var/lib/odoo/filestore mydb
+
+# Rétention 14 jours
+find $DEST -name 'db-*.dump' -mtime +14 -delete
+find $DEST -name 'filestore-*.tgz' -mtime +14 -delete
+
+# Sync offsite (rclone → S3/Wasabi/Backblaze)
+rclone copy $DEST remote:odoo-backups/$(hostname)/</code></pre>
+                <h4 class="mt-4">6.5 — Monitoring</h4>
+                <p>Au minimum : <strong>uptime externe</strong> (UptimeRobot gratuit) + alerte
+                    email si HTTP 5xx. Optionnel : Netdata / Prometheus pour métriques système.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHECKLIST ===== -->
+<section class="s_text_block pt48 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Checklist de mise en production</h2>
+                <ul>
+                    <li>✅ DNS A record pointe vers l'IP VPS</li>
+                    <li>✅ Odoo binding loopback uniquement (<code>xmlrpc_interface = 127.0.0.1</code>)</li>
+                    <li>✅ <code>proxy_mode = True</code> dans odoo.conf</li>
+                    <li>✅ <code>admin_passwd</code> fort (&gt; 24 caractères)</li>
+                    <li>✅ <code>list_db = False</code></li>
+                    <li>✅ Nginx vhost + HTTPS redirect</li>
+                    <li>✅ Certificat Let's Encrypt émis</li>
+                    <li>✅ <code>certbot renew --dry-run</code> OK</li>
+                    <li>✅ UFW actif, 22/80/443 uniquement</li>
+                    <li>✅ Fail2ban actif sur SSH + Nginx</li>
+                    <li>✅ Backup quotidien vers stockage offsite</li>
+                    <li>✅ Uptime monitoring externe</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONCLUSION ===== -->
+<section class="s_text_block pt48 pb64">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>En résumé</h2>
+                <p>Une mise en prod Odoo 19 sérieuse tient en <strong>6 étapes</strong> et
+                    environ <strong>2 heures</strong> la première fois (30 minutes les suivantes).
+                    Les 3 erreurs que je vois trop souvent :</p>
+                <ul>
+                    <li>Odoo bind 0.0.0.0 <em>et</em> firewall ouvert → port 8069 accessible
+                        publiquement</li>
+                    <li><code>proxy_mode=False</code> + reverse proxy HTTPS → redirections
+                        incohérentes, cookies cassés</li>
+                    <li>Pas de auto-renew testé → cert expire un dimanche, site HS 18h</li>
+                </ul>
+                <p>Évite ces 3 pièges et ta stack Odoo 19 tient la route plusieurs années sans
+                    friction. C'est exactement le setup qui fait tourner
+                    <em>https://odooskills.com</em> aujourd'hui.</p>
+                <p class="text-muted mt-4"><strong>Prochain article (T25) :</strong> passer à
+                    la couche <em>applicative Website</em> — créer ton site vitrine Odoo sans
+                    écrire une ligne de HTML, maîtriser les menus, les thèmes, le SEO on-page
+                    et les extensions utiles.</p>
+            </div>
+        </div>
+    </div>
+</section>
