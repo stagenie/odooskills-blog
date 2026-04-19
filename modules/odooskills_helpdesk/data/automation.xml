@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================ ir.actions.server #1 : escalade manuelle ================ -->
+    <!--
+        Action serveur de type 'code' : escalade un ou plusieurs tickets sélectionnés.
+        Visible dans le menu Actions de la form/liste via binding_model_id.
+    -->
+    <record id="server_action_escalate_sla" model="ir.actions.server">
+        <field name="name">Escalader en priorité Urgente</field>
+        <field name="model_id" ref="model_helpdesk_ticket"/>
+        <field name="binding_model_id" ref="model_helpdesk_ticket"/>
+        <field name="binding_view_types">form,list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    records.action_escalate_sla()
+        </field>
+    </record>
+
+    <!-- ================ ir.actions.server #2 : utilisée par base.automation ================ -->
+    <!--
+        Action serveur appelée par l'automation VIP : pousse la priorité à 2 (Haute)
+        et poste une note dans le chatter.
+    -->
+    <record id="server_action_set_vip_priority" model="ir.actions.server">
+        <field name="name">Ticket : priorité haute pour client VIP</field>
+        <field name="model_id" ref="model_helpdesk_ticket"/>
+        <field name="state">code</field>
+        <field name="code">
+for record in records:
+    if record.priority in ('0', '1'):
+        record.write({'priority': '2'})
+        record.message_post(body="Priorité auto-ajustée (client VIP).")
+        </field>
+    </record>
+
+    <!-- ================ ir.cron : escalade SLA auto ================ -->
+    <!--
+        En Odoo 19 ir.cron hérite d'ir.actions.server. La config tient sur
+        interval_number/interval_type + state='code' + code à exécuter.
+        Pas de numbercall/doall : le cron runner gère les retries.
+    -->
+    <record id="ir_cron_escalate_sla" model="ir.cron">
+        <field name="cron_name">Helpdesk — Escalade SLA automatique</field>
+        <field name="name">Helpdesk — Escalade SLA automatique</field>
+        <field name="model_id" ref="model_helpdesk_ticket"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_escalate_sla()</field>
+        <field name="interval_number">30</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="True"/>
+    </record>
+
+    <!-- ================ base.automation : déclencheur auto ================ -->
+    <!--
+        En Odoo 19, base.automation ne porte plus le code directement :
+        elle pointe vers UN OU PLUSIEURS ir.actions.server via action_server_ids.
+
+        Ici : à chaque create/write d'un ticket, si le partenaire est VIP
+        et la priorité basse, on exécute l'action serveur qui monte la priorité.
+    -->
+    <record id="automation_vip_priority" model="base.automation">
+        <field name="name">Ticket VIP → priorité haute auto</field>
+        <field name="model_id" ref="model_helpdesk_ticket"/>
+        <field name="trigger">on_create_or_write</field>
+        <field name="filter_domain">[('partner_id.is_vip', '=', True), ('priority', 'in', ['0', '1'])]</field>
+        <field name="action_server_ids" eval="[(6, 0, [ref('server_action_set_vip_priority')])]"/>
+        <field name="active" eval="True"/>
+    </record>
+
+</odoo>
