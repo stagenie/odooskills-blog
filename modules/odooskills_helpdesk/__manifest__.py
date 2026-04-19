@@ -1,12 +1,12 @@
 {
     'name': 'OdooSkills Helpdesk',
-    'version': '19.0.1.16.0',
+    'version': '19.0.1.17.0',
     'category': 'Services/Helpdesk',
     'summary': 'Module fil rouge du blog OdooSkills — tickets de support',
     'description': """
 Module pédagogique construit progressivement à travers les articles techniques
-du blog OdooSkills. Étape T23 (fin Bloc 5) : controllers HTTP + API REST —
-routes /api/v1/tickets (JSON auth=user) + page publique /helpdesk/status/<ref>.
+du blog OdooSkills. Étape T26 (Saison Dépassement tech v19) : field widget OWL
+custom sla_badge qui affiche le statut SLA avec pastille colorée et icône.
     """,
     'author': 'OdooSkills',
     'website': 'https://www.odooskills.com',
@@ -20,11 +20,19 @@ routes /api/v1/tickets (JSON auth=user) + page publique /helpdesk/status/<ref>.
         'report/helpdesk_ticket_report.xml',
         'views/helpdesk_ticket_category_views.xml',
         'views/helpdesk_ticket_views.xml',
+        'views/helpdesk_ticket_views_t26.xml',
         'views/res_partner_views.xml',
         'views/wizard_views.xml',
         'views/ticket_status_templates.xml',
         'views/helpdesk_menus.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'odooskills_helpdesk/static/src/views/fields/sla_badge/sla_badge.js',
+            'odooskills_helpdesk/static/src/views/fields/sla_badge/sla_badge.xml',
+            'odooskills_helpdesk/static/src/views/fields/sla_badge/sla_badge.scss',
+        ],
+    },
     'installable': True,
     'application': True,
 }
