@@ -1,0 +1,541 @@
+<!--
+Article 93 — Maîtriser les Achats & Approvisionnements dans Odoo 19 — Partie 4/4 : Planification d'approvisionnement (orderpoints, MTO, scheduler)
+Saison 8 · Article 4/4 — Maîtriser les Achats & Approvisionnements
+Auteur : BENHAMIDA Mustapha
+Date : 2026-04-17
+Slug : maitriser-approvisionnements-planification-orderpoints-mto
+Meta : Planification Odoo 19 CE — orderpoints, route MTO, scheduler, lead time. Cas InfoSphere chiffré (PO auto 474 810 DZD + MTO 428 400 DZD).
+Mot-clé cible : planification approvisionnement Odoo 19 orderpoint MTO scheduler point de commande
+Catégorie : Fonctionnel
+Tags : achats, approvisionnements, intermediaire, cas-pratique, community
+Temps de lecture : ~14 minutes
+Layout : pattern canonique #92 — s_text + figure.text-center my-4
+-->
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-9 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Saison 8 · Article 4/4 — Achats &amp; Approvisionnements</p>
+                <h1>Planification d'approvisionnement dans Odoo 19 — Orderpoints, MTO, scheduler</h1>
+                <p class="lead mt-3">Tes stocks ont une valeur. Mais <strong>quand</strong>
+                    faut-il en recommander ? Et <strong>combien</strong> ? Et surtout — qui
+                    déclenche tout ça ? Dans cette Partie 4/4 on relie les points entre
+                    orderpoints classiques (MTS), route <em>Make-to-Order</em> (MTO) et scheduler
+                    Odoo, avec 2 scénarios chiffrés : un PO automatique de 474 810 DZD pour
+                    réapprovisionner les SSD d'InfoSphere, et un PO MTO de 428 400 DZD
+                    déclenché à la seconde où un client commande un portable Dell.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_features pt48 pb48">
+    <div class="container">
+        <h2 class="text-center mb-4">Ce que tu vas apprendre</h2>
+        <div class="row">
+            <div class="col-lg-3 text-center mb-3">
+                <h4>Orderpoints</h4>
+                <p>min / max / qty_to_order — la logique de réapprovisionnement automatique par
+                    seuil.</p>
+            </div>
+            <div class="col-lg-3 text-center mb-3">
+                <h4>MTS vs MTO</h4>
+                <p>Stock tampon contre commande à la demande — quand choisir quoi, avec chiffres
+                    à l'appui.</p>
+            </div>
+            <div class="col-lg-3 text-center mb-3">
+                <h4>Scheduler v19</h4>
+                <p>Le cron qui fait tourner la boutique — déplacé sur <code>stock.rule</code>
+                    en v19, plus de <code>procurement.group</code>.</p>
+            </div>
+            <div class="col-lg-3 text-center mb-3">
+                <h4>Lead time fournisseur</h4>
+                <p>Vendor pricelist, délai, multi-fournisseurs — comment Odoo prend sa décision
+                    de date de commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. OÙ ON EN EST ===== -->
+<section class="s_text pt48 pb32">
+    <div class="container">
+        <h2>1. Où on en est : 12 serveurs en stock, mais pour combien de temps ?</h2>
+
+        <p>Dans la
+            <a href="/blog/fonctionnel-odoo-1/maitriser-approvisionnements-valorisation-stock-fifo-avco-99">Partie 3/4</a>,
+            Inès a compris comment Odoo valorise ses stocks : AVCO à 187 200 DZD pour les
+            serveurs <em>InfoRack R3 2U</em>, 12 u encore au magasin, 2 246 400 DZD au bilan.
+            Karim est content de la rigueur comptable. Mais il réalise vite qu'il n'a aucune
+            vue sur <strong>quand les stocks vont tomber à zéro</strong>.</p>
+
+        <p>Ses SSD Samsung 870 EVO sont à 8 u ce matin. Combien de ventes avant rupture ? Et
+            quand faut-il passer commande pour ne pas perdre un client ? Et cette commande,
+            c'est Karim qui s'en occupe manuellement chaque semaine, ou Odoo peut faire le
+            travail à sa place ?</p>
+
+        <p>La réponse tient en trois concepts — <strong>orderpoint</strong>,
+            <strong>route</strong>, <strong>scheduler</strong> — qui travaillent ensemble pour
+            transformer la gestion de stock d'InfoSphere d'une surveillance manuelle hebdo à une
+            machine autonome qui ne demande qu'à être validée.</p>
+
+        <div class="alert alert-info">
+            <strong>ℹ️ Trois grandes stratégies d'approvisionnement</strong> — dans Odoo tu
+            rencontreras trois logiques : <strong>MTS</strong> (<em>Make-to-Stock</em>) stock
+            tampon entretenu par seuils, <strong>MTO</strong> (<em>Make-to-Order</em>) on ne
+            commande qu'après avoir reçu une vente, et la <strong>production à la commande</strong>
+            (MRP, hors scope de cet article). Les deux premières couvrent 95 % des cas pour un
+            distributeur comme InfoSphere.
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ORDERPOINT 101 ===== -->
+<section class="s_text pt32 pb32 bg-light">
+    <div class="container">
+        <h2>2. Orderpoint 101 : min, max, qty_to_order</h2>
+
+        <p>Un <strong>orderpoint</strong> (ou <em>point de commande</em>, ou <em>règle de
+            réapprovisionnement</em>) est une règle qu'on attache à un couple
+            <strong>produit × emplacement</strong>. Elle répond à une question simple : dès que
+            le stock tombe sous un seuil <em>min</em>, commande de quoi remonter à <em>max</em>.</p>
+
+        <div class="table-responsive mt-3">
+            <table class="table table-bordered">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Champ v19</th>
+                        <th>Technique</th>
+                        <th>Rôle</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Quantité minimale</strong></td>
+                        <td><code>product_min_qty</code></td>
+                        <td>Le seuil en dessous duquel l'orderpoint se déclenche</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Quantité maximale</strong></td>
+                        <td><code>product_max_qty</code></td>
+                        <td>La cible à recharger — Odoo commandera de quoi atteindre ce
+                            niveau</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Quantité à commander</strong></td>
+                        <td><code>qty_to_order</code> <em>(computed)</em></td>
+                        <td>Calculée en temps réel = max − qty_on_hand (ajustable manuellement)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Déclencheur</strong></td>
+                        <td><code>trigger</code> (<em>auto</em> / <em>manual</em>)</td>
+                        <td>Auto = le scheduler le traite ; manual = clic humain requis</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Délai avant commande</strong></td>
+                        <td><code>days_to_order</code></td>
+                        <td>Jours d'anticipation au-delà du lead time fournisseur</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>Menu <strong>Inventaire → Opérations → Réapprovisionnement</strong>. Karim crée un
+            orderpoint pour le <em>Samsung 870 EVO 1TB</em> : minimum 10 u, maximum 50 u,
+            déclencheur <em>Auto</em>. L'orderpoint <code>OP/00003</code> est créé, le champ
+            <em>Quantité à commander</em> affiche <strong>42</strong> (= 50 − 8 en stock).</p>
+
+        <figure class="text-center my-4">
+            <img src="__IMG_01__"
+                 alt="Orderpoint OP/00003 Samsung SSD 1TB Odoo 19 — min 10, max 50, qty_to_order 42, trigger auto"
+                 class="img-fluid shadow rounded"/>
+            <figcaption class="text-muted mt-2">Orderpoint <code>OP/00003</code> — stock 8 u sous le seuil minimum de 10, Odoo veut commander 42 u pour atteindre le max de 50.</figcaption>
+        </figure>
+
+        <div class="alert alert-warning">
+            <strong>⚠️ Fin du <code>qty_multiple</code> en v19</strong> — en v17 et v18 un champ
+            <em>Multiple de quantité</em> (<code>qty_multiple</code>) permettait d'arrondir la
+            commande à un multiple (ex. cartons de 12). <strong>Ce champ a disparu en v19</strong>.
+            Il est remplacé par <code>qty_to_order_manual</code> (valeur saisie à la main qui
+            écrase le calcul) et <code>qty_to_order_computed</code> (valeur calculée par Odoo).
+            Pour les contraintes de conditionnement, passe désormais par l'unité de mesure
+            secondaire ou par le <em>min_qty</em> de la <code>product.supplierinfo</code>.
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. FIL ROUGE MTS ===== -->
+<section class="s_text pt48 pb32">
+    <div class="container">
+        <h2>3. Fil rouge MTS : 8 SSD en stock, le scheduler commande 42 u à TechDistrib</h2>
+
+        <p>Orderpoint créé. Stock à 8 u (sous le min). Maintenant la vraie magie : Karim ne
+            clique nulle part, il lance simplement le <strong>scheduler</strong> quotidien
+            (qu'Odoo exécute de toute façon une fois par jour via cron automatique).</p>
+
+        <p>Menu <strong>Inventaire → Opérations → Exécuter le scheduler</strong> (ou
+            simplement attendre le cron de minuit). Le scheduler balaye tous les orderpoints
+            avec <em>trigger = auto</em>, et pour chacun qui a un <em>qty_to_order > 0</em>, il
+            crée automatiquement un <strong>bon de commande fournisseur en brouillon</strong>.</p>
+
+        <div class="table-responsive mt-3">
+            <table class="table table-bordered">
+                <thead class="table-dark">
+                    <tr>
+                        <th>État</th>
+                        <th>Avant scheduler</th>
+                        <th>Après scheduler</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Stock SSD disponible</td>
+                        <td>8 u</td>
+                        <td>8 u <em>(inchangé)</em></td>
+                    </tr>
+                    <tr>
+                        <td>Quantité en commande</td>
+                        <td>0 u</td>
+                        <td class="text-success"><strong>42 u (sur PO P00015 draft)</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Valeur PO</td>
+                        <td>—</td>
+                        <td class="text-success"><strong>474 810,00 DZD</strong> (42 × 9 500 + TVA 19 %)</td>
+                    </tr>
+                    <tr>
+                        <td>Date prévue</td>
+                        <td>—</td>
+                        <td>2026-04-24 (=aujourd'hui + 7 jours de lead time fournisseur)</td>
+                    </tr>
+                    <tr>
+                        <td>Fournisseur</td>
+                        <td>—</td>
+                        <td><strong>TechDistrib Algérie</strong> (pris depuis la vendor pricelist)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <figure class="text-center my-4">
+            <img src="__IMG_02__"
+                 alt="Purchase Order P00015 Odoo 19 — 42 Samsung SSD 1TB à 9 500 DZD auprès de TechDistrib Algérie"
+                 class="img-fluid shadow rounded"/>
+            <figcaption class="text-muted mt-2">PO <code>P00015</code> généré automatiquement par le scheduler — origin = OP/00003, en brouillon en attente de validation.</figcaption>
+        </figure>
+
+        <p>Le PO reste en brouillon. Karim le valide dès qu'il confirme le budget, ou le
+            rejette s'il a déjà un backorder en cours. Odoo ne prend jamais la décision finale
+            à sa place — il prépare juste la paperasse.</p>
+
+        <p class="text-muted small">Pour un distributeur avec 200 références comme InfoSphere,
+            cet automatisme fait gagner plusieurs heures par semaine : plus besoin de scanner
+            un export Excel chaque lundi pour décider quoi recommander, le scheduler l'a fait
+            cette nuit.</p>
+    </div>
+</section>
+
+<!-- ===== 4. MTS VS MTO ===== -->
+<section class="s_text pt48 pb32 bg-light">
+    <div class="container">
+        <h2>4. MTS ou MTO — deux philosophies opposées</h2>
+
+        <p>L'orderpoint ci-dessus est du <strong>MTS</strong> : on maintient un stock tampon.
+            Mais pour certains produits, maintenir un tampon est une mauvaise idée : coûteux en
+            trésorerie, risqué en obsolescence, inutile si les ventes sont rares. C'est là
+            qu'entre en scène la <strong>route MTO</strong> (<em>Replenish on Order</em>) —
+            Odoo attend une vente concrète avant de commander.</p>
+
+        <div class="table-responsive mt-3">
+            <table class="table table-bordered table-sm">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Critère</th>
+                        <th>MTS (Make-to-Stock)</th>
+                        <th>MTO (Make-to-Order)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Déclencheur PO</td>
+                        <td>Scheduler + orderpoint franchit le min</td>
+                        <td>Confirmation d'une vente (SO)</td>
+                    </tr>
+                    <tr>
+                        <td>Stock physique</td>
+                        <td>Tampon permanent (entre min et max)</td>
+                        <td>Proche de zéro</td>
+                    </tr>
+                    <tr>
+                        <td>Délai client</td>
+                        <td>Rapide (quelques jours, on a du stock)</td>
+                        <td>Lent (lead time fournisseur + livraison)</td>
+                    </tr>
+                    <tr>
+                        <td>Risque obsolescence</td>
+                        <td>Moyen / élevé (selon rotation)</td>
+                        <td>Faible — on ne commande que ce qui est vendu</td>
+                    </tr>
+                    <tr>
+                        <td>Immobilisation trésorerie</td>
+                        <td>Élevée (valeur stock permanent)</td>
+                        <td>Faible (stock réduit)</td>
+                    </tr>
+                    <tr>
+                        <td>Cas type</td>
+                        <td>SSD, câbles, consommables à fort turnover</td>
+                        <td>Portables configurables, serveurs sur mesure</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>Pour InfoSphere : SSD en MTS (orderpoint min/max), portables Dell en MTO. Inès
+            configure la <strong>route MTO</strong> sur la fiche Dell Latitude 5450, en plus de
+            la route <em>Buy</em> (les deux ensemble : Odoo sait qu'il doit acheter auprès du
+            fournisseur dès qu'une vente est confirmée).</p>
+    </div>
+</section>
+
+<!-- ===== 5. FIL ROUGE MTO ===== -->
+<section class="s_text pt48 pb32">
+    <div class="container">
+        <h2>5. Fil rouge MTO : une vente Dell, un PO instantané</h2>
+
+        <p>Route MTO activée. Routes [MTO + Buy] assignées à la fiche Dell Latitude 5450.
+            Stock actuel : 8 u (InfoSphere en a en démo, mais on va voir qu'il va rester
+            intouché — le MTO commande au fournisseur, pas au stock).</p>
+
+        <p>Karim prend un appel : <strong>Réseau Plus</strong> (Oran) veut 3 portables
+            Dell pour son nouveau bureau. Devis rapide à 155 000 DZD HT l'unité. Karim crée
+            <code>S00009</code>, le client confirme, Karim clique <em>Confirmer</em>.</p>
+
+        <p>À la seconde où le SO passe à <em>sale</em> :</p>
+
+        <ul>
+            <li>Odoo remonte la chaîne d'approvisionnement Dell : route MTO → route Buy →
+                fournisseur primaire de la <code>product.supplierinfo</code></li>
+            <li>Création automatique de <code>P00016</code> en brouillon chez
+                <strong>TechDistrib Algérie</strong></li>
+            <li><strong>3 u × 120 000 = 360 000 HT, soit 428 400 DZD TTC</strong> — avec comme
+                <em>origin</em> le nom du SO client <code>S00009</code></li>
+            <li>Date prévue : aujourd'hui même (lead time Dell = 0 chez TechDistrib)</li>
+        </ul>
+
+        <figure class="text-center my-4">
+            <img src="__IMG_03__"
+                 alt="Purchase Order P00016 Odoo 19 créé par MTO — 3 Dell Latitude à 120 000 DZD, origin S00009"
+                 class="img-fluid shadow rounded"/>
+            <figcaption class="text-muted mt-2">PO <code>P00016</code> généré par la route MTO à la confirmation du SO — traçabilité via <em>origin</em>.</figcaption>
+        </figure>
+
+        <p>La différence avec le MTS : <strong>pas de scheduler, pas d'orderpoint, pas de
+            seuil</strong>. Le déclencheur est la commande client elle-même. C'est idéal pour
+            les produits à forte valeur unitaire, peu rotatifs, ou configurables (où maintenir
+            un stock de chaque variante serait ruineux).</p>
+
+        <div class="alert alert-info">
+            <strong>ℹ️ La route MTO est inactive par défaut</strong> — dans la plupart des bases
+            Odoo 19 fraîchement installées, la route <em>Replenish on Order</em> est présente
+            mais <em>archivée</em>. Il faut d'abord la <strong>réactiver</strong> dans
+            <em>Inventaire → Configuration → Routes</em> (bascule <em>Filtres → Archivé</em> pour
+            la voir), puis la cocher dans la fiche produit à côté de <em>Buy</em>. Les deux
+            routes fonctionnent ensemble.
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. LEAD TIME + VENDOR PRICELIST ===== -->
+<section class="s_text pt48 pb32 bg-light">
+    <div class="container">
+        <h2>6. Lead time, multi-fournisseurs et vendor pricelist</h2>
+
+        <p>Tout ce qu'on vient de voir repose sur un élément central souvent négligé : la
+            <strong>vendor pricelist</strong> (ou <em>liste de prix fournisseur</em>), configurée
+            sur chaque fiche produit dans l'onglet <em>Achats</em>. Chaque ligne décrit une
+            relation commerciale avec un fournisseur.</p>
+
+        <figure class="text-center my-4">
+            <img src="__IMG_04__"
+                 alt="Onglet Achats fiche produit Samsung SSD Odoo 19 — vendor pricelist TechDistrib prix 9 500, lead time 7 jours"
+                 class="img-fluid shadow rounded"/>
+            <figcaption class="text-muted mt-2">Vendor pricelist du Samsung SSD — fournisseur principal <em>TechDistrib Algérie</em>, prix 9 500 DZD, délai de livraison 7 jours.</figcaption>
+        </figure>
+
+        <div class="table-responsive mt-3">
+            <table class="table table-bordered table-sm">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Champ</th>
+                        <th>Rôle dans la planification</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>partner_id</strong></td>
+                        <td>Qui est le fournisseur de cette ligne</td>
+                    </tr>
+                    <tr>
+                        <td><strong>price</strong></td>
+                        <td>Prix unitaire de référence (surchargé par pricelist client si
+                            pertinent)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>min_qty</strong></td>
+                        <td>Quantité minimale à commander (si orderpoint calcule 5 mais min=12,
+                            Odoo passe à 12)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>delay</strong></td>
+                        <td>Lead time en jours — utilisé pour calculer <em>date_planned</em></td>
+                    </tr>
+                    <tr>
+                        <td><strong>date_start / date_end</strong></td>
+                        <td>Fenêtre de validité (utile pour contrats-cadres trimestriels)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>Si plusieurs fournisseurs sont listés, Odoo prend par défaut le <strong>premier</strong>
+            (celui du haut, ordonnable par <em>sequence</em>). Le scheduler suit cet ordre sans
+            faire de comparaison de prix — c'est au gestionnaire de trier intelligemment, ou
+            d'utiliser un <strong>appel d'offre</strong> (RFQ) comme vu dans la
+            <a href="/blog/fonctionnel-odoo-1/maitriser-les-achats-contrats-cadres-appels-offre-95">Partie 1/4</a>
+            pour choisir avant de créer l'orderpoint.</p>
+
+        <p class="text-muted small">L'aboutissement de cette chaîne : <em>lead time
+            fournisseur</em> (7 jours pour le SSD chez TechDistrib) + <em>days_to_order</em> de
+            l'orderpoint (jour supplémentaire d'anticipation) + <em>security_lead_time</em> de
+            l'entreprise (sur la fiche entreprise) = la date à laquelle Odoo estime qu'il faut
+            passer la commande pour ne pas rater la date de disponibilité souhaitée.</p>
+    </div>
+</section>
+
+<!-- ===== 7. LES GOTCHAS V19 ===== -->
+<section class="s_text pt48 pb32">
+    <div class="container">
+        <h2>7. Encadré ⚠️ Changements v19 — ce qui se casse à la migration</h2>
+
+        <p>Cette quatrième partie révèle la plus grosse surface de rupture v19 que vous avez
+            rencontrée dans la série. Trois changements structurels majeurs qui cassent les
+            modules tiers qui touchent à la chaîne de procurement.</p>
+
+        <figure class="text-center my-4">
+            <img src="__IMG_DIAG__"
+                 alt="Parcours complet d'un approvisionnement Odoo 19 — orderpoint MTS vs route MTO jusqu'au PO fournisseur"
+                 class="img-fluid shadow rounded"/>
+            <figcaption class="text-muted mt-2">Deux chemins vers un PO — MTS via orderpoint + scheduler, MTO via route + confirmation SO.</figcaption>
+        </figure>
+
+        <div class="alert alert-danger">
+            <strong>⚠️ <code>procurement.group</code> n'existe plus en v19</strong> — le modèle
+            central de la chaîne de procurement a été <strong>supprimé</strong>. La méthode
+            <code>run_scheduler</code> est désormais sur <code>stock.rule</code>
+            (<code>self.env['stock.rule'].run_scheduler()</code>). Les modules personnalisés qui
+            importaient <code>from odoo.addons.procurement</code> ou qui faisaient
+            <code>self.env['procurement.group'].run_scheduler()</code> vont crasher à l'install
+            en v19.
+        </div>
+
+        <div class="alert alert-danger">
+            <strong>⚠️ <code>qty_multiple</code> supprimé sur <code>stock.warehouse.orderpoint</code></strong>
+            — le champ qui permettait d'arrondir la commande à un multiple (cartons, palettes)
+            est parti. Son remplacement est une paire de champs : <code>qty_to_order_computed</code>
+            (calcul par Odoo) et <code>qty_to_order_manual</code> (saisie humaine qui l'écrase).
+            Le nouveau <code>qty_to_order</code> expose le bon selon la présence ou l'absence de
+            saisie manuelle. Les vues custom qui référençaient <code>qty_multiple</code> en
+            readonly ou compute doivent être migrées.
+        </div>
+
+        <div class="alert alert-danger">
+            <strong>⚠️ Nouveaux champs sur l'orderpoint</strong> — <code>snoozed_until</code>
+            (date jusqu'à laquelle un orderpoint manuel est mis en pause, visible dans
+            l'interface « Réapprovisionnement »), <code>unwanted_replenish</code> (booléen
+            computed qui signale quand la commande prévue dépasserait le max), et les nouvelles
+            actions <code>action_snooze</code> / <code>action_schedule_auto_reordering</code>.
+            Si ton module override <code>_compute_qty_to_order</code>, pense à gérer ces nouveaux
+            états.
+        </div>
+
+        <p>Ces trois changements, ajoutés à la suppression de <code>stock.valuation.layer</code>
+            vue dans la
+            <a href="/blog/fonctionnel-odoo-1/maitriser-approvisionnements-valorisation-stock-fifo-avco-99">Partie 3/4</a>,
+            font de la chaîne <em>supply chain</em> d'Odoo 19 un chantier quasi-structurel. Les
+            migrations depuis v17/v18 demandent au moins une revue complète des modules tiers
+            qui touchent à <code>stock_account</code>, <code>stock</code>, et
+            <code>purchase_stock</code>.</p>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_features_grid pt48 pb48 bg-light">
+    <div class="container">
+        <h2 class="text-center mb-4">À retenir</h2>
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <div class="s_card p-3 h-100">
+                    <h5>🎯 Orderpoint = min / max / qty_to_order</h5>
+                    <p class="small mb-0">Un couple produit × emplacement, déclencheur auto ou
+                        manuel. Le scheduler traite uniquement les orderpoints auto et génère
+                        les PO en brouillon. Le manager valide ensuite.</p>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="s_card p-3 h-100">
+                    <h5>⚡ MTO = route, pas orderpoint</h5>
+                    <p class="small mb-0">La route <em>Replenish on Order</em> est à réactiver
+                        (archivée par défaut) puis à cocher sur la fiche produit avec la route
+                        <em>Buy</em>. Chaque vente confirmée crée alors un PO instantané au
+                        fournisseur primaire.</p>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="s_card p-3 h-100">
+                    <h5>📅 Lead time = vendor pricelist + days_to_order</h5>
+                    <p class="small mb-0">Délai fournisseur renseigné sur la
+                        <code>product.supplierinfo</code>, days_to_order optionnel sur
+                        l'orderpoint, security_lead_time sur la société. L'addition donne la
+                        date à laquelle Odoo veut que la commande soit passée.</p>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="s_card p-3 h-100">
+                    <h5>💥 3 breaking changes v19</h5>
+                    <p class="small mb-0"><code>procurement.group</code> supprimé →
+                        <code>stock.rule.run_scheduler</code>. <code>qty_multiple</code>
+                        supprimé → <code>qty_to_order_manual/computed</code>. Nouveaux champs
+                        <code>snoozed_until</code> et <code>unwanted_replenish</code>.
+                        Migration v17/v18 → v19 = chantier structurel sur la supply chain.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CLÔTURE SAISON 8 ===== -->
+<section class="s_cover pt48 pb48 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h2>Fin de la Saison 8 — Maîtriser les Achats &amp; Approvisionnements</h2>
+                <p class="lead">Tu as maintenant un cycle d'achats complet dans Odoo 19 CE :
+                    <strong>contrats-cadres</strong> et appels d'offre pour choisir les
+                    fournisseurs, <strong>landed costs</strong> pour calculer le vrai coût,
+                    <strong>valorisation</strong> FIFO/AVCO pour un stock fidèle, et
+                    <strong>planification</strong> (orderpoints + MTO) pour automatiser les
+                    commandes. La compta suit, les marges sont honnêtes, la trésorerie
+                    respire.</p>
+                <p class="mt-3 small">Prochaine saison en préparation : <em>Configurateur
+                    Produit</em> (Saison 9 — variantes, pricelists, matrix configurator).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI / NAV (auto-généré en Phase 6 via build_maillage) ===== -->
+<!-- MAILLAGE_AUTO_START -->
+<!-- MAILLAGE_AUTO_END -->
