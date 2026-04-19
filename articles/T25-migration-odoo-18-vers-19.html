@@ -1,0 +1,663 @@
+<!--
+Article T25 — Migration Odoo 18 → 19
+Série Technique · Saison Dépassement tech v19 · Article 2/5
+Auteur : BENHAMIDA Mustapha
+Date : 2026-04-19
+Slug : migration-odoo-18-vers-19
+Meta : Scripts de migration Odoo — hooks pre_init / post_init, stages pre / post / end, arborescence migrations/, 7 breaking changes v18→v19 à gérer dans le code.
+Mot-clé cible : migration odoo 18 vers 19
+Catégorie : Développement Odoo
+Tags : avance, infrastructure, guide, community
+Temps de lecture : ~14 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.t25 { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.t25 th, table.t25 td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.t25 th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Saison « Dépassement tech v19 » · Article 2/5</p>
+                <h1 class="text-white">Migration Odoo 18 → 19 — scripts <code>pre</code>, <code>post</code>, <code>end</code> et 7 breaking changes</h1>
+                <p class="lead mt-3 text-white">Écrire la migration d'un module Odoo comme un vrai intégrateur —
+                    signature exacte <code>migrate(cr, version)</code> v19, arborescence
+                    <code>migrations/&lt;version&gt;/</code>, les 3 stages
+                    <strong>pre / ORM / post / end</strong>, et les 7 breaking changes v18→v19
+                    que ton code doit absolument traiter.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau avancé · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREVIEW ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="preview-figure">
+                    <img src="__IMG_TERMINAL__" alt="Sortie terminal Odoo 19 — 3 stages de migration exécutés successivement : pre, post, end"/>
+                    <figcaption>Objectif de l'article — obtenir cette sortie propre en trois stages :
+                        <code>[&gt;19.0.1.1.0] pre</code>, <code>[19.0.1.1.0&gt;] post</code>,
+                        <code>[$19.0.1.1.0] end</code>. Chaque stage renomme des colonnes, convertit des
+                        valeurs <em>selection</em>, nettoie. Zéro perte de données.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_features pt32 pb48">
+    <div class="container">
+        <h2 class="text-center mb-4">Ce que tu vas apprendre</h2>
+        <div class="row">
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>Les 3 hooks manifest</h4>
+                    <p><code>pre_init_hook</code>, <code>post_init_hook</code>, <code>uninstall_hook</code> — quand chacun s'exécute.</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>L'arborescence <code>migrations/</code></h4>
+                    <p>Pattern <code>migrations/&lt;version&gt;/{pre,post,end}-*.py</code> et ordre d'exécution.</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>Signature v19 stricte</h4>
+                    <p><code>migrate(cr, version)</code> — Odoo 19 valide le <em>nom exact</em> des params.</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>7 breaking changes</h4>
+                    <p><code>attrs</code>, <code>tree</code>, <code>_sql_constraints</code>, champs renommés… que le code doit gérer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Prérequis</h2>
+                <ul>
+                    <li>Odoo 19 installé (<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 Ubuntu</a>).</li>
+                    <li>Un module Odoo 18 fonctionnel à migrer — ou le module démo qu'on va construire dans cet article.</li>
+                    <li>Base PostgreSQL de test dédiée (jamais la prod — règle numéro un d'une migration).</li>
+                    <li>Familiarité avec le <a href="/blog/developpement-odoo-2/architecture-technique-odoo-19-56">manifeste Odoo</a>, les <a href="/blog/developpement-odoo-2/modeles-de-base-en-odoo-19-model-name-inherit-description-59">modèles</a> et les <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">tests automatisés</a> (T24) — la migration n'est sérieuse que si une suite de tests la valide.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 1 — Pourquoi des scripts de migration ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Pourquoi des scripts de migration&nbsp;?</h2>
+                <p>Quand tu bumpes la version de ton module dans le manifest, Odoo détecte l'écart entre
+                    la version en base et la version déclarée. Il applique automatiquement les
+                    <strong>changements de schéma triviaux</strong> (ajout de colonne, création de table,
+                    index). Mais il ne sait pas <em>comment</em> migrer les données existantes :</p>
+                <ul>
+                    <li>Un champ renommé (<code>legacy_status</code> → <code>state</code>)&nbsp;:
+                        l'ORM va créer la nouvelle colonne et <strong>ignorer</strong> l'ancienne.
+                        Les données sont perdues.</li>
+                    <li>Une valeur de <em>selection</em> renommée (<code>'confirm'</code> →
+                        <code>'confirmed'</code>)&nbsp;: les lignes gardent l'ancienne valeur, invalide
+                        pour le nouveau modèle.</li>
+                    <li>Une contrainte ou une méthode de calcul modifiée&nbsp;: aucune donnée à migrer,
+                        mais il faut forcer un recompute.</li>
+                </ul>
+                <p>C'est exactement le rôle des <strong>scripts de migration</strong>. Ils s'insèrent dans
+                    le cycle d'upgrade à trois moments précis&nbsp;:</p>
+
+                <figure class="preview-figure">
+                    <img src="__IMG_FLOW__" alt="Flow de migration Odoo 19 — 5 étapes : pre, ORM load, post, end, résultat, avec signatures des scripts et hooks"/>
+                    <figcaption>Les trois stages <code>pre</code> → <code>post</code> → <code>end</code>
+                        encadrent le chargement ORM. En bas, les signatures exactes des scripts de
+                        migration et des hooks du manifest (attention à l'asymétrie).</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 2 — Hooks manifest ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les 3 hooks du manifest</h2>
+                <p>Différents des scripts de migration (versionnés), les <strong>hooks du manifest</strong>
+                    s'exécutent à des moments fixes du cycle de vie du module&nbsp;:</p>
+
+<pre class="language-python"><code class="language-python"># __manifest__.py
+{
+    'name': 'Mon module',
+    'version': '19.0.1.0.0',
+    'depends': ['base'],
+    'data': ['...'],
+
+    'pre_init_hook': 'my_pre_init_function',     # fonction dans __init__.py
+    'post_init_hook': 'my_post_init_function',   # id.
+    'uninstall_hook': 'my_uninstall_function',   # id.
+}</code></pre>
+
+                <p>Dans <code>__init__.py</code>, tu définis ces fonctions avec une signature
+                    <strong>légèrement différente</strong> des scripts&nbsp;: elles reçoivent
+                    <code>env</code> directement, pas <code>cr</code>.</p>
+
+<pre class="language-python"><code class="language-python"># __init__.py
+def my_pre_init_function(env):
+    """Exécuté AVANT registry.load() — à l'installation uniquement."""
+    # À ce stade les modèles ne sont pas encore chargés.
+    # Tu as env, mais les modèles métier de ce module ne sont pas accessibles.
+    env.cr.execute("CREATE INDEX IF NOT EXISTS ...")
+
+
+def my_post_init_function(env):
+    """Exécuté APRÈS load_data() et translations — à l'installation uniquement."""
+    # Tous les modèles sont chargés, tu peux écrire des records.
+    env['res.config.settings'].create({...})
+
+
+def my_uninstall_function(env):
+    """Exécuté à la désinstallation du module."""
+    env.cr.execute("DROP INDEX IF EXISTS ...")</code></pre>
+
+                <p>Attention&nbsp;: ces hooks <strong>ne s'exécutent qu'à l'installation</strong> (ou à la
+                    désinstallation pour le dernier). Ils ne tournent pas lors d'un simple upgrade.
+                    Pour migrer entre deux versions, utilise les scripts versionnés décrits ci-dessous.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 3 — Arborescence migrations/ ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. L'arborescence <code>migrations/</code></h2>
+                <p>Odoo scanne automatiquement le dossier <code>migrations/</code> à la racine du module
+                    pour y chercher des scripts Python par version.</p>
+
+                <figure class="preview-figure">
+                    <img src="__IMG_TREE__" alt="Arborescence du module odooskills_migration_demo — structure standard avec dossier migrations/19.0.1.1.0/ contenant pre-, post-, end-"/>
+                    <figcaption>Structure complète. Le dossier <code>migrations/19.0.1.1.0/</code>
+                        contient les scripts qui s'exécutent quand Odoo détecte une base à
+                        <em>19.0.1.0.0</em> et un manifest à <em>19.0.1.1.0</em>. Les préfixes
+                        <code>pre-</code> / <code>post-</code> / <code>end-</code> déterminent le stage.</figcaption>
+                </figure>
+
+                <p>Trois règles à connaître&nbsp;:</p>
+                <ul>
+                    <li><strong>Le nom du dossier = la version cible</strong>. Pas la version source.
+                        Un dossier <code>migrations/19.0.1.1.0/</code> s'exécute pour <em>toute</em>
+                        base à une version strictement inférieure.</li>
+                    <li><strong>Tri alphabétique au sein d'un stage</strong>. Préfixe tes fichiers
+                        <code>pre-10-...</code>, <code>pre-20-...</code> pour forcer l'ordre.</li>
+                    <li><strong>Dossier spécial <code>0.0.0/</code></strong> — scripts exécutés à
+                        <em>chaque</em> bump de version, quelle que soit la cible. Utile pour des
+                        cleanups récurrents, mais délicat à garder idempotent.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 4 — pre ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le stage <code>pre</code> — avant l'ORM</h2>
+                <p>Le stage <code>pre</code> s'exécute <strong>avant que l'ORM ne charge le modèle</strong>.
+                    C'est ta seule chance de modifier le schéma SQL avant qu'Odoo décide de créer des
+                    colonnes neuves (et d'abandonner les anciennes).</p>
+
+                <p>Cas typique&nbsp;: tu as renommé <code>legacy_status</code> en <code>state</code> dans
+                    ton modèle Python. Si tu ne fais rien, l'ORM va créer une colonne <code>state</code>
+                    vide à côté de <code>legacy_status</code>. Avec un <code>pre-*.py</code>, tu renommes
+                    la colonne SQL <em>avant</em> que l'ORM la voie&nbsp;:</p>
+
+<pre class="language-python"><code class="language-python"># migrations/19.0.1.1.0/pre-10-rename-columns.py
+"""Pre-migration 19.0.1.0.0 → 19.0.1.1.0 — rename SQL columns."""
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    _logger.info("T25 migration — pre: rename columns legacy_* → *")
+
+    # 1. Renommer la colonne selection
+    cr.execute("""
+        SELECT column_name FROM information_schema.columns
+         WHERE table_name = 'mig_demo_item' AND column_name = 'legacy_status'
+    """)
+    if cr.fetchone():
+        cr.execute("ALTER TABLE mig_demo_item RENAME COLUMN legacy_status TO state")
+        _logger.info("  legacy_status → state")
+
+    # 2. Renommer la table de liaison Many2many
+    cr.execute("""
+        SELECT table_name FROM information_schema.tables
+         WHERE table_name = 'mig_demo_item_legacy_user_rel'
+    """)
+    if cr.fetchone():
+        cr.execute(
+            "ALTER TABLE mig_demo_item_legacy_user_rel "
+            "RENAME TO mig_demo_item_res_users_rel"
+        )
+        _logger.info("  table Many2many renommée")</code></pre>
+
+                <p>Trois détails à retenir&nbsp;:</p>
+                <ul>
+                    <li><strong>Idempotent toujours</strong>&nbsp;: on vérifie d'abord que la vieille
+                        colonne existe avant de renommer. Un upgrade peut être relancé plusieurs fois
+                        après une interruption — le script doit tolérer ça.</li>
+                    <li><strong>Pas d'ORM ici</strong>&nbsp;: le modèle n'est pas encore chargé. Tu es
+                        en SQL pur via <code>cr.execute()</code>.</li>
+                    <li><strong>Les tables Many2many se renomment aussi</strong>. Odoo nomme les tables
+                        de liaison <code>&lt;model&gt;_&lt;target&gt;_rel</code> — si tu renommes le champ,
+                        la convention change.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 5 — post ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le stage <code>post</code> — après l'ORM</h2>
+                <p>Après le stage <code>pre</code>, Odoo charge les modèles, met à jour le schéma,
+                    installe les <em>data XML</em>. À ce stade l'ORM est complètement disponible —
+                    c'est le moment idéal pour <strong>convertir les données</strong>.</p>
+
+<pre class="language-python"><code class="language-python"># migrations/19.0.1.1.0/post-10-convert-values.py
+"""Post-migration 19.0.1.0.0 → 19.0.1.1.0 — convertir valeurs selection."""
+import logging
+
+from odoo import SUPERUSER_ID, api
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    _logger.info("T25 migration — post: convert selection values")
+
+    mapping = {'confirm': 'confirmed', 'cancel': 'cancelled'}
+    for old, new in mapping.items():
+        cr.execute(
+            "UPDATE mig_demo_item SET state = %s WHERE state = %s",
+            (new, old),
+        )
+        count = cr.rowcount
+        if count:
+            _logger.info("  %d record(s) : %s → %s", count, old, new)
+
+    # Exemple d'accès à l'ORM via env (utile si on doit invoquer un compute
+    # ou déclencher un recompute sur les enregistrements migrés)
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    items = env['mig.demo.item'].search([])
+    _logger.info("  %d item(s) après migration post-", len(items))</code></pre>
+
+                <p>Ce qu'il faut retenir&nbsp;:</p>
+                <ul>
+                    <li><strong>La signature est identique au <code>pre</code></strong>&nbsp;:
+                        <code>migrate(cr, version)</code>. Tu reçois un <em>cursor</em>, pas un env.</li>
+                    <li><strong>Pour obtenir un env, tu le construis</strong> avec
+                        <code>api.Environment(cr, SUPERUSER_ID, {})</code>. C'est le pont vers l'ORM
+                        complet, avec les contraintes qui s'appliquent correctement.</li>
+                    <li><strong>Le SQL direct reste préférable pour les <em>UPDATE</em> massifs</strong>.
+                        Passer par l'ORM pour 50 000 lignes déclenche 50 000 tracking messages si le
+                        champ est <code>tracking=True</code>. Le <code>cr.execute()</code> reste la
+                        bonne approche pour les conversions de masse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 6 — end ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le stage <code>end</code> — une fois tous les modules chargés</h2>
+                <p>Le stage <code>end</code> s'exécute <strong>après que tous les modules</strong> (pas
+                    seulement le tien) soient passés par leurs pre + post. Utile pour des opérations
+                    qui dépendent d'autres modules ou pour des validations finales.</p>
+
+<pre class="language-python"><code class="language-python"># migrations/19.0.1.1.0/end-10-cleanup.py
+"""End-migration 19.0.1.0.0 → 19.0.1.1.0 — cleanup."""
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    _logger.info("T25 migration — end: cleanup")
+
+    # S'assurer qu'aucune vieille valeur n'a échappé à la conversion post-
+    cr.execute(
+        "SELECT COUNT(*) FROM mig_demo_item WHERE state IN ('confirm', 'cancel')"
+    )
+    stale = cr.fetchone()[0]
+    if stale:
+        _logger.warning(
+            "  %d records ont encore une valeur legacy — intervention manuelle",
+            stale,
+        )
+    else:
+        _logger.info("  aucune valeur legacy résiduelle — migration propre")</code></pre>
+
+                <p>Trois usages canoniques du stage <code>end</code>&nbsp;:</p>
+                <ul>
+                    <li><strong>Validations post-migration</strong>&nbsp;: scanner les tables pour
+                        détecter une donnée qui aurait échappé à la conversion — comme ici.</li>
+                    <li><strong>Déclenchement de crons ou d'actions serveur</strong> qui nécessitent
+                        que tous les modules soient chargés (triggers cross-module).</li>
+                    <li><strong>Invalidation de caches</strong>&nbsp;: forcer un recompute global via
+                        <code>env.invalidate_all()</code> après d'importantes modifications de données.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 7 — 7 breaking changes ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les 7 breaking changes v18 → v19 à gérer dans le code</h2>
+                <p>Voici les sept changements que tout module qui passe de v18 à v19 doit traiter.
+                    Certains sont des modifications de code pure (syntaxe XML, décorateurs) ; d'autres
+                    nécessitent un script de migration pour les données.</p>
+
+                <table class="t25">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Breaking change</th>
+                            <th>Impact</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td><code>attrs="{'invisible': [...]}"</code> → <code>invisible="expr"</code></td>
+                            <td>XML views refusées à l'install</td>
+                            <td>Code — search/replace + expressions Python (<code>==</code>, <code>in</code>, <code>and</code>)</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td><code>&lt;field name="view_mode"&gt;tree,form&lt;/field&gt;</code> → <code>list,form</code></td>
+                            <td>Actions window cassées</td>
+                            <td>Code — grep <code>tree,</code> → <code>list,</code></td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td><code>_sql_constraints = [...]</code> → <code>_name = models.Constraint(...)</code></td>
+                            <td>Contraintes SQL non appliquées</td>
+                            <td>Code — attribut de classe préfixé <code>_</code></td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td><code>_constraints = [...]</code> supprimé</td>
+                            <td>Validations Python muettes</td>
+                            <td>Code — convertir vers <code>@api.constrains</code></td>
+                        </tr>
+                        <tr>
+                            <td>5</td>
+                            <td><code>t-esc="val"</code> → <code>t-out="val"</code> (QWeb)</td>
+                            <td>Déprécié, à migrer</td>
+                            <td>Code — rename systématique</td>
+                        </tr>
+                        <tr>
+                            <td>6</td>
+                            <td>Champs renommés (<code>groups_id</code>→<code>group_ids</code>, <code>product_uom</code>→<code>product_uom_id</code>, <code>tax_id</code>→<code>tax_ids</code>…)</td>
+                            <td>FK cassées, compute en erreur</td>
+                            <td><strong>Script pre-</strong> SQL <code>RENAME COLUMN</code></td>
+                        </tr>
+                        <tr>
+                            <td>7</td>
+                            <td><code>read_group()</code> → <code>_read_group()</code> (ou <code>formatted_read_group()</code>)</td>
+                            <td>API interne renommée ; appels cassés en v19</td>
+                            <td>Code — renommage des appels, adapter la signature de retour</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>Pour les cas <strong>1 à 5 et 7</strong>, ce sont des corrections de <em>code</em> —
+                    pas besoin de script de migration. Un grep bien ciblé + un test complet suffit.
+                    C'est <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">la suite de
+                    tests</a> qui validera que rien n'a cassé.</p>
+
+                <p><strong>Note héritage</strong>&nbsp;: les décorateurs <code>@api.multi</code>,
+                    <code>@api.one</code>, <code>@api.returns</code> sont supprimés depuis la v13 — tu
+                    les rencontreras dans des bases <em>legacy</em> v17/v18 mais pas dans un code v18
+                    raisonnablement à jour. Pas un breaking change v18→v19 à proprement parler, mais
+                    un audit à faire systématiquement.</p>
+
+                <p>Pour le cas <strong>6</strong>, il faut un script <code>pre-</code> qui renomme les
+                    colonnes SQL. Le pattern est exactement celui montré en section 4 — sur le modèle
+                    concerné, <code>ALTER TABLE &lt;table&gt; RENAME COLUMN &lt;ancien&gt; TO &lt;nouveau&gt;</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 8 — Pièges migration ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Pièges à éviter</h2>
+
+                <div class="pitfall-box">
+                    <h4>⚠️ 5 pièges qui coûtent cher en production</h4>
+                    <ul>
+                        <li><strong>Signature stricte <code>migrate(cr, version)</code>.</strong>
+                            Odoo 19 valide les noms <em>exacts</em> des paramètres via
+                            <code>VALID_MIGRATE_PARAMS</code>. Les seules combinaisons autorisées
+                            sont <code>(cr, version)</code>, <code>(cr, _version)</code>,
+                            <code>(_cr, version)</code>, <code>(_cr, _version)</code>. Écrire
+                            <code>migrate(cr, installed_version)</code> lève
+                            <code>TypeError</code> immédiatement. Surprenant mais strict
+                            (<code>odoo/modules/migration.py:250-257</code>).</li>
+                        <li><strong>Asymétrie scripts vs hooks.</strong> Les scripts versionnés
+                            reçoivent <code>cr</code>. Les hooks <code>pre_init_hook</code> /
+                            <code>post_init_hook</code> reçoivent <code>env</code>. Piège classique
+                            quand tu migres un morceau de hook en script versionné.</li>
+                        <li><strong>Toujours idempotent.</strong> Une migration peut être relancée
+                            après une interruption (coupure réseau, kill du process). Chaque script
+                            doit vérifier l'état avant d'agir — <em>SELECT before ALTER</em>, pas
+                            <em>ALTER aveuglément</em>.</li>
+                        <li><strong>Dossier <code>0.0.0/</code> dangereux.</strong> Les scripts qui y
+                            vivent tournent à <em>chaque</em> bump de version — utilisés pour des
+                            cleanups récurrents. Mais une non-idempotence à cet endroit multiplie les
+                            problèmes.</li>
+                        <li><strong>L'ORM ne connaît pas tes renames.</strong> Sans script <code>pre</code>,
+                            l'ORM crée la colonne neuve et abandonne l'ancienne. Les données ne sont
+                            pas <em>perdues</em> — la colonne reste en base — mais elles deviennent
+                            inaccessibles via l'API. Seul un DBA avec un accès direct peut les récupérer.</li>
+                    </ul>
+                </div>
+
+                <p>Dernier point, moins un piège qu'une discipline&nbsp;: <strong>écris des tests qui
+                    valident la migration</strong>. Un test <code>TransactionCase</code>
+                    (<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a>) qui
+                    crée des records avec les anciennes valeurs, simule le bump de version, et vérifie
+                    que les données sont correctement converties. Sans test, une migration est une
+                    roulette russe le jour du déploiement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><strong>Trois stages</strong> encadrent le chargement ORM&nbsp;:
+                        <code>pre</code> (SQL avant l'ORM), <code>post</code> (données après l'ORM),
+                        <code>end</code> (une fois tous les modules chargés).</li>
+                    <li><strong>Arborescence</strong>&nbsp;: <code>migrations/&lt;version-cible&gt;/</code>
+                        avec préfixes <code>pre-</code>, <code>post-</code>, <code>end-</code>. Tri
+                        alphabétique au sein d'un stage — numérote <code>pre-10</code>, <code>pre-20</code>.</li>
+                    <li><strong>Signature stricte v19</strong>&nbsp;:
+                        <code>migrate(cr, version)</code> — noms exacts validés, pas de synonymes.</li>
+                    <li><strong>Scripts reçoivent <code>cr</code>, hooks reçoivent <code>env</code></strong>.
+                        Pour passer de l'un à l'autre&nbsp;:
+                        <code>api.Environment(cr, SUPERUSER_ID, {})</code>.</li>
+                    <li><strong>7 breaking changes v18 → v19</strong>&nbsp;: 6 de code (<code>attrs</code>,
+                        <code>tree</code>, <code>_sql_constraints</code>, <code>_constraints</code>,
+                        <code>t-esc</code>, décorateurs morts) + 1 de data (champs renommés —
+                        <code>pre</code> + SQL <code>RENAME COLUMN</code>).</li>
+                    <li><strong>Idempotence et tests</strong>&nbsp;: deux disciplines non négociables
+                        pour qu'une migration passe en production sans réveiller personne à 3h du matin.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI DANS CE PARCOURS (infrastructure) ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Voir aussi — Parcours Infrastructure</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a></h5>
+                            <p class="small">Base indispensable — sans environnement Odoo 19 local, pas de migration à tester.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a></h5>
+                            <p class="small">Tester une migration dans un container jetable — le pattern qu'on utilise nous-mêmes.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">#90 — Sécuriser Odoo en production (SSL/VPS)</a></h5>
+                            <p class="small">Après une migration réussie en staging, la bascule prod nécessite un environnement sécurisé.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ZONE 4 — ARTICLES COMPLÉMENTAIRES (cross-blog) ===== -->
+<section class="s_features_grid pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Articles complémentaires</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/contraintes-champs-calcules-odoo-63">T12 — Contraintes &amp; computes</a></h5>
+                            <p class="small">Les <code>_constraints</code> qu'on migre en <code>@api.constrains</code> — article de fond sur les règles de validation.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24 — Tests automatisés</a></h5>
+                            <p class="small">La suite de tests qui valide qu'une migration n'a rien cassé. À écrire en <em>même temps</em> que les scripts.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">T22 — Actions serveur &amp; cron</a></h5>
+                            <p class="small">Déclencher un cron après migration — pattern classique du stage <code>end</code>.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA + NAV ===== -->
+<section class="s_text_block pt32 pb32 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">Télécharge le Guide Technique Odoo</h3>
+                <p>Module fil rouge, 20+ articles techniques, environnements de dev complet — PDF à télécharger.</p>
+                <a href="/guide-technique-odoo" class="btn btn-warning btn-lg">Télécharger le guide</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt24 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto d-flex justify-content-between">
+                <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105" class="btn btn-outline-secondary">← T24 — Tests automatisés</a>
+                <span class="btn btn-outline-primary disabled">T26 — OWL composants custom · à venir</span>
+            </div>
+        </div>
+    </div>
+</section>
