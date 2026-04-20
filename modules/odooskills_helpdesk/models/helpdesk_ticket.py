@@ -394,3 +394,53 @@ class HelpdeskTicket(models.Model):
         sur un recordset.
         """
         return self.search_count([('state', '!=', 'done')])
+
+    @api.model
+    def bench_bulk_escalate(self, n=100, push=True):
+        """T28 — Point d'entrée public XML-RPC pour le bench.
+
+        Délègue à _bench_bulk_escalate. Les méthodes préfixées _ sont bloquées
+        par le RPC dispatcher Odoo; cette méthode publique lève cette restriction
+        pour les scripts de bench externes.
+        """
+        return self._bench_bulk_escalate(n=n, push=push)
+
+    @api.model
+    def _bench_bulk_escalate(self, n=100, push=True):
+        """T28 — Helper bench : escalade N tickets, retourne timing.
+
+        Mesure le coût wall-clock (time.perf_counter) d'un write() en masse,
+        avec ou sans push bus.bus (T27). Paramètre `push=False` contourne le
+        push en modifiant `description` (aucun effet sur sla_status, donc
+        aucun _sendone déclenché) — permet une comparaison A/B propre.
+
+        Retourne dict {'n': N, 'total_ms': X, 'per_ticket_ms': Y, 'push': bool}.
+        Peut être appelé via XML-RPC par les scripts de bench externes.
+        """
+        import time
+
+        # Filtre sur les tickets actifs (non-done) pour éviter la contrainte write
+        # qui bloque les modifications sur les tickets résolus (seuls quelques
+        # champs restent modifiables après résolution).
+        tickets = self.search([('state', '!=', 'done')], limit=n)
+        if not tickets:
+            return {'n': 0, 'total_ms': 0.0, 'per_ticket_ms': 0.0, 'push': push}
+
+        start = time.perf_counter()
+        if push:
+            # write sur sla_hours déclenche _compute_sla_status → peut changer
+            # sla_status → _notify_bus_sla_status est appelé → pg_notify + push
+            tickets.write({'sla_hours': 1})
+        else:
+            # write sur description : aucun compute ni push bus.bus impliqué
+            tickets.write({'description': 'Bench no-push'})
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        actual_n = len(tickets)
+
+        return {
+            'n': actual_n,
+            'total_ms': round(elapsed_ms, 2),
+            'per_ticket_ms': round(elapsed_ms / actual_n, 4),
+            'push': push,
+        }

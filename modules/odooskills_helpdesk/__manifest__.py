@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills Helpdesk',
-    'version': '19.0.1.18.0',
+    'version': '19.0.1.19.0',
     'category': 'Services/Helpdesk',
     'summary': 'Module fil rouge du blog OdooSkills — tickets de support',
     'description': """
@@ -10,6 +10,8 @@ custom sla_badge qui affiche le statut SLA avec pastille colorée et icône.
 Étape T27 : push bus.bus temps réel — quand sla_status change sur un ticket,
 tous les onglets ouverts rafraîchissent la pastille sla_badge via WebSocket
 sans rechargement de page.
+Étape T28 : helper bench _bench_bulk_escalate pour mesurer le coût réel
+du pattern bus.bus sur 10 000 tickets (time.perf_counter, comparaison A/B).
     """,
     'author': 'OdooSkills',
     'website': 'https://www.odooskills.com',

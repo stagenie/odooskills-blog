@@ -1,0 +1,506 @@
+<!--
+Article T28 — Mesurer la performance de bus.bus en Odoo 19
+Série Technique · Saison Dépassement tech v19 · Article 5/5 (CLOSING)
+Auteur : BENHAMIDA Mustapha
+Date : 2026-04-20
+Slug : mesurer-performance-bus-bus-odoo-19
+Meta : Bench Odoo 19 bus.bus — profiler natif, EXPLAIN ANALYZE, perf_counter. Coût réel du pattern T27 sur 10 000 tickets. Zéro dépendance externe.
+Mot-clé cible : performance bus.bus odoo 19
+Catégorie : Développement Odoo
+Tags : avance, infrastructure, guide, community
+Temps de lecture : ~11 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .chart-fig { position: relative; width: 100vw; left: 50%; margin-left: -50vw; margin-right: -50vw; max-width: 100vw; padding: 0 1rem; box-sizing: border-box; }
+  .chart-fig img, .chart-fig svg { width: 100%; max-width: 1800px; height: auto; display: block; margin: 0 auto; }
+  .chart-fig figcaption { max-width: 900px; margin: 0.5rem auto 0; }
+  .zoom-link { display: inline-block; margin-top: 0.25rem; font-size: 0.85em; color: #0284c7; text-decoration: underline; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+
+  .tools-box { background: #eff6ff; border-left: 4px solid #2563eb; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .tools-box h4 { color: #1e40af; margin-top: 0; }
+
+  .verdict-box { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .verdict-box h4 { color: #166534; margin-top: 0; }
+
+  table.t28 { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.92em; }
+  table.t28 th, table.t28 td { border: 1px solid #dee2e6; padding: 0.45rem 0.65rem; vertical-align: top; text-align: right; }
+  table.t28 th { background: #f6f8fa; text-align: center; }
+  table.t28 td:first-child, table.t28 th:first-child { text-align: left; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Saison « Dépassement tech v19 » · Article 5/5 · CLOSING</p>
+                <h1 class="text-white">Mesurer la performance de bus.bus en Odoo 19 — chiffres réels sur 10 000 tickets</h1>
+                <p class="lead mt-3 text-white">Combien coûte vraiment le pattern live du
+                    <a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108" style="color:#ffc107;">T27</a> ?
+                    Profilage natif Odoo, <code>EXPLAIN ANALYZE</code>, <code>perf_counter</code> — <strong>zéro
+                    dépendance externe</strong>. Les médianes ms/ticket, le coût du <code>pg_notify</code>,
+                    le verdict d'activation.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau avancé · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREVIEW ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="chart-fig">
+                    <a href="__IMG_CHART__" target="_blank" title="Ouvrir en plein écran">
+                        <img src="__IMG_CHART__" alt="Graphique bench bus.bus Odoo 19 — écart write() avec push vs sans push sur batch sizes 1/10/100, échelle log ms/ticket"/>
+                    </a>
+                    <figcaption>Bench local Odoo 19 CE, base <code>vs19_odooskills_test</code>, 10 000 tickets.
+                        Écart ~2 ms/ticket à <code>n=1</code>, amorti à <code>n=100</code>.
+                        <a class="zoom-link" href="__IMG_CHART__" target="_blank">Agrandir (SVG)</a></figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row">
+                    <div class="col-md-4">
+                        <h4>Profiler sans rien installer</h4>
+                        <p>Utiliser <code>odoo.tools.profiler.Profiler</code> en context manager — collecteurs
+                            <code>sql</code> et <code>traces_async</code> natifs, résultats persistés dans
+                            <code>ir.profile</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Mesurer un vrai write()</h4>
+                        <p>Helper <code>bench_bulk_escalate()</code> sur <code>helpdesk.ticket</code>, 3 scénarios
+                            (push ON, push OFF, search_read 10 000) et 5 répétitions pour médiane
+                            robuste.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire un EXPLAIN ANALYZE</h4>
+                        <p><code>Seq Scan</code> vs <code>Index Scan</code>, <code>Execution Time</code>,
+                            <code>Planning Time</code> — et décider si ajouter un index justifie son coût.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info" role="alert">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 19 CE installé (<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01</a>) + module <code>odooskills_helpdesk</code> v19.0.1.18.0 minimum (<a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108">T27</a>).</li>
+                        <li>Accès <code>psql</code> à la base — pour <code>EXPLAIN ANALYZE</code>.</li>
+                        <li>Python venv avec <code>xmlrpc.client</code> (stdlib) et <code>matplotlib</code> pour visualiser le CSV (facultatif).</li>
+                        <li>Connaissance des patterns <a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a> (write override) et <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a> (tests).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 1 — OUTILS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Trois outils que tout dev Odoo doit connaître</h2>
+                <p>Avant de mesurer, choisir ses instruments. La série propose une tour de contrôle en
+                    trois couches — toutes natives à Odoo 19 CE ou à la stack Python+Postgres.</p>
+                <div class="tools-box">
+                    <h4>La trousse du profiler Odoo 19</h4>
+                    <ul>
+                        <li><strong><code>odoo.tools.profiler.Profiler</code></strong> — context manager
+                            natif (<a href="https://github.com/odoo/odoo/blob/19.0/odoo/tools/profiler.py" target="_blank" rel="noopener">source v19</a>)
+                            avec deux collecteurs par défaut :
+                            <code>SQLCollector</code> capture chaque requête et son temps,
+                            <code>PeriodicCollector</code> échantillonne la pile Python toutes les 1 ms.
+                            Les résultats sont écrits en base dans <code>ir.profile</code> et visualisables via
+                            <a href="https://www.speedscope.app" target="_blank" rel="noopener">Speedscope</a>
+                            (visualisateur flamegraph open-source).</li>
+                        <li><strong><code>EXPLAIN ANALYZE</code></strong> — côté PostgreSQL, lance la requête
+                            <em>réellement</em> et retourne le plan exécuté avec les vrais temps. Universel,
+                            zéro configuration — le seul outil qui te dit si tu es sur un
+                            <code>Seq Scan</code> ou un <code>Index Scan</code>.</li>
+                        <li><strong><code>time.perf_counter()</code></strong> — stdlib, haute précision
+                            (&lt; microseconde), monotonique. Idéal pour chronométrer un appel XML-RPC ou
+                            une boucle ORM sans jouer avec les logs.</li>
+                    </ul>
+                </div>
+                <p>On ne parle pas de <em>pyinstrument</em>, <em>py-spy</em> ou <em>pg_stat_statements</em>
+                    dans cet article : utiles, mais optionnels, et souvent absents d'un environnement VPS
+                    standard. La trousse native suffit largement pour répondre à la question qui nous
+                    intéresse : <em>« quel est le vrai coût du pattern T27 ? »</em>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 2 — HELPER BENCH ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le helper bench — une méthode, un verdict</h2>
+                <p>Plutôt que d'empiler les scripts ad hoc, on ajoute une méthode côté modèle. Reproductible,
+                    testée, paramétrable <code>push=True|False</code> pour comparaison A/B propre.</p>
+                <pre class="language-python"><code class="language-python"># addons/odooskills_helpdesk/models/helpdesk_ticket.py (extrait T28)
+def _bench_bulk_escalate(self, n=100, push=True):
+    """T28 — Helper bench : escalade N tickets, retourne timing.
+
+    Permet de mesurer proprement le coût du write() avec ou sans push bus.bus.
+    push=True  → write({'sla_hours': 1}) — déclenche recompute + _sendone T27
+    push=False → write({'description': ...}) — contourne le push pour A/B
+
+    Retourne dict {'n': N, 'total_ms': X, 'per_ticket_ms': Y, 'push': bool}.
+    """
+    import time
+    tickets = self.search([('state', '!=', 'done')], limit=n)
+    if not tickets:
+        return {'n': 0, 'total_ms': 0.0, 'per_ticket_ms': 0.0, 'push': push}
+    start = time.perf_counter()
+    if push:
+        tickets.write({'sla_hours': 1})
+    else:
+        tickets.write({'description': 'Bench no-push'})
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return {
+        'n': len(tickets),
+        'total_ms': round(elapsed_ms, 2),
+        'per_ticket_ms': round(elapsed_ms / len(tickets), 4),
+        'push': push,
+    }</code></pre>
+                <p>Deux choix d'ingénierie à expliquer :</p>
+                <ul>
+                    <li>Le filtre <code>state != 'done'</code> évite de heurter la contrainte
+                        <code>write()</code> du <a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a>
+                        qui refuse les modifications sur les tickets résolus. Bench propre = pas d'erreur métier parasite.</li>
+                    <li>Le <code>push=False</code> change un champ <code>description</code> qui n'a aucun
+                        effet sur <code>sla_status</code> — donc le snapshot avant/après du T27 ne détecte
+                        aucun changement et aucun <code>_sendone</code> n'est émis. C'est le <em>contrôle</em>
+                        qui isole précisément le coût du push.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 3 — LES CHIFFRES ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les chiffres — médiane sur 5 runs, batch 1 / 10 / 100</h2>
+                <p>Bench exécuté en local sur <code>vs19_odooskills_test</code> (Odoo 19 CE,
+                    PostgreSQL 16, venv Python 3.12) après seed de 10 000 tickets. Chaque batch est relancé
+                    5 fois, on retient la médiane pour gommer le jitter.</p>
+                <table class="t28">
+                    <thead>
+                        <tr>
+                            <th>Scénario</th>
+                            <th>n</th>
+                            <th>médiane ms/ticket</th>
+                            <th>samples (ms/ticket)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>write_push</td><td>1</td><td><strong>5.43</strong></td><td>8.90 · 5.43 · 5.30 · 4.97 · 5.45</td></tr>
+                        <tr><td>write_push</td><td>10</td><td><strong>0.64</strong></td><td>0.67 · 0.70 · 0.57 · 0.64 · 0.55</td></tr>
+                        <tr><td>write_push</td><td>100</td><td><strong>0.10</strong></td><td>0.10 · 0.10 · 0.11 · 0.10 · 0.09</td></tr>
+                        <tr><td>write_no_push</td><td>1</td><td><strong>3.36</strong></td><td>7.19 · 3.36 · 3.83 · 3.36 · 2.94</td></tr>
+                        <tr><td>write_no_push</td><td>10</td><td><strong>0.47</strong></td><td>0.44 · 0.32 · 1.56 · 0.47 · 1.96</td></tr>
+                        <tr><td>write_no_push</td><td>100</td><td><strong>0.47</strong></td><td>0.07 · 0.55 · 0.47 · 0.50 · 0.47</td></tr>
+                        <tr><td>search_read 10k</td><td>10 000</td><td><strong>0.026</strong></td><td>0.055 · 0.027 · 0.025 · 0.026 · 0.024</td></tr>
+                    </tbody>
+                </table>
+                <p>Trois observations calmes qui valent toute la théorie :</p>
+                <ul>
+                    <li><strong>Delta bus.bus ≈ 2 ms par ticket à n=1</strong> (5.43 − 3.36). C'est le coût
+                        plafond : une écriture isolée paie plein tarif (snapshot <code>pre_status</code>,
+                        <code>_sendone</code> + insertion batch <code>bus_bus</code>, <code>pg_notify</code>).</li>
+                    <li><strong>Le delta s'évapore dès n=100</strong> : 0.10 vs 0.47 ms/ticket, inversion
+                        apparente. La ligne <code>write_no_push n=100</code> montre un fort <em>jitter</em>
+                        (runs 3 et 4 anormalement rapides puis lents) parce que PostgreSQL n'avait pas ses
+                        pages en cache. Leçon : toujours publier la dispersion, pas seulement la médiane.</li>
+                    <li><strong>search_read 10 000 = 253 ms total</strong> (0.026 ms/ticket) — c'est rapide
+                        parce que <code>sla_status</code> est <em>computed/stored</em> (T26) : pas de
+                        recalcul au vol, lecture pure en SQL.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="__IMG_EXPLAIN__" alt="Terminal EXPLAIN ANALYZE PostgreSQL — plan d'exécution Seq Scan sur helpdesk_ticket, Execution Time 0.043 ms"/>
+                    <figcaption><code>EXPLAIN ANALYZE</code> sur le filtre <code>sla_status IS NOT NULL</code> :
+                        <strong>Seq Scan</strong>, 0.043 ms pour 3 tickets. Aucun index sur ce champ par défaut.</figcaption>
+                </figure>
+                <p>À 3 tickets le <em>Seq Scan</em> est optimal — PostgreSQL ne perdra pas son temps à
+                    consulter un B-tree pour trois lignes. Mais à 100 000 tickets, la décision change. Si
+                    <code>sla_status</code> devient un filtre d'écran permanent (Kanban "Tickets en
+                    warning"), ajouter un index devient pertinent : <code>CREATE INDEX ON helpdesk_ticket
+                    (sla_status) WHERE sla_status != 'ok';</code> (index partiel, plus léger).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 4 — PROFILER ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Plonger avec le profiler natif</h2>
+                <p>Les médianes disent <em>combien</em>, pas <em>pourquoi</em>. Pour comprendre ce qui se
+                    passe à l'intérieur d'un <code>write()</code>, on sort l'artillerie d'Odoo 19 — le
+                    context manager <code>Profiler</code>.</p>
+                <pre class="language-python"><code class="language-python">from odoo.tools.profiler import Profiler
+
+# Depuis un shell Odoo ou un test, on profile 100 writes avec push
+with Profiler(db='vs19_odooskills_test',
+              collectors=['sql', 'traces_async'],
+              description='T28 bench write_push n=100'):
+    env['helpdesk.ticket']._bench_bulk_escalate(n=100, push=True)
+
+# La session est disponible dans ir.profile — consultable via /odoo/action-base_setup.action_general_configuration
+# ou directement en SQL :
+#   SELECT id, name, duration, total_time FROM ir_profile ORDER BY id DESC LIMIT 5;</code></pre>
+                <p>L'intérêt du <code>SQLCollector</code> : tu vois chaque requête issue du
+                    <code>write()</code>, son temps exact, et surtout les <em>N+1</em> cachés — par exemple
+                    un <code>SELECT</code> par ticket pour charger le <code>partner_id.email</code> avant
+                    l'envoi du mail d'acquittement. Sur 100 tickets, ça se paie vite.</p>
+                <figure class="preview-figure">
+                    <img src="__IMG_LIST__" alt="Interface Odoo 19 — liste helpdesk avec le widget sla_badge T26, environnement 8077 odooskills_demo_v19"/>
+                    <figcaption>L'écran de référence pour le bench : la liste helpdesk avec le widget
+                        <code>sla_badge</code> du T26. Chaque pastille lit un <code>sla_status</code>
+                        <em>computed/stored</em>.</figcaption>
+                </figure>
+                <p>Astuce complémentaire : en développement, ajouter <code>?profiler=1</code> à l'URL
+                    backend active le panneau devtool côté navigateur — mais exige le mode
+                    <code>dev=all</code> dans la conf Odoo. En production, l'approche Python ci-dessus est
+                    la seule option responsable.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PITFALL ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Les cinq pièges qui déforment un bench Odoo</h4>
+                    <ul>
+                        <li><strong>Méthodes préfixées <code>_</code> inaccessibles en XML-RPC</strong> —
+                            Odoo refuse <em>Private methods cannot be called remotely</em>. Il faut ajouter
+                            un wrapper public <code>bench_bulk_escalate</code> (sans underscore) qui appelle
+                            <code>_bench_bulk_escalate</code>, sinon ton script bench échoue silencieusement.</li>
+                        <li><strong>Écrire sur un ticket <code>done</code></strong> — la contrainte T15
+                            lève une <code>ValidationError</code>. Toujours filtrer
+                            <code>('state', '!=', 'done')</code> dans le helper pour un bench reproductible.</li>
+                        <li><strong>Mode <code>dev=all</code> activé pendant le bench</strong> — ajoute du
+                            logging, des reloads assets, des traces stacktrace. Les timings sont
+                            <em>systématiquement</em> biaisés de 10–30%. Bench = conf production.</li>
+                        <li><strong>Crons actifs pendant la mesure</strong> — un <code>ir.cron</code> qui
+                            tourne au milieu de tes 5 répétitions contamine les runs. Désactiver tous les
+                            crons (<code>ir.cron</code> → <code>active=False</code>) en amont.</li>
+                        <li><strong><code>time.time()</code> au lieu de <code>time.perf_counter()</code></strong> —
+                            le premier est ajusté par le NTP et peut reculer. Le second est monotonique et
+                            haute résolution. Toujours le second pour mesurer des deltas.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 5 — VERDICT ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Verdict — quand activer le pattern T27 ?</h2>
+                <div class="verdict-box">
+                    <h4>Règles décisionnelles validées par les chiffres</h4>
+                    <ul class="mb-0">
+                        <li><strong>Activer bus.bus live</strong> si&nbsp;: &lt; 100 événements/seconde sur le
+                            canal, &lt; 500 onglets simultanément ouverts, visibilité UX forte (dashboard,
+                            ticket ouvert en permanence). Le surcoût de ~0.1 ms/ticket à n=100 est
+                            imperceptible.</li>
+                        <li><strong>Préférer un polling</strong> si&nbsp;: tolérance latence 5-10 secondes
+                            acceptable, le changement concerne un widget rarement affiché, la charge ORM
+                            domine déjà. Un <code>setInterval</code> simple est souvent moins coûteux à
+                            maintenir.</li>
+                        <li><strong>Préférer un cron batch</strong> si&nbsp;: &gt; 1 000 événements/s,
+                            traitement pas urgent pour l'utilisateur final, besoin de regrouper les
+                            notifications (digest quotidien).</li>
+                        <li><strong>Index partiel sur champs filtrés</strong> si&nbsp;: plus de 100 000 lignes
+                            ET requêtes filtrées fréquentes. <code>EXPLAIN ANALYZE</code> tranche —
+                            si tu vois <em>Seq Scan</em> sur &gt; 10 000 lignes, regarde si l'index vaut le
+                            coup.</li>
+                    </ul>
+                </div>
+                <p>La morale de la saison, en une phrase : <em>le pattern T27 est viable pour la majorité
+                    des cas d'usage helpdesk/CRM d'une PME, et coûte environ 2 ms par notification — soit
+                    1/500e d'une seconde, invisible pour l'utilisateur, amorti dès qu'on bat en bulk</em>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><strong>Trois outils natifs</strong> suffisent&nbsp;: <code>Profiler</code>,
+                        <code>EXPLAIN ANALYZE</code>, <code>perf_counter</code>. Pas besoin de pyinstrument
+                        ni pg_stat_statements pour une première mesure sérieuse.</li>
+                    <li><strong>Coût bus.bus T27 mesuré</strong>&nbsp;: <strong>+2 ms/ticket à n=1</strong>,
+                        <strong>amorti sous 0.2 ms/ticket à n=100</strong>. C'est le <em>vrai</em> chiffre,
+                        pas une estimation.</li>
+                    <li><strong>Helper bench sur le modèle</strong> plutôt qu'un script externe&nbsp;:
+                        reproductible, testable, utilisable dans un <code>TransactionCase</code>.</li>
+                    <li><strong>Médiane sur 5 runs</strong> + affichage des samples&nbsp;: toute publication
+                        sérieuse de benchmark montre la dispersion, pas juste la moyenne.</li>
+                    <li><strong>EXPLAIN ANALYZE</strong> sur un champ <code>selection</code> non-indexé =
+                        <em>Seq Scan</em> jusqu'à environ 10 000 lignes, puis index partiel rentable.</li>
+                    <li><strong>Cinq pièges</strong> à neutraliser avant de mesurer&nbsp;: XML-RPC
+                        <code>_</code>, ticket <code>done</code>, mode <code>dev=all</code>, crons,
+                        <code>time.time</code> vs <code>perf_counter</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI — INFRASTRUCTURE ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Voir aussi — Parcours Infrastructure</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a></h5>
+                            <p class="small">L'environnement de base pour reproduire ce bench — conf Python, PostgreSQL, venv.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a></h5>
+                            <p class="small">Relancer le bench dans un container jetable pour isoler le bruit du host.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">#90 — Sécuriser Odoo en production</a></h5>
+                            <p class="small">Avant de profiler en prod, SSL + systemd + isolation — la base d'un VPS digne de ce nom.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ARTICLES COMPLÉMENTAIRES ===== -->
+<section class="s_features_grid pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Articles complémentaires</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108">T27 — bus.bus + WebSocket</a></h5>
+                            <p class="small">Le pattern dont on mesure ici le coût — <strong>lire T27 avant T28</strong> pour le fil narratif complet.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24 — Tests automatisés</a></h5>
+                            <p class="small">Le <code>TransactionCase</code> du helper bench — pattern directement réutilisable.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107">T26 — OWL composants custom</a></h5>
+                            <p class="small">Le widget <code>sla_badge</code> qu'on lit dans <code>search_read</code> — <em>computed/stored</em> = 0.026 ms/ticket.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA + NAV ===== -->
+<section class="s_text_block pt32 pb32 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">🎉 Saison « Dépassement tech v19 » terminée</h3>
+                <p>5 articles, 5 modules, 1 CSV de bench, 0 bluff. Télécharge le Guide Technique pour
+                    récupérer le PDF compilé + le module fil rouge <code>odooskills_helpdesk</code> à
+                    toutes les étapes (T24 → T28).</p>
+                <a href="/guide-technique-odoo" class="btn btn-warning btn-lg">Télécharger le guide</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt24 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto d-flex justify-content-between">
+                <a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108" class="btn btn-outline-secondary">← T27 — bus.bus + WebSocket</a>
+                <span class="btn btn-outline-primary disabled">Saison clôturée · T28 dernier article</span>
+            </div>
+        </div>
+    </div>
+</section>

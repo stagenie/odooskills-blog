@@ -4,3 +4,4 @@ from . import test_ticket_wizard
 from . import test_controllers
 from . import test_sla_badge_registration
 from . import test_sla_bus_push
+from . import test_bench_helper
