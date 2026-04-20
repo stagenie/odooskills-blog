@@ -1,5 +1,6 @@
 from . import helpdesk_mixin
 from . import sla_mixin
+from . import ir_websocket
 from . import helpdesk_ticket_category
 from . import helpdesk_ticket_tag
 from . import helpdesk_ticket

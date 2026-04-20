@@ -242,6 +242,11 @@ class HelpdeskTicket(models.Model):
 
         Démontre le pattern "protection d'état" — très fréquent dans les modules
         métier (factures validées, commandes confirmées, etc.).
+
+        T27 : push bus.bus si sla_status change après l'écriture. Le champ
+        `sla_status` est computed/stored — il peut changer indirectement quand
+        `sla_hours` ou `sla_deadline` est modifié. On capture le statut AVANT
+        super().write() et on compare APRÈS pour détecter les changements.
         """
         protected = set(vals) - self._EDITABLE_WHEN_DONE
         if protected:
@@ -252,12 +257,31 @@ class HelpdeskTicket(models.Model):
                         f"{', '.join(sorted(self._EDITABLE_WHEN_DONE))} "
                         "restent modifiables."
                     )
+
         # Horodatage automatique lors du passage à 'done'
         newly_resolved = self.env['helpdesk.ticket']
         if vals.get('state') == 'done':
             vals.setdefault('resolved_at', fields.Datetime.now())
             newly_resolved = self.filtered(lambda t: t.state != 'done')
+
+        # T27 — snapshot sla_status AVANT écriture pour détecter les changements
+        pre_status = {rec.id: rec.sla_status for rec in self}
+
         result = super().write(vals)
+
+        # T27 — push bus.bus pour chaque ticket dont sla_status a changé
+        changed = self.filtered(lambda r: r.sla_status != pre_status.get(r.id))
+        for ticket in changed:
+            self.env['bus.bus']._sendone(
+                'odooskills.sla',
+                'sla_status_changed',
+                {
+                    'id': ticket.id,
+                    'reference': ticket.reference or '',
+                    'new_status': ticket.sla_status,
+                    'name': ticket.name,
+                },
+            )
 
         # T21 : email de résolution aux tickets qui viennent de passer à 'done'
         if newly_resolved and not self.env.context.get('skip_mail'):
@@ -269,6 +293,7 @@ class HelpdeskTicket(models.Model):
                 for ticket in newly_resolved:
                     if ticket.partner_id.email:
                         template.send_mail(ticket.id, force_send=False)
+
         return result
 
     def unlink(self):

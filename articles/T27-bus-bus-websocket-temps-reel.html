@@ -1,0 +1,615 @@
+<!--
+Article T27 — bus.bus + WebSocket temps réel en Odoo 19
+Série Technique · Saison Dépassement tech v19 · Article 4/5
+Auteur : BENHAMIDA Mustapha
+Date : 2026-04-20
+Slug : bus-bus-websocket-temps-reel
+Meta : bus.bus + WebSocket Odoo 19 — push server → widget OWL sans F5. Pattern complet _sendone, _build_bus_channel_list, bus_service.subscribe appliqué au widget sla_badge (T26).
+Mot-clé cible : bus.bus odoo 19 websocket temps réel
+Catégorie : Développement Odoo
+Tags : avance, web-ui, guide, community
+Temps de lecture : ~12 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-change { background: #e0f2fe; border-left: 4px solid #0284c7; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-change h4 { color: #075985; margin-top: 0; }
+
+  .seq-fig svg { max-width: 100%; height: auto; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Saison « Dépassement tech v19 » · Article 4/5</p>
+                <h1 class="text-white">bus.bus + WebSocket temps réel — rafraîchir un widget OWL sans F5</h1>
+                <p class="lead mt-3 text-white">De l'override <code>write()</code> Python à la pastille qui change
+                    de couleur dans l'onglet voisin en moins de 500 ms — le cycle complet
+                    <strong>_sendone → PostgreSQL NOTIFY → WebSocket → bus_service → record.load()</strong>
+                    appliqué au widget <code>sla_badge</code> du <a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107" style="color:#ffc107;">T26</a>.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau avancé · parcours <strong>Web/UI</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREVIEW ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="preview-figure">
+                    <img src="__IMG_AFTER__" alt="Widget sla_badge Odoo 19 après push bus.bus temps réel — pastille orange 'Proche échéance' rafraîchie sans F5"/>
+                    <figcaption>Objectif de l'article — obtenir ce changement de pastille
+                        <strong>sans action utilisateur sur l'onglet affiché</strong>. Un autre onglet a
+                        modifié <code>sla_hours</code>, le serveur a poussé un événement bus, et
+                        le widget OWL s'est rechargé tout seul.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row">
+                    <div class="col-md-4">
+                        <h4>Pousser côté serveur</h4>
+                        <p>Émettre un événement depuis un <code>write()</code> override avec
+                            <code>env['bus.bus']._sendone(channel, type, payload)</code> — et comprendre
+                            pourquoi la magie arrive au <em>postcommit</em>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Autoriser le canal</h4>
+                        <p>Étendre <code>ir.websocket._build_bus_channel_list</code> pour whitelister
+                            un canal string — sans cette ACL, l'<code>addChannel</code> client est
+                            silencieusement ignoré.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Écouter côté OWL</h4>
+                        <p>Utiliser <code>useService("bus_service")</code> avec
+                            <code>subscribe()</code> / <code>unsubscribe()</code> dans les hooks
+                            <code>onMounted</code> / <code>onWillUnmount</code>, et déclencher
+                            <code>this.props.record.load()</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info" role="alert">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 19 CE installé (<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01</a>) avec le daemon <code>bodoo19.service</code> actif — le longpolling WebSocket est géré nativement.</li>
+                        <li>Module <code>odooskills_helpdesk</code> v19.0.1.17.0 installé (widget <code>sla_badge</code> du <a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107">T26</a>).</li>
+                        <li>Connaissance des surcharges CRUD (<a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a>) et des widgets OWL (T26).</li>
+                        <li>Un navigateur moderne — Firefox, Chrome, Edge. Le bus passe par un <em>SharedWorker</em>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 1 — POURQUOI BUS.BUS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Pourquoi bus.bus plutôt que du polling HTTP ?</h2>
+                <p>La première question que pose tout débutant : <em>« pourquoi ne pas juste faire un
+                    <code>setInterval(() =&gt; record.load(), 5000)</code> et terminer ? »</em>.
+                    Trois raisons pragmatiques :</p>
+                <ul>
+                    <li><strong>Coût.</strong> 1 000 utilisateurs qui interrogent le serveur toutes
+                        les 5 s = 200 requêtes ORM/s permanentes, même si rien n'a changé. En v19 avec
+                        <code>bus.bus</code>, le serveur ne parle que quand il a vraiment quelque chose à dire.</li>
+                    <li><strong>Latence.</strong> Un polling de 5 s affiche la mise à jour en moyenne
+                        2,5 s après le changement. Avec WebSocket, c'est &lt; 500 ms dans un réseau
+                        décent — le même ordre de grandeur qu'un clic.</li>
+                    <li><strong>Intégrité.</strong> <code>bus.bus</code> route via
+                        <code>PostgreSQL NOTIFY</code> → un seul mécanisme, cohérent pour tous les
+                        workers Odoo, y compris le multi-process gunicorn.</li>
+                </ul>
+                <p>Odoo 19 expose tout le nécessaire dans <code>odoo/addons/bus/</code>. Côté Python :
+                    <code>bus.bus._sendone</code> (API bas niveau) et <code>bus.listener.mixin._bus_send</code>
+                    (API haute, <em>record-scoped</em>). Côté JS : le service <code>bus_service</code>
+                    gère un <em>SharedWorker</em> qui partage une unique WebSocket entre tous les
+                    onglets d'un même navigateur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 2 — DIAGRAMME SÉQUENCE ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le cycle complet en un coup d'œil</h2>
+                <p>Ce diagramme de séquence suit un <em>écrit</em> Python jusqu'au re-render OWL.
+                    Les étapes marquées <em>precommit</em> et <em>postcommit</em> sont
+                    l'orchestration par laquelle <code>bus.bus</code> garantit qu'un onglet abonné
+                    <strong>ne reçoit jamais</strong> une notification avant que la transaction soit
+                    effectivement committée.</p>
+                <figure class="preview-figure seq-fig">
+                    <img src="__IMG_SEQUENCE__" alt="Diagramme séquence bus.bus + WebSocket — 11 acteurs de write() Python jusqu'au re-render OWL"/>
+                    <figcaption>Cycle complet — du <code>write()</code> Python au re-render OWL sans F5
+                        — en 11 acteurs et 15 échanges.</figcaption>
+                </figure>
+                <p>Trois points importants :</p>
+                <ul>
+                    <li>Le tuple <code>(channel, notification_type, payload)</code> est sérialisé en
+                        JSON dans la table <code>bus_bus</code> au <em>precommit</em>.</li>
+                    <li>Le <em>postcommit</em> envoie un <code>pg_notify('imbus', payload)</code> —
+                        cela réveille le thread <code>ImDispatch</code> (le dispatcher interne d'Odoo
+                        chargé de router les notifications bus vers les sockets ouvertes) qui relaie
+                        aux WebSockets.</li>
+                    <li>Le <em>SharedWorker</em> <code>bus_service</code> (un par navigateur, pas par
+                        onglet) rebroadcast via un <code>EventBus</code> OWL — chaque widget abonné
+                        reçoit son callback.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 3 — SERVER PUSH ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Étape 1 — Pousser depuis <code>write()</code></h2>
+                <p>Le champ <code>sla_status</code> est <em>computed/stored</em> — il dépend de
+                    <code>sla_deadline</code>, lui-même fonction de <code>sla_hours</code> et
+                    <code>create_date</code>. Autrement dit, un <code>write({'sla_hours': 1})</code>
+                    peut déclencher indirectement un changement de <code>sla_status</code>. Pour
+                    détecter ce changement, on prend un <strong>snapshot avant</strong>,
+                    on appelle <code>super().write(vals)</code>, puis on compare
+                    <strong>après</strong>.</p>
+                <pre class="language-python"><code class="language-python"># addons/odooskills_helpdesk/models/helpdesk_ticket.py (extrait T27)
+def write(self, vals):
+    # ...logique T15 (protection d'état) inchangée...
+
+    # T27 — snapshot sla_status AVANT écriture pour détecter les changements
+    pre_status = {rec.id: rec.sla_status for rec in self}
+
+    result = super().write(vals)
+
+    # T27 — push bus.bus pour chaque ticket dont sla_status a changé
+    changed = self.filtered(lambda r: r.sla_status != pre_status.get(r.id))
+    for ticket in changed:
+        self.env['bus.bus']._sendone(
+            'odooskills.sla',
+            'sla_status_changed',
+            {
+                'id': ticket.id,
+                'reference': ticket.reference or '',
+                'new_status': ticket.sla_status,
+                'name': ticket.name,
+            },
+        )
+
+    return result</code></pre>
+                <p>Trois détails qui ne sautent pas aux yeux :</p>
+                <ul>
+                    <li>Le snapshot lit <code>rec.sla_status</code> — donc déclenche potentiellement
+                        un premier calcul si le champ n'était pas encore matérialisé dans le cache
+                        ORM. C'est volontaire : on veut une base fiable de comparaison.</li>
+                    <li><code>_sendone</code> <strong>ne fait pas</strong> l'insertion immédiatement ;
+                        il pousse la ligne dans <code>self.env.cr.precommit.data</code>. Tout est
+                        écrit dans <code>bus_bus</code> en un batch au commit — performant.</li>
+                    <li>Si la transaction <strong>rollback</strong>, la ligne n'est jamais insérée :
+                        zéro notification fantôme à reconcilier. Exactly-once par construction.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 4 — ACL CANAL ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Étape 2 — Whitelister le canal</h2>
+                <p>Le client (<code>bus_service.addChannel("odooskills.sla")</code>) ne peut pas
+                    s'abonner librement à un canal arbitraire : cela ouvrirait une fuite d'info
+                    évidente. Odoo 19 force chaque canal à passer par un filtre côté serveur —
+                    <code>ir.websocket._build_bus_channel_list</code>. On ajoute le nôtre via un
+                    <code>_inherit</code>, pattern copié de <code>odoo/addons/im_livechat</code>&nbsp;:</p>
+                <pre class="language-python"><code class="language-python"># addons/odooskills_helpdesk/models/ir_websocket.py
+from odoo import models
+
+
+class IrWebsocket(models.AbstractModel):
+    _inherit = 'ir.websocket'
+
+    def _build_bus_channel_list(self, channels):
+        """Ajoute le canal 'odooskills.sla' pour tout user authentifié."""
+        channels = list(channels)  # ne pas altérer la liste originale
+
+        if self.env.user and not self.env.user._is_public():
+            if 'odooskills.sla' not in channels:
+                channels.append('odooskills.sla')
+
+        return super()._build_bus_channel_list(channels)</code></pre>
+                <p>La logique est <em>permissive</em> : tout utilisateur authentifié écoute. En
+                    production sur un vrai back-office, il est plus sain de restreindre par groupe,
+                    par exemple <code>self.env.user.has_group('base.group_user')</code>, ou mieux
+                    par groupe helpdesk dédié.</p>
+                <p>À quel moment <code>_build_bus_channel_list</code> est-il appelé ?
+                    <strong>À chaque subscription WebSocket</strong> — typiquement au chargement de
+                    la page, et à chaque <code>addChannel</code> client. Le client envoie la liste
+                    qu'<em>il</em> demande, le serveur la réécrit selon ses règles, et <em>c'est
+                    cette liste filtrée</em> qui est enregistrée pour ce socket.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 5 — CLIENT OWL ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Étape 3 — Abonner le widget OWL</h2>
+                <p>Le widget <code>SlaBadgeField</code> (T26) devient réactif. On ajoute trois
+                    imports OWL, un <code>setup()</code>, et deux callbacks de cycle de vie&nbsp;:</p>
+                <pre class="language-javascript"><code class="language-javascript">// addons/odooskills_helpdesk/static/src/views/fields/sla_badge/sla_badge.js (extrait T27)
+/** @odoo-module **/
+import { Component, onMounted, onWillUnmount } from "@odoo/owl";
+import { registry } from "@web/core/registry";
+import { standardFieldProps } from "@web/views/fields/standard_field_props";
+import { useService } from "@web/core/utils/hooks";
+import { _t } from "@web/core/l10n/translation";
+
+export class SlaBadgeField extends Component {
+    static template = "odooskills_helpdesk.SlaBadge";
+    static props = {
+        ...standardFieldProps,
+        icon: { type: Boolean, optional: true },
+        compact: { type: Boolean, optional: true },
+        live: { type: Boolean, optional: true },
+    };
+    static defaultProps = { icon: true, compact: false, live: true };
+
+    setup() {
+        if (this.props.live) {
+            this.busService = useService("bus_service");
+            this._onSlaChanged = this._onSlaChanged.bind(this);
+
+            onMounted(() => {
+                this.busService.addChannel("odooskills.sla");
+                this.busService.subscribe("sla_status_changed", this._onSlaChanged);
+            });
+
+            onWillUnmount(() => {
+                this.busService.unsubscribe("sla_status_changed", this._onSlaChanged);
+            });
+        }
+    }
+
+    _onSlaChanged(payload) {
+        if (payload && payload.id === this.props.record.resId) {
+            this.props.record.load();
+        }
+    }
+
+    // getters `value`, `label`, `iconClass`, `pillClass` inchangés — voir T26.
+}</code></pre>
+                <p>Quatre réflexes d'ingénieur OWL à internaliser :</p>
+                <ul>
+                    <li><code>useService</code> doit être appelé <strong>dans <code>setup()</code></strong>,
+                        pas dans <code>onMounted</code>. Les hooks OWL doivent voir le composant
+                        dans son contexte de création.</li>
+                    <li><strong>Toujours désabonner</strong> dans <code>onWillUnmount</code> —
+                        sinon, naviguer entre tickets laisse des callbacks orphelins qui
+                        s'empilent et tirent sur la mémoire.</li>
+                    <li><strong>Binder la référence</strong> (<code>.bind(this)</code>) avant de la
+                        passer à <code>subscribe</code> et à <code>unsubscribe</code> — sinon,
+                        <code>unsubscribe</code> cherche une référence qui n'est plus la même et
+                        rate silencieusement.</li>
+                    <li><code>record.load()</code> recharge <em>ce record</em> ; les props OWL
+                        étant réactives, le template se re-rend automatiquement. Pas besoin de
+                        <code>render</code> ou <code>trigger</code> explicite.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 6 — TESTS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Étape 4 — Tester ce qui ne devrait jamais régresser</h2>
+                <p>Tester un push bus sans démarrer un vrai WebSocket demande un mock. On patche
+                    <code>bus.bus._sendone</code> et on vérifie les appels. Extrait d'un test sur
+                    cinq du fichier <code>tests/test_sla_bus_push.py</code>&nbsp;:</p>
+                <pre class="language-python"><code class="language-python">from unittest.mock import patch
+from odoo.tests.common import TransactionCase, tagged
+
+
+@tagged('post_install', '-at_install', 'odooskills_t27')
+class TestSlaBusPush(TransactionCase):
+
+    def test_write_no_sla_change_no_push(self):
+        """Écriture d'un champ sans effet sur sla_status → aucun push bus."""
+        ticket = self.env['helpdesk.ticket'].with_context(skip_mail=True).create({
+            'name': 'T27 no-push', 'sla_hours': 48,
+        })
+        with patch.object(type(self.env['bus.bus']), '_sendone') as mock_send:
+            ticket.write({'description': 'Mise à jour description uniquement'})
+
+        sla_calls = [c for c in mock_send.call_args_list
+                     if c.args and c.args[0] == 'odooskills.sla']
+        self.assertFalse(sla_calls, "Aucun push bus ne devait être émis")</code></pre>
+                <p>La technique — <em>patcher la classe, pas l'instance</em> — est décrite plus
+                    en détail dans l'<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">article T24</a>
+                    sur les tests. Au total, la suite T27 ajoute cinq tests : push effectif, absence
+                    de push pour un write non-SLA, présence du canal pour user authentifié,
+                    non-duplication du canal, et un cas de double écriture consécutive.</p>
+                <p>Pour lancer cette suite uniquement, utilise le tag <code>odooskills_t27</code>&nbsp;:</p>
+                <pre class="language-bash"><code class="language-bash">venv/bin/python odoo/odoo-bin \
+  --addons-path=odoo/addons,addons/odooskills-blog/modules \
+  -d vs19_odooskills_test \
+  -u odooskills_helpdesk \
+  --test-enable --test-tags=odooskills_t27 \
+  --stop-after-init</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 7 — DÉMO LIVE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Démo — voir le widget se recharger sans F5</h2>
+                <p>État initial — onglet A ouvre un ticket avec <code>sla_hours=48</code>,
+                    pastille verte <em>Dans les temps</em>&nbsp;:</p>
+                <figure class="preview-figure">
+                    <img src="__IMG_BEFORE__" alt="Ticket helpdesk Odoo 19 — widget sla_badge en état initial, pastille verte 'Dans les temps' avec SLA 48 heures"/>
+                    <figcaption>Onglet A — ticket <code>HLP/2026/00005</code>, badge initial vert.</figcaption>
+                </figure>
+                <p>L'onglet B, dans une autre session navigateur, modifie
+                    <code>sla_hours</code> de 48 à 1. Le <code>write()</code> Python recompute
+                    <code>sla_status</code> et pousse le message bus. Trois secondes plus tard,
+                    l'onglet A — <strong>sans aucune action utilisateur</strong> — affiche la
+                    pastille orange <em>Proche échéance</em>&nbsp;:</p>
+                <figure class="preview-figure">
+                    <img src="__IMG_AFTER_DEMO__" alt="Widget sla_badge Odoo 19 — pastille orange 'Proche échéance' après push bus.bus temps réel, sans F5"/>
+                    <figcaption>Onglet A — même ticket, même URL, badge passé à orange après
+                        le push bus. Aucun rafraîchissement manuel.</figcaption>
+                </figure>
+                <p>Sur un VPS correctement configuré, le délai observé entre le
+                    <code>write()</code> sur l'onglet B et le changement visible sur l'onglet A
+                    tourne autour de 300–500 ms. La latence est dominée par la sérialisation JSON
+                    et le tour du <em>SharedWorker</em>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Les cinq pièges qui font perdre une après-midi</h4>
+                    <ul>
+                        <li><strong>Oublier <code>_build_bus_channel_list</code></strong> — le
+                            client appelle <code>addChannel()</code>, le navigateur fait bien son
+                            boulot, mais le serveur ignore silencieusement la demande. Zéro log
+                            d'erreur, zéro message reçu. Toujours vérifier le filtre côté serveur.</li>
+                        <li><strong>Channel string <em>guessable</em></strong> — la doc v19
+                            (<code>odoo/addons/bus/models/bus.py</code>, méthode
+                            <code>_sendone</code>) rappelle que pour un canal sensible, il faut
+                            utiliser une chaîne aléatoire (token). Pour un canal métier partagé
+                            comme <code>odooskills.sla</code>, c'est OK car on filtre déjà côté ACL.</li>
+                        <li><strong>Tester sans comprendre pre/post-commit</strong> — en test
+                            <code>TransactionCase</code>, la transaction n'est jamais
+                            <em>committée</em> ; donc <code>_sendone</code> n'écrit jamais dans
+                            <code>bus_bus</code>. Pour vérifier un push, on patche
+                            <code>_sendone</code> et on compte les appels, pas la table.</li>
+                        <li><strong>Ne pas binder la callback</strong> — passer
+                            <code>this._onSlaChanged</code> à <code>subscribe</code> sans
+                            <code>.bind(this)</code> fonctionne au premier coup (grâce à la
+                            wrap de <code>subscribe</code>) mais le <code>unsubscribe</code>
+                            suivant rate car la Map interne cherche la référence exacte.</li>
+                        <li><strong>Oublier <code>onWillUnmount</code></strong> — chaque
+                            navigation entre tickets crée un nouveau widget, qui s'abonne à nouveau.
+                            Dix navigations = dix callbacks qui tournent, dix
+                            <code>record.load()</code> à chaque notification. La fuite mémoire est
+                            subtile mais réelle.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHANGEMENT V19 ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="v19-change">
+                    <h4>En v19 — <code>bus.listener.mixin</code> existe aussi</h4>
+                    <p class="mb-2">À côté de l'API bas niveau <code>_sendone</code> utilisée ici,
+                        Odoo 19 expose <code>bus.listener.mixin</code> dans
+                        <code>odoo/addons/bus/models/bus_listener_mixin.py</code>. La méthode
+                        <code>_bus_send(notification_type, message)</code> pousse sur un canal
+                        <strong>indexé par record</strong> — idéal pour notifier les abonnés d'un
+                        chat, d'un thread ou d'un document précis.</p>
+                    <p class="mb-0">Pour cet article on a choisi le canal <em>string</em> global
+                        <code>'odooskills.sla'</code> pour sa simplicité pédagogique : une ligne
+                        serveur, une ligne client, une démo spectaculaire. Pour un use-case réel
+                        avec plusieurs milliers de tickets actifs, passer au mixin record-scoped
+                        ramène le trafic à ce que chaque onglet a vraiment besoin d'entendre.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><strong>Trois fichiers suffisent</strong> pour passer d'un widget statique à
+                        un widget réactif&nbsp;: un override <code>write()</code>, un
+                        <code>_build_bus_channel_list</code>, et trois hooks OWL.</li>
+                    <li><strong>Snapshot avant / après</strong>&nbsp;: pour un champ
+                        <em>computed/stored</em>, capturer l'état avant <code>super().write()</code>
+                        reste la méthode la plus fiable pour détecter un changement.</li>
+                    <li><strong>bus.bus = precommit + postcommit</strong>&nbsp;: le push est
+                        <em>exactly-once</em> par construction. Rollback = aucune notification
+                        partie.</li>
+                    <li><strong>_build_bus_channel_list est obligatoire</strong>&nbsp;: sans cette
+                        ACL, l'<code>addChannel</code> client est un no-op silencieux.</li>
+                    <li><strong>SharedWorker</strong>&nbsp;: le <code>bus_service</code> partage
+                        une WebSocket unique entre tous les onglets d'un navigateur.
+                        <code>record.load()</code> rafraîchit chaque widget individuellement.</li>
+                    <li><strong>Cinq pièges à connaître</strong>&nbsp;: ACL oubliée, bind manquant,
+                        unsubscribe oublié, test sans mock du commit, canal string trop devinable.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI — WEB/UI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Voir aussi — Parcours Web/UI</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107">T26 — OWL composants custom</a></h5>
+                            <p class="small">Le widget <code>sla_badge</code> statique dont cet article rend le comportement réactif — point de départ indispensable.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/vues-form-list-kanban-odoo-67">T06 — Vues form/list/kanban</a></h5>
+                            <p class="small">Le XPath d'héritage qui injecte <code>widget="sla_badge"</code> dans la form — la base de tout override de vue.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/heritage-xpath-odoo-69">T09 — Héritage XPath</a></h5>
+                            <p class="small">Comment <code>&lt;attribute name="decoration-X"/&gt;</code> en self-closing supprime un attribut hérité — pattern v19 utilisé par T26.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ARTICLES COMPLÉMENTAIRES ===== -->
+<section class="s_features_grid pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Articles complémentaires</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24 — Tests automatisés</a></h5>
+                            <p class="small">Le pattern de mock <code>patch.object(type(…), '_sendone')</code> vient directement du playbook de tests de cette série.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/migration-odoo-18-vers-19-106">T25 — Migration 18 → 19</a></h5>
+                            <p class="small">Les breaking changes v18 → v19 à anticiper avant d'ajouter un pattern bus.bus custom à une base existante.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15 — create/write/unlink</a></h5>
+                            <p class="small">Le pattern d'override <code>write()</code> auquel cet article greffe le push bus — le snapshot avant/après est une application directe.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA + NAV ===== -->
+<section class="s_text_block pt32 pb32 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">Télécharge le Guide Technique Odoo</h3>
+                <p>Module fil rouge, 20+ articles techniques, environnements de dev complet — PDF à télécharger.</p>
+                <a href="/guide-technique-odoo" class="btn btn-warning btn-lg">Télécharger le guide</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt24 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto d-flex justify-content-between">
+                <a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107" class="btn btn-outline-secondary">← T26 — OWL composants custom</a>
+                <span class="btn btn-outline-primary disabled">T28 — Performance &amp; profiling · à venir</span>
+            </div>
+        </div>
+    </div>
+</section>
