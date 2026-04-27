@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills - Lead GeoIP',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Marketing',
     'summary': "Capture le pays des abonnés newsletter via GeoIP (ip-api.com)",
     'description': """
