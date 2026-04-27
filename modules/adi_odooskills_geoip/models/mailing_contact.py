@@ -19,18 +19,28 @@ _PRIVATE_PREFIXES = (
 _GEOIP_URL = 'http://ip-api.com/json/{ip}?fields=status,countryCode'
 _GEOIP_TIMEOUT = 3
 
+CONSENT_TEXT_VERSION = 'aup-v1-2026-04-27'
+
 
 class MailingContact(models.Model):
     _inherit = 'mailing.contact'
 
     signup_ip = fields.Char(string='Signup IP', readonly=True, copy=False)
+    consent_text_version = fields.Char(
+        string='Consent Text Version', readonly=True, copy=False,
+        help="Version of the AUP consent text shown when the subscriber opted in.",
+    )
 
     @api.model_create_multi
     def create(self, vals_list):
         ip = self._extract_request_ip()
+        consent_version = CONSENT_TEXT_VERSION if request else None
         if ip:
             for vals in vals_list:
                 vals.setdefault('signup_ip', ip)
+        if consent_version:
+            for vals in vals_list:
+                vals.setdefault('consent_text_version', consent_version)
         contacts = super().create(vals_list)
         if ip:
             country_id = self._geoip_country(ip)
