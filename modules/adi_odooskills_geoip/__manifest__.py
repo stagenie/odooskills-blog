@@ -1,8 +1,8 @@
 {
     'name': 'OdooSkills - Lead GeoIP',
-    'version': '19.0.1.1.0',
+    'version': '19.0.1.2.0',
     'category': 'Marketing',
-    'summary': "Capture le pays des abonnés newsletter via GeoIP (ip-api.com)",
+    'summary': "Capture pays (GeoIP) + version texte consentement AUP des abonnes newsletter",
     'description': """
 Ajoute un champ `signup_ip` sur mailing.contact et resout automatiquement
 `country_id` via une requete GeoIP a la creation depuis un formulaire web.

@@ -1,4 +1,7 @@
 from odoo import api, models
+from odoo.http import request
+
+from .mailing_contact import CONSENT_TEXT_VERSION
 
 
 class MailingSubscription(models.Model):
@@ -9,16 +12,18 @@ class MailingSubscription(models.Model):
         subs = super().create(vals_list)
         Contact = self.env['mailing.contact']
         ip = Contact._extract_request_ip()
-        if not ip:
+        if not ip and not request:
             return subs
         country_id = None
         for sub in subs:
             contact = sub.contact_id
             if not contact:
                 continue
-            if not contact.signup_ip:
+            if ip and not contact.signup_ip:
                 contact.signup_ip = ip
-            if contact.country_id:
+            if request and not contact.consent_text_version:
+                contact.consent_text_version = CONSENT_TEXT_VERSION
+            if contact.country_id or not ip:
                 continue
             if country_id is None:
                 country_id = Contact._geoip_country(ip)
