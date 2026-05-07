@@ -90,3 +90,37 @@ class TestEmailValidatorRoleBased(TransactionCase):
         # "infomail" is NOT role-based (full local-part doesn't match, neither does base before "+")
         status, reason = self.validator._check_role_based('infomail', 'gmail.com')
         self.assertEqual(status, 'ok')
+
+
+@tagged('post_install', '-at_install', 'adi_odooskills_email_hygiene')
+class TestEmailValidatorDisposable(TransactionCase):
+    """ Reject yopmail, mailinator, etc. """
+
+    def setUp(self):
+        super().setUp()
+        self.validator = self.env['email.validator']
+
+    def test_disposable_yopmail(self):
+        status, reason = self.validator._check_disposable('yopmail.com')
+        self.assertEqual(status, 'disposable')
+
+    def test_disposable_mailinator(self):
+        status, reason = self.validator._check_disposable('mailinator.com')
+        self.assertEqual(status, 'disposable')
+
+    def test_disposable_10minutemail(self):
+        status, reason = self.validator._check_disposable('10minutemail.com')
+        self.assertEqual(status, 'disposable')
+
+    def test_disposable_legit_passes(self):
+        status, reason = self.validator._check_disposable('gmail.com')
+        self.assertEqual(status, 'ok')
+
+    def test_disposable_uppercase_normalized(self):
+        # caller is expected to lowercase before calling, but defense in depth
+        status, reason = self.validator._check_disposable('YOPMAIL.COM')
+        self.assertEqual(status, 'disposable')
+
+    def test_disposable_corp_domain_passes(self):
+        status, reason = self.validator._check_disposable('adicops.com')
+        self.assertEqual(status, 'ok')
