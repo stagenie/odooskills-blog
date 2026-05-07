@@ -77,6 +77,16 @@ def _normalize_email(email):
     return local, domain
 
 
+def _redact_email(email):
+    """ pierre.dupont@gmail.com → p***@gmail.com (RGPD-friendly logging). """
+    if not email or '@' not in email:
+        return '***'
+    local, domain = email.split('@', 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
 class EmailValidator(models.AbstractModel):
     _name = 'email.validator'
     _description = 'OdooSkills email hygiene validator (stateless)'

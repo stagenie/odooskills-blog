@@ -345,3 +345,29 @@ class TestMailingContactEmailStatus(TransactionCase):
                      'mx_ko', 'dns_timeout'):
             self.assertIn(code, selection,
                           f"email_status missing selection key '{code}'")
+
+
+from odoo.addons.adi_odooskills_email_hygiene.models.email_validator import _redact_email
+
+
+@tagged('post_install', '-at_install', 'adi_odooskills_email_hygiene')
+class TestRedactEmail(TransactionCase):
+    """ RGPD-friendly logging: pierre.dupont@gmail.com → p***@gmail.com """
+
+    def test_redact_standard(self):
+        self.assertEqual(_redact_email('pierre.dupont@gmail.com'), 'p***@gmail.com')
+
+    def test_redact_single_letter_local(self):
+        self.assertEqual(_redact_email('a@gmail.com'), 'a***@gmail.com')
+
+    def test_redact_no_at_sign(self):
+        self.assertEqual(_redact_email('pierre.dupont'), '***')
+
+    def test_redact_empty(self):
+        self.assertEqual(_redact_email(''), '***')
+
+    def test_redact_none(self):
+        self.assertEqual(_redact_email(None), '***')
+
+    def test_redact_empty_local(self):
+        self.assertEqual(_redact_email('@gmail.com'), '***@gmail.com')
