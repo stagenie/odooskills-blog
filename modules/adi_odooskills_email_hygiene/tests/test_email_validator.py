@@ -124,3 +124,59 @@ class TestEmailValidatorDisposable(TransactionCase):
     def test_disposable_corp_domain_passes(self):
         status, reason = self.validator._check_disposable('adicops.com')
         self.assertEqual(status, 'ok')
+
+
+from unittest.mock import patch, MagicMock
+import dns.resolver
+from dns.exception import Timeout
+from dns.resolver import NXDOMAIN, NoAnswer
+
+
+@tagged('post_install', '-at_install', 'adi_odooskills_email_hygiene')
+class TestEmailValidatorMx(TransactionCase):
+    """ DNS MX resolution with TTL cache. """
+
+    def setUp(self):
+        super().setUp()
+        self.validator = self.env['email.validator']
+        # Reset cache between tests to avoid leakage
+        from odoo.addons.adi_odooskills_email_hygiene.models import email_validator
+        email_validator._MX_CACHE.clear()
+
+    def _fake_mx(self, host):
+        m = MagicMock()
+        m.exchange.to_text.return_value = host
+        return m
+
+    def test_mx_present(self):
+        with patch('dns.resolver.resolve', return_value=[self._fake_mx('mx.gmail.com.')]):
+            status, reason = self.validator._resolve_mx('gmail.com')
+        self.assertEqual(status, 'ok')
+
+    def test_mx_nxdomain(self):
+        with patch('dns.resolver.resolve', side_effect=NXDOMAIN()):
+            status, reason = self.validator._resolve_mx('aaa.bbb.fr')
+        self.assertEqual(status, 'mx_ko')
+
+    def test_mx_no_answer(self):
+        with patch('dns.resolver.resolve', side_effect=NoAnswer()):
+            status, reason = self.validator._resolve_mx('domain-without-mx.fr')
+        self.assertEqual(status, 'mx_ko')
+
+    def test_mx_timeout(self):
+        with patch('dns.resolver.resolve', side_effect=Timeout()):
+            status, reason = self.validator._resolve_mx('slow-dns.com')
+        self.assertEqual(status, 'dns_timeout')
+
+    def test_mx_cache_hit_avoids_second_resolve(self):
+        with patch('dns.resolver.resolve', return_value=[self._fake_mx('mx.x.com.')]) as mock:
+            self.validator._resolve_mx('cached.com')
+            self.validator._resolve_mx('cached.com')
+        self.assertEqual(mock.call_count, 1, "Second call should hit cache")
+
+    def test_mx_cache_negative_result_cached(self):
+        # NXDOMAIN must also be cached (avoid hammering DNS on garbage)
+        with patch('dns.resolver.resolve', side_effect=NXDOMAIN()) as mock:
+            self.validator._resolve_mx('nope.fr')
+            self.validator._resolve_mx('nope.fr')
+        self.assertEqual(mock.call_count, 1)
