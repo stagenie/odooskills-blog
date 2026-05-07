@@ -321,3 +321,27 @@ class TestEmailValidatorBatch(TransactionCase):
         info_calls = [c for c in mock_log.info.call_args_list
                       if 'validate_batch progress' in (c.args[0] if c.args else '')]
         self.assertEqual(len(info_calls), 1)
+
+
+@tagged('post_install', '-at_install', 'adi_odooskills_email_hygiene')
+class TestMailingContactEmailStatus(TransactionCase):
+    """ Verify the email_status field is present and defaults to 'valid'. """
+
+    def test_email_status_field_exists(self):
+        Contact = self.env['mailing.contact']
+        self.assertIn('email_status', Contact._fields)
+
+    def test_email_status_default_valid(self):
+        contact = self.env['mailing.contact'].create({
+            'name': 'Test User',
+            'email': 'test@example.com',
+        })
+        self.assertEqual(contact.email_status, 'valid')
+
+    def test_email_status_selection_includes_all_reasons(self):
+        Contact = self.env['mailing.contact']
+        selection = dict(Contact._fields['email_status'].selection)
+        for code in ('valid', 'syntax_ko', 'role_based', 'disposable',
+                     'mx_ko', 'dns_timeout'):
+            self.assertIn(code, selection,
+                          f"email_status missing selection key '{code}'")
