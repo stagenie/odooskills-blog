@@ -36,6 +36,11 @@ def _load_disposable_set():
                     domains.add(line)
     except FileNotFoundError:
         _logger.warning("Disposable list not found at %s — disposable check disabled", path)
+    except Exception as e:
+        _logger.warning(
+            "Failed to load disposable list at %s: %s — disposable check disabled",
+            path, e,
+        )
     return frozenset(domains)
 
 
