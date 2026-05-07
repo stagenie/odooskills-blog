@@ -97,12 +97,17 @@ class TestSubscribeControllerHygiene(HttpCase):
             resp = self._post_subscribe('lambda@new-domain.io')
         body = resp.json()['result']
         self.assertEqual(body.get('toast_type'), 'danger')
-        self.assertTrue(body.get('toast_content'))
+        self.assertIn('réessayer', body.get('toast_content', ''))
 
     def test_subscribe_rejects_syntax_ko(self):
         resp = self._post_subscribe('not_an_email')
         body = resp.json()['result']
         self.assertEqual(body.get('toast_type'), 'danger')
+        self.assertIn("n'est pas valide", body.get('toast_content', ''))
+        contact = self.env['mailing.contact'].search(
+            [('email', '=', 'not_an_email')]
+        )
+        self.assertFalse(contact, "syntax_ko email must NOT create contact")
 
     def test_subscribe_accepts_valid_email(self):
         with patch('dns.resolver.resolve', return_value=[self._fake_mx()]):
