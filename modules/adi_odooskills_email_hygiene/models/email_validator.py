@@ -8,7 +8,8 @@ _logger = logging.getLogger(__name__)
 # Regex covers ~99% of real-world emails. Strict RFC 5322 cannot be expressed
 # as a single regex; this rejects obvious garbage and accepts standard atoms.
 _EMAIL_RE = re.compile(
-    r"^(?P<local>[A-Z0-9._%+\-]+)@(?P<domain>[A-Z0-9.\-]+\.[A-Z]{2,})$",
+    r"^(?P<local>[A-Z0-9._%+\-]+)"
+    r"@(?P<domain>(?:[A-Z0-9](?:[A-Z0-9\-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,})$",
     re.IGNORECASE,
 )
 
@@ -27,7 +28,7 @@ def _normalize_email(email):
         return None
     try:
         domain = domain.encode('idna').decode('ascii')
-    except (UnicodeError, UnicodeDecodeError):
+    except UnicodeError:
         return None
     return local, domain
 
@@ -40,11 +41,13 @@ class EmailValidator(models.AbstractModel):
     def _check_syntax(self, email):
         """ Returns ('ok', None) or ('syntax_ko', email). """
         if not email:
+            _logger.debug("email.validator syntax_ko: empty input")
             return ('syntax_ko', email)
         parts = _normalize_email(email)
         if parts is None:
             return ('syntax_ko', email)
         local, domain = parts
+        # normalize handles IDNA/structure; regex validates char classes and TLD format
         if not _EMAIL_RE.match(f"{local}@{domain}"):
             return ('syntax_ko', email)
         tld = domain.rsplit('.', 1)[-1]

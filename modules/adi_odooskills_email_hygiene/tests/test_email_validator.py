@@ -12,6 +12,7 @@ class TestEmailValidatorSyntax(TransactionCase):
     def test_syntax_valid_standard(self):
         status, reason = self.validator._check_syntax('pierre@gmail.com')
         self.assertEqual(status, 'ok')
+        self.assertIsNone(reason)
 
     def test_syntax_dot_atom_with_plus_tag(self):
         status, reason = self.validator._check_syntax('prenom.nom+tag@gmail.com')
@@ -20,6 +21,7 @@ class TestEmailValidatorSyntax(TransactionCase):
     def test_syntax_no_at_sign(self):
         status, reason = self.validator._check_syntax('aaaaa')
         self.assertEqual(status, 'syntax_ko')
+        self.assertEqual(reason, 'aaaaa')
 
     def test_syntax_no_tld(self):
         status, reason = self.validator._check_syntax('aaa@bbb')
