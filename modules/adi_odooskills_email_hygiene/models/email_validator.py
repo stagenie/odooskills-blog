@@ -1,6 +1,11 @@
 import logging
 import os
 import re
+import time
+
+import dns.resolver
+from dns.exception import DNSException, Timeout
+from dns.resolver import NXDOMAIN, NoAnswer
 
 from odoo import api, models
 
@@ -15,6 +20,13 @@ _EMAIL_RE = re.compile(
 )
 
 INVALID_TLDS = frozenset({'test', 'invalid', 'localhost', 'example'})
+
+DNS_TIMEOUT_SEC = 3.0
+MX_CACHE_TTL_SEC = 3600
+MX_CACHE_MAXSIZE = 1024
+
+# Module-level cache: {domain: (status, expiry_monotonic)}
+_MX_CACHE = {}
 
 ROLE_BASED_LOCAL_PARTS = frozenset({
     'admin', 'administrator', 'contact', 'hello', 'help', 'hr', 'info',
@@ -89,6 +101,41 @@ class EmailValidator(models.AbstractModel):
         if (domain or '').lower().strip() in DISPOSABLE_SET:
             return ('disposable', domain)
         return ('ok', None)
+
+    @api.model
+    def _resolve_mx(self, domain):
+        """ Resolve MX record for a domain.
+            Returns ('ok', None), ('mx_ko', domain), or ('dns_timeout', domain).
+            In-memory TTL cache (1h, max 1024 entries) avoids hammering DNS
+            on repeated submissions. NXDOMAIN/NoAnswer are also cached.
+        """
+        domain = (domain or '').lower().strip()
+        if not domain:
+            return ('mx_ko', domain)
+        now = time.monotonic()
+        cached = _MX_CACHE.get(domain)
+        if cached is not None:
+            status, expiry = cached
+            if now < expiry:
+                if status == 'ok':
+                    return ('ok', None)
+                return (status, domain)
+            _MX_CACHE.pop(domain, None)
+        # cache miss → resolve
+        try:
+            answers = dns.resolver.resolve(domain, 'MX', lifetime=DNS_TIMEOUT_SEC)
+            status = 'ok' if any(a for a in answers) else 'mx_ko'
+        except (NXDOMAIN, NoAnswer):
+            status = 'mx_ko'
+        except (Timeout, DNSException):
+            status = 'dns_timeout'
+        # Eviction: if full, drop one arbitrary entry (insertion-ordered dict)
+        if len(_MX_CACHE) >= MX_CACHE_MAXSIZE:
+            _MX_CACHE.pop(next(iter(_MX_CACHE)), None)
+        _MX_CACHE[domain] = (status, now + MX_CACHE_TTL_SEC)
+        if status == 'ok':
+            return ('ok', None)
+        return (status, domain)
 
     @api.model
     def _check_syntax(self, email):
