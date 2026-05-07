@@ -15,6 +15,12 @@ _EMAIL_RE = re.compile(
 
 INVALID_TLDS = frozenset({'test', 'invalid', 'localhost', 'example'})
 
+ROLE_BASED_LOCAL_PARTS = frozenset({
+    'admin', 'administrator', 'contact', 'hello', 'help', 'hr', 'info',
+    'jobs', 'mail', 'marketing', 'no-reply', 'noreply', 'office',
+    'postmaster', 'sales', 'support',
+})
+
 
 def _normalize_email(email):
     """ lowercase + strip + idna-encode the domain. Returns (local, domain) or None. """
@@ -36,6 +42,16 @@ def _normalize_email(email):
 class EmailValidator(models.AbstractModel):
     _name = 'email.validator'
     _description = 'OdooSkills email hygiene validator (stateless)'
+
+    @api.model
+    def _check_role_based(self, local_part, domain):
+        """ Returns ('ok', None) or ('role_based', email). """
+        normalized = (local_part or '').lower().strip()
+        # base part before "+" suffix (Gmail-style alias separator)
+        base = normalized.split('+', 1)[0]
+        if normalized in ROLE_BASED_LOCAL_PARTS or base in ROLE_BASED_LOCAL_PARTS:
+            return ('role_based', f"{local_part}@{domain}")
+        return ('ok', None)
 
     @api.model
     def _check_syntax(self, email):
