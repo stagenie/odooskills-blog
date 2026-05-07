@@ -203,3 +203,66 @@ class TestEmailValidatorMx(TransactionCase):
                         "dns_timeout entry should NOT use the full 1h TTL")
         self.assertLessEqual(seconds_until_expiry, email_validator.MX_CACHE_TTL_TIMEOUT_SEC + 1,
                              "dns_timeout entry should use the short TTL")
+
+
+@tagged('post_install', '-at_install', 'adi_odooskills_email_hygiene')
+class TestEmailValidatorOrchestration(TransactionCase):
+    """ End-to-end validate() routing: syntax → role-based → disposable → MX. """
+
+    def setUp(self):
+        super().setUp()
+        self.validator = self.env['email.validator']
+        from odoo.addons.adi_odooskills_email_hygiene.models import email_validator
+        email_validator._MX_CACHE.clear()
+
+    def _fake_mx(self):
+        m = MagicMock()
+        m.exchange.to_text.return_value = 'mx.gmail.com.'
+        return m
+
+    def test_validate_valid(self):
+        with patch('dns.resolver.resolve', return_value=[self._fake_mx()]):
+            status, reason = self.validator.validate('pierre@gmail.com')
+        self.assertEqual(status, 'valid')
+
+    def test_validate_syntax_ko_short_circuits(self):
+        # MX should NOT be queried when syntax fails
+        with patch('dns.resolver.resolve') as mock:
+            status, reason = self.validator.validate('aaa@bbb')
+        self.assertEqual(status, 'syntax_ko')
+        mock.assert_not_called()
+
+    def test_validate_role_based_short_circuits(self):
+        with patch('dns.resolver.resolve') as mock:
+            status, reason = self.validator.validate('info@startup.io')
+        self.assertEqual(status, 'role_based')
+        mock.assert_not_called()
+
+    def test_validate_disposable_short_circuits(self):
+        with patch('dns.resolver.resolve') as mock:
+            status, reason = self.validator.validate('test@yopmail.com')
+        self.assertEqual(status, 'disposable')
+        mock.assert_not_called()
+
+    def test_validate_mx_ko(self):
+        with patch('dns.resolver.resolve', side_effect=NXDOMAIN()):
+            status, reason = self.validator.validate('aaa@bbb.fr')
+        self.assertEqual(status, 'mx_ko')
+
+    def test_validate_dns_timeout(self):
+        with patch('dns.resolver.resolve', side_effect=Timeout()):
+            status, reason = self.validator.validate('pierre@new-domain.io')
+        self.assertEqual(status, 'dns_timeout')
+
+    def test_validate_normalizes_case(self):
+        with patch('dns.resolver.resolve', return_value=[self._fake_mx()]):
+            status, reason = self.validator.validate('PiErRe@GMail.cOm')
+        self.assertEqual(status, 'valid')
+
+    def test_validate_empty_input(self):
+        status, reason = self.validator.validate('')
+        self.assertEqual(status, 'syntax_ko')
+
+    def test_validate_none_input(self):
+        status, reason = self.validator.validate(None)
+        self.assertEqual(status, 'syntax_ko')
