@@ -60,10 +60,12 @@ class TestEmailValidatorRoleBased(TransactionCase):
     def test_role_based_admin(self):
         status, reason = self.validator._check_role_based('admin', 'startup.io')
         self.assertEqual(status, 'role_based')
+        self.assertEqual(reason, 'admin@startup.io')
 
     def test_role_based_info(self):
         status, reason = self.validator._check_role_based('info', 'boite.fr')
         self.assertEqual(status, 'role_based')
+        self.assertEqual(reason, 'info@boite.fr')
 
     def test_role_based_postmaster(self):
         status, reason = self.validator._check_role_based('postmaster', 'boite.fr')
@@ -77,10 +79,12 @@ class TestEmailValidatorRoleBased(TransactionCase):
         # info+newsletter is still role-based (base part before "+" is "info")
         status, reason = self.validator._check_role_based('info+newsletter', 'boite.fr')
         self.assertEqual(status, 'role_based')
+        self.assertEqual(reason, 'info+newsletter@boite.fr')
 
     def test_role_based_personal_passes(self):
         status, reason = self.validator._check_role_based('pierre.dupont', 'gmail.com')
         self.assertEqual(status, 'ok')
+        self.assertIsNone(reason)
 
     def test_role_based_personal_starting_with_role_word_passes(self):
         # "infomail" is NOT role-based (full local-part doesn't match, neither does base before "+")

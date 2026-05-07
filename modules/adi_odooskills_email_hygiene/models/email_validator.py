@@ -45,7 +45,10 @@ class EmailValidator(models.AbstractModel):
 
     @api.model
     def _check_role_based(self, local_part, domain):
-        """ Returns ('ok', None) or ('role_based', email). """
+        """ Check if local_part is a role-based address (admin@, sales@, etc.).
+            Handles Gmail-style plus-tag aliases: info+newsletter → extracts base "info".
+            Returns ('ok', None) or ('role_based', email).
+        """
         normalized = (local_part or '').lower().strip()
         # base part before "+" suffix (Gmail-style alias separator)
         base = normalized.split('+', 1)[0]
