@@ -224,35 +224,41 @@ class TestEmailValidatorOrchestration(TransactionCase):
         with patch('dns.resolver.resolve', return_value=[self._fake_mx()]):
             status, reason = self.validator.validate('pierre@gmail.com')
         self.assertEqual(status, 'valid')
+        self.assertIsNone(reason)
 
     def test_validate_syntax_ko_short_circuits(self):
         # MX should NOT be queried when syntax fails
         with patch('dns.resolver.resolve') as mock:
             status, reason = self.validator.validate('aaa@bbb')
         self.assertEqual(status, 'syntax_ko')
+        self.assertEqual(reason, 'aaa@bbb')
         mock.assert_not_called()
 
     def test_validate_role_based_short_circuits(self):
         with patch('dns.resolver.resolve') as mock:
             status, reason = self.validator.validate('info@startup.io')
         self.assertEqual(status, 'role_based')
+        self.assertEqual(reason, 'info@startup.io')
         mock.assert_not_called()
 
     def test_validate_disposable_short_circuits(self):
         with patch('dns.resolver.resolve') as mock:
             status, reason = self.validator.validate('test@yopmail.com')
         self.assertEqual(status, 'disposable')
+        self.assertEqual(reason, 'test@yopmail.com')
         mock.assert_not_called()
 
     def test_validate_mx_ko(self):
         with patch('dns.resolver.resolve', side_effect=NXDOMAIN()):
             status, reason = self.validator.validate('aaa@bbb.fr')
         self.assertEqual(status, 'mx_ko')
+        self.assertEqual(reason, 'aaa@bbb.fr')
 
     def test_validate_dns_timeout(self):
         with patch('dns.resolver.resolve', side_effect=Timeout()):
             status, reason = self.validator.validate('pierre@new-domain.io')
         self.assertEqual(status, 'dns_timeout')
+        self.assertEqual(reason, 'pierre@new-domain.io')
 
     def test_validate_normalizes_case(self):
         with patch('dns.resolver.resolve', return_value=[self._fake_mx()]):

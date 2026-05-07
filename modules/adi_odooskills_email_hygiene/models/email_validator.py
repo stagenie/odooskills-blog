@@ -159,32 +159,32 @@ class EmailValidator(models.AbstractModel):
 
     @api.model
     def validate(self, email):
-        """ Top-level: returns ('valid', None) or (reason_code, problematic_value).
+        """ Top-level: returns ('valid', None) or (reason_code, email).
             reason_code in {syntax_ko, role_based, disposable, mx_ko, dns_timeout}.
+            On any rejection, the SECOND tuple element is the ORIGINAL email
+            string (preserves case/whitespace for logging and UI display).
             Short-circuits: syntax → role-based → disposable → MX (cheapest first).
         """
         # 1. Syntax (also normalizes & idna-encodes)
-        status, reason = self._check_syntax(email)
+        status, _reason = self._check_syntax(email)
         if status != 'ok':
             return ('syntax_ko', email)
-        parts = _normalize_email(email)
-        if parts is None:
-            return ('syntax_ko', email)
-        local, domain = parts
+        # _check_syntax only returns 'ok' if _normalize_email succeeded → guaranteed non-None
+        local, domain = _normalize_email(email)
 
         # 2. Role-based local-part
-        status, reason = self._check_role_based(local, domain)
+        status, _reason = self._check_role_based(local, domain)
         if status != 'ok':
-            return ('role_based', f"{local}@{domain}")
+            return ('role_based', email)
 
         # 3. Disposable domain
-        status, reason = self._check_disposable(domain)
+        status, _reason = self._check_disposable(domain)
         if status != 'ok':
-            return ('disposable', domain)
+            return ('disposable', email)
 
         # 4. DNS MX
-        status, reason = self._resolve_mx(domain)
+        status, _reason = self._resolve_mx(domain)
         if status != 'ok':
-            return (status, domain)  # 'mx_ko' or 'dns_timeout'
+            return (status, email)  # 'mx_ko' or 'dns_timeout'
 
         return ('valid', None)
