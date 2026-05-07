@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 
 from odoo import api, models
@@ -20,6 +21,25 @@ ROLE_BASED_LOCAL_PARTS = frozenset({
     'jobs', 'mail', 'marketing', 'no-reply', 'noreply', 'office',
     'postmaster', 'sales', 'support',
 })
+
+
+def _load_disposable_set():
+    """ Load disposable_domains.txt once at import time → frozenset. """
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, '..', 'data', 'disposable_domains.txt')
+    domains = set()
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip().lower()
+                if line and not line.startswith('#'):
+                    domains.add(line)
+    except FileNotFoundError:
+        _logger.warning("Disposable list not found at %s — disposable check disabled", path)
+    return frozenset(domains)
+
+
+DISPOSABLE_SET = _load_disposable_set()
 
 
 def _normalize_email(email):
@@ -54,6 +74,15 @@ class EmailValidator(models.AbstractModel):
         base = normalized.split('+', 1)[0]
         if normalized in ROLE_BASED_LOCAL_PARTS or base in ROLE_BASED_LOCAL_PARTS:
             return ('role_based', f"{local_part}@{domain}")
+        return ('ok', None)
+
+    @api.model
+    def _check_disposable(self, domain):
+        """ Check if domain is a known disposable email service.
+            Returns ('ok', None) or ('disposable', domain).
+        """
+        if (domain or '').lower().strip() in DISPOSABLE_SET:
+            return ('disposable', domain)
         return ('ok', None)
 
     @api.model
