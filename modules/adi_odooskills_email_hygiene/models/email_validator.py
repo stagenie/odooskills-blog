@@ -23,6 +23,7 @@ INVALID_TLDS = frozenset({'test', 'invalid', 'localhost', 'example'})
 
 DNS_TIMEOUT_SEC = 3.0
 MX_CACHE_TTL_SEC = 3600
+MX_CACHE_TTL_TIMEOUT_SEC = 60  # transient: short TTL so legitimate users can retry
 MX_CACHE_MAXSIZE = 1024
 
 # Module-level cache: {domain: (status, expiry_monotonic)}
@@ -132,7 +133,8 @@ class EmailValidator(models.AbstractModel):
         # Eviction: if full, drop one arbitrary entry (insertion-ordered dict)
         if len(_MX_CACHE) >= MX_CACHE_MAXSIZE:
             _MX_CACHE.pop(next(iter(_MX_CACHE)), None)
-        _MX_CACHE[domain] = (status, now + MX_CACHE_TTL_SEC)
+        ttl = MX_CACHE_TTL_TIMEOUT_SEC if status == 'dns_timeout' else MX_CACHE_TTL_SEC
+        _MX_CACHE[domain] = (status, now + ttl)
         if status == 'ok':
             return ('ok', None)
         return (status, domain)

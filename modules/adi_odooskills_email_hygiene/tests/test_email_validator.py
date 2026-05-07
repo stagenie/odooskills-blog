@@ -152,11 +152,13 @@ class TestEmailValidatorMx(TransactionCase):
         with patch('dns.resolver.resolve', return_value=[self._fake_mx('mx.gmail.com.')]):
             status, reason = self.validator._resolve_mx('gmail.com')
         self.assertEqual(status, 'ok')
+        self.assertIsNone(reason)
 
     def test_mx_nxdomain(self):
         with patch('dns.resolver.resolve', side_effect=NXDOMAIN()):
             status, reason = self.validator._resolve_mx('aaa.bbb.fr')
         self.assertEqual(status, 'mx_ko')
+        self.assertEqual(reason, 'aaa.bbb.fr')
 
     def test_mx_no_answer(self):
         with patch('dns.resolver.resolve', side_effect=NoAnswer()):
@@ -167,6 +169,7 @@ class TestEmailValidatorMx(TransactionCase):
         with patch('dns.resolver.resolve', side_effect=Timeout()):
             status, reason = self.validator._resolve_mx('slow-dns.com')
         self.assertEqual(status, 'dns_timeout')
+        self.assertEqual(reason, 'slow-dns.com')
 
     def test_mx_cache_hit_avoids_second_resolve(self):
         with patch('dns.resolver.resolve', return_value=[self._fake_mx('mx.x.com.')]) as mock:
@@ -180,3 +183,23 @@ class TestEmailValidatorMx(TransactionCase):
             self.validator._resolve_mx('nope.fr')
             self.validator._resolve_mx('nope.fr')
         self.assertEqual(mock.call_count, 1)
+
+    def test_mx_timeout_uses_short_ttl(self):
+        """ dns_timeout entries must NOT be cached at full TTL_SEC,
+            otherwise a transient DNS flake blocks a user for 1h. """
+        from odoo.addons.adi_odooskills_email_hygiene.models import email_validator
+        with patch('dns.resolver.resolve', side_effect=Timeout()):
+            self.validator._resolve_mx('flaky.example.com')
+        # Cache entry exists with the short TTL
+        cached = email_validator._MX_CACHE.get('flaky.example.com')
+        self.assertIsNotNone(cached, "timeout result should be cached")
+        status, expiry = cached
+        self.assertEqual(status, 'dns_timeout')
+        # Expiry should be within MX_CACHE_TTL_TIMEOUT_SEC (60s) from now,
+        # well under MX_CACHE_TTL_SEC (3600s)
+        import time as _time
+        seconds_until_expiry = expiry - _time.monotonic()
+        self.assertLess(seconds_until_expiry, email_validator.MX_CACHE_TTL_SEC,
+                        "dns_timeout entry should NOT use the full 1h TTL")
+        self.assertLessEqual(seconds_until_expiry, email_validator.MX_CACHE_TTL_TIMEOUT_SEC + 1,
+                             "dns_timeout entry should use the short TTL")
