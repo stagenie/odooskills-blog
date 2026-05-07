@@ -188,3 +188,24 @@ class EmailValidator(models.AbstractModel):
             return (status, email)  # 'mx_ko' or 'dns_timeout'
 
         return ('valid', None)
+
+    @api.model
+    def validate_batch(self, emails, progress_every=100):
+        """ Validate a list of emails. Returns list of dicts:
+            [{'email': ..., 'status': ..., 'reason': ...}, ...]
+
+            Logs progress every `progress_every` items + a final line at the end.
+            Used by sub-project B (legacy cleanup of 7348 contacts).
+        """
+        emails = list(emails or [])
+        total = len(emails)
+        results = []
+        for idx, email in enumerate(emails, start=1):
+            status, reason = self.validate(email)
+            results.append({'email': email, 'status': status, 'reason': reason})
+            if total and (idx % progress_every == 0 or idx == total):
+                _logger.info(
+                    "email_hygiene validate_batch progress %d/%d (%.1f%%)",
+                    idx, total, 100.0 * idx / total,
+                )
+        return results
