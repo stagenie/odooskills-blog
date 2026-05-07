@@ -15,7 +15,7 @@ Logs every rejection with redacted email for RGPD-friendly analytics.
         'website_mass_mailing',
     ],
     'external_dependencies': {
-        'python': ['dns'],  # dnspython package, imported as `import dns.resolver`
+        'python': ['dnspython'],
     },
     'data': [],
     'installable': True,
