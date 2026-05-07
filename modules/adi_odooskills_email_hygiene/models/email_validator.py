@@ -1,0 +1,53 @@
+import logging
+import re
+
+from odoo import api, models
+
+_logger = logging.getLogger(__name__)
+
+# Regex covers ~99% of real-world emails. Strict RFC 5322 cannot be expressed
+# as a single regex; this rejects obvious garbage and accepts standard atoms.
+_EMAIL_RE = re.compile(
+    r"^(?P<local>[A-Z0-9._%+\-]+)@(?P<domain>[A-Z0-9.\-]+\.[A-Z]{2,})$",
+    re.IGNORECASE,
+)
+
+INVALID_TLDS = frozenset({'test', 'invalid', 'localhost', 'example'})
+
+
+def _normalize_email(email):
+    """ lowercase + strip + idna-encode the domain. Returns (local, domain) or None. """
+    if not email or '@' not in email:
+        return None
+    if email.count('@') != 1:
+        return None
+    email = email.strip().lower()
+    local, domain = email.split('@', 1)
+    if not local or not domain:
+        return None
+    try:
+        domain = domain.encode('idna').decode('ascii')
+    except (UnicodeError, UnicodeDecodeError):
+        return None
+    return local, domain
+
+
+class EmailValidator(models.AbstractModel):
+    _name = 'email.validator'
+    _description = 'OdooSkills email hygiene validator (stateless)'
+
+    @api.model
+    def _check_syntax(self, email):
+        """ Returns ('ok', None) or ('syntax_ko', email). """
+        if not email:
+            return ('syntax_ko', email)
+        parts = _normalize_email(email)
+        if parts is None:
+            return ('syntax_ko', email)
+        local, domain = parts
+        if not _EMAIL_RE.match(f"{local}@{domain}"):
+            return ('syntax_ko', email)
+        tld = domain.rsplit('.', 1)[-1]
+        if tld in INVALID_TLDS:
+            return ('syntax_ko', email)
+        return ('ok', None)
