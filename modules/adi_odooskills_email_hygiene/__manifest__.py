@@ -13,8 +13,10 @@ Logs every rejection with redacted email for RGPD-friendly analytics.
     'license': 'LGPL-3',
     'depends': [
         'website_mass_mailing',
-        'adi_odooskills_geoip',
     ],
+    'external_dependencies': {
+        'python': ['dns'],  # dnspython package, imported as `import dns.resolver`
+    },
     'data': [],
     'installable': True,
     'application': False,

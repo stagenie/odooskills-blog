@@ -49,29 +49,11 @@ Expected: 57 tests, all green.
 
 ### Single Email Validation
 
-```python
-request.env['email.validator'].sudo().validate(email: str) -> (status: str, email_or_none: str | None)
-```
-
-- `status` ∈ `{'valid', 'syntax_ko', 'role_based', 'disposable', 'mx_ko', 'dns_timeout'}`
-- Returns `(status, email)` if valid, `(status, None)` if rejected
-
-### Batch Validation
-
-```python
-request.env['email.validator'].sudo().validate_batch(emails: List[str], progress_every: int = 100) -> List[dict]
-```
-
-Example return:
-```python
-[
-    {'email': 'alice@example.com', 'status': 'valid'},
-    {'email': 'bob@disposable.co', 'status': 'disposable'},
-    {'email': 'admin@acme.fr', 'status': 'role_based'},
-]
-```
-
-Used by sub-project B (cleanup of legacy contacts).
+- `request.env['email.validator'].sudo().validate(email)` → tuple
+  - On success: `('valid', None)`
+  - On rejection: `(reason_code, original_email)` where `reason_code` ∈ `{'syntax_ko', 'role_based', 'disposable', 'mx_ko', 'dns_timeout'}`
+- `request.env['email.validator'].sudo().validate_batch(emails, progress_every=100)` → list of dicts `{'email', 'status', 'reason'}`
+  - Used by sub-project B (cleanup of legacy contacts)
 
 ## RGPD Logging
 
@@ -84,8 +66,7 @@ INFO adi_odooskills_email_hygiene email_status=disposable email=p***@gmail.com r
 ## Dependencies
 
 - `website_mass_mailing` — override of subscribe controller
-- `adi_odooskills_geoip` — optional IP geolocation metadata in logs
-- `dnspython` — DNS resolver for MX checks
+- `dnspython` (external) — DNS resolver for MX checks; install with `pip install dnspython` in the Odoo venv
 
 ## Changelog
 
