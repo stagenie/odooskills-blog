@@ -1,6 +1,6 @@
 {
-    'name': 'OdooSkills - Lead GeoIP',
-    'version': '19.0.1.2.0',
+    'name': 'ADI - Blog Lead GeoIP',
+    'version': '19.0.2.0.0',
     'category': 'Marketing',
     'summary': "Capture pays (GeoIP) + version texte consentement AUP des abonnes newsletter",
     'description': """
