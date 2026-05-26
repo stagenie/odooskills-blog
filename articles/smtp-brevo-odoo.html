@@ -1,0 +1,476 @@
+<!--
+Article — Configurer Brevo SMTP en Odoo — ir.mail_server, DKIM CNAME et from_filter
+Série Tech-Email · Article 2/14 · Parcours Infrastructure
+Auteur : BENHAMIDA Mustapha
+Date : 2026-05-26
+Slug : smtp-brevo-odoo
+Meta : Configurer Brevo (ex-Sendinblue) en relais SMTP transactionnel Odoo 19 — endpoint, DKIM CNAME, from_filter et 5 pièges à éviter.
+Mot-clé cible : brevo smtp odoo 19
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tbrevo { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tbrevo th, table.tbrevo td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tbrevo th { background: #f6f8fa; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- Article #02 Série Tech-Email — SMTP Brevo (ir.mail_server) -->
+
+<section class="container my-5">
+  <div class="row">
+    <div class="col-lg-10 mx-auto">
+
+      <p class="lead">
+        Configurer un relais SMTP transactionnel pour Odoo 19, c'est cinq champs dans le backend — et trois enregistrements DNS bien posés en amont. Tout le reste, c'est de la maîtrise du pivot <code>from_filter</code> et de la chaîne d'alignement DKIM. <strong>Brevo</strong> (ex-Sendinblue) reste en 2026 l'option la plus simple côté RGPD pour une PME francophone : compte gratuit jusqu'à 300 emails/jour, infrastructure européenne, et un mécanisme de DKIM par CNAME qui permet à Brevo de rotater les clés de signature sans intervention manuelle.
+      </p>
+
+      <p>
+        Cet article décrit la chaîne complète, de la création de la clé SMTP côté Brevo jusqu'à l'inspection de la queue <code>mail.mail</code> en cas d'échec. Il s'inscrit dans la série Tech-Email après l'<a href="/blog/developpement-odoo-2/architecture-mail-odoo-les-4-couches-transport-message-template-mass-123">article HUB sur les 4 couches mail</a> et avant l'<a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">article dédié à DKIM/SPF/DMARC</a> — qui couvre le détail cryptographique des records DNS.
+      </p>
+
+      <div class="alert alert-info my-4" role="note">
+        <strong>Prérequis lecteur.</strong> Une instance Odoo 19 (CE ou EE) en mode debug, un accès root/admin, un compte Brevo (free tier suffit) et l'accès à la console DNS du domaine d'envoi. Aucune connaissance préalable de DKIM cryptographique n'est requise — le détail des records est expliqué dans l'<a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">article DKIM dédié</a>.
+      </div>
+
+      <h2 class="mt-5">1. Pourquoi un SMTP transactionnel et pas Gmail</h2>
+
+      <p>
+        Pour des envois ponctuels, un compte Gmail ou un SMTP personnel peut suffire. Dès que le volume dépasse quelques centaines d'emails par jour, ou que la production tourne sur un serveur qui n'a pas un IP « propre », un relais transactionnel dédié devient nécessaire pour trois raisons : la <strong>délivrabilité</strong> (l'IP du relais est notée par les fournisseurs), la <strong>visibilité</strong> (logs, bounces, opens consultables), et la <strong>conformité 2026</strong> (Google, Yahoo et Microsoft imposent SPF + DKIM + DMARC pour tout expéditeur >5 000 emails/jour depuis février 2024, étendu à tous depuis mai 2025).
+      </p>
+
+      <p>
+        Brevo se positionne sur la même catégorie que Mailjet et Amazon SES. Les trois sont des relais SMTP transactionnels. Brevo se distingue par :
+      </p>
+
+      <ul>
+        <li><strong>Free tier 300 emails/jour</strong> sans limite de durée — suffisant pour une PME en démarrage.</li>
+        <li><strong>Infrastructure EU</strong> (datacenter Paris) — RGPD natif sans déclaration.</li>
+        <li><strong>DKIM par CNAME</strong> avec rotation automatique des clés (sélecteurs <code>brevo1</code>/<code>brevo2</code>).</li>
+        <li><strong>Setup SMTP standard</strong> — pas d'IAM AWS, pas de domaine à vérifier hors interface Brevo.</li>
+      </ul>
+
+      <p>
+        Le tableau ci-dessous résume les positionnements vérifiés en janvier 2026 — utile pour situer ce que cet article configure, avant que la <em>Série Tech-Email</em> revienne en détail sur Mailjet et SES dans l'article suivant.
+      </p>
+
+      <table class="tbrevo">
+        <thead>
+          <tr><th>Critère</th><th>Brevo</th><th>Mailjet</th><th>Amazon SES</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Free tier</td><td>300/jour (~9k/mois)</td><td>200/jour (~6k/mois)</td><td>3 000/mois (12 mois seulement)</td></tr>
+          <tr><td>Prix Starter</td><td>9$/mois — 5k emails</td><td>15$/mois — 15k emails</td><td>0,10$ / 1 000 emails</td></tr>
+          <tr><td>Data EU par défaut</td><td>Oui (Paris)</td><td>Oui (EU)</td><td>Non — multi-régions explicites</td></tr>
+          <tr><td>Setup Odoo</td><td>Simple — SMTP standard</td><td>Simple — SMTP standard</td><td>Complexe — IAM + sandbox</td></tr>
+          <tr><td>DKIM rotation auto</td><td>Oui (CNAME natif)</td><td>Non natif</td><td>Manuel via Route 53</td></tr>
+        </tbody>
+      </table>
+
+      <h2 class="mt-5">2. L'endpoint Brevo en 2026 — ce qui a changé</h2>
+
+      <p>
+        Le service a été renommé <strong>Brevo</strong> en mai 2023 (anciennement Sendinblue). En 2026, toute documentation qui mentionne <code>smtp.sendinblue.com</code> ou un port 25 doit être considérée obsolète. Les bons paramètres :
+      </p>
+
+      <ul>
+        <li><strong>SMTP host</strong> : <code>smtp-relay.brevo.com</code></li>
+        <li><strong>Port 587</strong> : STARTTLS — recommandé (standard moderne)</li>
+        <li><strong>Port 465</strong> : SSL/TLS — accepté en alternative</li>
+        <li><strong>Port 2525</strong> : fallback si 587 bloqué par l'hébergeur</li>
+        <li><strong>Authentification</strong> : login = email du compte Brevo, password = <strong>clé SMTP</strong> (pas la clé API REST)</li>
+      </ul>
+
+      <div class="alert alert-warning my-3" role="note">
+        <strong>⚠️ Piège classique.</strong> Brevo distingue depuis 2024 deux types de clés : <strong>clé SMTP</strong> (Settings → SMTP &amp; API → SMTP Keys) et <strong>clé API REST</strong> (même section, onglet API Keys). Seule la clé SMTP fonctionne dans le champ <code>smtp_pass</code> d'<code>ir.mail_server</code>. Une clé API REST utilisée comme mot de passe SMTP retournera l'erreur <code>535 5.7.8 Authentication credentials invalid</code>. L'ancien « master password » a été supprimé pour les nouveaux comptes depuis 2024.
+      </div>
+
+      <p>
+        La clé SMTP existe en deux formats : Standard (64 caractères) ou Short (15 caractères). Le format Standard est recommandé pour les usages serveur. Elle s'affiche une seule fois à la génération — la copier immédiatement dans un coffre-fort (Bitwarden, 1Password) ou dans la config Odoo.
+      </p>
+
+      <h2 class="mt-5">3. Le diagramme du flux Brevo → Odoo → destinataire</h2>
+
+      <figure class="my-4" role="img" aria-label="Schéma du flux d'envoi entre Odoo 19, le relais Brevo, et le destinataire — avec étapes DKIM et from_filter">
+        <svg viewBox="0 0 920 480" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; height:auto; background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px;">
+          <defs>
+            <linearGradient id="o" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#0e7490"/><stop offset="100%" stop-color="#083344"/>
+            </linearGradient>
+            <linearGradient id="b" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#1e3a8a"/>
+            </linearGradient>
+            <linearGradient id="d" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#15803d"/><stop offset="100%" stop-color="#14532d"/>
+            </linearGradient>
+            <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+            </marker>
+          </defs>
+
+          <g font-family="system-ui, -apple-system, sans-serif" font-size="13">
+            <!-- Odoo box -->
+            <rect x="30" y="60" width="220" height="200" rx="10" fill="url(#o)" opacity="0.95"/>
+            <text x="50" y="90" fill="#fff" font-size="17" font-weight="700">Odoo 19</text>
+            <text x="50" y="115" fill="#fff" opacity="0.92" font-size="12">record.message_post()</text>
+            <text x="50" y="135" fill="#fff" opacity="0.92" font-size="12">→ mail.message</text>
+            <text x="50" y="155" fill="#fff" opacity="0.92" font-size="12">→ mail.mail (outgoing)</text>
+            <text x="50" y="180" fill="#fff" opacity="0.78" font-size="11" font-style="italic">_find_mail_server()</text>
+            <text x="50" y="200" fill="#fff" opacity="0.78" font-size="11">match from_filter</text>
+            <text x="50" y="225" fill="#fff" opacity="0.92" font-size="12">ir.mail_server :</text>
+            <text x="50" y="245" fill="#fff" opacity="0.92" font-size="12">smtp-relay.brevo.com:587</text>
+
+            <!-- Brevo box -->
+            <rect x="350" y="60" width="220" height="200" rx="10" fill="url(#b)" opacity="0.95"/>
+            <text x="370" y="90" fill="#fff" font-size="17" font-weight="700">Brevo</text>
+            <text x="370" y="115" fill="#fff" opacity="0.92" font-size="12">Reçoit via STARTTLS</text>
+            <text x="370" y="135" fill="#fff" opacity="0.92" font-size="12">Vérifie domaine validé</text>
+            <text x="370" y="160" fill="#fff" opacity="0.92" font-size="12">Signe DKIM (sélecteur</text>
+            <text x="370" y="178" fill="#fff" opacity="0.92" font-size="12">brevo1 ou brevo2)</text>
+            <text x="370" y="205" fill="#fff" opacity="0.92" font-size="12">Réécrit Return-Path</text>
+            <text x="370" y="223" fill="#fff" opacity="0.78" font-size="11">(@sender-sib.com)</text>
+            <text x="370" y="248" fill="#fff" opacity="0.92" font-size="12">Forward vers SMTP MX</text>
+
+            <!-- Destinataire box -->
+            <rect x="670" y="60" width="220" height="200" rx="10" fill="url(#d)" opacity="0.95"/>
+            <text x="690" y="90" fill="#fff" font-size="17" font-weight="700">Destinataire</text>
+            <text x="690" y="115" fill="#fff" opacity="0.92" font-size="12">Boîte de réception</text>
+            <text x="690" y="135" fill="#fff" opacity="0.92" font-size="12">(Gmail, Outlook…)</text>
+            <text x="690" y="160" fill="#fff" opacity="0.92" font-size="12">Vérifie DKIM = pass</text>
+            <text x="690" y="180" fill="#fff" opacity="0.92" font-size="12">Vérifie DMARC align</text>
+            <text x="690" y="205" fill="#fff" opacity="0.92" font-size="12">→ Inbox</text>
+            <text x="690" y="225" fill="#fff" opacity="0.78" font-size="11">ou Spam si DKIM fail</text>
+
+            <!-- Arrows -->
+            <line x1="260" y1="160" x2="345" y2="160" stroke="#475569" stroke-width="2.5" marker-end="url(#ar2)"/>
+            <text x="270" y="150" fill="#475569" font-size="11">SMTP relay</text>
+            <text x="270" y="175" fill="#475569" font-size="11">(STARTTLS 587)</text>
+
+            <line x1="580" y1="160" x2="665" y2="160" stroke="#475569" stroke-width="2.5" marker-end="url(#ar2)"/>
+            <text x="595" y="150" fill="#475569" font-size="11">SMTP outbound</text>
+            <text x="595" y="175" fill="#475569" font-size="11">(signé DKIM)</text>
+
+            <!-- DNS layer at bottom -->
+            <rect x="30" y="320" width="860" height="120" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+            <text x="50" y="345" fill="#7c2d12" font-size="14" font-weight="700">DNS du domaine (pré-requis statique, validé une fois)</text>
+            <text x="50" y="370" fill="#7c2d12" font-size="12">brevo1._domainkey.example.com  CNAME  brevo1._domainkey.brevo.com</text>
+            <text x="50" y="388" fill="#7c2d12" font-size="12">brevo2._domainkey.example.com  CNAME  brevo2._domainkey.brevo.com</text>
+            <text x="50" y="406" fill="#7c2d12" font-size="12">example.com                    TXT    &lt;code de propriété Brevo&gt;</text>
+            <text x="50" y="424" fill="#7c2d12" font-size="12">_dmarc.example.com             TXT    v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com</text>
+
+            <text x="40" y="468" fill="#475569" font-size="11" font-style="italic">
+              Le SPF Brevo (include:spf.brevo.com) est optionnel — il ne permet pas l'alignement DMARC car l'Envelope From appartient à Brevo, pas au domaine d'envoi.
+            </text>
+          </g>
+        </svg>
+        <figcaption class="text-muted small mt-2">
+          <strong>Figure 1.</strong> Chaîne d'envoi Brevo → Odoo → destinataire avec, en dessous, les enregistrements DNS pré-requis (validés une seule fois côté Brevo).
+        </figcaption>
+      </figure>
+
+      <h2 class="mt-5">4. DNS : valider son domaine côté Brevo</h2>
+
+      <p>
+        Avant toute configuration Odoo, le domaine d'envoi doit être validé dans l'interface Brevo. Sans cette étape, Brevo substitue <code>@brevosend.com</code> au <em>From</em> utilisateur depuis février 2024, cassant l'identité d'envoi de manière irréversible côté destinataire.
+      </p>
+
+      <div class="alert alert-info my-3" role="note">
+        <strong>Vocabulaire SMTP.</strong> Deux entêtes coexistent dans un email : le <strong><code>From:</code></strong> visible au destinataire (le « From » utilisateur) et le <strong>Return-Path / Envelope From</strong> (RFC 5321) utilisé pour les bounces et l'alignement SPF. Avec Brevo en IPs partagées, le Return-Path appartient à Brevo (<code>@sender-sib.com</code>), pas au domaine d'envoi — ce qui rend l'alignement SPF strict structurellement impossible et impose de passer par DKIM pour DMARC.
+      </div>
+
+      <p>
+        Le workflow côté Brevo : <strong>Senders &amp; IP</strong> → <strong>Domains</strong> → <strong>Add a domain</strong>. Brevo affiche les enregistrements à ajouter dans la console DNS du domaine. Trois familles d'enregistrements :
+      </p>
+
+      <p>
+        <strong>1. Vérification de propriété (TXT)</strong>. Brevo génère un code unique à coller en TXT sur le domaine racine. C'est l'enregistrement qui prouve qu'on contrôle le domaine.
+      </p>
+
+      <p>
+        <strong>2. DKIM par CNAME (recommandé)</strong>. Deux CNAME délégués à Brevo, avec rotation automatique des clés côté serveur :
+      </p>
+
+      <pre class="language-bash"><code class="language-bash">brevo1._domainkey.example.com  CNAME  brevo1._domainkey.brevo.com
+brevo2._domainkey.example.com  CNAME  brevo2._domainkey.brevo.com</code></pre>
+
+      <p>
+        Avantage du CNAME sur le TXT historique (<code>mail._domainkey</code>) : Brevo fait tourner les clés sans demander d'intervention manuelle. Mise en garde Cloudflare : si l'option <em>CNAME flattening</em> est activée sur la zone, désactiver le flattening pour ces enregistrements spécifiques, sinon Cloudflare convertit le CNAME en TXT et DKIM échoue.
+      </p>
+
+      <p>
+        <strong>3. DMARC (TXT)</strong>. Démarrer en <code>p=none</code> (monitoring seul), puis progresser vers <code>quarantine</code> après 2-4 semaines, puis <code>reject</code> en cible finale. Une politique <code>p=none</code> minimum est obligatoire pour tout domaine envoyant 5 000+ emails/jour depuis les exigences Google/Yahoo de février 2024.
+      </p>
+
+      <pre class="language-bash"><code class="language-bash">_dmarc.example.com  TXT  v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com; ruf=mailto:ruf@dmarc.brevo.com</code></pre>
+
+      <p>
+        Une fois les enregistrements ajoutés, attendre la propagation DNS (15 min à 48h selon TTL), puis revenir dans Brevo et cliquer <strong>Authenticate this email domain</strong>. Les checkmarks verts confirment la validation. Pour le détail cryptographique de chaque enregistrement (sélecteurs, signatures, alignement strict vs relâché), l'<a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">article DKIM/SPF/DMARC de la série</a> creuse le sujet.
+      </p>
+
+      <h2 class="mt-5">5. <code>ir.mail_server</code> : la configuration côté Odoo</h2>
+
+      <p>
+        Une fois le domaine validé côté Brevo et la clé SMTP générée, la création du serveur sortant Odoo prend cinq champs critiques. Chemin backend : <strong>Settings</strong> → <strong>Technical</strong> (mode debug activé) → <strong>Email</strong> → <strong>Outgoing Mail Servers</strong> → <strong>New</strong>.
+      </p>
+
+      <table class="tbrevo">
+        <thead><tr><th>Champ Odoo</th><th>Valeur Brevo recommandée</th></tr></thead>
+        <tbody>
+          <tr><td><code>name</code></td><td>Brevo — example.com</td></tr>
+          <tr><td><code>from_filter</code> (« FROM Filtering »)</td><td><code>example.com</code> (le domaine validé Brevo, exact)</td></tr>
+          <tr><td><code>smtp_host</code></td><td><code>smtp-relay.brevo.com</code></td></tr>
+          <tr><td><code>smtp_port</code></td><td><code>587</code></td></tr>
+          <tr><td><code>smtp_encryption</code></td><td><code>starttls_strict</code> (production)</td></tr>
+          <tr><td><code>smtp_authentication</code></td><td><code>login</code></td></tr>
+          <tr><td><code>smtp_user</code></td><td>email du compte Brevo</td></tr>
+          <tr><td><code>smtp_pass</code></td><td>clé SMTP générée (Standard 64 chars)</td></tr>
+          <tr><td><code>sequence</code></td><td>10 (ou plus petit pour priorité haute)</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Le champ <code>smtp_encryption</code> en Odoo 19 accepte cinq valeurs : <code>none</code>, <code>starttls</code>, <code>starttls_strict</code>, <code>ssl</code>, <code>ssl_strict</code>. Le suffixe <code>_strict</code> active la validation du certificat serveur — recommandée en production. <code>starttls_strict</code> est le bon choix pour le port 587 Brevo en production.
+      </p>
+
+      <p>
+        Pour automatiser la création (utile en déploiement CI/CD ou via un module custom), un snippet Python utilisant le moteur ORM :
+      </p>
+
+      <pre class="language-bash"><code class="language-bash"># Lancer le shell Odoo sur la base de production (mode debug actif)
+$ ./odoo-bin shell -c config/odoo.conf -d ma_base_production</code></pre>
+
+      <pre class="language-python"><code class="language-python"># À exécuter dans odoo-bin shell, ou depuis une migration de module custom.
+# Pré-requis : avoir un compte Brevo avec domaine validé et clé SMTP générée.
+
+server = env['ir.mail_server'].create({
+    'name': 'Brevo — example.com',
+    'from_filter': 'example.com',          # CRITIQUE : domaine exact validé Brevo
+    'smtp_host': 'smtp-relay.brevo.com',
+    'smtp_port': 587,
+    'smtp_encryption': 'starttls_strict',  # validation certificat en prod
+    'smtp_authentication': 'login',
+    'smtp_user': 'votrecompte@example.com',
+    'smtp_pass': '<votre-cle-smtp-brevo-64-caracteres>',  # clé SMTP (pas API REST)
+    'sequence': 10,
+})
+
+# Test de connexion immédiate (équivalent du bouton "Test Connection" du backend)
+try:
+    server.test_smtp_connection()
+    env.cr.commit()
+    print(f"Serveur Brevo configuré : id={server.id}")
+except Exception as e:
+    # Sur erreur SMTP, Odoo lève une exception détaillée (auth, TLS, DNS…)
+    print(f"Échec de connexion : {e}")
+    raise</code></pre>
+
+      <div class="alert alert-warning my-3" role="note">
+        <strong>⚠️ <code>from_filter</code> jamais vide ni <code>*</code>.</strong> Si plusieurs serveurs sortants coexistent dans Odoo (par exemple un serveur Brevo et un Gmail personnel), un <code>from_filter</code> vide ou catch-all (<code>*</code>) provoque le routage de tous les emails vers le premier serveur de la liste classé par <code>sequence</code>, indépendamment du domaine du From. Conséquence : un email <code>From: alice@gmail.com</code> envoyé via Brevo n'est pas signé DKIM par Brevo (le domaine ne match pas) et casse le DKIM Gmail (puisque ce n'est pas Gmail qui envoie).
+      </div>
+
+      <h2 class="mt-5">6. <code>_find_mail_server()</code> : l'algorithme de sélection en 5 étapes</h2>
+
+      <p>
+        Quand Odoo a un email à envoyer, la méthode <code>_find_mail_server()</code> (couche transport, modèle <code>ir.mail_server</code>) sélectionne le serveur sortant par priorité décroissante. Comprendre les cinq étapes évite les surprises de routage.
+      </p>
+
+      <ol>
+        <li><strong>Match exact sur l'adresse From</strong>. Cherche un serveur dont le <code>from_filter</code> contient l'adresse normalisée exacte (ex: <code>notifications@example.com</code>).</li>
+        <li><strong>Match sur le domaine du From</strong>. Cherche un serveur dont le <code>from_filter</code> contient juste le domaine (ex: <code>example.com</code>). C'est le cas le plus courant pour Brevo.</li>
+        <li><strong>Fallback notifications</strong>. Si pas de match, bascule sur l'adresse de notifications définie dans <code>mail.alias.domain.default_from</code> (ex: <code>notifications@example.com</code>) et reprend la recherche de l'étape 1 avec cette adresse. <strong>L'adresse From visible au destinataire change</strong> dans ce cas.</li>
+        <li><strong>Catch-all</strong>. Prend le premier serveur sans <code>from_filter</code> du tout, classé par <code>sequence</code>. Un warning <em>« No mail server matches the from_filter »</em> est loggé.</li>
+        <li><strong>CLI args</strong>. Dernier recours : utilise les paramètres <code>smtp_server</code>/<code>smtp_user</code> de <code>odoo.conf</code> si aucun <code>ir.mail_server</code> ne convient.</li>
+      </ol>
+
+      <p>
+        Ce séquencement explique pourquoi un <code>from_filter</code> mal réglé peut silencieusement réécrire l'adresse From et casser DKIM. Le mécanisme est traité plus en profondeur dans l'<a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">article DKIM/SPF/DMARC</a>, où chaque étape est mise en regard de la chaîne d'alignement.
+      </p>
+
+      <h2 class="mt-5">7. <code>mail.alias.domain</code> : cohérence multi-société et bounces</h2>
+
+      <p>
+        Depuis la v17, le modèle <code>mail.alias.domain</code> remplace les anciens paramètres système (<code>mail.catchall.domain</code>, <code>mail.bounce.alias</code>, <code>mail.default.from</code>) et porte la configuration mail au niveau de chaque société. Chemin backend : <strong>Settings</strong> → <strong>Technical</strong> → <strong>Email</strong> → <strong>Alias Domains</strong>.
+      </p>
+
+      <table class="tbrevo">
+        <thead><tr><th>Champ</th><th>Rôle</th><th>Valeur recommandée</th></tr></thead>
+        <tbody>
+          <tr><td><code>name</code></td><td>Domaine email</td><td><code>example.com</code></td></tr>
+          <tr><td><code>bounce_alias</code></td><td>Local-part du Return-Path</td><td><code>bounce</code> → <code>bounce@example.com</code></td></tr>
+          <tr><td><code>catchall_alias</code></td><td>Local-part du Reply-To catchall</td><td><code>catchall</code> → <code>catchall@example.com</code></td></tr>
+          <tr><td><code>default_from</code></td><td>From par défaut</td><td><code>notifications</code> → <code>notifications@example.com</code></td></tr>
+          <tr><td><code>company_ids</code></td><td>Sociétés rattachées</td><td>[société courante]</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        La règle de cohérence à retenir : <strong>le domaine du <code>from_filter</code> de l'<code>ir.mail_server</code> Brevo doit correspondre au <code>name</code> du <code>mail.alias.domain</code></strong>. Sinon, l'adresse <code>notifications@example.com</code> ne sera pas routée vers Brevo et tombera en étape 4 de <code>_find_mail_server()</code>, perdant l'alignement DKIM.
+      </p>
+
+      <p>
+        Pour la réception des bounces, le <code>bounce_alias</code> doit aussi être configuré comme un alias entrant dans Odoo si l'on souhaite tracker les rebonds dans <code>mail.notification</code>. Le détail du gateway entrant est couvert dans l'article fetchmail à venir dans cette série.
+      </p>
+
+      <h2 class="mt-5">8. Tester l'envoi et inspecter en cas d'échec</h2>
+
+      <p>
+        Une fois la configuration en place, deux tests à enchaîner :
+      </p>
+
+      <p>
+        <strong>Test de connexion SMTP</strong>. Sur la fiche <code>ir.mail_server</code>, bouton <strong>Test Connection</strong> : vérifie que la connexion STARTTLS s'établit et que l'authentification passe. Un échec ici signale en général une clé SMTP incorrecte (confondue avec une clé API) ou un port bloqué par l'hébergeur.
+      </p>
+
+      <p>
+        <strong>Test fonctionnel complet</strong>. Ouvrir une commande de vente (<code>sale.order</code>) → bouton <strong>Send &amp; Print</strong> → envoyer à une adresse réelle. Vérifier dans l'en-tête source du mail reçu (option « Afficher l'original » dans Gmail) :
+      </p>
+
+      <pre class="language-markup"><code class="language-markup">DKIM-Signature: v=1; a=rsa-sha256; d=example.com; s=brevo1; ...
+Authentication-Results: mx.google.com;
+   dkim=pass header.i=@example.com header.s=brevo1;
+   dmarc=pass action=none header.from=example.com</code></pre>
+
+      <p>
+        Les deux lignes critiques : <code>dkim=pass</code> et <code>dmarc=pass</code> sur le From: header du domaine d'envoi (pas sur celui de Brevo). Si <code>dkim=fail</code> ou si la signature est sur un autre domaine (ex: <code>@brevosend.com</code>), la configuration est cassée — revenir au workflow DNS section 4.
+      </p>
+
+      <p>
+        <strong>En cas d'échec à l'envoi</strong>, le diagnostic se fait sur deux tables :
+      </p>
+
+      <ul>
+        <li><strong><code>mail.mail</code></strong> (Settings → Technical → Email → Emails). Liste tous les emails sortants avec leur état (<code>outgoing</code>, <code>sent</code>, <code>exception</code>, <code>cancel</code>). Le champ <code>failure_reason</code> contient le retour SMTP brut en cas d'erreur (ex: <code>550 5.7.1 This domain is not authorized to send mail through Brevo</code>).</li>
+        <li><strong><code>mail.notification</code></strong>. Statuts par destinataire : <code>sent</code>, <code>bounce</code>, <code>exception</code>, <code>canceled</code>. C'est ici que les NDR (Non-Delivery Reports) retournés via le <code>bounce_alias</code> Odoo se reflètent côté analytique.</li>
+      </ul>
+
+      <p>
+        Les emails restés en <code>outgoing</code> indéfiniment trahissent un cron arrêté — le job <strong>Mail: Fetchmail / Email Queue Manager</strong> doit tourner. La gestion de la queue par cron est détaillée dans l'<a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">article sur les actions serveur et crons</a>.
+      </p>
+
+      <h2 class="mt-5">9. Cinq pièges spécifiques Brevo + Odoo</h2>
+
+      <p>
+        Les erreurs récurrentes en production avec Brevo + Odoo se concentrent sur cinq points :
+      </p>
+
+      <ul>
+        <li>
+          <strong>Domaine non validé chez Brevo</strong>. Bounce systématique avec <code>550 5.7.1 This domain is not authorized to send mail through Brevo</code>. Toujours s'assurer que les checkmarks verts apparaissent côté Brevo Domains <strong>avant</strong> de configurer le serveur sortant Odoo.
+        </li>
+        <li>
+          <strong>SMTP key vs API REST key</strong>. Erreur <code>535 5.7.8 Authentication credentials invalid</code>. Les deux clés sont générées dans la même section du backoffice Brevo mais ne sont pas interchangeables — seule la clé SMTP (onglet SMTP Keys) fonctionne pour le relais STARTTLS.
+        </li>
+        <li>
+          <strong>SPF Brevo mis en avant comme garantie DMARC</strong>. L'include <code>include:spf.brevo.com</code> est optionnel et n'aligne pas DMARC, car l'Envelope From appartient à Brevo (<code>@sender-sib.com</code>) et non au domaine d'envoi. <strong>Seul DKIM aligne</strong> avec Brevo en IPs partagées. C'est le point qui surprend le plus en sortie d'audit DMARC.
+        </li>
+        <li>
+          <strong>Cloudflare CNAME flattening activé</strong>. Cloudflare convertit alors les CNAME <code>brevo1/brevo2._domainkey</code> en TXT statiques, et DKIM échoue à la première rotation de clé Brevo. Désactiver le flattening pour ces enregistrements spécifiques (ou utiliser une zone DNS sans flattening).
+        </li>
+        <li>
+          <strong>Brevo SMTP utilisé pour des campagnes de masse</strong>. Brevo limite le relais SMTP transactionnel et impose des temporisations en cas de rafale. Pour des campagnes de plus de quelques milliers d'envois, utiliser l'API REST marketing de Brevo (ou un autre canal dédié), pas le relais SMTP transactionnel.
+        </li>
+      </ul>
+
+      <p>
+        À retenir : <strong>Brevo se configure en cinq champs Odoo, mais la qualité de la délivrabilité dépend de trois enregistrements DNS et d'un <code>from_filter</code> aligné</strong>. Tout le reste — multi-société, bounces, monitoring — est une mécanique de cohérence entre <code>ir.mail_server</code> et <code>mail.alias.domain</code>.
+      </p>
+
+      <p>
+        L'article suivant de cette série traitera des autres relais transactionnels (Mailjet, Amazon SES, serveurs SMTP personnels) avec leurs spécificités et leurs cas d'usage typiques.
+      </p>
+
+      <!-- ─── Zone 2 : Voir aussi dans ce parcours ─────────────────── -->
+      <section class="s_features_grid pt-4 pb-4 mt-5" aria-labelledby="voir-aussi">
+        <h3 id="voir-aussi" class="mb-3">Voir aussi dans ce parcours Infrastructure</h3>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h5 class="card-title">Architecture mail Odoo — les 4 couches</h5>
+                <p class="card-text small text-muted">HUB de la série Tech-Email : cartographie transport / message / template / mass et flux complet <code>message_post</code> → SMTP.</p>
+                <a href="/blog/developpement-odoo-2/architecture-mail-odoo-les-4-couches-transport-message-template-mass-123" class="stretched-link">Lire l'article →</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h5 class="card-title">DKIM, SPF, DMARC pour Odoo</h5>
+                <p class="card-text small text-muted">Détail cryptographique des records DNS, pivot <code>from_filter</code>, et 5 erreurs fréquentes à éviter.</p>
+                <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121" class="stretched-link">Lire l'article →</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── Zone 3 : Navigation Précédent / Suivant ──────────────── -->
+      <section class="pt-4 pb-4">
+        <div class="d-flex justify-content-between flex-wrap gap-2">
+          <a href="/blog/developpement-odoo-2/architecture-mail-odoo-les-4-couches-transport-message-template-mass-123" class="btn btn-outline-secondary">← Précédent — Architecture mail Odoo</a>
+          <span class="btn btn-outline-primary disabled">Suivant — SMTP Mailjet / SES (à venir)</span>
+        </div>
+        <p class="text-muted small mt-2 text-center">
+          <em>Série Tech-Email — Article 2/14 — Parcours Infrastructure emailing Odoo 19.</em>
+        </p>
+      </section>
+
+      <!-- ─── Zone 4 : Articles complémentaires (cross-link) ───────── -->
+      <section class="s_features_grid bg-light pt-4 pb-4 mt-5" aria-labelledby="complementaires">
+        <div class="container-fluid">
+          <h3 id="complementaires" class="mb-3">Articles complémentaires</h3>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="card h-100">
+                <div class="card-body">
+                  <h5 class="card-title">Email templates et <code>mail.thread</code></h5>
+                  <p class="card-text small text-muted">Envoi automatique depuis <code>create</code> et <code>write</code> — patterns chatter et templates Odoo 19.</p>
+                  <a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72" class="stretched-link">Lire l'article →</a>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="card h-100">
+                <div class="card-body">
+                  <h5 class="card-title">Actions serveur, cron et automations</h5>
+                  <p class="card-text small text-muted"><code>ir.cron</code> et <code>base.automation</code> — le moteur qui processe la queue <code>mail.mail</code>.</p>
+                  <a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73" class="stretched-link">Lire l'article →</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <p class="text-muted small mt-4">
+        Sources officielles :
+        <a href="https://help.brevo.com/hc/en-us/articles/360001005870" rel="noopener noreferrer">Brevo Help — SMTP relay</a> ·
+        <a href="https://www.odoo.com/documentation/19.0/applications/general/email_communication/email_servers_outbound.html" rel="noopener noreferrer">Odoo 19 — Outgoing mail servers</a>.
+      </p>
+
+    </div>
+  </div>
+</section>
