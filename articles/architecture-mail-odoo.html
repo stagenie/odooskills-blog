@@ -1,0 +1,374 @@
+<!-- Article #01 Série Tech-Email — Architecture mail Odoo 19 (HUB) -->
+<!-- Slug : architecture-mail-odoo  | Tags : intermediaire, infrastructure, guide, community -->
+
+<section class="container my-5">
+  <div class="row">
+    <div class="col-lg-10 mx-auto">
+
+      <p class="lead">
+        La couche mail d'Odoo 19 ressemble souvent à une boîte noire vue de l'extérieur : un bouton « Envoyer » dans le chatter, et l'email arrive (ou pas). En réalité, ce qui se passe entre <code>record.message_post()</code> et la boîte de réception du destinataire passe par <strong>quatre couches d'abstraction distinctes</strong>, chacune portée par des modèles précis du framework. Comprendre ces quatre couches, c'est savoir où chercher quand une queue de messages se bloque, où surcharger pour customiser un comportement, et comment relier les concepts évoqués dans les treize articles suivants de cette série.
+      </p>
+
+      <p>
+        Cet article HUB cartographie les quatre couches mail d'Odoo 19 : <strong>transport</strong>, <strong>message</strong>, <strong>template</strong> et <strong>mass</strong>. Pour chacune, on identifie les modèles clés, les fichiers source à connaître, et les usages typiques. Le diagramme central donne en un coup d'œil le flux complet d'un <code>message_post</code> jusqu'au SMTP.
+      </p>
+
+      <div class="alert alert-info my-4" role="note">
+        <strong>Prérequis lecteur.</strong> Avoir installé Odoo 19, lu un manifest, ouvert un modèle Python (<code>models.Model</code>, <code>_inherit</code>, <code>_name</code>). Aucune connaissance SMTP/DNS requise — ces points sont couverts en profondeur par les articles dédiés <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">#04 DKIM/SPF/DMARC</a> et les futurs articles SMTP/Fetchmail de la série.
+      </div>
+
+      <h2 class="mt-5">1. Pourquoi l'email est central dans Odoo</h2>
+
+      <p>
+        Bien plus qu'un simple module de notification, l'email dans Odoo est une <strong>infrastructure transverse</strong> consommée par presque toutes les applications métier. Le chatter d'une commande de vente, l'envoi automatique d'une facture PDF, la newsletter de la base marketing, le ticket helpdesk créé par email entrant : tous ces flux mobilisent les mêmes briques techniques.
+      </p>
+
+      <p>
+        Cinq usages principaux structurent l'usage de la couche mail :
+      </p>
+
+      <ul>
+        <li><strong>Chatter et discussion</strong> sur un record — modèle <code>mail.thread</code> hérité par tout document qui doit accepter messages, followers et activités.</li>
+        <li><strong>Notifications utilisateur</strong> dans Discuss et par email — modèles <code>mail.notification</code> et <code>mail.message</code>.</li>
+        <li><strong>Automation transactionnelle</strong> — un template <code>mail.template</code> déclenché par une action serveur, un cron ou un changement d'état métier.</li>
+        <li><strong>Marketing de masse</strong> — campagnes <code>mailing.mailing</code> avec tracking d'ouverture, clics et rebonds.</li>
+        <li><strong>Gateway entrant</strong> — réception de messages via <code>fetchmail.server</code>, routage sur un record par <code>mail.alias</code>.</li>
+      </ul>
+
+      <p>
+        Ces cinq usages s'appuient sur la même fondation à quatre couches. C'est cette fondation que cet article met à plat.
+      </p>
+
+      <h2 class="mt-5">2. Le diagramme des 4 couches</h2>
+
+      <figure class="my-4" role="img" aria-label="Schéma stack 4 couches mail Odoo 19 : transport en bas, puis message, template, mass au sommet">
+        <svg viewBox="0 0 800 520" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; height:auto; background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px;">
+          <defs>
+            <linearGradient id="lt" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#0e7490"/><stop offset="100%" stop-color="#083344"/>
+            </linearGradient>
+            <linearGradient id="lm" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#1d4ed8"/><stop offset="100%" stop-color="#1e3a8a"/>
+            </linearGradient>
+            <linearGradient id="lp" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#6d28d9"/><stop offset="100%" stop-color="#4c1d95"/>
+            </linearGradient>
+            <linearGradient id="lx" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="#ea580c"/><stop offset="100%" stop-color="#7c2d12"/>
+            </linearGradient>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+            </marker>
+          </defs>
+
+          <!-- 4 layers stacked, top = mass, bottom = transport -->
+          <g font-family="system-ui, -apple-system, sans-serif" font-size="14">
+            <!-- Couche 4 — mass -->
+            <rect x="40" y="40" width="520" height="90" rx="8" fill="url(#lx)" opacity="0.92"/>
+            <text x="60" y="68" fill="#fff" font-size="18" font-weight="700">Couche 4 — Mass</text>
+            <text x="60" y="92" fill="#fff" opacity="0.92">mailing.mailing · mailing.trace · utm.source.mixin</text>
+            <text x="60" y="112" fill="#fff" opacity="0.78" font-size="12">Campagnes, tracking ouverts/clics/bounces, statistiques détachées</text>
+
+            <!-- Couche 3 — template -->
+            <rect x="40" y="150" width="520" height="90" rx="8" fill="url(#lp)" opacity="0.92"/>
+            <text x="60" y="178" fill="#fff" font-size="18" font-weight="700">Couche 3 — Template</text>
+            <text x="60" y="202" fill="#fff" opacity="0.92">mail.template · mail.render.mixin · QWeb inline</text>
+            <text x="60" y="222" fill="#fff" opacity="0.78" font-size="12">Séparation du rendu et de l'envoi, placeholders, multilingue</text>
+
+            <!-- Couche 2 — message -->
+            <rect x="40" y="260" width="520" height="90" rx="8" fill="url(#lm)" opacity="0.92"/>
+            <text x="60" y="288" fill="#fff" font-size="18" font-weight="700">Couche 2 — Message</text>
+            <text x="60" y="312" fill="#fff" opacity="0.92">mail.message · mail.thread · mail.followers · mail.notification</text>
+            <text x="60" y="332" fill="#fff" opacity="0.78" font-size="12">Modèle de message, chatter, abonnements, statuts notifications</text>
+
+            <!-- Couche 1 — transport -->
+            <rect x="40" y="370" width="520" height="90" rx="8" fill="url(#lt)" opacity="0.92"/>
+            <text x="60" y="398" fill="#fff" font-size="18" font-weight="700">Couche 1 — Transport</text>
+            <text x="60" y="422" fill="#fff" opacity="0.92">ir.mail_server · fetchmail.server · mail.alias · mail.alias.domain</text>
+            <text x="60" y="442" fill="#fff" opacity="0.78" font-size="12">SMTP sortant, IMAP/POP3 entrant, alias et routage par domaine</text>
+
+            <!-- Flow arrow on the right -->
+            <text x="600" y="55" fill="#475569" font-size="11" font-weight="600">CLIENTS</text>
+            <text x="600" y="70" fill="#475569" font-size="11">─────────</text>
+            <text x="600" y="90" fill="#0f172a" font-size="12">mailing</text>
+            <text x="600" y="200" fill="#0f172a" font-size="12">templates</text>
+            <text x="600" y="310" fill="#0f172a" font-size="12">chatter</text>
+            <text x="600" y="420" fill="#0f172a" font-size="12">SMTP/IMAP</text>
+
+            <!-- Vertical flow arrow -->
+            <line x1="700" y1="85" x2="700" y2="425" stroke="#475569" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="715" y="160" fill="#475569" font-size="11">message</text>
+            <text x="715" y="175" fill="#475569" font-size="11">_post()</text>
+            <text x="715" y="270" fill="#475569" font-size="11">enqueue</text>
+            <text x="715" y="285" fill="#475569" font-size="11">mail.mail</text>
+            <text x="715" y="380" fill="#475569" font-size="11">SMTP</text>
+            <text x="715" y="395" fill="#475569" font-size="11">delivery</text>
+
+            <!-- Caption bottom -->
+            <text x="40" y="495" fill="#475569" font-size="12" font-style="italic">
+              Les couches supérieures (mass, template) sont clientes de la couche message, qui s'appuie sur la couche transport pour l'envoi effectif.
+            </text>
+          </g>
+        </svg>
+        <figcaption class="text-muted small mt-2">
+          <strong>Figure 1.</strong> Stack des 4 couches mail Odoo 19. La couche mass n'est <em>pas</em> un canal SMTP indépendant : elle reste cliente de <code>mail.mail</code> via la couche message.
+        </figcaption>
+      </figure>
+
+      <h2 class="mt-5">3. Couche transport — <code>ir.mail_server</code> et <code>fetchmail.server</code></h2>
+
+      <p>
+        La couche transport est l'interface entre Odoo et les serveurs SMTP / IMAP du monde extérieur. Elle se décompose en deux modèles principaux : <code>ir.mail_server</code> (sortant) et <code>fetchmail.server</code> (entrant), complétés par <code>mail.alias</code> et <code>mail.alias.domain</code> pour le routage des messages reçus.
+      </p>
+
+      <p>
+        <strong>Sortant — <code>ir.mail_server</code></strong>. Défini dans <code>odoo/addons/base/models/ir_mail_server.py</code> et étendu par le module <code>mail</code>, ce modèle stocke la configuration SMTP (host, port, TLS, credentials) et expose la méthode <code>send_email()</code>. La sélection du serveur pour un message donné passe par <code>_find_mail_server()</code>, qui croise l'en-tête <code>From</code> avec le champ <code>from_filter</code> de chaque serveur configuré. Ce mécanisme est détaillé dans <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">l'article dédié à DKIM/SPF/DMARC</a> car il conditionne l'alignement d'authentification.
+      </p>
+
+      <p>
+        Depuis la v17, le module <code>mail</code> ajoute trois champs au modèle de base : <code>owner_user_id</code> (serveur personnel d'un utilisateur), <code>owner_limit_time</code> et <code>owner_limit_count</code> (throttling, défaut 30 emails/minute, 10 pour Outlook). Ces serveurs personnels coexistent avec les serveurs globaux et sont sélectionnés en priorité quand l'auteur du message correspond.
+      </p>
+
+      <div class="alert alert-warning my-3" role="note">
+        <strong>⚠️ Changement v17.</strong> Les serveurs SMTP personnels n'existaient pas en v16 et antérieures. Un module qui exposait sa propre gestion par-utilisateur doit être migré vers <code>owner_user_id</code> et le throttling intégré.
+      </div>
+
+      <p>
+      </p>
+
+      <p>
+        <strong>Entrant — <code>fetchmail.server</code></strong>. Le modèle <code>fetchmail.server</code> (<code>odoo/addons/mail/models/fetchmail.py</code>) interroge périodiquement un compte IMAP ou POP3 et injecte chaque message reçu dans la chaîne de routage <code>mail.thread.message_route()</code>. La sécurité de désactivation automatique au bout de <code>MAIL_SERVER_DEACTIVATE_TIME</code> jours d'erreurs successives (5 jours par défaut) évite les boucles d'erreur sur un compte cassé.
+      </p>
+
+      <p>
+        <strong>Alias et domaine</strong>. Le modèle <code>mail.alias</code> mappe une adresse email à un modèle Odoo cible : <code>support@</code> crée un <code>helpdesk.ticket</code>, <code>commercial@</code> crée un <code>crm.lead</code>. Depuis la v17, le préfixe de domaine n'est plus stocké dans un paramètre système (<code>mail.catchall.domain</code> déprécié) mais dans le modèle <code>mail.alias.domain</code>, scopé par société : chaque <code>res.company</code> peut avoir son propre domaine d'envoi et de réception.
+      </p>
+
+      <div class="alert alert-warning my-3" role="note">
+        <strong>⚠️ Changement v17 → v19.</strong> Les ICP <code>mail.catchall.domain</code>, <code>mail.bounce.alias</code> et <code>mail.default.from</code> ont été remplacés par le modèle <code>mail.alias.domain</code>. Une migration automatique via <code>_migrate_icp_to_domain()</code> est jouée à l'installation, mais un module legacy qui lit encore l'ancien ICP renverra une chaîne vide en v19.
+      </div>
+
+      <h2 class="mt-5">4. Couche message — <code>mail.message</code>, <code>mail.thread</code>, <code>mail.followers</code></h2>
+
+      <p>
+        Au-dessus du transport, la couche message porte l'<strong>identité éditoriale</strong> d'un email : qui parle, à qui, dans quel contexte métier. C'est cette couche qui rend possible le chatter universel d'Odoo : chaque sale.order, chaque project.task, chaque hr.employee peut accueillir une discussion structurée.
+      </p>
+
+      <p>
+        <strong><code>mail.message</code></strong>. Le message immuable, créé une fois et plus jamais modifié. Il stocke le contenu HTML, l'auteur (<code>author_id</code>), les destinataires (<code>partner_ids</code>), et un lien polymorphe vers le record source (<code>model</code> + <code>res_id</code>). Tous les emails envoyés et reçus passent par ce modèle, qui agit comme journal d'audit.
+      </p>
+
+      <p>
+        <strong><code>mail.thread</code></strong>. AbstractModel défini dans <a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72">l'article dédié aux <code>mail.template</code> et au chatter</a>. Tout modèle qui hérite de <code>mail.thread</code> obtient automatiquement la possibilité de recevoir des messages (<code>message_post()</code>), des followers, et un chatter dans la vue formulaire. Options de configuration via les attributs de classe : <code>_mail_flat_thread</code> (vue plate ou imbriquée), <code>_mail_post_access</code> (qui peut écrire dans le chatter).
+      </p>
+
+      <p>
+        <strong><code>mail.followers</code></strong>. Modèle de jonction qui lie un partner à un record avec un ensemble de subtypes (<code>mail.message.subtype</code>). Un follower n'est pas notifié de tout : il choisit ses subtypes (création, changement d'étape, notes internes). C'est ce filtrage qui empêche un commercial de recevoir 200 emails par jour sur les commandes auxquelles il est abonné.
+      </p>
+
+      <p>
+        <strong><code>mail.notification</code></strong> (modèle qui matérialise la livraison d'un message à un destinataire donné — un message envoyé à N destinataires génère N <code>mail.notification</code>). Une notification par couple (message, destinataire). Statuts possibles : <code>ready</code>, <code>sent</code>, <code>bounce</code>, <code>exception</code>, <code>canceled</code>. C'est sur ce modèle qu'on inspecte un échec d'envoi : un message envoyé à 50 destinataires génère 50 notifications, chacune avec son propre statut. La table <code>mail.notification</code> est aussi le point d'observation principal pour le monitoring de la délivrabilité.
+      </p>
+
+      <h2 class="mt-5">5. Couche template — <code>mail.template</code> et <code>mail.render.mixin</code></h2>
+
+      <p>
+        La couche template découple le <em>rendu</em> du contenu de son <em>envoi</em>. Sans elle, chaque module aurait son propre code de génération d'email — recette idéale pour la duplication et les régressions. Avec elle, on déclare un template une fois, et n'importe quel record du modèle ciblé peut le rendre.
+      </p>
+
+      <p>
+        <strong><code>mail.template</code></strong>. Stocke un sujet, un corps HTML, des destinataires par défaut, des pièces jointes dynamiques. Le corps est interprété en <strong>QWeb inline</strong> : la syntaxe <code>{{ object.name }}</code> et <code>{% for line in object.order_line %}</code> est convertie automatiquement à la volée par la méthode <code>convert_inline_template_to_qweb()</code>. Depuis la v17, Jinja2 a été retiré complètement — un template legacy en Jinja sera converti au premier rendu.
+      </p>
+
+      <div class="alert alert-warning my-3" role="note">
+        <strong>⚠️ Changement v17 → v19.</strong> Le moteur de templating Jinja2 a été supprimé. Tout module v16 (ou antérieur) qui dépendait de filtres Jinja personnalisés (<code>safe</code>, <code>format_date</code> via Jinja, etc.) doit migrer vers les helpers QWeb équivalents fournis par <code>mail.render.mixin</code>.
+      </div>
+
+      <p>
+        <strong><code>mail.render.mixin</code></strong>. Le moteur de rendu lui-même. Mixin partagée par <code>mail.template</code> et <code>mailing.mailing</code>, elle expose <code>_render_field()</code> et un drapeau de classe critique : <code>_unrestricted_rendering</code>. Quand ce drapeau est à <code>False</code> (défaut), seuls les membres du groupe <strong>Template Editor</strong> peuvent éditer un template, car le QWeb arbitraire permet d'exécuter du Python via <code>t-esc</code> et représente une surface d'attaque côté serveur. Le passer à <code>True</code> sur un modèle custom doit être un acte conscient, jamais un raccourci.
+      </p>
+
+      <p>
+        Pour des cas pratiques de templates déclenchés sur <code>create</code> et <code>write</code>, l'<a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72">article dédié aux email templates et mail.thread</a> couvre les patterns recommandés et les pièges classiques. L'article spécifique à la mixin <code>mail.render.mixin</code> arrive plus tard dans cette série.
+      </p>
+
+      <h2 class="mt-5">6. Couche mass — <code>mailing.mailing</code> et <code>mailing.trace</code></h2>
+
+      <p>
+        La couche mass est <strong>au-dessus</strong> des trois autres, et non à côté. Une campagne <code>mailing.mailing</code> est cliente du moteur de templating (pour rendre son corps), cliente de la couche message (chaque envoi génère un <code>mail.message</code>), et cliente de la couche transport (un <code>ir.mail_server</code> est sélectionné comme pour n'importe quel email).
+      </p>
+
+      <p>
+        <strong><code>mailing.mailing</code></strong>. Hérite de quatre mixins : <code>mail.thread</code> (audit), <code>mail.activity.mixin</code> (planification), <code>mail.render.mixin</code> (rendu), <code>utm.source.mixin</code> (intégration des paramètres UTM — <code>utm_source</code>, <code>utm_medium</code>, <code>utm_campaign</code> — automatiquement injectés dans les liens trackés). Cette accumulation reflète la complexité réelle d'une campagne : il faut un journal, des activités liées, un rendu paramétrable, et un suivi de source pour l'attribution marketing.
+      </p>
+
+      <p>
+        <strong><code>mailing.trace</code></strong> (modèle dédié au tracking — une ligne par destinataire et par campagne, indépendante de la queue d'envoi). Table de statistiques par envoi, détachée de <code>mail.mail</code>. Cette séparation est volontaire : <code>mail.mail</code> est purgée régulièrement pour ne pas saturer la base, alors que <code>mailing.trace</code> conserve durablement les statuts <code>outgoing</code>, <code>process</code>, <code>pending</code>, <code>sent</code>, <code>opened</code>, <code>replied</code>, <code>error</code>, <code>bounce</code>, <code>cancel</code>. Sans cette table, impossible de calculer un taux d'ouverture sur six mois.
+      </p>
+
+      <p>
+        Les modules <code>mass_mailing_*</code> (sms, sale, crm, event, etc.) ajoutent des canaux et des intégrations métier, mais le squelette reste celui décrit ci-dessus. Pour le détail de l'implémentation et des patterns recommandés, les articles spécifiques aux campagnes et à <code>mailing.trace</code> arrivent en deuxième moitié de cette série.
+      </p>
+
+      <h2 class="mt-5">7. Le flux complet : du <code>message_post</code> au SMTP</h2>
+
+      <p>
+        Une fois les quatre couches identifiées, le flux d'un email transactionnel devient lisible. Voici la chaîne d'appels typique quand un utilisateur écrit un message dans le chatter d'une commande de vente :
+      </p>
+
+      <pre class="language-python"><code class="language-python"># Flux de référence — Odoo 19.0, code distillé depuis
+# odoo/addons/mail/models/mail_thread.py (commit 7196ee3, juin 2025)
+# et odoo/addons/base/models/ir_mail_server.py
+# Pseudo-code documenté : aucun __init__ à exécuter, c'est la séquence
+# d'appels réelle observée en lançant un test mail.thread sur 19.0.
+
+# 1. L'utilisateur clique "Envoyer un message" → wizard ouvre mail.compose.message
+# 2. Validation → appel de message_post() sur la sale.order cible
+
+order.message_post(
+    body=composer.body,
+    partner_ids=composer.partner_ids.ids,
+    subtype_xmlid='mail.mt_comment',
+    message_type='comment',
+)
+
+# 3. Création d'un mail.message lié au record
+#    → champ model='sale.order', res_id=order.id, author_id=user.partner_id.id
+
+# 4. Résolution mail.followers : tous les partners suivant l'ordre + subtype matchant
+#    → ajout aux destinataires
+
+# 5. Création d'une mail.notification par destinataire
+#    → état initial : ready, type : email (ou inbox si destinataire interne)
+
+# 6. Enqueue dans mail.mail (queue d'envoi)
+#    → état initial : outgoing, recipient_ids = partners externes
+
+# 7. Cron mail.mail.queue.process déclenche _send() (toutes les minutes)
+#    → pour chaque mail.mail outgoing :
+#      a. Si attaché à un mail.template, rendu via mail.render.mixin
+#      b. Sélection de l'ir.mail_server via _find_mail_server() + from_filter
+#      c. Appel SMTP via send_email() → connexion, AUTH, DATA, .
+
+# 8. Selon le résultat :
+#    - succès → mail.mail.state = sent, mail.notification.notification_status = sent
+#    - rebond → state = exception, notification_status = bounce, failure_type renseigné
+
+# 9. Si la sale.order est cliente d'une mailing.mailing :
+#    → en parallèle, mailing.trace est mise à jour (opened/replied via tracking pixel/link)
+</code></pre>
+
+      <p>
+        Cette chaîne en 9 étapes traverse les 4 couches : étape 2-5 sur la couche message, étape 7a sur la couche template, étape 7b-c sur la couche transport, étape 9 sur la couche mass. Quand un email ne part pas, identifier la couche du blocage est la première question à poser : <code>mail.mail</code> reste-t-il en <code>outgoing</code> (cron à vérifier), arrive-t-il en <code>exception</code> (transport à inspecter), ou n'est-il jamais créé (couche message — followers, subtypes mal configurés) ?
+      </p>
+
+      <h2 class="mt-5">8. Pièges classiques et récap</h2>
+
+      <p>
+        Quatre erreurs récurrentes méritent une attention particulière sur la couche mail Odoo 19 :
+      </p>
+
+      <ul>
+        <li>
+          <strong>Queue <code>mail.mail</code> bloquée en <code>outgoing</code></strong>. Symptôme : les emails ne partent pas, aucun log d'erreur. Cause typique : le cron <code>Mail: Email Queue Manager</code> est désactivé (vérifier <code>ir.cron</code> dans les paramètres techniques) ou le worker ne tourne plus. Diagnostic via <a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">l'article sur les crons et automations serveur</a>.
+        </li>
+        <li>
+          <strong><code>from_filter</code> mal réglé</strong>. Symptôme : les emails sont envoyés mais l'auteur visible est réécrit en <code>"X via Notifications &lt;notifications@odoo.com&gt;"</code>. Cause : le filtre du serveur SMTP ne match pas l'expéditeur souhaité, Odoo bascule sur un serveur de notifications par défaut. Conséquence directe sur DKIM, traitée en détail dans <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121">l'article DKIM/SPF/DMARC</a>.
+        </li>
+        <li>
+          <strong>Fetchmail désactivé après 5 jours d'erreurs</strong>. Symptôme : les emails entrants ne sont plus routés. Cause : <code>MAIL_SERVER_DEACTIVATE_TIME = 5</code> dans <code>fetchmail.py</code> — Odoo désactive automatiquement un serveur en erreur continue. Solution : corriger le compte source, réactiver manuellement le serveur dans le backend.
+        </li>
+        <li>
+          <strong>Confusion <code>mail.template</code> vs <code>email.template</code></strong>. Le second n'existe pas en v19 (c'était un alias legacy de la v10). Toute référence à <code>email.template</code> dans un module v17+ doit être migrée vers <code>mail.template</code>.
+        </li>
+      </ul>
+
+      <p>
+        À retenir des quatre couches :
+      </p>
+
+      <ul>
+        <li><strong>Transport</strong> = canal physique (SMTP, IMAP, alias, domaine).</li>
+        <li><strong>Message</strong> = contenu et audit (qui parle, à qui, dans quel record).</li>
+        <li><strong>Template</strong> = rendu (séparation forme/envoi, QWeb inline).</li>
+        <li><strong>Mass</strong> = surcouche de campagne (statistiques, tracking, UTM) — pas un canal séparé.</li>
+      </ul>
+
+      <p>
+        Cette cartographie est la grille de lecture des treize articles suivants de la <em>Série Tech-Email</em>, qui creusent chaque couche en profondeur : SMTP transactionnel, fetchmail, alias, mail.template avancé, render mixin, notifications Discuss, mass mailing, mailing.trace, debug de queue, et industrialisation par cron et tests automatisés.
+      </p>
+
+      <!-- ─── Zone 2 : Voir aussi dans ce parcours ─────────────────── -->
+      <section class="s_features_grid pt-4 pb-4 mt-5" aria-labelledby="voir-aussi">
+        <h3 id="voir-aussi" class="mb-3">Voir aussi dans ce parcours Infrastructure</h3>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h5 class="card-title">DKIM, SPF, DMARC pour Odoo</h5>
+                <p class="card-text small text-muted">Authentifier ses emails sortants — alignement <code>from_filter</code> et configuration DNS Brevo.</p>
+                <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121" class="stretched-link">Lire l'article →</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h5 class="card-title">Email templates et mail.thread en Odoo 19</h5>
+                <p class="card-text small text-muted">Envoi automatique depuis <code>create</code> et <code>write</code> — patterns chatter et templates.</p>
+                <a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72" class="stretched-link">Lire l'article →</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── Zone 3 : Navigation Précédent / Suivant ───────────────── -->
+      <section class="pt-4 pb-4">
+        <div class="d-flex justify-content-between flex-wrap gap-2">
+          <span class="btn btn-outline-secondary disabled">← Premier article de la série</span>
+          <a href="/blog/developpement-odoo-2/dkim-spf-dmarc-pour-odoo-authentifier-ses-emails-sortants-121" class="btn btn-outline-primary">Suivant — DKIM, SPF, DMARC pour Odoo →</a>
+        </div>
+        <p class="text-muted small mt-2 text-center">
+          <em>Série Tech-Email — Article 1/14 — Hub du parcours Infrastructure emailing Odoo 19.</em>
+        </p>
+      </section>
+
+      <!-- ─── Zone 4 : Articles complémentaires (cross-link) ────────── -->
+      <section class="s_features_grid bg-light pt-4 pb-4 mt-5" aria-labelledby="complementaires">
+        <div class="container-fluid">
+          <h3 id="complementaires" class="mb-3">Articles complémentaires</h3>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="card h-100">
+                <div class="card-body">
+                  <h5 class="card-title">Actions serveur, cron et automations</h5>
+                  <p class="card-text small text-muted"><code>ir.cron</code>, <code>ir.actions.server</code>, <code>base.automation</code> — le moteur qui déclenche l'envoi des emails templatés.</p>
+                  <a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73" class="stretched-link">Lire l'article →</a>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="card h-100">
+                <div class="card-body">
+                  <h5 class="card-title">Controllers HTTP et API REST</h5>
+                  <p class="card-text small text-muted">Recevoir un webhook d'événement email (bounce, open, click) depuis un relais SMTP transactionnel.</p>
+                  <a href="/blog/developpement-odoo-2/controllers-http-api-rest-odoo-74" class="stretched-link">Lire l'article →</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Source officielle -->
+      <p class="text-muted small mt-4">
+        Documentation Odoo 19 sur la couche mail :
+        <a href="https://www.odoo.com/documentation/19.0/applications/general/email_communication.html" rel="noopener noreferrer">
+          odoo.com/documentation/19.0 — Email communication
+        </a>.
+      </p>
+
+    </div>
+  </div>
+</section>
