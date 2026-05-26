@@ -1,0 +1,749 @@
+<!--
+Article — DKIM, SPF, DMARC pour Odoo 19
+Série Technique · Parcours Infrastructure
+Auteur : BENHAMIDA Mustapha
+Date : 2026-05-26
+Slug : dkim-spf-dmarc-odoo
+Meta : Authentifier les emails Odoo 19 avec SPF, DKIM et DMARC — rôle du from_filter, setup DNS Brevo, et 5 erreurs fréquentes à éviter.
+Mot-clé cible : dkim spf dmarc odoo
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tdkim { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tdkim th, table.tdkim td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tdkim th { background: #f6f8fa; }
+
+  .diag-figure { margin: 1.5rem 0; text-align: center; }
+  .diag-figure svg { max-width: 100%; height: auto; }
+  .diag-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+
+  .key-box { background: #e8f4fd; border-left: 4px solid #0d6efd; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .key-box h4 { color: #084298; margin-top: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Parcours Infrastructure · Série Tech-Email</p>
+                <h1 class="text-white">DKIM, SPF, DMARC pour Odoo 19 — sécuriser l'authentification de tes emails sortants</h1>
+                <p class="lead mt-3 text-white">Trois protocoles, trois enregistrements DNS, un seul objectif&nbsp;:
+                    que tes emails Odoo arrivent en boîte de réception au lieu du dossier spam. Le pivot
+                    technique côté Odoo&nbsp;: le champ <code>from_filter</code> de <code>ir.mail_server</code>.
+                    Comprendre ce qu'il fait, et pourquoi il casse l'alignement DKIM s'il est mal réglé.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_features pt48 pb48">
+    <div class="container">
+        <h2 class="text-center mb-4">Ce que tu vas apprendre</h2>
+        <div class="row">
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>Les 3 protocoles</h4>
+                    <p>SPF, DKIM, DMARC — leur rôle, leur articulation, ce qu'Odoo fait (et ne fait pas).</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>Le pivot <code>from_filter</code></h4>
+                    <p>Pourquoi ce champ d'<code>ir.mail_server</code> conditionne l'alignement DKIM.</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>3 records DNS prêts</h4>
+                    <p>Setup type Brevo + Odoo&nbsp;: TXT SPF, CNAME DKIM, TXT DMARC.</p>
+                </div>
+            </div>
+            <div class="col-lg-3 text-center">
+                <div class="s_card p-3">
+                    <h4>5 pièges fréquents</h4>
+                    <p>Encapsulation From, Return-Path mal aligné, ICPs legacy, SPF&nbsp;>&nbsp;10 lookups…</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Prérequis</h2>
+                <ul>
+                    <li>Une instance Odoo 19 fonctionnelle (cf. <a href="/blog/developpement-odoo-2/installer-odoo-ubuntu-50">installer Odoo 19 sur Ubuntu</a>).</li>
+                    <li>Accès admin Odoo&nbsp;: menu <em>Settings → Technical → Email</em> (mode développeur activé).</li>
+                    <li>Accès au panneau DNS du domaine expéditeur (registrar OVH, Cloudflare, Gandi, Route&nbsp;53…).</li>
+                    <li>Un compte chez un relais SMTP transactionnel (Brevo, Mailjet, SES, Postmark…) ou un serveur Postfix dédié avec OpenDKIM.</li>
+                    <li>Notions de base des enregistrements DNS&nbsp;: TXT, CNAME, MX.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 1 — Pourquoi 3 protocoles complémentaires ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Pourquoi trois protocoles complémentaires&nbsp;?</h2>
+                <p>SMTP a été conçu en 1982 sans aucune notion d'authentification. N'importe quel serveur
+                    peut prétendre envoyer du courrier au nom de n'importe quel domaine. Trois RFC successives
+                    ont rebouché ce trou&nbsp;: RFC 7208 pour SPF, RFC 6376 pour DKIM, RFC 7489 pour DMARC.
+                    Aucune ne suffit seule. Combinées, elles offrent une chaîne d'identité solide.</p>
+
+                <p>L'analogie qui aide à les retenir&nbsp;: imagine un envoi recommandé à la frontière.</p>
+                <ul>
+                    <li><strong>SPF</strong> = la liste des transporteurs autorisés à présenter un colis au nom de l'expéditeur. Le douanier vérifie que le camion qui se présente figure bien sur la liste publique.</li>
+                    <li><strong>DKIM</strong> = un cachet cryptographique apposé sur l'enveloppe au départ. Le destinataire vérifie que le cachet est intact et que la clé publique correspond au domaine annoncé.</li>
+                    <li><strong>DMARC</strong> = l'instruction laissée au guichet&nbsp;: «&nbsp;si ni la liste ni le cachet ne sont alignés avec le nom du domaine sur le colis, alors mets-le en quarantaine ou rejette-le, et envoie-moi un rapport quotidien.&nbsp;»</li>
+                </ul>
+
+                <figure class="diag-figure">
+                    <svg viewBox="0 0 1100 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Validation d'un email entrant côté serveur destinataire — chaîne SPF puis DKIM puis DMARC menant à une décision de politique">
+                        <defs>
+                            <marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" fill="#0d6efd"/>
+                            </marker>
+                            <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" fill="#198754"/>
+                            </marker>
+                            <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" fill="#dc3545"/>
+                            </marker>
+                        </defs>
+                        <rect x="20" y="120" width="170" height="80" rx="8" fill="#f8f9fa" stroke="#495057" stroke-width="1.5"/>
+                        <text x="105" y="150" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#212529">SMTP entrant</text>
+                        <text x="105" y="170" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#6c757d">IP source +</text>
+                        <text x="105" y="185" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#6c757d">message DKIM-signé</text>
+
+                        <rect x="225" y="120" width="180" height="80" rx="8" fill="#e7f1ff" stroke="#0d6efd" stroke-width="1.5"/>
+                        <text x="315" y="150" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#084298">1. Check SPF</text>
+                        <text x="315" y="170" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">IP ∈ enregistrement</text>
+                        <text x="315" y="185" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">SPF du domaine ?</text>
+
+                        <rect x="440" y="120" width="180" height="80" rx="8" fill="#e7f1ff" stroke="#0d6efd" stroke-width="1.5"/>
+                        <text x="530" y="150" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#084298">2. Check DKIM</text>
+                        <text x="530" y="170" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">Signature valide,</text>
+                        <text x="530" y="185" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">clé publique DNS ?</text>
+
+                        <rect x="655" y="120" width="180" height="80" rx="8" fill="#e7f1ff" stroke="#0d6efd" stroke-width="1.5"/>
+                        <text x="745" y="150" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#084298">3. Check DMARC</text>
+                        <text x="745" y="170" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">SPF ou DKIM</text>
+                        <text x="745" y="185" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">aligné avec From ?</text>
+
+                        <rect x="870" y="60" width="210" height="50" rx="8" fill="#d1e7dd" stroke="#198754" stroke-width="1.5"/>
+                        <text x="975" y="80" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0a3622">Accept (p=none)</text>
+                        <text x="975" y="98" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#0a3622">→ inbox</text>
+
+                        <rect x="870" y="135" width="210" height="50" rx="8" fill="#fff3cd" stroke="#f59e0b" stroke-width="1.5"/>
+                        <text x="975" y="155" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#664d03">Quarantine (p=quarantine)</text>
+                        <text x="975" y="173" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#664d03">→ spam folder</text>
+
+                        <rect x="870" y="210" width="210" height="50" rx="8" fill="#f8d7da" stroke="#dc3545" stroke-width="1.5"/>
+                        <text x="975" y="230" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#58151c">Reject (p=reject)</text>
+                        <text x="975" y="248" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#58151c">→ refusé SMTP</text>
+
+                        <line x1="190" y1="160" x2="225" y2="160" stroke="#495057" stroke-width="2" marker-end="url(#arr1)"/>
+                        <line x1="405" y1="160" x2="440" y2="160" stroke="#0d6efd" stroke-width="2" marker-end="url(#arr1)"/>
+                        <line x1="620" y1="160" x2="655" y2="160" stroke="#0d6efd" stroke-width="2" marker-end="url(#arr1)"/>
+                        <line x1="835" y1="160" x2="868" y2="85" stroke="#198754" stroke-width="2" marker-end="url(#arr2)"/>
+                        <line x1="835" y1="160" x2="868" y2="160" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,3"/>
+                        <line x1="835" y1="160" x2="868" y2="235" stroke="#dc3545" stroke-width="2" marker-end="url(#arr3)"/>
+
+                        <text x="550" y="40" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#212529">Validation d'un email entrant — chaîne SPF → DKIM → DMARC</text>
+                        <text x="550" y="295" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#6c757d">DMARC consulte les résultats SPF et DKIM puis applique la politique publiée dans le DNS du domaine du header From.</text>
+                    </svg>
+                    <figcaption>Trois vérifications successives. SPF échoue ou DKIM échoue&nbsp;: DMARC tranche selon la
+                        politique publiée par le domaine de l'adresse <code>From</code>.</figcaption>
+                </figure>
+
+                <div class="key-box">
+                    <h4>Le rôle d'Odoo dans cette chaîne</h4>
+                    <p>Odoo 19 <strong>ne signe pas DKIM</strong> et <strong>ne publie pas tes records DNS</strong>.
+                        Il prépare correctement les headers <code>From</code>, <code>Return-Path</code> et
+                        <code>Reply-To</code> — les mêmes mécaniques que celles utilisées par les
+                        <a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72">templates email et le mixin <code>mail.thread</code></a>,
+                        sélectionne le bon relais SMTP via <code>from_filter</code>, et délègue ensuite l'envoi.
+                        C'est le relais transactionnel (Brevo, Mailjet, SES…) qui appose la signature DKIM, et
+                        c'est ton DNS qui publie SPF / DKIM / DMARC. La référence officielle&nbsp;:
+                        <a href="https://www.odoo.com/documentation/19.0/applications/general/email_communication/email_servers_outbound.html" target="_blank" rel="noopener">la documentation Odoo 19 sur les serveurs sortants</a>.
+                        Le développeur Odoo a donc deux interfaces à maîtriser&nbsp;: <em>ir.mail_server</em> côté Odoo,
+                        et le panneau DNS côté domaine.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 2 — SPF ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. SPF — autoriser les IPs sortantes</h2>
+                <p>SPF (Sender Policy Framework) publie dans le DNS la liste des IPs et des domaines autorisés à
+                    envoyer du courrier au nom du domaine. Côté destinataire, le serveur de réception lit
+                    l'enregistrement TXT et vérifie que l'IP source de la connexion SMTP s'y trouve.</p>
+
+                <p>L'enregistrement est un TXT à la racine du domaine&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">; Type : TXT
+; Nom  : @  (ou example.com.)
+; Valeur :
+"v=spf1 include:spf.brevo.com include:_spf.google.com ip4:91.121.55.78 ~all"</code></pre>
+
+                <p>Lecture mécanique&nbsp;:</p>
+                <ul>
+                    <li><code>v=spf1</code> — version du protocole (toujours 1).</li>
+                    <li><code>include:spf.brevo.com</code> — inclut récursivement le SPF du relais Brevo (autorise toutes les IPs Brevo).</li>
+                    <li><code>include:_spf.google.com</code> — autorise les IPs Google Workspace si une partie du trafic part par Gmail.</li>
+                    <li><code>ip4:91.121.55.78</code> — autorise explicitement un serveur dédié (Postfix sur VPS, par exemple).</li>
+                    <li><code>~all</code> — <em>softfail</em> pour toute autre source (recommandé en démarrage). Une fois sûr, passe à <code>-all</code> (<em>hardfail</em>).</li>
+                </ul>
+
+                <p>Le <code>Return-Path</code> (l'enveloppe SMTP <code>MAIL FROM</code>) est l'adresse que SPF
+                    vérifie, <strong>pas</strong> le header <code>From</code> visible. Côté Odoo 19, le
+                    <code>Return-Path</code> est généré à partir de <code>mail.alias.domain.bounce_email</code>
+                    (typiquement <code>bounce@example.com</code>). Si ce domaine n'est pas couvert par le SPF
+                    publié, le check SPF échoue.</p>
+
+                <div class="pitfall-box">
+                    <h4>⚠️ Piège classique — la limite des 10 lookups DNS</h4>
+                    <p>SPF impose un maximum de <strong>10 résolutions DNS</strong> (incluant les
+                        <code>include:</code> récursifs). Chaque <code>include</code> compte&nbsp;; un
+                        <code>include:_spf.google.com</code> en consomme déjà entre 3 et 5 à lui seul. Si tu
+                        cumules Brevo, Google, Microsoft et un fournisseur newsletter, tu dépasses vite.
+                        Conséquence&nbsp;: <code>PermError</code> et SPF traité comme un échec. Outil de
+                        diagnostic&nbsp;: <code>dig +short TXT example.com</code> puis comptage manuel, ou
+                        un service tiers de validation SPF (MXToolbox, dmarcian).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 3 — DKIM ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. DKIM — signature cryptographique du message</h2>
+                <p>DKIM (DomainKeys Identified Mail, RFC 6376) ajoute un header <code>DKIM-Signature</code> au
+                    message au moment de l'envoi. Cette signature est calculée par le relais SMTP sortant à
+                    partir d'une clé privée. La clé publique correspondante est publiée dans le DNS sous un
+                    sélecteur (par exemple <code>brevo._domainkey.example.com</code>). Le serveur destinataire
+                    récupère la clé publique, vérifie la signature, et obtient deux informations critiques&nbsp;:
+                    le message n'a pas été altéré en transit, et il a bien été émis avec l'autorisation du
+                    propriétaire de la clé privée associée au domaine annoncé dans <code>d=</code>.</p>
+
+                <p>Exemple de header généré par un relais transactionnel&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com;
+    s=brevo; t=1748241600; h=from:to:subject:date:message-id;
+    bh=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=;
+    b=ZjC3rW7w9Yc... (signature base64 tronquée)</code></pre>
+
+                <p>Les champs qui comptent côté setup&nbsp;:</p>
+                <ul>
+                    <li><code>d=example.com</code> — domaine signataire. C'est ce domaine qui doit être <strong>aligné</strong> avec le header <code>From</code> pour que DMARC valide.</li>
+                    <li><code>s=brevo</code> — sélecteur. Pointe vers l'enregistrement DNS <code>brevo._domainkey.example.com</code> qui publie la clé publique.</li>
+                    <li><code>h=from:to:subject:date:message-id</code> — liste des headers couverts par la signature. Si l'un d'eux est modifié en transit, la signature casse.</li>
+                </ul>
+
+                <p>L'enregistrement DNS chez ton registrar est typiquement un CNAME qui pointe vers le DNS du
+                    relais (le relais gère la clé)&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">; Type : CNAME
+; Nom  : brevo._domainkey
+; Valeur : brevo.brevo-1k.com.    (fourni par le provider)</code></pre>
+
+                <p>Certains providers exposent directement la clé publique en TXT au lieu d'un CNAME. La
+                    procédure est identique du point de vue Odoo&nbsp;: rien à configurer côté Odoo, tout côté
+                    DNS et côté compte provider.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 4 — DMARC ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. DMARC — politique d'alignement et reporting</h2>
+                <p>DMARC (RFC 7489) est la <strong>colle</strong> entre SPF et DKIM. Il répond à deux questions&nbsp;:
+                    «&nbsp;que fait-on si l'email passe SPF ou DKIM mais que le domaine signataire n'est pas
+                    aligné avec le <code>From</code> visible&nbsp;?&nbsp;» et «&nbsp;à qui envoyer le rapport
+                    quotidien des emails reçus en mon nom&nbsp;?&nbsp;».</p>
+
+                <p>L'enregistrement est un TXT sur le sous-domaine <code>_dmarc</code>&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">; Type : TXT
+; Nom  : _dmarc
+; Valeur :
+"v=DMARC1; p=none; rua=mailto:dmarc-reports@example.com; pct=100; aspf=r; adkim=r"</code></pre>
+
+                <p>Décryptage&nbsp;:</p>
+                <ul>
+                    <li><code>p=none</code> — politique observative en démarrage. Ne rejette rien, collecte les rapports. Puis <code>p=quarantine</code>, enfin <code>p=reject</code> quand tous les flux sortants sont identifiés et alignés.</li>
+                    <li><code>rua=mailto:dmarc-reports@…</code> — adresse de réception des rapports agrégés (Reporting URI Aggregate). Un rapport XML quotidien y atterrit, signé par chaque opérateur de boîtes de réception (Gmail, Outlook, Yahoo…).</li>
+                    <li><code>pct=100</code> — pourcentage d'emails auxquels la politique s'applique. Utile pour un déploiement progressif (<code>pct=10</code> = 10% des emails non conformes sont rejetés, le reste est observé).</li>
+                    <li><code>aspf=r</code> et <code>adkim=r</code> — mode d'alignement <em>relaxed</em>. Tolère que <code>mail.example.com</code> aligne avec <code>example.com</code>. <code>s</code> (<em>strict</em>) exige une correspondance exacte.</li>
+                </ul>
+
+                <div class="key-box">
+                    <h4>Industrie 2026 — l'enforcement Google/Yahoo/Microsoft</h4>
+                    <p>Depuis février 2024 chez Google et Yahoo, et mai 2025 chez Microsoft Outlook, les
+                        expéditeurs qui dépassent 5&nbsp;000 messages/jour vers leurs boîtes doivent
+                        <strong>impérativement</strong> publier SPF, DKIM et DMARC alignés, sous peine de rejet
+                        SMTP direct. PCI DSS v4.0 impose également DMARC depuis 2026 pour toute organisation
+                        traitant des paiements par carte. Un déploiement <code>p=none</code> est tolérable
+                        quelques semaines en démarrage, mais la cible production est <code>p=quarantine</code>
+                        au minimum — ce qui s'inscrit dans une démarche plus large de
+                        <a href="/blog/developpement-odoo-2/securiser-odoo-production-90">sécurisation d'une instance Odoo en production</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 5 — Setup type Brevo + Odoo ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Setup type — Brevo + Odoo 19 + 3 records DNS</h2>
+                <p>Cas concret&nbsp;: domaine <code>example.com</code>, relais transactionnel Brevo, instance
+                    Odoo 19 envoyant les notifications, les emails de devis et les newsletters. Cinq étapes,
+                    pas une de plus.</p>
+
+                <h3>Étape 1 — Valider le domaine dans le compte Brevo</h3>
+                <p>Dans l'interface Brevo&nbsp;: <em>Senders, Domains & Dedicated IPs → Domains → Add a new
+                    domain</em>. Saisir <code>example.com</code>. Brevo fournit immédiatement&nbsp;:</p>
+                <ul>
+                    <li>1 TXT de vérification de propriété (à supprimer une fois validée).</li>
+                    <li>1 valeur SPF à inclure (<code>spf.brevo.com</code>).</li>
+                    <li>2 CNAME DKIM (<code>brevo1._domainkey</code> et <code>brevo2._domainkey</code> — 2 sélecteurs pour rotation de clés).</li>
+                </ul>
+
+                <h3>Étape 2 — Publier les 3 records DNS</h3>
+                <p>Chez le registrar (OVH, Cloudflare, Gandi…)&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">; SPF
+example.com.            IN  TXT     "v=spf1 include:spf.brevo.com ~all"
+
+; DKIM
+brevo1._domainkey       IN  CNAME   brevo1.brevo-1k.com.
+brevo2._domainkey       IN  CNAME   brevo2.brevo-1k.com.
+
+; DMARC
+_dmarc.example.com.     IN  TXT     "v=DMARC1; p=none; rua=mailto:dmarc-reports@example.com; pct=100"</code></pre>
+
+                <p>Propagation DNS&nbsp;: de quelques minutes à 24h selon le TTL configuré. Brevo détecte
+                    automatiquement la validation et marque le domaine «&nbsp;authenticated&nbsp;».</p>
+
+                <h3>Étape 3 — Configurer le serveur SMTP sortant dans Odoo</h3>
+                <p><em>Settings → Technical → Email → Outgoing Mail Servers → Create</em>&nbsp;:</p>
+
+                <table class="tdkim">
+                    <thead>
+                        <tr><th>Champ</th><th>Valeur</th><th>Pourquoi</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>name</code></td><td>Brevo Transactionnel</td><td>Libellé interne.</td></tr>
+                        <tr><td><code>smtp_host</code></td><td>smtp-relay.brevo.com</td><td>Hôte SMTP fourni par Brevo.</td></tr>
+                        <tr><td><code>smtp_port</code></td><td>587</td><td>STARTTLS standard.</td></tr>
+                        <tr><td><code>smtp_encryption</code></td><td>starttls</td><td>Chiffrement à la connexion.</td></tr>
+                        <tr><td><code>smtp_authentication</code></td><td>login</td><td>Authentification login/password (pas OAuth2 pour Brevo).</td></tr>
+                        <tr><td><code>smtp_user</code></td><td>login Brevo fourni</td><td>Identifiant compte SMTP.</td></tr>
+                        <tr><td><code>smtp_pass</code></td><td>clé API SMTP Brevo</td><td>Pas le mot de passe du compte web.</td></tr>
+                        <tr><td><strong><code>from_filter</code></strong></td><td><strong><code>example.com</code></strong></td><td><strong>Point critique pour l'alignement DKIM</strong> — voir ci-dessous.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Étape 4 — Configurer le <code>mail.alias.domain</code></h3>
+                <p>Depuis Odoo 17, la configuration des adresses de bounce, catchall et default_from est centralisée
+                    dans le modèle <code>mail.alias.domain</code> (et non plus dans l'ancien paramètre système
+                    <code>mail.catchall.domain</code> — voir piège n°&nbsp;3 plus bas).</p>
+                <p><em>Settings → Technical → Email → Alias Domains</em>&nbsp;:</p>
+
+                <table class="tdkim">
+                    <thead>
+                        <tr><th>Champ</th><th>Valeur</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>name</code></td><td><code>example.com</code></td></tr>
+                        <tr><td><code>bounce_alias</code></td><td><code>bounce</code> → <code>bounce@example.com</code></td></tr>
+                        <tr><td><code>catchall_alias</code></td><td><code>catchall</code> → <code>catchall@example.com</code></td></tr>
+                        <tr><td><code>default_from</code></td><td><code>notifications</code> → <code>notifications@example.com</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>L'effet&nbsp;: tout email sortant utilisera <code>notifications@example.com</code> comme
+                    expéditeur par défaut, et <code>bounce@example.com</code> comme <code>Return-Path</code>.
+                    Le domaine <code>example.com</code> est couvert par le SPF, donc le check SPF passe. Le
+                    domaine est signé DKIM par Brevo, donc <code>d=example.com</code>. Les deux sont
+                    alignés avec le header <code>From</code>&nbsp;: DMARC valide.</p>
+
+                <figure class="diag-figure">
+                    <svg viewBox="0 0 1100 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Chaîne Odoo from_filter vers relais SMTP vers signature DKIM">
+                        <defs>
+                            <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+                            </marker>
+                        </defs>
+                        <rect x="20" y="100" width="200" height="100" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+                        <text x="120" y="130" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#5b21b6">Odoo 19</text>
+                        <text x="120" y="150" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#5b21b6">message_post() →</text>
+                        <text x="120" y="168" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#5b21b6">From: notifications@</text>
+                        <text x="120" y="183" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#5b21b6">example.com</text>
+
+                        <rect x="260" y="100" width="200" height="100" rx="8" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.5"/>
+                        <text x="360" y="130" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#92400e">_find_mail_server()</text>
+                        <text x="360" y="150" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#92400e">match from_filter</text>
+                        <text x="360" y="168" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#92400e">= "example.com" ?</text>
+                        <text x="360" y="183" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="bold" fill="#92400e">→ ir.mail_server</text>
+
+                        <rect x="500" y="100" width="200" height="100" rx="8" fill="#dbeafe" stroke="#0d6efd" stroke-width="1.5"/>
+                        <text x="600" y="130" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#084298">Relais Brevo</text>
+                        <text x="600" y="150" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">connexion SMTP</text>
+                        <text x="600" y="168" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">IP source = IP Brevo</text>
+                        <text x="600" y="183" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#084298">(autorisée SPF)</text>
+
+                        <rect x="740" y="100" width="200" height="100" rx="8" fill="#d1fae5" stroke="#10b981" stroke-width="1.5"/>
+                        <text x="840" y="130" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#065f46">Signature DKIM</text>
+                        <text x="840" y="150" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#065f46">d=example.com</text>
+                        <text x="840" y="168" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#065f46">s=brevo1</text>
+                        <text x="840" y="183" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#065f46">→ DKIM aligné</text>
+
+                        <rect x="975" y="100" width="115" height="100" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+                        <text x="1032" y="135" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#78350f">Envoi</text>
+                        <text x="1032" y="155" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#78350f">SMTP</text>
+                        <text x="1032" y="175" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#78350f">vers</text>
+                        <text x="1032" y="190" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="bold" fill="#78350f">destinataire</text>
+
+                        <line x1="220" y1="150" x2="260" y2="150" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr4)"/>
+                        <line x1="460" y1="150" x2="500" y2="150" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr4)"/>
+                        <line x1="700" y1="150" x2="740" y2="150" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr4)"/>
+                        <line x1="940" y1="150" x2="975" y2="150" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr4)"/>
+
+                        <text x="550" y="40" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#212529">Chaîne Odoo → relais SMTP → email signé DKIM</text>
+                        <text x="550" y="65" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#6c757d">Le from_filter "example.com" est le pivot — il décide quel serveur prendra le message.</text>
+
+                        <text x="550" y="240" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#6c757d">Si from_filter ≠ domaine du From → Odoo encapsule l'expéditeur en "Untel via Notifications" → DKIM cassé côté alignement.</text>
+                    </svg>
+                    <figcaption>Le <code>from_filter</code> détermine quel <code>ir.mail_server</code> traite le message.
+                        S'il matche le domaine du header <code>From</code>, l'expéditeur est conservé, le relais signe
+                        avec le bon <code>d=</code>, et DMARC valide. Sinon, Odoo encapsule l'adresse et l'alignement
+                        casse.</figcaption>
+                </figure>
+
+                <h3>Étape 5 — Tester la chaîne complète</h3>
+                <p>Bouton <em>Test Connection</em> sur la fiche <code>ir.mail_server</code> — vérifie l'authentification
+                    SMTP. Puis envoi d'un email réel vers un service de validation externe
+                    (<code>check-auth@verifier.port25.com</code>, <code>mail-tester.com</code>) qui renvoie un rapport
+                    détaillé sur SPF, DKIM et DMARC en quelques secondes. Score cible&nbsp;: 10/10.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 6 — Outils ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Vérification — les outils du DevOps email</h2>
+                <p>Trois familles d'outils, à utiliser dans cet ordre&nbsp;: validation des records DNS, test
+                    d'envoi réel, lecture des rapports DMARC.</p>
+
+                <h3>Validation des records DNS</h3>
+                <ul>
+                    <li><strong>MXToolbox</strong> (<code>mxtoolbox.com</code>) — lookup SPF, DKIM, DMARC. Affiche en clair le nombre de lookups SPF (alerte si proche de 10).</li>
+                    <li><strong>Google Admin Toolbox — Check MX</strong> — diagnostic complet du domaine côté Gmail.</li>
+                    <li><strong><code>dig</code></strong> en CLI&nbsp;: <code>dig +short TXT example.com</code> pour SPF, <code>dig +short CNAME brevo1._domainkey.example.com</code> pour DKIM, <code>dig +short TXT _dmarc.example.com</code> pour DMARC.</li>
+                </ul>
+
+                <h3>Test d'envoi réel</h3>
+                <ul>
+                    <li><strong>mail-tester.com</strong> — envoie un email à l'adresse fournie, retourne un score /10 avec détail SPF, DKIM, DMARC, contenu, blacklist.</li>
+                    <li><strong><code>check-auth@verifier.port25.com</code></strong> — répond automatiquement avec un rapport SMTP brut très complet.</li>
+                    <li><strong>Bouton «&nbsp;Tester la connexion&nbsp;»</strong> sur <code>ir.mail_server</code> dans Odoo — valide uniquement l'authentification SMTP, pas la signature DKIM. Toujours doubler avec un test réel externe.</li>
+                </ul>
+
+                <h3>Analyse des rapports DMARC</h3>
+                <ul>
+                    <li><strong>dmarcian.com</strong> — interface web qui agrège les rapports XML reçus à l'adresse <code>rua=</code>. Affiche un dashboard par source, IP, taux d'alignement.</li>
+                    <li><strong>PowerDMARC</strong> — alternative SaaS, freemium jusqu'à 10&nbsp;000 messages/mois.</li>
+                    <li><strong>Parseur Python maison</strong> — les rapports DMARC sont des fichiers ZIP contenant un XML normalisé&nbsp;; <code>parsedmarc</code> (PyPI) parse et exporte vers Elasticsearch / Splunk pour les setups internes.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 7 — Lire un rapport DMARC ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Lire un rapport DMARC agrégé</h2>
+                <p>Un rapport agrégé arrive quotidiennement à l'adresse <code>rua=</code>. Format&nbsp;: XML
+                    compressé en GZIP ou ZIP, envoyé par chaque opérateur (Google, Microsoft, Yahoo…). Extrait
+                    représentatif d'un rapport Google&nbsp;:</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;feedback&gt;
+  &lt;report_metadata&gt;
+    &lt;org_name&gt;google.com&lt;/org_name&gt;
+    &lt;email&gt;noreply-dmarc-support@google.com&lt;/email&gt;
+    &lt;report_id&gt;14831284727584810532&lt;/report_id&gt;
+    &lt;date_range&gt;
+      &lt;begin&gt;1748131200&lt;/begin&gt;
+      &lt;end&gt;1748217599&lt;/end&gt;
+    &lt;/date_range&gt;
+  &lt;/report_metadata&gt;
+  &lt;policy_published&gt;
+    &lt;domain&gt;example.com&lt;/domain&gt;
+    &lt;adkim&gt;r&lt;/adkim&gt;
+    &lt;aspf&gt;r&lt;/aspf&gt;
+    &lt;p&gt;none&lt;/p&gt;
+    &lt;pct&gt;100&lt;/pct&gt;
+  &lt;/policy_published&gt;
+  &lt;record&gt;
+    &lt;row&gt;
+      &lt;source_ip&gt;185.34.32.7&lt;/source_ip&gt;
+      &lt;count&gt;42&lt;/count&gt;
+      &lt;policy_evaluated&gt;
+        &lt;disposition&gt;none&lt;/disposition&gt;
+        &lt;dkim&gt;pass&lt;/dkim&gt;
+        &lt;spf&gt;pass&lt;/spf&gt;
+      &lt;/policy_evaluated&gt;
+    &lt;/row&gt;
+    &lt;identifiers&gt;
+      &lt;header_from&gt;example.com&lt;/header_from&gt;
+    &lt;/identifiers&gt;
+    &lt;auth_results&gt;
+      &lt;dkim&gt;&lt;domain&gt;example.com&lt;/domain&gt;&lt;result&gt;pass&lt;/result&gt;&lt;/dkim&gt;
+      &lt;spf&gt;&lt;domain&gt;example.com&lt;/domain&gt;&lt;result&gt;pass&lt;/result&gt;&lt;/spf&gt;
+    &lt;/auth_results&gt;
+  &lt;/record&gt;
+&lt;/feedback&gt;</code></pre>
+
+                <p>Lecture utile&nbsp;:</p>
+                <ul>
+                    <li><code>source_ip</code> + <code>count</code> — quelle IP envoie en mon nom, combien de messages.</li>
+                    <li><code>policy_evaluated/dkim</code> et <code>spf</code> — verdict DMARC pour chaque protocole.</li>
+                    <li><code>auth_results</code> — résultats bruts, avant prise en compte de l'alignement.</li>
+                    <li><code>header_from</code> — domaine présenté dans le header <code>From</code>.</li>
+                </ul>
+
+                <p>Pattern à surveiller&nbsp;: une <code>source_ip</code> inconnue qui envoie en quantité avec
+                    <code>dkim=fail</code> ou <code>spf=fail</code>. C'est soit un ancien relais oublié dans le
+                    SPF, soit une newsletter tierce non autorisée, soit un usurpateur. Réaction&nbsp;: identifier
+                    l'IP, l'ajouter au SPF si légitime, ou passer la politique à <code>p=quarantine</code> si
+                    illégitime.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SECTION 8 — Pièges fréquents ===== -->
+<section class="s_text_block pt48 pb48 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Cinq erreurs fréquentes (et comment les détecter)</h2>
+
+                <div class="pitfall-box">
+                    <h4>1 — <code>from_filter</code> vide ou trop large</h4>
+                    <p>Symptôme&nbsp;: les emails partent, mais Gmail affiche «&nbsp;envoyé par <code>brevo.com</code> au nom de <code>example.com</code>&nbsp;»
+                        et le header <code>From</code> est encapsulé («&nbsp;Notifications via … &lt;notifications@brevo.com&gt;&nbsp;»).
+                        Cause&nbsp;: <code>from_filter</code> vide → Odoo sélectionne le premier serveur disponible, qui ne signe pas
+                        forcément le domaine du <code>From</code>. Fix&nbsp;: renseigner précisément
+                        <code>from_filter = example.com</code> sur le serveur SMTP qui correspond au domaine signé DKIM.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>2 — <code>bounce_email</code> sur un domaine différent du <code>from_filter</code></h4>
+                    <p>Symptôme&nbsp;: SPF passe sur le header <code>From</code>, mais DMARC en mode <em>strict</em>
+                        échoue car le <code>Return-Path</code> (utilisé pour SPF identifier alignment) pointe sur un
+                        autre domaine. Fix&nbsp;: aligner le domaine de <code>mail.alias.domain</code> avec le
+                        <code>from_filter</code>. C'est presque toujours le même.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>3 — ICP legacy <code>mail.catchall.domain</code> encore actif</h4>
+                    <p>Symptôme&nbsp;: les emails partent avec un <code>From</code> incohérent, le menu
+                        <em>Settings → Technical → Email → Alias Domains</em> affiche un domaine, mais le code
+                        utilise encore l'ancien paramètre système. Cause&nbsp;: une base migrée depuis v15/v16
+                        garde l'ICP <code>mail.catchall.domain</code> qui prend le pas. Ce piège est typique
+                        d'une <a href="/blog/developpement-odoo-2/migration-odoo-18-vers-19-106">migration mal nettoyée vers Odoo 19</a>.
+                        Fix&nbsp;: vérifier dans <em>Technical → Parameters → System Parameters</em> que
+                        <code>mail.catchall.domain</code>, <code>mail.bounce.alias</code>,
+                        <code>mail.default.from</code> n'existent plus, ou supprimer ces lignes. Odoo 19 migre
+                        automatiquement via <code>_migrate_icp_to_domain()</code> mais certains scripts d'import
+                        peuvent les recréer.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>4 — SPF qui dépasse 10 lookups DNS</h4>
+                    <p>Symptôme&nbsp;: rapport DMARC affiche <code>spf=permerror</code> (erreur permanente — le
+                        nombre de résolutions DNS imbriquées dépasse la limite de 10 fixée par la RFC 7208, le
+                        check SPF est abandonné). Aucun email n'est rejeté par SPF lui-même, mais l'alignement
+                        DMARC échoue systématiquement. Fix&nbsp;: simplifier le SPF — remplacer les
+                        <code>include:</code> par des <code>ip4:</code> directs quand possible, ou consolider
+                        plusieurs relais sur un seul. Outil utile&nbsp;: <code>dmarcian.com/spf-survey/</code>.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>5 — <code>p=reject</code> activé trop tôt</h4>
+                    <p>Symptôme&nbsp;: une newsletter Mailchimp envoyée par le service marketing arrête de
+                        livrer chez Gmail. La newsletter signait <code>d=mailchimp.com</code> sans alignement
+                        avec <code>From: …@example.com</code>. Fix&nbsp;: revenir à <code>p=quarantine</code>
+                        ou <code>p=none</code>, identifier toutes les sources légitimes dans le rapport
+                        DMARC, les ajouter au SPF, faire signer DKIM avec un domaine aligné, puis ré-escalader.
+                        Règle&nbsp;: 2 semaines minimum à <code>p=quarantine</code> avant de passer à
+                        <code>p=reject</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt48 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><strong>SPF</strong> autorise les IPs sortantes au nom du domaine — TXT à la racine, attention aux 10 lookups.</li>
+                    <li><strong>DKIM</strong> signe le message cryptographiquement — CNAME ou TXT sous le sélecteur, géré par le relais transactionnel.</li>
+                    <li><strong>DMARC</strong> arbitre l'alignement et collecte les rapports — TXT sur <code>_dmarc</code>, démarre toujours en <code>p=none</code>.</li>
+                    <li><strong>Côté Odoo 19</strong>, le pivot est <code>from_filter</code> sur <code>ir.mail_server</code>. Aligne-le avec le domaine signé par le relais.</li>
+                    <li><strong>Le modèle <code>mail.alias.domain</code></strong> (depuis v17) centralise bounce, catchall et default_from. Plus d'ICP <code>mail.catchall.*</code> à manipuler.</li>
+                    <li><strong>Industrie 2026</strong>&nbsp;: Google, Yahoo et Microsoft imposent SPF + DKIM + DMARC aux expéditeurs &gt; 5&nbsp;000/jour. Pas négociable.</li>
+                </ul>
+
+                <p>Le couplage Odoo ↔ relais SMTP est plus subtil qu'un simple branchement de serveur. Une fois
+                    les 3 records DNS publiés et le <code>from_filter</code> aligné, les rapports DMARC
+                    convergent vers 100% d'authentification en quelques jours. Et le développeur Odoo récupère
+                    une chaîne d'envoi vérifiable, traçable et conforme.</p>
+
+                <p>Pour la suite&nbsp;: la prochaine fois qu'un ticket «&nbsp;les emails Odoo finissent en
+                    spam&nbsp;» arrive, le réflexe est de vérifier dans cet ordre — record SPF / record DKIM /
+                    enregistrement DMARC / champ <code>from_filter</code> / <code>mail.alias.domain</code>.
+                    Quatre-vingt-quinze pour cent des cas se résolvent dans ces cinq points.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ZONE 2 — Voir aussi dans ce parcours ===== -->
+<section class="s_features_grid pt32 pb32 bg-light">
+    <div class="container">
+        <h3 class="text-center mb-4">Voir aussi dans le parcours <em>Infrastructure</em></h3>
+        <div class="row">
+            <div class="col-lg-4">
+                <div class="s_card p-3 h-100">
+                    <h5><a href="/blog/developpement-odoo-2/installer-odoo-ubuntu-50">Installer Odoo 19 sur Ubuntu / Debian</a></h5>
+                    <p class="small text-muted">Mettre en place une instance Odoo 19 propre — service systemd, utilisateur dédié, base PostgreSQL.</p>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="s_card p-3 h-100">
+                    <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">Sécuriser Odoo en production</a></h5>
+                    <p class="small text-muted">HTTPS, reverse proxy, hardening PostgreSQL, dbfilter, désactivation de la liste des bases.</p>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="s_card p-3 h-100">
+                    <h5><a href="/blog/developpement-odoo-2/migration-odoo-18-vers-19-106">Migration Odoo 18 → 19</a></h5>
+                    <p class="small text-muted">Hooks <code>pre_init</code> / <code>post_init</code>, stages de migration, 7 breaking changes v18 → v19.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ZONE 3 — Précédent / Suivant ===== -->
+<section class="pt32 pb32">
+    <div class="container">
+        <div class="d-flex justify-content-between flex-wrap gap-3">
+            <span class="btn btn-outline-secondary disabled">← Article précédent (série en démarrage)</span>
+            <span class="btn btn-outline-primary disabled">Article suivant à venir →</span>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ZONE 4 — Articles complémentaires ===== -->
+<section class="s_features_grid pt32 pb48">
+    <div class="container">
+        <h3 class="text-center mb-4">Articles complémentaires</h3>
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="s_card p-3 h-100">
+                    <h5><a href="/blog/developpement-odoo-2/email-templates-mailthread-odoo-72">Email templates et mail.thread en Odoo</a></h5>
+                    <p class="small text-muted">Une fois la chaîne d'authentification posée, place à la rédaction&nbsp;: templates QWeb, héritage <code>mail.thread</code>, chatter custom.</p>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="s_card p-3 h-100">
+                    <h5><a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">Actions serveur, cron et automations</a></h5>
+                    <p class="small text-muted">Déclencher l'envoi d'emails sur événement, planifier des relances automatiques, router les messages entrants vers les bons modèles.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section class="s_text_block pt48 pb48 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">Aller plus loin avec le Guide Technique OdooSkills</h3>
+                <p class="lead text-white">Le guide complet de la stack Odoo 19 — installation, modélisation, vues, héritage, tests, déploiement.
+                    Plus de 100 articles techniques structurés en parcours.</p>
+                <a href="/blog/developpement-odoo-2" class="btn btn-warning btn-lg mt-2">Explorer le parcours technique</a>
+            </div>
+        </div>
+    </div>
+</section>
