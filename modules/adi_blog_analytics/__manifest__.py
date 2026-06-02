@@ -1,6 +1,6 @@
 {
     'name': 'ADI - Blog Analytics',
-    'version': '19.0.2.0.0',
+    'version': '19.0.2.0.1',
     'category': 'Marketing',
     'summary': "Tableau de bord backend : inscrits newsletter, vues d'articles, top articles, visiteurs & pays, filtres temps",
     'description': """
