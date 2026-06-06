@@ -197,3 +197,29 @@ Checklist obligatoire avant de pousser un article en ligne sur le VPS :
 - [ ] Code dans l'article identique à celui du module testé
 - [ ] Validation BENHAMIDA Mustapha
 - [ ] Statut mis à jour dans `CATEGORIES.md`
+
+## 10. Emplacement des nouveaux articles (règle post-migration 2026-06)
+
+La migration du blog statique est **terminée**. Le dossier `blog-migration/` à la racine du
+projet est désormais une **archive GELÉE (read-only)** — on n'y écrit plus.
+
+Tout nouvel article OdooSkills (technique, fonctionnel ou autre) se place ici :
+
+| Artefact | Emplacement |
+|----------|-------------|
+| Source article (HTML/MD) | `content/blog/articles/<slug>.html` |
+| Cover PNG | `content/blog/assets/covers/` (fonctionnel → `covers-functional/`) |
+| Module démo | `content/blog/modules/<slug>/` |
+| Captures | `content/blog/screenshots/<slug>/` |
+| Suivi éditorial | `content/blog/CATEGORIES.md` |
+
+**Hors de ce submodule public** (racine du projet) :
+
+| Artefact | Emplacement | Raison |
+|----------|-------------|--------|
+| Veille / research | `.specs/blog-research/` | notes internes |
+| Briefs / plans | `.specs/plans/` ou `.specs/scratchpad/` | notes internes |
+| Scripts de publication | `tools/blog/` | **contiennent des credentials DB** → jamais dans un repo public |
+
+> ⚠️ `content/blog` est un submodule **public**. Aucun credential, aucune veille interne,
+> aucun script-à-mot-de-passe ne doit y être committé.
