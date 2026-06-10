@@ -1,6 +1,6 @@
 {
     'name': "OdooSkills - Email Hygiene Validation",
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Marketing/Email Marketing',
     'summary': "Server-side validation of subscriber emails on lead-magnet forms",
     'description': """
@@ -18,6 +18,11 @@ Logs every rejection with redacted email for RGPD-friendly analytics.
         'python': ['dnspython'],
     },
     'data': [],
+    'assets': {
+        'web.assets_frontend': [
+            'adi_odooskills_email_hygiene/static/src/js/subscribe_guard.js',
+        ],
+    },
     'installable': True,
     'application': False,
 }
