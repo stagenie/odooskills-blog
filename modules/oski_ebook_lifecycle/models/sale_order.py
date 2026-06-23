@@ -75,5 +75,7 @@ class SaleOrder(models.Model):
                 continue
             if not order.partner_id.email:
                 continue
-            template.send_mail(order.id, force_send=False)
+            # force_send=True : livraison transactionnelle immédiate à la confirmation,
+            # sans passer par la file (sinon coincée derrière un éventuel mass-mailing).
+            template.send_mail(order.id, force_send=True)
             order.ebook_delivery_sent = True
