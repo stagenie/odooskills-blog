@@ -8,10 +8,10 @@ class TestBlogCta(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         PT = cls.env['product.template']
-        cls.e1 = PT.create({'name': 'E1', 'default_code': 'EBOOK-E1'})
-        cls.e2 = PT.create({'name': 'E2', 'default_code': 'EBOOK-E2'})
-        cls.e3 = PT.create({'name': 'E3', 'default_code': 'EBOOK-E3'})
-        cls.tri = PT.create({'name': 'Trilogie', 'default_code': 'PACK-TRILOGIE'})
+        cls.e1 = PT.create({'name': 'E1', 'default_code': 'EBOOK-E1', 'is_published': True})
+        cls.e2 = PT.create({'name': 'E2', 'default_code': 'EBOOK-E2', 'is_published': True})
+        cls.e3 = PT.create({'name': 'E3', 'default_code': 'EBOOK-E3', 'is_published': True})
+        cls.tri = PT.create({'name': 'Trilogie', 'default_code': 'PACK-TRILOGIE', 'is_published': True})
         cls.blog_tech = cls.env['blog.blog'].create({'name': 'Développement Odoo'})
         cls.blog_other = cls.env['blog.blog'].create({'name': 'Voyager'})
 

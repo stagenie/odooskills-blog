@@ -43,7 +43,7 @@ class BlogPost(models.Model):
         Tmpl = self.env['product.template']
         prods = Tmpl
         for c in ordered:
-            p = Tmpl.search([('default_code', '=', c)], limit=1)
+            p = Tmpl.search([('default_code', '=', c), ('is_published', '=', True)], limit=1)
             if p:
                 prods |= p
         return prods
