@@ -1,6 +1,6 @@
 import logging
 
-from odoo import models
+from odoo import fields, models
 from odoo.tools import email_normalize
 
 _logger = logging.getLogger(__name__)
@@ -9,9 +9,14 @@ _logger = logging.getLogger(__name__)
 class SaleOrder(models.Model):
     _inherit = 'sale.order'
 
+    ebook_delivery_sent = fields.Boolean(
+        string="Email ebook envoyé", default=False, copy=False,
+        help="Garde d'idempotence : empêche le renvoi de l'email de livraison.")
+
     def _action_confirm(self):
         res = super()._action_confirm()
         self._apply_ebook_lifecycle()
+        self._send_ebook_delivery_email()
         return res
 
     def _apply_ebook_lifecycle(self):
@@ -50,3 +55,20 @@ class SaleOrder(models.Model):
                 to_optout = subs.filtered(lambda s: not s.opt_out)
                 if to_optout:
                     to_optout.write({'opt_out': True})
+
+    def _send_ebook_delivery_email(self):
+        """Envoie l'email de livraison brandé (liens download directs + portail).
+        Déclenché sur confirm => payment-agnostic. Idempotent via ebook_delivery_sent.
+        N'envoie que si la commande contient au moins un ebook livrable."""
+        template = self.env.ref(
+            'oski_ebook_lifecycle.mail_template_ebook_delivery',
+            raise_if_not_found=False)
+        if not template:
+            return
+        for order in self:
+            if order.ebook_delivery_sent:
+                continue
+            if not order.order_line.product_id.ebook_ids:
+                continue
+            template.send_mail(order.id, force_send=False)
+            order.ebook_delivery_sent = True

@@ -105,3 +105,30 @@ class TestEbookLifecycle(TransactionCase):
                                                    'ebook_ids': [(6, 0, eb4.ids)]})
         self._order(p_e4).action_confirm()
         self.assertIn(cat_e4, self.partner.category_id)
+
+    def test_delivery_email_sent_on_confirm(self):
+        # attache un faux PDF livrable au produit E1
+        att = self.env['ir.attachment'].create({
+            'name': 'e1.pdf', 'datas': b'JVBERi0xLjQK',  # %PDF-1.4
+            'res_model': 'product.template', 'res_id': self.p_e1.product_tmpl_id.id,
+        })
+        self.env['product.document'].create({
+            'ir_attachment_id': att.id, 'attached_on_sale': 'sale_order',
+        })
+        order = self._order(self.p_e1)
+        order.action_confirm()
+        mail = self.env['mail.mail'].search([
+            ('subject', 'ilike', 'OdooSkills'),
+            ('email_to', 'ilike', 'buyer@test.com')], limit=1)
+        self.assertTrue(mail, "email de livraison non créé")
+        self.assertIn('/web/content/%d' % att.id, mail.body_html or '')
+        self.assertTrue(order.ebook_delivery_sent)
+
+    def test_delivery_email_idempotent(self):
+        order = self._order(self.p_e1)
+        order.action_confirm()
+        order._send_ebook_delivery_email()  # 2e appel
+        mails = self.env['mail.mail'].search_count([
+            ('subject', 'ilike', 'OdooSkills'),
+            ('email_to', 'ilike', 'buyer@test.com')])
+        self.assertEqual(mails, 1, "email renvoyé alors que déjà envoyé")
