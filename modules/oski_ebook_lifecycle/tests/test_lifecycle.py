@@ -125,6 +125,18 @@ class TestEbookLifecycle(TransactionCase):
         self.assertTrue(order.ebook_delivery_sent)
 
     def test_delivery_email_idempotent(self):
+        # attache un faux PDF livrable au produit E1 pour que le 1er envoi soit réel
+        att = self.env['ir.attachment'].create({
+            'name': 'e1.pdf', 'datas': b'JVBERi0xLjQK',  # %PDF-1.4
+            'res_model': 'product.template', 'res_id': self.p_e1.product_tmpl_id.id,
+        })
+        self.env['product.document'].create({
+            'ir_attachment_id': att.id, 'attached_on_sale': 'sale_order',
+        })
+        # le One2many du template (fixture partagée) a pu être matérialisé vide
+        # avant la création du document dans cette transaction de test : on
+        # invalide le cache pour que le garde livrable voie le document.
+        self.p_e1.product_tmpl_id.invalidate_recordset(['product_document_ids'])
         order = self._order(self.p_e1)
         order.action_confirm()
         order._send_ebook_delivery_email()  # 2e appel

@@ -68,7 +68,12 @@ class SaleOrder(models.Model):
         for order in self:
             if order.ebook_delivery_sent:
                 continue
-            if not order.order_line.product_id.ebook_ids:
+            docs = order.order_line.product_id.mapped(
+                'product_tmpl_id.product_document_ids'
+            ).filtered(lambda d: d.attached_on_sale == 'sale_order')
+            if not docs:
+                continue
+            if not order.partner_id.email:
                 continue
             template.send_mail(order.id, force_send=False)
             order.ebook_delivery_sent = True
