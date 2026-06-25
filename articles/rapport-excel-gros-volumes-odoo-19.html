@@ -1,0 +1,441 @@
+<!--
+Article T5 — Un rapport Excel sur gros volumes dans Odoo 19 (agrégation SQL + flux)
+Série Technique · Série Rapports Excel · Article 5/6
+Auteur : BENHAMIDA Mustapha
+Date : 2026-06-25
+Slug : rapport-excel-gros-volumes-odoo-19
+Meta : Générer un rapport Excel sur de gros volumes dans Odoo 19 : agréger en SQL avec _read_group sans charger les enregistrements et écrire en flux à mémoire constante (constant_memory).
+Mot-clé cible : rapport excel gros volumes odoo 19
+Catégorie : Développement Odoo
+Tags : avance, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Figures : src à remplacer par /web/image/<att_id> au publish (Phase 6)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h3 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+
+  .fmt-table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: 0.92em; }
+  .fmt-table th, .fmt-table td { border: 1px solid #d0d7de; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+  .fmt-table th { background: #1D6F42; color: #fff; }
+  .fmt-table tr:nth-child(even) td { background: #f6f8fa; }
+  .fmt-table code { white-space: nowrap; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2 text-warning">Série Rapports Excel · Article 5/6</p>
+                <h1 class="text-white">Un rapport Excel sur gros volumes dans Odoo 19</h1>
+                <p class="lead mt-3 text-white">Sur quelques centaines de lignes, tout marche. Sur des
+                    centaines de milliers, le serveur s'étrangle. Deux leviers changent tout :
+                    <strong>agréger en SQL</strong> avec <code>_read_group</code> sans jamais charger les
+                    enregistrements, et <strong>écrire en flux</strong> avec le mode
+                    <code>constant_memory</code> d'<code>xlsxwriter</code>. Mesures à l'appui.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau avancé · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_features pt40 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-4">
+                    <div class="col-md-4">
+                        <h3>Agréger en SQL</h3>
+                        <p>Laisser PostgreSQL faire la somme avec <code>_read_group</code> au lieu de charger
+                            puis additionner des milliers de lignes en Python.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h3>Écrire en flux</h3>
+                        <p>Activer <code>constant_memory</code> pour que chaque ligne parte sur le disque
+                            aussitôt écrite, et garder une RAM plate.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h3>Mesurer le gain</h3>
+                        <p>Comparer l'approche SQL et l'approche « tout charger » sur un vrai volume, chiffres
+                            à l'appui.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info" role="alert">
+                    <strong>Prérequis.</strong> Cet article clôt le volet technique de la
+                    <a href="/blog/developpement-odoo-2/graphiques-rapport-excel-odoo-19">série des rapports
+                    Excel</a> : même mécanique (méthode modèle + controller HTTP + bouton). Une instance Odoo 19
+                    Communauté, le module <code>sale</code>. Notions utiles : domaines de recherche et
+                    agrégats SQL.
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== INTRO ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le piège du « tout charger »</h2>
+                <p>Les articles précédents itéraient sur un recordset : <code>for order in self</code>, puis
+                    <code>for line in order.order_line</code>. Parfait pour une poignée de commandes
+                    sélectionnées. Catastrophique pour synthétiser <strong>tout le carnet de ventes</strong> :
+                    charger 200 000 lignes en mémoire pour les additionner en Python, c'est 200 000 objets
+                    instanciés, autant d'accès aux champs, et un pic de RAM proportionnel au volume.</p>
+                <p>La règle d'or des rapports volumineux : <strong>ne jamais charger ce qu'on peut agréger</strong>.
+                    PostgreSQL sait sommer des millions de lignes en une requête ; autant le laisser faire. Côté
+                    écriture, <code>xlsxwriter</code> sait sérialiser le classeur au fil de l'eau plutôt que de
+                    le garder entier en mémoire. On combine les deux dans une méthode
+                    <code>_build_sales_xlsx_bulk</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 — _read_group ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Agréger en SQL avec <code>_read_group</code></h2>
+                <p>En Odoo 19, <code>_read_group(domain, groupby, aggregates)</code> traduit l'agrégation en
+                    une requête SQL <code>GROUP BY</code> et ne ramène que les valeurs calculées — aucun
+                    enregistrement n'est instancié pour le calcul. On l'appelle deux fois : par produit et par
+                    mois.</p>
+<pre class="language-python"><code class="language-python">    @api.model
+    def _bulk_summary_data(self):
+        """Agrège tout le carnet de ventes confirmées en SQL, sans charger les lignes."""
+        line_domain = [('display_type', '=', False),
+                       ('order_id.state', 'in', ('sale', 'done'))]
+        product_groups = self.env['sale.order.line']._read_group(
+            line_domain,
+            groupby=['product_id'],
+            aggregates=['price_subtotal:sum', '__count'],
+        )
+        products = sorted(
+            ((product.display_name, count, subtotal)
+             for product, subtotal, count in product_groups),
+            key=lambda r: r[2], reverse=True,
+        )
+
+        order_domain = [('state', 'in', ('sale', 'done'))]
+        month_groups = self.env['sale.order']._read_group(
+            order_domain,
+            groupby=['date_order:month'],
+            aggregates=['amount_untaxed:sum', '__count'],
+        )
+        months = [
+            ((period.strftime('%m/%Y') if period else _('Inconnu')), count, untaxed)
+            for period, untaxed, count in month_groups
+        ]
+        return products, months</code></pre>
+                <p>Trois points méritent l'attention :</p>
+                <table class="fmt-table">
+                    <thead>
+                        <tr><th>Élément</th><th>Comportement</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>'price_subtotal:sum'</code></td><td>agrégat <code>SUM</code> calculé par PostgreSQL.</td></tr>
+                        <tr><td><code>'__count'</code></td><td>jeton spécial : ajoute le <code>COUNT</code> du groupe.</td></tr>
+                        <tr><td><code>'date_order:month'</code></td><td>granularité temporelle ; la valeur du groupe est un <code>datetime</code> au 1<sup>er</sup> du mois.</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour un <code>groupby</code> sur un champ relationnel, la valeur remontée est un
+                    <strong>recordset</strong> (ici un <code>product.product</code>) déjà préchargé : on lit son
+                    <code>display_name</code> sans requête supplémentaire. Le résultat tient en quelques
+                    dizaines de tuples, quel que soit le nombre de lignes sous-jacentes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 — constant_memory ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Écrire en flux avec <code>constant_memory</code></h2>
+                <p>Par défaut, <code>xlsxwriter</code> garde tout le classeur en mémoire jusqu'au
+                    <code>close()</code>. L'option <code>constant_memory</code> renverse la logique : chaque
+                    ligne est écrite sur le disque dès qu'elle est terminée, puis oubliée. L'empreinte RAM
+                    reste plate, à un détail près — il faut écrire les cellules <strong>ligne par ligne, dans
+                    l'ordre croissant</strong>, sans jamais revenir en arrière.</p>
+<pre class="language-python"><code class="language-python">        import xlsxwriter  # vendored par Odoo
+
+        products, months = self._bulk_summary_data()
+
+        buffer = io.BytesIO()
+        workbook = xlsxwriter.Workbook(
+            buffer, {'in_memory': True, 'constant_memory': True})</code></pre>
+                <p>Chaque feuille de synthèse est ensuite écrite de haut en bas : largeurs de colonnes posées
+                    <em>avant</em> les lignes, puis titre, en-tête, lignes agrégées et total.</p>
+<pre class="language-python"><code class="language-python">    def _write_summary(self, workbook, sheet_name, title, label, rows, ...):
+        """Écrit une feuille de synthèse en flux (cellules en ordre croissant)."""
+        sheet = workbook.add_worksheet(sheet_name)
+        # Largeurs définies avant l'écriture des lignes (contrainte du flux).
+        sheet.set_column(0, 0, 42)
+        sheet.set_column(1, 1, 12)
+        sheet.set_column(2, 2, 18)
+
+        # merge_range reste possible ici car la ligne 0 est écrite en premier,
+        # avant toute autre ligne (contrainte du mode flux).
+        sheet.merge_range(0, 0, 0, 2, title, title_fmt)
+        sheet.set_row(0, 22)
+        sheet.write(1, 0, label, header_fmt)
+        sheet.write(1, 1, _('Nombre'), header_fmt)
+        sheet.write(1, 2, _('CA HT'), header_fmt)
+
+        row = 2
+        total_amount = 0.0
+        total_count = 0
+        for name, count, amount in rows:
+            sheet.write(row, 0, name, text_fmt)
+            sheet.write_number(row, 1, count, int_fmt)
+            sheet.write_number(row, 2, amount, money_fmt)
+            total_amount += amount
+            total_count += count
+            row += 1
+
+        sheet.write(row, 0, _('Total'), total_lbl_fmt)
+        sheet.write_number(row, 1, total_count, total_lbl_fmt)
+        sheet.write_number(row, 2, total_amount, total_money_fmt)</code></pre>
+                <p>Le <code>merge_range</code> du titre fonctionne malgré le mode flux parce qu'il porte sur la
+                    ligne 0, écrite avant toute autre. Toute fusion sur une ligne déjà dépassée lèverait une
+                    erreur : en flux, on n'écrit jamais vers le passé.</p>
+                <figure class="preview-figure">
+                    <img src="02-synthese-produit.png"
+                         alt="Feuille Excel Synthèse du CA par produit : titre vert fusionné, colonnes Produit, Nombre, CA HT et ligne Total générée en mode mémoire constante"/>
+                    <figcaption>La synthèse par produit, agrégée en SQL et écrite en flux : titre, nombre de lignes et CA HT par produit, total général.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="03-synthese-mensuelle.png"
+                         alt="Feuille Excel Synthèse du CA par mois : colonnes Mois, Nombre, CA HT et total"/>
+                    <figcaption>La seconde feuille : même structure, agrégée par mois grâce à la granularité <code>date_order:month</code>.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 — BENCHMARK ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Mesurer le gain</h2>
+                <p>Les grands principes méritent des chiffres. On compare, sur un même jeu de données,
+                    l'agrégation SQL et l'approche « charger puis sommer en Python ».</p>
+<pre class="language-python"><code class="language-python">import time
+
+SOL = env['sale.order.line']
+line_domain = [('display_type', '=', False),
+               ('order_id.state', 'in', ('sale', 'done'))]
+n = SOL.search_count(line_domain)
+
+# (a) Agrégation SQL : PostgreSQL fait la somme
+t0 = time.perf_counter()
+for _ in range(20):
+    groups = SOL._read_group(line_domain, ['product_id'], ['price_subtotal:sum'])
+t_sql = (time.perf_counter() - t0) / 20
+
+# (b) Tout charger puis sommer en Python
+t0 = time.perf_counter()
+for _ in range(3):
+    acc = {}
+    for line in SOL.search(line_domain):
+        acc[line.product_id.id] = acc.get(line.product_id.id, 0.0) + line.price_subtotal
+t_py = (time.perf_counter() - t0) / 3
+
+print("lignes=%d  sql=%.1fms  python=%.0fms  speedup=%.0fx"
+      % (n, t_sql * 1000, t_py * 1000, t_py / t_sql))</code></pre>
+                <p>Sur un jeu de <strong>21 033 lignes</strong>, la sortie est sans appel :</p>
+<pre class="language-bash"><code class="language-bash">lignes=21033  sql=25.0ms  python=214ms  speedup=9x</code></pre>
+                <p>Neuf fois plus rapide — et l'écart se creuse avec le volume, car l'approche Python paie un
+                    coût mémoire et CPU linéaire, là où le <code>GROUP BY</code> reste optimisé par l'index.
+                    Surtout, l'agrégation SQL garde une empreinte mémoire constante : elle ne ramène que les
+                    quelques lignes de groupe, jamais les 21 033 enregistrements.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTROLLER + BOUTON ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le controller et le bouton</h2>
+                <p>Le rapport ne dépend pas d'une sélection : il synthétise tout le carnet. Le controller
+                    appelle donc directement la méthode sur le modèle, sans identifiants.</p>
+<pre class="language-python"><code class="language-python">    @route('/odooskills/export/sales/xlsx_bulk', type='http', auth='user', readonly=True)
+    def export_sales_xlsx_bulk(self, **kw):
+        content = request.env['sale.order']._build_sales_xlsx_bulk()
+        headers = [
+            ('Content-Type',
+             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+            ('Content-Disposition', content_disposition('rapport_ventes_synthese.xlsx')),
+        ]
+        return request.make_response(content, headers)</code></pre>
+                <figure class="preview-figure">
+                    <img src="01-bouton-synthese-carnet.png"
+                         alt="En-tête d'une commande de vente Odoo 19 avec le bouton Synthèse Excel (tout le carnet) aux côtés des boutons des articles précédents"/>
+                    <figcaption>Le bouton « Synthèse Excel (tout le carnet) » complète la série des exports.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h3>⚠️ Pièges à éviter</h3>
+                    <ul>
+                        <li>Charger un grand recordset puis sommer en Python fait exploser la RAM : préférer
+                            <code>_read_group</code> qui agrège côté base.</li>
+                        <li>En mode <code>constant_memory</code>, écrire les cellules dans l'ordre croissant des
+                            lignes ; revenir vers une ligne déjà écrite lève une erreur.</li>
+                        <li>Définir les largeurs de colonnes <em>avant</em> d'écrire les données, et n'utiliser
+                            <code>merge_range</code> que sur la ligne courante (ici la ligne de titre).</li>
+                        <li>Le jeton <code>'__count'</code> compte les enregistrements du groupe sans champ
+                            dédié ; ne pas le confondre avec un agrégat de champ.</li>
+                        <li>La valeur d'un <code>groupby</code> en <code>:month</code> est un
+                            <code>datetime</code> (1<sup>er</sup> du mois), à formater — pas une chaîne toute prête.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_features_grid pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><code>_read_group(domain, groupby, aggregates)</code> agrège en SQL et ne ramène que les
+                        valeurs calculées — la seule voie tenable sur gros volumes.</li>
+                    <li><code>constant_memory</code> sérialise le classeur au fil de l'eau : RAM plate, au prix
+                        d'une écriture strictement ordonnée.</li>
+                    <li>Mesuré sur 21 033 lignes : agrégation SQL <strong>9× plus rapide</strong> que le « tout
+                        charger », et à empreinte mémoire constante.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA GUIDE ===== -->
+<section class="s_text_block pt32 pb32 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">Télécharge le Guide Technique Odoo</h3>
+                <p>Un module Odoo 19 fonctionnel, 20+ articles techniques, environnements de dev et
+                    pipeline complet — le tout en PDF.</p>
+                <a href="/guide-technique-odoo" class="btn btn-warning btn-lg">Télécharger le guide</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREMIUM EBOOKS ===== -->
+<section class="s_text_block pt8 pb24" data-oski-ebook-cta="1">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="o_oski_ebook_cta p-4 rounded" style="background:#f5f6fa;border:1px solid #e4e6ef">
+                    <p class="mb-3 fw-bold" style="color:#1a1a2e">📘 Pour aller plus loin : nos formations Odoo 19</p>
+                    <div class="d-flex flex-column flex-md-row gap-3">
+                        <a href="/shop/ebook-e1-formation-technique-odoo-19-ebook-3" class="d-flex align-items-center text-decoration-none flex-grow-1 p-2 rounded bg-white" style="border:1px solid #e4e6ef">
+                            <img src="/web/image/product.template/3/image_128" class="me-3 rounded" style="width:48px;height:64px;object-fit:cover" alt="Formation Technique Odoo 19 (ebook)"/>
+                            <span><span class="d-block fw-semibold" style="color:#1a1a2e">Formation Technique Odoo 19 (ebook)</span><span class="small text-primary">Découvrir →</span></span>
+                        </a>
+                        <a href="/shop/ebook-e3-formation-deploiement-odoo-19-ebook-5" class="d-flex align-items-center text-decoration-none flex-grow-1 p-2 rounded bg-white" style="border:1px solid #e4e6ef">
+                            <img src="/web/image/product.template/5/image_128" class="me-3 rounded" style="width:48px;height:64px;object-fit:cover" alt="Formation Déploiement Odoo 19 (ebook)"/>
+                            <span><span class="d-block fw-semibold" style="color:#1a1a2e">Formation Déploiement Odoo 19 (ebook)</span><span class="small text-primary">Découvrir →</span></span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI + CROSS-LINK ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>À lire également</h3>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/graphiques-rapport-excel-odoo-19">Insérer des
+                        graphiques dans un rapport Excel</a> — l'article précédent, où l'agrégation se faisait encore en Python.</li>
+                    <li><a href="/blog/developpement-odoo-2/generer-un-rapport-excel-xlsx-natif-dans-odoo-19-145">Générer
+                        un rapport Excel natif dans Odoo 19</a> — le point de départ de la série.</li>
+                    <li><a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Écrire des tests automatisés
+                        en Odoo 19</a> — pour figer le résultat d'une agrégation par un test.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+
+<!-- ===== NAV PRÉCÉDENT / SUIVANT ===== -->
+<section class="s_text_block pt24 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto d-flex justify-content-between">
+                <a href="/blog/developpement-odoo-2/graphiques-rapport-excel-odoo-19"
+                   class="btn btn-outline-secondary">← Article 4 — Graphiques dans le XLSX</a>
+                <span class="btn btn-outline-primary disabled">T6 — Industrialiser l'export · à venir</span>
+            </div>
+        </div>
+    </div>
+</section>
