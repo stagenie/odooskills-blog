@@ -1,9 +1,10 @@
 from odoo import models
 
-# Mots-clés (blog name + tags, insensible casse) -> codes produit cibles.
+# Mots-clés (titre + blog name + tags, insensible casse) -> codes produit cibles.
 _TECH_KW = ('développ', 'developp', 'technique', 'code', 'python', 'owl', 'orm')
 _FUNC_KW = ('fonctionnel', 'gestion', 'métier', 'metier', 'consultant', 'utilisateur')
 _DEPLOY_KW = ('déploiement', 'deploiement', 'production', 'serveur', 'devops', 'infra')
+_REPORT_KW = ('rapport', 'excel', 'xlsx', 'tableur', 'état', 'etat', 'analyse', ' sql')
 
 
 class BlogPost(models.Model):
@@ -18,11 +19,15 @@ class BlogPost(models.Model):
         self.ensure_one()
 
         haystack = ' '.join([
+            self.name or '',
             self.blog_id.name or '',
             ' '.join(self.tag_ids.mapped('name')),
         ]).lower()
 
         codes = []
+        # Rapports / Excel / états -> E5 en tête (match sémantique le plus fort).
+        if any(k in haystack for k in _REPORT_KW):
+            codes.append('EBOOK-E5')
         if any(k in haystack for k in _TECH_KW):
             codes += ['EBOOK-E1', 'EBOOK-E3']
         if any(k in haystack for k in _DEPLOY_KW):
@@ -39,6 +44,7 @@ class BlogPost(models.Model):
 
         if not ordered:
             ordered = ['PACK-TRILOGIE']
+        ordered = ordered[:3]
 
         Tmpl = self.env['product.template']
         prods = Tmpl
