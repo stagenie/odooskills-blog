@@ -1,0 +1,453 @@
+<!--
+Article PDF-5 — Rapport PDF dynamique dans Odoo 19 (données calculées + QR)
+Série Technique · Série Rapports PDF · Article 5/5
+Auteur : BENHAMIDA Mustapha
+Date : 2026-06-28
+Slug : rapport-pdf-dynamique-odoo-19
+Meta : Calculer les données d'un rapport en Python avec _get_report_values, agréger via _read_group et insérer un QR code dans un PDF QWeb sous Odoo 19.
+Mot-clé cible : rapport pdf dynamique odoo 19
+Catégorie : Développement Odoo
+Tags : avance, web-ui, guide, community
+Temps de lecture : ~10 minutes
+Figures : src à remplacer par /web/image/<att_id> au publish (Phase 6)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box ul { margin-bottom: 0; }
+
+  .flow-svg { display:block; margin: 1.5rem auto; max-width: 760px; width: 100%; height: auto; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <p class="text-uppercase small mb-2" style="color:#f06595">Série Rapports PDF · Article 5/5</p>
+                <h1 class="text-white">Un rapport PDF dynamique dans Odoo 19</h1>
+                <p class="lead mt-3 text-white">Jusqu'ici, le template lisait des champs. Ici, il affiche des
+                    <strong>données calculées</strong>&nbsp;: une synthèse agrégée par catégorie, un total
+                    général, et un <strong>QR code</strong>. Le contenu ne vient plus d'un enregistrement, mais
+                    d'un modèle Python qui le fabrique.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau avancé · parcours <strong>Web &amp; UI</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_features pt40 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2 class="mb-4">Ce que tu vas apprendre</h2>
+                <div class="row">
+                    <div class="col-md-4">
+                        <h3 class="h5">Calculer les données</h3>
+                        <p>Le modèle de rapport Python et sa méthode
+                            <code>_get_report_values</code>, qui injecte un dictionnaire sur mesure dans le
+                            template.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h3 class="h5">Agréger en SQL</h3>
+                        <p><code>_read_group</code> pour sommer quantités et montants par groupe, sans charger
+                            chaque ligne en mémoire.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h3 class="h5">Insérer un QR code</h3>
+                        <p>Le contrôleur <code>/report/barcode/QR/…</code> qui transforme n'importe quelle
+                            valeur en code à scanner.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info" role="alert">
+                    <strong>Prérequis.</strong> Odoo 19 Community, le module <code>sale</code>, et un module
+                    custom avec du Python. On suppose acquis le squelette d'un rapport QWeb&nbsp;; si ce n'est
+                    pas le cas, commence par
+                    <a href="/blog/developpement-odoo-2/creer-son-rapport-pdf-de-a-a-z-dans-odoo-19-161">créer
+                    un rapport de zéro</a>. Installation classique&nbsp;:
+                </div>
+<pre class="language-bash"><code class="language-bash">odoo-bin -i odooskills_report_dynamic_demo -d ta_base</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FLUX ===== -->
+<section class="s_text_block pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le flux des données</h2>
+                <p>Un rapport statique lit directement l'enregistrement (<code>doc.name</code>,
+                    <code>doc.partner_id</code>…). Un rapport dynamique insère une étape&nbsp;: un
+                    <strong>modèle Python</strong> calcule les données — agrégats, totaux, valeurs dérivées —
+                    et les passe au template sous forme de dictionnaire. Le template ne fait plus qu'afficher —
+                    il reste construit sur le même squelette
+                    <a href="/blog/developpement-odoo-2/rapports-qweb-pdf-odoo-71"><code>html_container</code> →
+                    <code>external_layout</code></a> que les rapports précédents.</p>
+                <svg class="flow-svg" viewBox="0 0 760 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flux : sale.order.line vers _read_group vers _get_report_values vers template QWeb">
+                    <rect x="2" y="40" width="150" height="44" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+                    <text x="77" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#444">sale.order.line</text>
+                    <text x="77" y="76" text-anchor="middle" font-size="10" fill="#777">les données brutes</text>
+                    <rect x="200" y="40" width="150" height="44" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+                    <text x="275" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#444">_read_group</text>
+                    <text x="275" y="76" text-anchor="middle" font-size="10" fill="#777">agrégation SQL</text>
+                    <rect x="398" y="40" width="160" height="44" rx="6" fill="#d6336c" stroke="#d6336c"/>
+                    <text x="478" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">_get_report_values</text>
+                    <text x="478" y="76" text-anchor="middle" font-size="10" fill="#ffd9e6">le dictionnaire</text>
+                    <rect x="606" y="40" width="150" height="44" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+                    <text x="681" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#444">template QWeb</text>
+                    <text x="681" y="76" text-anchor="middle" font-size="10" fill="#777">t-foreach + QR</text>
+                    <line x1="152" y1="62" x2="198" y2="62" stroke="#d6336c" stroke-width="2" marker-end="url(#a5)"/>
+                    <line x1="350" y1="62" x2="396" y2="62" stroke="#d6336c" stroke-width="2" marker-end="url(#a5)"/>
+                    <line x1="558" y1="62" x2="604" y2="62" stroke="#d6336c" stroke-width="2" marker-end="url(#a5)"/>
+                    <defs><marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#d6336c"/></marker></defs>
+                </svg>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 — MODÈLE PYTHON ===== -->
+<section class="s_text_block pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1 — Le modèle de rapport</h2>
+                <p>Tout commence par un <code>AbstractModel</code> dont le nom est
+                    <strong><code>report.</code> suivi du <code>report_name</code> de l'action</strong>. C'est
+                    cette convention de nommage qui dit au moteur&nbsp;: « pour ce rapport, appelle ma méthode
+                    <code>_get_report_values</code> avant de rendre le template ». La méthode reçoit les
+                    <code>docids</code> sélectionnés et renvoie le dictionnaire qui peuplera le template.</p>
+<pre class="language-python"><code class="language-python">from odoo import models
+
+
+class ReportSalesSummary(models.AbstractModel):
+    _name = 'report.odooskills_report_dynamic_demo.report_sales_summary'
+    _description = "Synthèse des ventes par catégorie"
+
+    def _get_report_values(self, docids, data=None):
+        docs = self.env['sale.order'].browse(docids)
+
+        # Agrégation SQL : somme des quantités et des montants par produit.
+        groups = self.env['sale.order.line']._read_group(
+            domain=[('order_id', 'in', docs.ids), ('display_type', '=', False)],
+            groupby=['product_id'],
+            aggregates=['product_uom_qty:sum', 'price_subtotal:sum'],
+        )
+
+        # Repli par catégorie (dictionnaire simple, sans import externe).
+        by_category = {}
+        for product, qty, subtotal in groups:
+            name = product.categ_id.display_name or "Sans catégorie"
+            bucket = by_category.setdefault(name, {'qty': 0.0, 'subtotal': 0.0})
+            bucket['qty'] += qty
+            bucket['subtotal'] += subtotal
+
+        summary = [
+            {'category': name, 'qty': vals['qty'], 'subtotal': vals['subtotal']}
+            for name, vals in sorted(by_category.items())
+        ]
+        grand_total = sum(row['subtotal'] for row in summary)
+
+        return {
+            'doc_ids': docids,
+            'doc_model': 'sale.order',
+            'docs': docs,
+            'summary': summary,
+            'grand_total': grand_total,
+        }</code></pre>
+                <p>Les clés <code>doc_ids</code>, <code>doc_model</code> et <code>docs</code> sont attendues par
+                    convention&nbsp;; <code>summary</code> et <code>grand_total</code> sont nos données
+                    maison. Tout ce qui est renvoyé là devient une variable disponible dans le template.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 — _read_group ===== -->
+<section class="s_text_block pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2 — Agréger avec _read_group</h2>
+                <p>Le cœur du calcul. <code>_read_group</code> délègue l'agrégation à PostgreSQL au lieu de
+                    parcourir chaque ligne en Python — indispensable dès que le volume grimpe. Sa signature
+                    tient en trois arguments utiles&nbsp;:</p>
+<pre class="language-python"><code class="language-python">groups = self.env['sale.order.line']._read_group(
+    domain=[('order_id', 'in', docs.ids), ('display_type', '=', False)],
+    groupby=['product_id'],
+    aggregates=['product_uom_qty:sum', 'price_subtotal:sum'],
+)
+# -> liste de tuples : [(product, qty_sum, subtotal_sum), ...]</code></pre>
+                <p>Le <code>domain</code> filtre les lignes (ici, celles des commandes choisies, hors lignes de
+                    section). <code>groupby</code> liste les axes de regroupement. <code>aggregates</code>
+                    énumère les calculs au format <code>'champ:fonction'</code> — <code>:sum</code>,
+                    <code>:avg</code>, <code>:count</code>, etc. Le retour est une liste de tuples&nbsp;: le
+                    premier élément est la valeur du groupe (le <em>recordset</em> produit pour un champ
+                    relationnel), les suivants sont les agrégats, dans l'ordre demandé. On les déballe
+                    directement dans la boucle. La signature complète figure dans le
+                    <a href="https://github.com/odoo/odoo/blob/19.0/odoo/orm/models.py" target="_blank" rel="noopener">source ORM d'Odoo 19</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 — TEMPLATE ===== -->
+<section class="s_text_block pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3 — Le template consomme les données</h2>
+                <p>Côté QWeb, plus de <code>t-field</code>&nbsp;: les valeurs ne sont pas des champs d'un
+                    enregistrement, mais des entrées de dictionnaire. On les affiche avec <code>t-out</code>,
+                    qui évalue une expression Python. On boucle sur <code>summary</code>, et on lit
+                    <code>grand_total</code> dans le pied du tableau&nbsp;:</p>
+<pre class="language-markup"><code class="language-markup">&lt;t t-call="web.external_layout"&gt;
+    &lt;t t-set="o" t-value="docs[:1]"/&gt;
+    &lt;t t-set="layout_document_title"&gt;Synthèse des ventes&lt;/t&gt;
+    &lt;div class="page"&gt;
+        &lt;p&gt;Synthèse portant sur &lt;span t-out="len(docs)"/&gt; commande(s).&lt;/p&gt;
+        &lt;table class="table table-sm"&gt;
+            &lt;tbody&gt;
+                &lt;tr t-foreach="summary" t-as="row"&gt;
+                    &lt;td&gt;&lt;span t-out="row['category']"/&gt;&lt;/td&gt;
+                    &lt;td class="text-end"&gt;&lt;span t-out="'%.2f' % row['qty']"/&gt;&lt;/td&gt;
+                    &lt;td class="text-end"&gt;&lt;span t-out="'%.2f' % row['subtotal']"/&gt;&lt;/td&gt;
+                &lt;/tr&gt;
+            &lt;/tbody&gt;
+            &lt;tfoot&gt;
+                &lt;tr&gt;&lt;th&gt;Total général&lt;/th&gt;&lt;th/&gt;
+                    &lt;th class="text-end"&gt;&lt;span t-out="'%.2f' % grand_total"/&gt;&lt;/th&gt;&lt;/tr&gt;
+            &lt;/tfoot&gt;
+        &lt;/table&gt;
+    &lt;/div&gt;
+&lt;/t&gt;</code></pre>
+                <p class="small text-muted"><em>Extrait condensé&nbsp;: le module complet ajoute les en-têtes
+                    de colonnes et le bloc QR détaillé plus bas.</em></p>
+                <p>On pose <code>o = docs[:1]</code> pour que <code>external_layout</code> retrouve la société
+                    et son en-tête — c'est là que se branche tout le travail de
+                    <a href="/blog/developpement-odoo-2/mise-en-page-et-branding-dun-rapport-pdf-dans-odoo-19-163">mise
+                    en page et de branding</a>. Le résultat&nbsp;: une page de synthèse unique, agrégée sur
+                    l'ensemble des commandes sélectionnées. Pour la tester&nbsp;: dans <em>Ventes</em>, coche
+                    plusieurs commandes dans la liste, puis <em>Imprimer → Synthèse des ventes</em>.</p>
+                <figure class="preview-figure">
+                    <img src="01-synthese-ventes.png"
+                         alt="Rapport PDF Odoo 19 de synthèse des ventes : tableau agrégé par catégorie de produit avec quantités, totaux HT, total général et QR code" style="max-width:80%; height:auto;"/>
+                    <figcaption>La synthèse rendue&nbsp;: cinq catégories agrégées, un total général, un QR code — toutes données calculées en Python.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 — QR ===== -->
+<section class="s_text_block pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4 — Le QR code</h2>
+                <p>Odoo embarque un générateur de codes-barres accessible par une simple URL d'image. Pour un
+                    QR, on appelle <code>/report/barcode/QR/&lt;valeur&gt;</code> dans le <code>src</code> d'une
+                    balise <code>img</code>. La valeur peut être n'importe quoi — un numéro, un texte, ou ici
+                    une URL de vérification construite à partir de la commande&nbsp;:</p>
+<pre class="language-markup"><code class="language-markup">&lt;img t-att-src="'/report/barcode/QR/%s' % ('https://odooskills.com/verifier/%s' % docs[0].name)"
+     style="width:110px;height:110px;"/&gt;</code></pre>
+                <p>Le contrôleur accepte aussi une forme paramétrée
+                    (<code>/report/barcode/?barcode_type=QR&amp;value=…&amp;width=…&amp;height=…</code>) pour
+                    régler finement la taille ou le niveau de correction d'erreur. Scanné, ce QR ouvre la page
+                    de vérification — un usage courant pour relier un document papier à son équivalent en
+                    ligne.</p>
+                <figure class="preview-figure">
+                    <img src="02-qr-code-rapport.png"
+                         alt="Détail d'un rapport PDF Odoo 19 montrant un QR code généré par le contrôleur report barcode, avec une légende invitant à scanner pour vérifier la synthèse" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le QR code généré par <code>/report/barcode/QR/…</code>, prêt à être scanné.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES v19 ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>⚠️ Trois pièges du rapport dynamique</h4>
+                    <ul>
+                        <li><strong><code>_read_group</code>, avec l'underscore.</strong> L'ancien
+                            <code>read_group</code> public est retiré&nbsp;; on utilise
+                            <code>_read_group(domain, groupby, aggregates)</code>, qui renvoie des
+                            <em>tuples</em>, pas des dictionnaires.</li>
+                        <li><strong><code>t-out</code>, pas <code>t-field</code>.</strong> Les données
+                            calculées ne sont pas des champs d'un enregistrement&nbsp;; <code>t-field</code>
+                            exigerait un <code>record.champ</code>. Pour une valeur de dictionnaire, c'est
+                            <code>t-out</code>.</li>
+                        <li><strong>Le nom du modèle fait le lien.</strong> Si
+                            <code>_name</code> ne vaut pas exactement <code>report.</code> + le
+                            <code>report_name</code> de l'action, <code>_get_report_values</code> n'est jamais
+                            appelée et le template ne reçoit que le contexte par défaut.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_features_grid pt8 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2 class="mb-4">À retenir</h2>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <h3 class="h5">🧮 _get_report_values fabrique les données</h3>
+                        <p>Un <code>AbstractModel</code> nommé <code>report.&lt;report_name&gt;</code> injecte un
+                            dictionnaire sur mesure.</p>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <h3 class="h5">⚡ _read_group agrège en SQL</h3>
+                        <p>Sommes et moyennes par groupe sans charger chaque ligne&nbsp;; retour en tuples.</p>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <h3 class="h5">🔤 t-out affiche le calculé</h3>
+                        <p>Les valeurs de dictionnaire s'affichent avec <code>t-out</code>, pas
+                            <code>t-field</code>.</p>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <h3 class="h5">🔳 Un QR en une URL</h3>
+                        <p><code>/report/barcode/QR/&lt;valeur&gt;</code> dans un <code>img</code>, rien de plus.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA GUIDE ===== -->
+<section class="s_call_to_action pt32 pb32 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h3 class="text-white">Télécharge le Guide Technique Odoo</h3>
+                <p>Un module Odoo 19 fonctionnel, 20+ articles techniques, environnements de dev et
+                    pipeline complet — le tout en PDF.</p>
+                <a href="/guide-technique-odoo" class="btn btn-warning btn-lg">Télécharger le guide</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREMIUM EBOOKS ===== -->
+<section class="s_text_block pt8 pb24" data-oski-ebook-cta="1">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="o_oski_ebook_cta p-4 rounded" style="background:#f5f6fa;border:1px solid #e4e6ef">
+                    <p class="mb-3 fw-bold" style="color:#1a1a2e">📘 Pour aller plus loin : nos formations Odoo 19</p>
+                    <div class="d-flex flex-column flex-md-row gap-3">
+                        <a href="/shop/ebook-e1-formation-technique-odoo-19-ebook-3" class="d-flex align-items-center text-decoration-none flex-grow-1 p-2 rounded bg-white" style="border:1px solid #e4e6ef">
+                            <img src="/web/image/product.template/3/image_128" class="me-3 rounded" style="width:48px;height:64px;object-fit:cover" alt="Formation Technique Odoo 19 (ebook)"/>
+                            <span><span class="d-block fw-semibold" style="color:#1a1a2e">Formation Technique Odoo 19 (ebook)</span><span class="small text-primary">Découvrir →</span></span>
+                        </a>
+                        <a href="/shop/ebook-e3-formation-deploiement-odoo-19-ebook-5" class="d-flex align-items-center text-decoration-none flex-grow-1 p-2 rounded bg-white" style="border:1px solid #e4e6ef">
+                            <img src="/web/image/product.template/5/image_128" class="me-3 rounded" style="width:48px;height:64px;object-fit:cover" alt="Formation Déploiement Odoo 19 (ebook)"/>
+                            <span><span class="d-block fw-semibold" style="color:#1a1a2e">Formation Déploiement Odoo 19 (ebook)</span><span class="small text-primary">Découvrir →</span></span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VOIR AUSSI + CROSS-LINK ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>À lire également</h3>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/mise-en-page-et-branding-dun-rapport-pdf-dans-odoo-19-163">Mise
+                        en page et branding</a> — habiller la synthèse qu'on vient de calculer.</li>
+                    <li><a href="/blog/developpement-odoo-2/creer-son-rapport-pdf-de-a-a-z-dans-odoo-19-161">Créer
+                        son rapport PDF de A à Z</a> — le squelette de départ.</li>
+                    <li><a href="/blog/developpement-odoo-2/rapports-qweb-pdf-odoo-71">Générer des rapports
+                        PDF avec QWeb</a> — les fondamentaux du moteur de rendu.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ZONE 4 — CROSS-BLOG ===== -->
+<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="p-3 rounded" style="background:#f6f8fa;border:1px solid #e4e6ef">
+                    <p class="mb-1 fw-semibold" style="color:#1a1a2e">↔ Besoin de chiffres, pas de PDF&nbsp;?</p>
+                    <p class="mb-0 small">Pour un export chiffré exploitable plutôt qu'un PDF, la série Excel
+                        couvre le sujet&nbsp;:
+                        <a href="/blog/developpement-odoo-2/generer-un-rapport-excel-xlsx-natif-dans-odoo-19-145">générer
+                        un rapport Excel XLSX natif</a>. Et côté configuration sans code, le blog fonctionnel
+                        détaille
+                        <a href="/blog/fonctionnel-odoo-1/modeles-de-rapports-et-format-dimpression-dans-odoo-19-community-131">les
+                        modèles de rapports et le format d'impression</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAV PRÉCÉDENT / FIN DE SÉRIE ===== -->
+<section class="s_text_block pt24 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto d-flex justify-content-between">
+                <a href="/blog/developpement-odoo-2/mise-en-page-et-branding-dun-rapport-pdf-dans-odoo-19-163"
+                   class="btn btn-outline-primary">← Article 4 — Mise en page et branding</a>
+                <a href="/blog/developpement-odoo-2/personnaliser-un-rapport-pdf-existant-dans-odoo-19-160"
+                   class="btn btn-outline-secondary">↻ Reprendre la série à l'article 1</a>
+            </div>
+        </div>
+    </div>
+</section>
