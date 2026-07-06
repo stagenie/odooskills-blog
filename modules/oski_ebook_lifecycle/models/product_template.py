@@ -53,6 +53,14 @@ class ProductTemplate(models.Model):
             else:
                 Item.create({**base, 'fixed_price': launch})
 
+    def action_oski_compute_pack_price(self):
+        """Assistant : prix pack = Σ prix des monos membres − bonus. Valeurs éditables ensuite."""
+        for rec in self.filtered(lambda p: len(p.ebook_ids) > 1):
+            monos = self.search([('id', '!=', rec.id)]).filtered(
+                lambda m: len(m.ebook_ids) == 1 and m.ebook_ids <= rec.ebook_ids)
+            rec.oski_price_regular = sum(monos.mapped('oski_price_regular')) - rec.oski_pack_bonus
+            rec.oski_price_launch = sum(monos.mapped('oski_price_launch')) - rec.oski_pack_bonus
+
     def oski_pricing_incoherences(self):
         """Retourne la liste des divergences entre champs d'offre et emplacements natifs."""
         ICP = self.env['ir.config_parameter'].sudo()

@@ -76,3 +76,16 @@ class TestOskiPricing(TransactionCase):
         self.mono1.oski_launch_deadline = '2099-12-31 22:59:59'
         self.mono1._oski_apply_pricing_offer()
         self.assertEqual(self.mono1.oski_pricing_incoherences(), [])
+
+    def test_pack_price_assistant(self):
+        eb3 = self.env.ref('oski_ebook_lifecycle.ebook_e3')
+        P = self.env['product.template']
+        mono3 = P.create({'name': 'TEST E3', 'default_code': 'TEST-E3',
+                          'ebook_ids': [(6, 0, eb3.ids)],
+                          'oski_price_regular': 25.0, 'oski_price_launch': 22.0})
+        pack = P.create({'name': 'TEST PACK E1E3', 'default_code': 'TEST-P13',
+                         'ebook_ids': [(6, 0, (self.eb1 + eb3).ids)],
+                         'oski_pack_bonus': 7.0})
+        pack.action_oski_compute_pack_price()
+        self.assertEqual(pack.oski_price_regular, 27.0 + 25.0 - 7.0)  # 45
+        self.assertEqual(pack.oski_price_launch, 24.0 + 22.0 - 7.0)   # 39
