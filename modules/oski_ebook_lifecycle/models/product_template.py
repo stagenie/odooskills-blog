@@ -51,3 +51,25 @@ class ProductTemplate(models.Model):
                 Item.create({**base, 'fixed_price': reg})
             else:
                 Item.create({**base, 'fixed_price': launch})
+
+    def oski_pricing_incoherences(self):
+        """Retourne la liste des divergences entre champs d'offre et emplacements natifs."""
+        ICP = self.env['ir.config_parameter'].sudo()
+        rate = float(ICP.get_param('oski.pricing.dzd_rate') or 270.0)
+        pl_id = int(ICP.get_param('oski.pricing.eur_pricelist_id') or 0)
+        Item = self.env['product.pricelist.item']
+        issues = []
+        for rec in self.filtered(lambda p: p.ebook_ids):
+            tag = rec.default_code or rec.display_name
+            reg, launch = rec.oski_price_regular, (rec.oski_price_launch or rec.oski_price_regular)
+            exp_compare = round(reg * rate, 2) if reg > launch else 0.0
+            if abs(rec.compare_list_price - exp_compare) > 0.01:
+                issues.append('%s: barré %.2f attendu %.2f' % (tag, rec.compare_list_price, exp_compare))
+            if abs(rec.list_price - round(launch * rate, 2)) > 0.01:
+                issues.append('%s: list_price %.2f attendu %.2f' % (tag, rec.list_price, launch * rate))
+            if pl_id:
+                active = Item.search([('pricelist_id', '=', pl_id), ('product_tmpl_id', '=', rec.id),
+                                      '|', ('date_end', '=', False), ('date_end', '>', fields.Datetime.now())])
+                if not active or abs(min(active.mapped('fixed_price')) - launch) > 0.01:
+                    issues.append('%s: item pricelist actif ≠ %.2f' % (tag, launch))
+        return issues

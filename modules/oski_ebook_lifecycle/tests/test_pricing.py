@@ -55,3 +55,15 @@ class TestOskiPricing(TransactionCase):
         dated = items.filtered(lambda i: i.date_end)
         self.assertEqual(dated.fixed_price, 24.0)
         self.assertEqual(items.filtered(lambda i: not i.date_end).fixed_price, 27.0)
+
+    def test_incoherences_empty_after_apply(self):
+        self._make_pricelist()
+        self.mono1._oski_apply_pricing_offer()
+        self.assertEqual(self.mono1.oski_pricing_incoherences(), [])
+
+    def test_incoherences_detects_drift(self):
+        self._make_pricelist()
+        self.mono1._oski_apply_pricing_offer()
+        self.mono1.compare_list_price = 999.0  # drift manuel
+        issues = self.mono1.oski_pricing_incoherences()
+        self.assertTrue(any('barré' in i for i in issues))
