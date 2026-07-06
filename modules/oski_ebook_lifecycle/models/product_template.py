@@ -1,4 +1,4 @@
-from odoo import fields, models
+from odoo import api, fields, models
 
 
 class ProductTemplate(models.Model):
@@ -24,6 +24,14 @@ class ProductTemplate(models.Model):
     oski_pack_bonus = fields.Float(
         string='Bonus pack (€)', digits='Product Price',
         help="Remise bundle retranchée à la somme des membres (assistant prix pack).")
+    oski_is_pack = fields.Boolean(
+        string='Est un pack', compute='_compute_oski_is_pack',
+        help="Vrai si le produit accorde plusieurs ebooks (pack).")
+
+    @api.depends('ebook_ids')
+    def _compute_oski_is_pack(self):
+        for rec in self:
+            rec.oski_is_pack = len(rec.ebook_ids) > 1
 
     def _oski_apply_pricing_offer(self):
         """Estampille les emplacements natifs depuis les champs d'offre.
