@@ -24,3 +24,30 @@ class ProductTemplate(models.Model):
     oski_pack_bonus = fields.Float(
         string='Bonus pack (€)', digits='Product Price',
         help="Remise bundle retranchée à la somme des membres (assistant prix pack).")
+
+    def _oski_apply_pricing_offer(self):
+        """Estampille les emplacements natifs depuis les champs d'offre.
+        list_price = launch*rate ; compare_list_price = regular*rate (0 si pas de remise).
+        Item pricelist EUR = launch (daté si deadline, + item régulier de repli)."""
+        ICP = self.env['ir.config_parameter'].sudo()
+        rate = float(ICP.get_param('oski.pricing.dzd_rate') or 270.0)
+        pl_id = int(ICP.get_param('oski.pricing.eur_pricelist_id') or 0)
+        pricelist = self.env['product.pricelist'].browse(pl_id).exists()
+        Item = self.env['product.pricelist.item']
+        for rec in self.filtered(lambda p: p.ebook_ids):
+            reg = rec.oski_price_regular
+            launch = rec.oski_price_launch or reg
+            rec.list_price = round(launch * rate, 2)
+            rec.compare_list_price = round(reg * rate, 2) if reg > launch else 0.0
+            if not pricelist:
+                continue
+            Item.search([('pricelist_id', '=', pricelist.id),
+                         ('product_tmpl_id', '=', rec.id)]).unlink()
+            base = {'pricelist_id': pricelist.id, 'product_tmpl_id': rec.id,
+                    'applied_on': '1_product', 'compute_price': 'fixed'}
+            if rec.oski_launch_deadline:
+                Item.create({**base, 'fixed_price': launch,
+                             'date_end': rec.oski_launch_deadline})
+                Item.create({**base, 'fixed_price': reg})
+            else:
+                Item.create({**base, 'fixed_price': launch})

@@ -11,6 +11,7 @@
         'security/ir.model.access.csv',
         'data/partner_categories.xml',
         'data/oski_ebook_data.xml',
+        'data/pricing_config_params.xml',
         'data/mail_template_ebook_delivery.xml',
         'views/oski_ebook_views.xml',
         'views/product_template_views.xml',
