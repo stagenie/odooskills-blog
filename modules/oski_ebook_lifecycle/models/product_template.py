@@ -64,7 +64,7 @@ class ProductTemplate(models.Model):
     def action_oski_compute_pack_price(self):
         """Assistant : prix pack = Σ prix des monos membres − bonus. Valeurs éditables ensuite."""
         for rec in self.filtered(lambda p: len(p.ebook_ids) > 1):
-            monos = self.search([('id', '!=', rec.id)]).filtered(
+            monos = self.search([('id', '!=', rec.id), ('ebook_ids', '!=', False)]).filtered(
                 lambda m: len(m.ebook_ids) == 1 and m.ebook_ids <= rec.ebook_ids)
             rec.oski_price_regular = sum(monos.mapped('oski_price_regular')) - rec.oski_pack_bonus
             rec.oski_price_launch = sum(monos.mapped('oski_price_launch')) - rec.oski_pack_bonus
@@ -89,11 +89,16 @@ class ProductTemplate(models.Model):
                 active = Item.search([
                     ('pricelist_id', '=', pl_id), ('product_tmpl_id', '=', rec.id),
                     '|', ('date_start', '=', False), ('date_start', '<=', now),
-                    '|', ('date_end', '=', False), ('date_end', '>', now)])
+                    '|', ('date_end', '=', False), ('date_end', '>=', now)])
                 if len(active) > 1:
                     # Plusieurs items actifs simultanément = ambiguïté sur le prix
                     # réellement appliqué par Odoo. Ne jamais masquer via min().
                     issues.append('%s: %d items pricelist actifs simultanément' % (tag, len(active)))
-                elif not active or abs(active.fixed_price - launch) > 0.01:
-                    issues.append('%s: item pricelist actif ≠ %.2f' % (tag, launch))
+                else:
+                    # Après une deadline dépassée, l'item natif actif est le repli
+                    # régulier (reg), pas le prix de lancement (launch) : sinon le
+                    # checker rapporte une fausse incohérence pour toujours.
+                    expected = launch if (not rec.oski_launch_deadline or now < rec.oski_launch_deadline) else reg
+                    if not active or abs(active.fixed_price - expected) > 0.01:
+                        issues.append('%s: item pricelist actif ≠ %.2f' % (tag, expected))
         return issues

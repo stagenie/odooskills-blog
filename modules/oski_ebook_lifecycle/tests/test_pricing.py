@@ -8,7 +8,6 @@ class TestOskiPricing(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.eb1 = cls.env.ref('oski_ebook_lifecycle.ebook_e1')
-        cls.eb2 = cls.env.ref('oski_ebook_lifecycle.ebook_e2')
         P = cls.env['product.template']
         cls.mono1 = P.create({
             'name': 'TEST E1', 'default_code': 'TEST-E1',
@@ -74,6 +73,17 @@ class TestOskiPricing(TransactionCase):
         lancement. Un seul item actif à la fois => aucune incohérence."""
         self._make_pricelist()
         self.mono1.oski_launch_deadline = '2099-12-31 22:59:59'
+        self.mono1._oski_apply_pricing_offer()
+        self.assertEqual(self.mono1.oski_pricing_incoherences(), [])
+
+    def test_incoherences_empty_with_past_deadline(self):
+        """Régression finding #2 : une fois la deadline dépassée, l'item natif
+        actif est le repli régulier (date_start=deadline passée, date_end=False),
+        l'item de lancement (date_end=deadline passée) est sorti de l'actif. Le
+        checker doit comparer au prix attendu selon le temps (reg), pas toujours
+        au prix de lancement (launch), sous peine de fausse incohérence permanente."""
+        self._make_pricelist()
+        self.mono1.oski_launch_deadline = '2000-01-01 00:00:00'
         self.mono1._oski_apply_pricing_offer()
         self.assertEqual(self.mono1.oski_pricing_incoherences(), [])
 
