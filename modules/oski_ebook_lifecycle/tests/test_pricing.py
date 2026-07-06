@@ -67,3 +67,12 @@ class TestOskiPricing(TransactionCase):
         self.mono1.compare_list_price = 999.0  # drift manuel
         issues = self.mono1.oski_pricing_incoherences()
         self.assertTrue(any('barré' in i for i in issues))
+
+    def test_incoherences_empty_with_future_deadline(self):
+        """Régression : en mode deadline, l'item de repli régulier doit
+        démarrer APRES la deadline pour ne jamais chevaucher l'item de
+        lancement. Un seul item actif à la fois => aucune incohérence."""
+        self._make_pricelist()
+        self.mono1.oski_launch_deadline = '2099-12-31 22:59:59'
+        self.mono1._oski_apply_pricing_offer()
+        self.assertEqual(self.mono1.oski_pricing_incoherences(), [])

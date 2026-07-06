@@ -48,7 +48,8 @@ class ProductTemplate(models.Model):
             if rec.oski_launch_deadline:
                 Item.create({**base, 'fixed_price': launch,
                              'date_end': rec.oski_launch_deadline})
-                Item.create({**base, 'fixed_price': reg})
+                Item.create({**base, 'fixed_price': reg,
+                             'date_start': rec.oski_launch_deadline})
             else:
                 Item.create({**base, 'fixed_price': launch})
 
@@ -68,8 +69,15 @@ class ProductTemplate(models.Model):
             if abs(rec.list_price - round(launch * rate, 2)) > 0.01:
                 issues.append('%s: list_price %.2f attendu %.2f' % (tag, rec.list_price, launch * rate))
             if pl_id:
-                active = Item.search([('pricelist_id', '=', pl_id), ('product_tmpl_id', '=', rec.id),
-                                      '|', ('date_end', '=', False), ('date_end', '>', fields.Datetime.now())])
-                if not active or abs(min(active.mapped('fixed_price')) - launch) > 0.01:
+                now = fields.Datetime.now()
+                active = Item.search([
+                    ('pricelist_id', '=', pl_id), ('product_tmpl_id', '=', rec.id),
+                    '|', ('date_start', '=', False), ('date_start', '<=', now),
+                    '|', ('date_end', '=', False), ('date_end', '>', now)])
+                if len(active) > 1:
+                    # Plusieurs items actifs simultanément = ambiguïté sur le prix
+                    # réellement appliqué par Odoo. Ne jamais masquer via min().
+                    issues.append('%s: %d items pricelist actifs simultanément' % (tag, len(active)))
+                elif not active or abs(active.fixed_price - launch) > 0.01:
                     issues.append('%s: item pricelist actif ≠ %.2f' % (tag, launch))
         return issues
