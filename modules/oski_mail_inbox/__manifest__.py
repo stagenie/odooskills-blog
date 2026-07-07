@@ -7,6 +7,7 @@
     'license': 'LGPL-3',
     'depends': ['mail'],
     'data': [
+        'security/security_groups.xml',
         'security/ir.model.access.csv',
         'data/ir_cron.xml',
     ],
