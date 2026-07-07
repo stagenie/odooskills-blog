@@ -8,6 +8,7 @@
     'depends': ['mail'],
     'data': [
         'security/ir.model.access.csv',
+        'data/ir_cron.xml',
     ],
     'installable': True,
     'application': True,

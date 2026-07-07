@@ -1,8 +1,15 @@
+import imaplib
 import logging
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+BACKLOG_BATCH_SIZE = 200
+# IMAP exige les abréviations de mois anglaises ; strftime('%b') dépend de la locale.
+IMAP_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
 
 
 class OskiMailbox(models.Model):
@@ -92,3 +99,88 @@ class OskiMailbox(models.Model):
         if not self.fetchmail_server_id:
             return
         return self.sudo().fetchmail_server_id.button_confirm_login()
+
+    def action_start_backlog(self):
+        for box in self:
+            box.write({
+                'backlog_state': 'pending',
+                'backlog_last_uid': 0,
+            })
+
+    @api.model
+    def _imap_since_criteria(self, since_date):
+        return '(SINCE "%02d-%s-%d")' % (
+            since_date.day, IMAP_MONTHS[since_date.month - 1], since_date.year)
+
+    def _imap_connect(self):
+        self.ensure_one()
+        box = self.sudo()
+        if not (box.imap_host and box.imap_user and box.imap_password):
+            raise UserError(_("Configuration IMAP incomplète pour %s.", box.email))
+        klass = imaplib.IMAP4_SSL if box.imap_ssl else imaplib.IMAP4
+        connection = klass(box.imap_host, box.imap_port or (993 if box.imap_ssl else 143))
+        connection.login(box.imap_user, box.imap_password)
+        return connection
+
+    @api.model
+    def _cron_process_backlog(self):
+        boxes = self.search([('backlog_state', 'in', ('pending', 'running'))])
+        for box in boxes:
+            try:
+                box._process_backlog_batch()
+            except Exception:
+                _logger.exception(
+                    'Messagerie : échec import historique pour %s', box.email)
+
+    def _process_backlog_batch(self):
+        """Importe une tranche d'historique depuis INBOX (lecture seule).
+
+        Relançable : la progression est tenue par backlog_last_uid et la
+        dédup Message-Id du gateway absorbe tout recouvrement. Commit après
+        chaque message (pattern fetchmail natif), désactivable en test via
+        le contexte oski_backlog_no_commit."""
+        self.ensure_one()
+        no_commit = self.env.context.get('oski_backlog_no_commit')
+        connection = self._imap_connect()
+        try:
+            connection.select('INBOX', readonly=True)
+            since = self.backlog_since or fields.Date.to_date('2026-01-01')
+            status, data = connection.uid('search', None, self._imap_since_criteria(since))
+            if status != 'OK':
+                raise UserError(_("Recherche IMAP en échec pour %s.", self.email))
+            uids = sorted(int(u) for u in (data[0].split() if data and data[0] else []))
+            pending = [u for u in uids if u > self.backlog_last_uid][:BACKLOG_BATCH_SIZE]
+            if not pending:
+                self.write({'backlog_state': 'done'})
+                if not no_commit:
+                    self.env.cr.commit()
+                return
+            self.write({'backlog_state': 'running'})
+            MailThread = self.env['mail.thread'].with_context(
+                default_fetchmail_server_id=self.fetchmail_server_id.id)
+            for uid in pending:
+                status, msg_data = connection.uid('fetch', str(uid), '(BODY.PEEK[])')
+                raw = msg_data[0][1] if status == 'OK' and msg_data and msg_data[0] else None
+                if raw:
+                    try:
+                        MailThread.message_process(
+                            'oski.mail.inbox', raw, strip_attachments=False)
+                    except Exception:
+                        _logger.exception(
+                            'Messagerie : message UID %s illisible sur %s, ignoré',
+                            uid, self.email)
+                self.write({
+                    'backlog_last_uid': uid,
+                    'backlog_done_count': self.backlog_done_count + 1,
+                })
+                if not no_commit:
+                    self.env.cr.commit()
+            if len(pending) < BACKLOG_BATCH_SIZE:
+                self.write({'backlog_state': 'done'})
+                if not no_commit:
+                    self.env.cr.commit()
+        finally:
+            try:
+                connection.logout()
+            except Exception:
+                pass
