@@ -11,7 +11,7 @@ class TestSecurity(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'odooers@odooskills.com',
+            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })

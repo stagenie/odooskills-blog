@@ -10,7 +10,7 @@ class TestReply(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'odooers@odooskills.com',
+            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })
@@ -26,12 +26,12 @@ class TestReply(TransactionCase):
             partner_ids=self.env['res.partner'].create(
                 {'name': 'Client', 'email': 'client@example.com'}).ids,
         )
-        self.assertIn('odooers@odooskills.com', message.email_from,
+        self.assertIn('tests-box@odooskills.example', message.email_from,
                       "la réponse doit partir de l'adresse de la boîte")
 
     def test_reply_to_is_mailbox(self):
         reply_to = self.record._notify_get_reply_to()
-        self.assertIn('odooers@odooskills.com', reply_to[self.record.id])
+        self.assertIn('tests-box@odooskills.example', reply_to[self.record.id])
 
     def test_comment_marks_answered(self):
         self.record.state = 'new'

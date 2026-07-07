@@ -4,7 +4,7 @@ from odoo.tests import TransactionCase, tagged
 @tagged('post_install', '-at_install')
 class TestMailbox(TransactionCase):
 
-    def _mailbox_vals(self, email='odooers@odooskills.com'):
+    def _mailbox_vals(self, email='tests-mbox@odooskills.example'):
         return {
             'name': 'Odooers',
             'email': email,
@@ -23,7 +23,7 @@ class TestMailbox(TransactionCase):
         self.assertEqual(server.port, 993)
         self.assertTrue(server.is_ssl)
         self.assertEqual(server.server_type, 'imap')
-        self.assertEqual(server.user, 'odooers@odooskills.com')
+        self.assertEqual(server.user, 'tests-mbox@odooskills.example')
         self.assertEqual(server.object_id.model, 'oski.mail.inbox')
 
     def test_write_updates_server(self):
@@ -34,7 +34,8 @@ class TestMailbox(TransactionCase):
         self.assertFalse(box.fetchmail_server_id.is_ssl)
 
     def test_no_server_without_credentials(self):
-        box = self.env['oski.mailbox'].create({'name': 'Info', 'email': 'info@odooskills.com'})
+        box = self.env['oski.mailbox'].create(
+            {'name': 'Info', 'email': 'tests-info@odooskills.example'})
         self.assertFalse(box.fetchmail_server_id, "serveur créé sans credentials IMAP")
 
     def test_unlink_removes_server(self):
