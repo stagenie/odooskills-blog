@@ -1,5 +1,5 @@
 from odoo import api, fields, models, _
-from odoo.tools import email_normalize
+from odoo.tools import email_normalize, formataddr
 
 
 class OskiMailInbox(models.Model):
@@ -57,6 +57,28 @@ class OskiMailInbox(models.Model):
             'date_received': msg_dict.get('date') or fields.Datetime.now(),
         })
         return super().message_update(msg_dict, update_vals=vals)
+
+    def message_post(self, **kwargs):
+        if (len(self) == 1 and self.mailbox_id.email
+                and not kwargs.get('email_from')
+                and kwargs.get('message_type') == 'comment'):
+            kwargs['email_from'] = formataddr(
+                (self.env.user.name, self.mailbox_id.email))
+        message = super().message_post(**kwargs)
+        if (message.message_type == 'comment'
+                and not message.subtype_id.internal
+                and self.env.user._is_internal()
+                and self.state == 'new'):
+            self.state = 'answered'
+        return message
+
+    def _notify_get_reply_to(self, default=None, author_id=False):
+        result = super()._notify_get_reply_to(default=default, author_id=author_id)
+        for record in self.filtered(lambda r: r.mailbox_id.email):
+            result[record.id] = formataddr(
+                (record.mailbox_id.name or record.mailbox_id.email,
+                 record.mailbox_id.email))
+        return result
 
     def action_mark_done(self):
         self.write({'state': 'done'})
