@@ -123,6 +123,19 @@ class TestEbookLifecycle(TransactionCase):
         self.assertTrue(mail, "email de livraison non créé")
         self.assertIn('/web/content/%d' % att.id, mail.body_html or '')
         self.assertTrue(order.ebook_delivery_sent)
+        # Régression S00058 (2026-07) : liens sans access_token => 404 acheteur.
+        # Chaque lien de téléchargement DOIT porter le token de son attachment.
+        token = att.sudo().access_token
+        self.assertTrue(token, "access_token non généré sur l'attachment livré")
+        self.assertIn(
+            '/web/content/%d?download=true&amp;access_token=%s' % (att.id, token),
+            mail.body_html or '',
+            "lien de téléchargement sans access_token dans l'email")
+        self.assertTrue(order.access_token, "access_token portail non généré")
+        self.assertIn(
+            '/my/orders/%d?access_token=%s' % (order.id, order.access_token),
+            mail.body_html or '',
+            "lien portail sans access_token dans l'email")
 
     def test_delivery_email_idempotent(self):
         # attache un faux PDF livrable au produit E1 pour que le 1er envoi soit réel

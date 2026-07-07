@@ -75,6 +75,11 @@ class SaleOrder(models.Model):
                 continue
             if not order.partner_id.email:
                 continue
+            # Les PDF sont des attachments privés (res_model=product.template) :
+            # sans access_token, les liens /web/content du mail renvoient 404 pour
+            # l'acheteur (anonyme ou portail). On garantit les tokens avant rendu.
+            docs.ir_attachment_id.sudo().generate_access_token()
+            order.sudo()._portal_ensure_token()
             # force_send=True : livraison transactionnelle immédiate à la confirmation,
             # sans passer par la file (sinon coincée derrière un éventuel mass-mailing).
             template.send_mail(order.id, force_send=True)
