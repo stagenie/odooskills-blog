@@ -52,6 +52,22 @@ class TestInboxRouting(TransactionCase):
         self.assertEqual(rec.state, 'new')
         self.assertTrue(rec.date_received)
 
+    def test_fallback_mailbox_by_recipient(self):
+        # boîte sans serveur fetchmail (pas de credentials) : le mail arrive
+        # sans contexte serveur utile -> rattachement par adresse destinataire
+        box2 = self.env['oski.mailbox'].create({
+            'name': 'Info', 'email': 'tests-box2@odooskills.example'})
+        raw = MAIL_TEMPLATE.format(
+            email_from='client@example.com',
+            email_to='tests-box2@odooskills.example',
+            subject='Sans contexte serveur',
+            msg_id='<t-fallback-1@example.com>',
+            extra='')
+        rec_id = self.env['mail.thread'].message_process('oski.mail.inbox', raw)
+        rec = self.env['oski.mail.inbox'].browse(rec_id)
+        self.assertEqual(rec.mailbox_id, box2,
+                         "le fallback par destinataire doit rattacher la boîte")
+
     def test_partner_matched(self):
         rec_id = process_raw(self.env, self.server,
                              email_from='connu@example.com',

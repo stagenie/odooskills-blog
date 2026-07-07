@@ -30,6 +30,16 @@ class OskiMailInbox(models.Model):
         if server_id:
             mailbox = mailbox.sudo().search(
                 [('fetchmail_server_id', '=', server_id)], limit=1)
+        if not mailbox:
+            # Fallback : rattache par adresse destinataire (mail arrivé hors
+            # contexte fetchmail, ou serveur non lié à une boîte).
+            recipients = ' '.join(filter(None, (
+                msg_dict.get('to'), msg_dict.get('cc'),
+                msg_dict.get('recipients')))).lower()
+            for box in self.env['oski.mailbox'].sudo().search([]):
+                if box.email and box.email.lower() in recipients:
+                    mailbox = box
+                    break
         email_from = msg_dict.get('email_from') or ''
         partner = self.env['res.partner']
         normalized = email_normalize(email_from)
