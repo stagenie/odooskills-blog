@@ -1,10 +1,65 @@
-from odoo import fields, models
+from odoo import api, fields, models, _
+from odoo.tools import email_normalize
 
 
 class OskiMailInbox(models.Model):
     _name = 'oski.mail.inbox'
     _description = 'Email reçu'
     _inherit = ['mail.thread']
+    _order = 'date_received desc, id desc'
     _rec_name = 'subject'
 
     subject = fields.Char(string='Sujet')
+    email_from = fields.Char(string='De', index=True)
+    partner_id = fields.Many2one('res.partner', string='Contact')
+    body_html = fields.Html(string='Message', sanitize=True)
+    mailbox_id = fields.Many2one(
+        'oski.mailbox', string='Boîte', index=True, ondelete='set null')
+    date_received = fields.Datetime(
+        string='Reçu le', default=fields.Datetime.now, index=True)
+    state = fields.Selection([
+        ('new', 'Nouveau'),
+        ('answered', 'Répondu'),
+        ('done', 'Clos'),
+    ], string='État', default='new', index=True, tracking=True)
+
+    @api.model
+    def message_new(self, msg_dict, custom_values=None):
+        mailbox = self.env['oski.mailbox']
+        server_id = self.env.context.get('default_fetchmail_server_id')
+        if server_id:
+            mailbox = mailbox.sudo().search(
+                [('fetchmail_server_id', '=', server_id)], limit=1)
+        email_from = msg_dict.get('email_from') or ''
+        partner = self.env['res.partner']
+        normalized = email_normalize(email_from)
+        if normalized:
+            found = self._mail_find_partner_from_emails([normalized])
+            if found and found[0]:
+                partner = found[0]
+        values = {
+            'subject': msg_dict.get('subject') or _('(sans sujet)'),
+            'email_from': email_from,
+            'partner_id': partner.id if partner else False,
+            'body_html': msg_dict.get('body') or '',
+            'mailbox_id': mailbox.id,
+            'date_received': msg_dict.get('date') or fields.Datetime.now(),
+            'state': 'new',
+        }
+        if custom_values:
+            values.update(custom_values)
+        return super().message_new(msg_dict, custom_values=values)
+
+    def message_update(self, msg_dict, update_vals=None):
+        vals = dict(update_vals or {})
+        vals.update({
+            'state': 'new',
+            'date_received': msg_dict.get('date') or fields.Datetime.now(),
+        })
+        return super().message_update(msg_dict, update_vals=vals)
+
+    def action_mark_done(self):
+        self.write({'state': 'done'})
+
+    def action_mark_new(self):
+        self.write({'state': 'new'})
