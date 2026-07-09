@@ -1,6 +1,6 @@
 {
     'name': "Affiliations",
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Marketing',
     'summary': "Suivi personnel des programmes d'affiliation et des commissions",
     'description': """

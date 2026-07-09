@@ -28,7 +28,7 @@ class AffiliateCommission(models.Model):
         [('pending', 'En attente'), ('confirmed', 'Confirmée'), ('paid', 'Payée')],
         string='Statut', default='pending', required=True)
     reference = fields.Char(string='Référence')
-    site = fields.Selection(related='program_id.site', store=True, string='Site')
+    site = fields.Char(related='program_id.site', store=True, string='Site')
     note = fields.Char(string='Note')
 
     @api.depends('date')

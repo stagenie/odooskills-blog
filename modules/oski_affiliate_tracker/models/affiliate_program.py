@@ -12,9 +12,10 @@ class AffiliateProgram(models.Model):
     status = fields.Selection(
         [('active', 'Actif'), ('paused', 'En pause'), ('closed', 'Fermé')],
         string='Statut', default='active', required=True, tracking=True)
-    site = fields.Selection(
-        [('odooskills', 'Blog OdooSkills'), ('aiskillspro', 'AISkillsPro'), ('both', 'Les deux')],
-        string='Site', default='both', required=True)
+    site = fields.Char(
+        string='Site(s)', default='OdooSkills',
+        help="Site(s) où ce programme est utilisé — texte libre "
+             "(ex. « OdooSkills », « AISkillsPro », « OdooSkills, monsite.com »).")
     tag_ids = fields.Many2many('oski.affiliate.tag', string='Catégories')
 
     currency_id = fields.Many2one(
@@ -27,7 +28,10 @@ class AffiliateProgram(models.Model):
     # Compte & liens
     signup_url = fields.Char(string="URL d'inscription")
     dashboard_url = fields.Char(string='URL tableau de bord')
-    referral_link = fields.Char(string='Mon lien affilié')
+    referral_link = fields.Char(string='Lien affilié principal')
+    link_ids = fields.One2many(
+        'oski.affiliate.link', 'program_id', string="Liens d'affiliation")
+    link_count = fields.Integer(string='Nb liens', compute='_compute_link_count')
     login_username = fields.Char(string='Login / email')
     credentials_ref = fields.Char(
         string='Emplacement du mot de passe',
@@ -75,6 +79,11 @@ class AffiliateProgram(models.Model):
                 comms.filtered(lambda c: c.status == 'paid').mapped('amount_company'))
             dates = comms.mapped('date')
             prog.last_commission_date = max(dates) if dates else False
+
+    @api.depends('link_ids')
+    def _compute_link_count(self):
+        for prog in self:
+            prog.link_count = len(prog.link_ids)
 
     def action_view_commissions(self):
         self.ensure_one()

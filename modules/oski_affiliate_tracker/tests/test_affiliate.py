@@ -65,6 +65,21 @@ class TestAffiliate(TransactionCase):
         self.program.invalidate_recordset()
         self.assertEqual(self.program.last_commission_date, date(2026, 8, 15))
 
+    def test_multiple_links_per_program(self):
+        self.program.write({'link_ids': [
+            (0, 0, {'name': 'Article blog', 'url': 'https://ex.com/a?ref=me'}),
+            (0, 0, {'name': 'Bannière sidebar', 'url': 'https://ex.com/b?ref=me'}),
+            (0, 0, {'name': 'Newsletter', 'url': 'https://ex.com/n?ref=me'}),
+        ]})
+        self.program.invalidate_recordset()
+        self.assertEqual(self.program.link_count, 3)
+        self.assertEqual(len(self.program.link_ids), 3)
+
+    def test_site_is_free_text(self):
+        p = self.env['oski.affiliate.program'].create({
+            'name': 'FreeText', 'site': 'OdooSkills, AISkillsPro, monsite.com'})
+        self.assertEqual(p.site, 'OdooSkills, AISkillsPro, monsite.com')
+
     def test_action_view_commissions_domain(self):
         act = self.program.action_view_commissions()
         self.assertEqual(act['res_model'], 'oski.affiliate.commission')
