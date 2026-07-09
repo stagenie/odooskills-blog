@@ -1,6 +1,6 @@
 {
     'name': "Affiliations",
-    'version': '19.0.1.1.0',
+    'version': '19.0.1.1.1',
     'category': 'Marketing',
     'summary': "Suivi personnel des programmes d'affiliation et des commissions",
     'description': """
@@ -21,6 +21,7 @@ période et par site (pivot / graphe). Réutilisable sur toute instance Odoo.
         'views/affiliate_commission_views.xml',
         'views/affiliate_menus.xml',
     ],
+    'post_init_hook': 'post_init',
     'application': True,
     'installable': True,
 }
