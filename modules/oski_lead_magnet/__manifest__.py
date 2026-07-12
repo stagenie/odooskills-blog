@@ -9,6 +9,8 @@
     'depends': ['website_blog', 'website_sale', 'loyalty', 'mass_mailing'],
     'data': [
         'security/ir.model.access.csv',
+        'data/config_params.xml',
+        'data/loyalty_program.xml',
     ],
     'installable': True,
     'application': False,
