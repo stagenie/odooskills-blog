@@ -19,9 +19,21 @@ class BlogPost(models.Model):
         'oski.pdf.series', string="Série (PDF combiné)",
         help="Si renseigné, le PDF de la série prime sur celui de l'article.")
 
+    def _oski_pdf_attachment(self):
+        self.ensure_one()
+        return self.oski_pdf_series_id.attachment_id or self.oski_pdf_attachment_id
+
     def _oski_pdf_download_url(self):
         self.ensure_one()
-        att = self.oski_pdf_series_id.attachment_id or self.oski_pdf_attachment_id
+        att = self._oski_pdf_attachment()
         if not att:
             return False
         return '/web/content/%s?download=true' % att.id
+
+    def _oski_pdf_gated_url(self):
+        self.ensure_one()
+        att = self._oski_pdf_attachment()
+        if not att:
+            return False
+        token = att.access_token or att.sudo().generate_access_token()[0]
+        return '/web/content/%s?access_token=%s&download=true' % (att.id, token)
