@@ -1,6 +1,7 @@
 import re
+from datetime import timedelta
 
-from odoo import api, models
+from odoo import api, fields, models
 
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
@@ -31,7 +32,16 @@ class OskiLeadCapture(models.AbstractModel):
         return cat or Cat.create({'name': name})
 
     @api.model
-    def _oski_capture_lead(self, email, consent, source, blog_post=None):
+    def _oski_capture_lead(self, email, consent, source, blog_post=None, client_ip=None):
+        if client_ip:
+            Attempt = self.env['oski.lead.attempt'].sudo()
+            window = fields.Datetime.now() - timedelta(seconds=60)
+            limit = int(self.env['ir.config_parameter'].sudo().get_param(
+                'oski_lead_magnet.rate_limit_per_min', '10'))
+            if Attempt.search_count([('ip', '=', client_ip), ('create_date', '>=', window)]) >= limit:
+                return {'ok': False, 'error': 'rate_limited', 'pdf_url': None, 'new': False}
+            Attempt.create({'ip': client_ip})
+
         email = (email or '').strip().lower()
         if not _EMAIL_RE.match(email):
             return {'ok': False, 'error': 'invalid', 'pdf_url': None, 'new': False}

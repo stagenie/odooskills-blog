@@ -57,3 +57,19 @@ class TestCapture(TransactionCase):
         self.assertFalse(res['new'])
         self.assertEqual(self.env['oski.welcome.offer'].search_count(
             [('email', '=', 'never-consented@example.com')]), 0)
+
+    def test_rate_limited(self):
+        self.env['ir.config_parameter'].sudo().set_param(
+            'oski_lead_magnet.rate_limit_per_min', '3')
+        for i in range(3):
+            res = self.env['oski.lead.capture']._oski_capture_lead(
+                'rl-%s@example.com' % i, True, 'popup', None, client_ip='9.9.9.9')
+            self.assertTrue(res['ok'])
+        res = self.env['oski.lead.capture']._oski_capture_lead(
+            'rl-4@example.com', True, 'popup', None, client_ip='9.9.9.9')
+        self.assertFalse(res['ok'])
+        self.assertEqual(res['error'], 'rate_limited')
+
+    def test_no_client_ip_not_throttled(self):
+        res = self._capture('no-throttle@example.com')
+        self.assertTrue(res['ok'])
