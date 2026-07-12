@@ -67,6 +67,9 @@ class OskiWelcomeOffer(models.Model):
         except IntegrityError:
             # concurrent insert won the race → return the offer that landed first
             return self.sudo().search([('email', '=', email)], limit=1)
+        template = self.env.ref('oski_lead_magnet.mail_welcome_offer', raise_if_not_found=False)
+        if template:
+            template.sudo().send_mail(offer.id, force_send=False)
         return offer
 
     def activate(self):

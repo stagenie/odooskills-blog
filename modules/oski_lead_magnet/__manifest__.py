@@ -11,6 +11,7 @@
         'security/ir.model.access.csv',
         'data/config_params.xml',
         'data/loyalty_program.xml',
+        'data/mail_template_welcome.xml',
     ],
     'installable': True,
     'application': False,
