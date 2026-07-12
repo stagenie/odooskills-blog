@@ -36,8 +36,11 @@ class OskiLeadCapture(models.AbstractModel):
         if client_ip:
             Attempt = self.env['oski.lead.attempt'].sudo()
             window = fields.Datetime.now() - timedelta(seconds=60)
-            limit = int(self.env['ir.config_parameter'].sudo().get_param(
-                'oski_lead_magnet.rate_limit_per_min', '10'))
+            try:
+                limit = int(self.env['ir.config_parameter'].sudo().get_param(
+                    'oski_lead_magnet.rate_limit_per_min', '10'))
+            except (TypeError, ValueError):
+                limit = 10
             if Attempt.search_count([('ip', '=', client_ip), ('create_date', '>=', window)]) >= limit:
                 return {'ok': False, 'error': 'rate_limited', 'pdf_url': None, 'new': False}
             Attempt.create({'ip': client_ip})

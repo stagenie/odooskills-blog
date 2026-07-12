@@ -4,7 +4,7 @@ from odoo.http import request
 
 class OskiLeadController(http.Controller):
 
-    @http.route('/oski/lead/subscribe', type='json', auth='public',
+    @http.route('/oski/lead/subscribe', type='jsonrpc', auth='public',
                 methods=['POST'], website=True, csrf=False)
     def subscribe(self, email=None, consent=False, source='popup', blog_post_id=None):
         post = None
