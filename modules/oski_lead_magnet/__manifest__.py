@@ -15,10 +15,13 @@
         'data/ir_cron.xml',
         'views/blog_post_views.xml',
         'views/offer_landing.xml',
+        'views/popup_templates.xml',
     ],
     'assets': {
         'web.assets_frontend': [
             'oski_lead_magnet/static/src/js/offer_countdown.js',
+            'oski_lead_magnet/static/src/js/lead_popup.js',
+            'oski_lead_magnet/static/src/scss/lead_magnet.scss',
         ],
     },
     'installable': True,
