@@ -9,3 +9,4 @@ from . import test_capture_http
 from . import test_landing
 from . import test_popup_render
 from . import test_gate_render
+from . import test_checkout_guard
