@@ -9,6 +9,8 @@ class TestConfig(TransactionCase):
         reward = prog.reward_ids[:1]
         self.assertEqual(reward.discount, 50.0)
         self.assertEqual(reward.discount_mode, 'percent')
+        self.assertEqual(reward.discount_applicability, 'specific')
+        self.assertTrue(reward.discount_product_domain and reward.discount_product_domain != '[]')
 
     def test_params(self):
         ICP = self.env['ir.config_parameter'].sudo()

@@ -6,7 +6,7 @@
     'author': 'ADICOPS',
     'website': 'https://odooskills.com',
     'license': 'LGPL-3',
-    'depends': ['website_blog', 'website_sale', 'loyalty', 'mass_mailing'],
+    'depends': ['website_blog', 'website_sale', 'loyalty', 'mass_mailing', 'oski_ebook_lifecycle'],
     'data': [
         'security/ir.model.access.csv',
         'data/config_params.xml',
