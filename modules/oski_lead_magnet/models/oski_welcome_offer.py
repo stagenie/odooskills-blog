@@ -1,7 +1,10 @@
 import secrets
 from datetime import timedelta
 
+from psycopg2 import IntegrityError
+
 from odoo import api, fields, models
+from odoo.tools import mute_logger
 
 
 class OskiWelcomeOffer(models.Model):
@@ -34,6 +37,9 @@ class OskiWelcomeOffer(models.Model):
 
     def _create_coupon(self, partner):
         program = self.env.ref('oski_lead_magnet.welcome_program')
+        # sudo justified: this model is gated to base.group_system, and the
+        # real caller here is the public capture controller (anonymous popup
+        # submission), which has no rights to create a loyalty.card itself.
         return self.env['loyalty.card'].sudo().create({
             'program_id': program.id,
             'partner_id': partner.id if partner else False,
@@ -47,15 +53,21 @@ class OskiWelcomeOffer(models.Model):
         existing = self.sudo().search([('email', '=', email)], limit=1)
         if existing:
             return existing
-        coupon = self._create_coupon(partner)
-        return self.sudo().create({
-            'email': email,
-            'partner_id': partner.id if partner else False,
-            'coupon_id': coupon.id,
-            'token': secrets.token_urlsafe(24),
-            'source': source,
-            'state': 'dormant',
-        })
+        try:
+            with mute_logger('odoo.sql_db'), self.env.cr.savepoint():
+                coupon = self._create_coupon(partner)
+                offer = self.sudo().create({
+                    'email': email,
+                    'partner_id': partner.id if partner else False,
+                    'coupon_id': coupon.id,
+                    'token': secrets.token_urlsafe(24),
+                    'source': source,
+                    'state': 'dormant',
+                })
+        except IntegrityError:
+            # concurrent insert won the race → return the offer that landed first
+            return self.sudo().search([('email', '=', email)], limit=1)
+        return offer
 
     def activate(self):
         self.ensure_one()

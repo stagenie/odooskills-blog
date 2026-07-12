@@ -1,4 +1,6 @@
 from datetime import timedelta
+from unittest.mock import patch
+
 from odoo import fields
 from odoo.tests import TransactionCase, tagged
 
@@ -43,3 +45,30 @@ class TestOffer(TransactionCase):
         first_deadline = offer.deadline
         offer.activate()
         self.assertEqual(offer.deadline, first_deadline)
+
+    def test_create_recovers_from_race(self):
+        """A concurrent request already inserted the row, but our existence
+        check missed it (race window) — create_for_email must recover via
+        the savepoint/IntegrityError guard and return the existing offer,
+        not raise and not create a duplicate row."""
+        Offer = self.env['oski.welcome.offer']
+        p = self._make_partner('race@example.com')
+        first = Offer.create_for_email('race@example.com', p, 'popup')
+
+        real_search = type(Offer).search
+        missed = {'done': False}
+
+        def flaky_search(self2, domain, *args, **kwargs):
+            # Only spoof the very first lookup-by-email (the existence
+            # check in create_for_email); leave every other search
+            # (including our own recovery search) untouched.
+            if not missed['done'] and domain == [('email', '=', 'race@example.com')]:
+                missed['done'] = True
+                return self2.browse()
+            return real_search(self2, domain, *args, **kwargs)
+
+        with patch.object(type(Offer), 'search', flaky_search):
+            second = Offer.create_for_email('race@example.com', p, 'popup')
+
+        self.assertEqual(second, first)
+        self.assertEqual(Offer.search_count([('email', '=', 'race@example.com')]), 1)
