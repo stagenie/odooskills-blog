@@ -13,6 +13,7 @@
         'data/loyalty_program.xml',
         'data/mail_template_welcome.xml',
         'data/ir_cron.xml',
+        'views/blog_post_views.xml',
     ],
     'installable': True,
     'application': False,
