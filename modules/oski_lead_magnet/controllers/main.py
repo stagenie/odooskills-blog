@@ -29,5 +29,14 @@ class OskiLeadController(http.Controller):
             [('token', '=', token)], limit=1)
         if not offer:
             return request.not_found()
+        return request.render('oski_lead_magnet.offer_page', {'offer': offer})
+
+    @http.route('/oski/offer/<string:token>/start', type='http', auth='public',
+                website=True, sitemap=False, methods=['POST'])
+    def offer_landing_start(self, token, **kw):
+        offer = request.env['oski.welcome.offer'].sudo().search(
+            [('token', '=', token)], limit=1)
+        if not offer:
+            return request.not_found()
         offer.activate()
         return request.render('oski_lead_magnet.offer_page', {'offer': offer})
