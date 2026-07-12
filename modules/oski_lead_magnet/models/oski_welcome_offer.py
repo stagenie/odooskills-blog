@@ -83,3 +83,13 @@ class OskiWelcomeOffer(models.Model):
             'deadline': now + timedelta(hours=self._offer_hours()),
         })
         return self
+
+    @api.model
+    def _cron_expire(self):
+        now = fields.Datetime.now()
+        stale = self.sudo().search([('state', '=', 'active'), ('deadline', '<', now)])
+        for offer in stale:
+            offer.state = 'expired'
+            if offer.coupon_id:
+                offer.coupon_id.expiration_date = fields.Date.context_today(offer) - timedelta(days=1)
+        return True

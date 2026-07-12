@@ -12,6 +12,7 @@
         'data/config_params.xml',
         'data/loyalty_program.xml',
         'data/mail_template_welcome.xml',
+        'data/ir_cron.xml',
     ],
     'installable': True,
     'application': False,
