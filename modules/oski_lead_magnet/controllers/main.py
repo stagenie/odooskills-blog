@@ -21,3 +21,13 @@ class OskiLeadController(http.Controller):
         return request.env['oski.lead.capture'].sudo()._oski_capture_lead(
             email, consent_bool, source, post,
             client_ip=request.httprequest.remote_addr)
+
+    @http.route('/oski/offer/<string:token>', type='http', auth='public',
+                website=True, sitemap=False)
+    def offer_landing(self, token, **kw):
+        offer = request.env['oski.welcome.offer'].sudo().search(
+            [('token', '=', token)], limit=1)
+        if not offer:
+            return request.not_found()
+        offer.activate()
+        return request.render('oski_lead_magnet.offer_page', {'offer': offer})

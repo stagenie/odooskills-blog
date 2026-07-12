@@ -14,7 +14,13 @@
         'data/mail_template_welcome.xml',
         'data/ir_cron.xml',
         'views/blog_post_views.xml',
+        'views/offer_landing.xml',
     ],
+    'assets': {
+        'web.assets_frontend': [
+            'oski_lead_magnet/static/src/js/offer_countdown.js',
+        ],
+    },
     'installable': True,
     'application': False,
 }
