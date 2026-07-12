@@ -16,6 +16,7 @@
         'views/blog_post_views.xml',
         'views/offer_landing.xml',
         'views/popup_templates.xml',
+        'views/pdf_gate_templates.xml',
     ],
     'assets': {
         'web.assets_frontend': [
