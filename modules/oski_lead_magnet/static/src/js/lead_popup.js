@@ -1,8 +1,17 @@
 /** Popup capture email — PC uniquement, déclencheur min(5min, scroll 60%). */
-document.addEventListener("DOMContentLoaded", function () {
-    initLeadPopup();
-    initPdfGate();
-});
+// Les bundles frontend Odoo s'exécutent souvent APRÈS DOMContentLoaded : un
+// simple addEventListener('DOMContentLoaded') ne se déclencherait jamais et le
+// popup resterait mort. On lance donc immédiatement si le DOM est déjà prêt.
+// ⚠️ L'appel onReady() est en BAS du fichier : s'il tourne ici (DOM déjà prêt),
+// il s'exécute de façon synchrone AVANT les const ci-dessous (hasCookie…) →
+// ReferenceError (TDZ). En fin de fichier, toutes les const sont initialisées.
+function onReady(fn) {
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", fn);
+    } else {
+        fn();
+    }
+}
 
 const SEEN = "osk_lead_seen";
 const hasCookie = (n) => document.cookie.split("; ").some((c) => c.startsWith(n + "="));
@@ -200,3 +209,11 @@ function initPdfGate() {
         }
     });
 }
+
+// Point d'entrée — en fin de fichier pour que toutes les const/fonctions
+// ci-dessus soient initialisées quand onReady s'exécute en mode synchrone
+// (DOM déjà prêt, cas fréquent des bundles frontend Odoo).
+onReady(function () {
+    initLeadPopup();
+    initPdfGate();
+});
