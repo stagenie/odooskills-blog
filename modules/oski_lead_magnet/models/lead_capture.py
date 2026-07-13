@@ -71,7 +71,7 @@ class OskiLeadCapture(models.AbstractModel):
         # consentement : partner/tag/PDF quand même, mais pas d'offre.
         Offer = self.env['oski.welcome.offer'].sudo()
         is_new = False
-        if consent:
+        if consent and Offer._offer_active():
             already = Offer.search_count([('email', '=', email)])
             has_bought = bool(self.env['sale.order'].sudo().search_count(
                 [('partner_id', '=', partner.id), ('state', '=', 'sale')]))

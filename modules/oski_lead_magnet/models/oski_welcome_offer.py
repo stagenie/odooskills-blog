@@ -36,6 +36,15 @@ class OskiWelcomeOffer(models.Model):
             return 72
 
     @api.model
+    def _offer_active(self):
+        """Kill-switch global de la remise de bienvenue. Désactivé => aucun
+        coupon/email créé et les surfaces (popup, badges) sont masquées. La
+        capture d'email (gate PDF) reste, elle, toujours active."""
+        val = self.env['ir.config_parameter'].sudo().get_param(
+            'oski_lead_magnet.offer_enabled', 'True')
+        return str(val).strip().lower() not in ('false', '0', '', 'none')
+
+    @api.model
     def _welcome_percent(self):
         val = self.env['ir.config_parameter'].sudo().get_param(
             'oski_lead_magnet.welcome_percent', '30')

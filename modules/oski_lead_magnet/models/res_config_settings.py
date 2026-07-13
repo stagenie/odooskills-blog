@@ -4,6 +4,9 @@ from odoo import fields, models
 class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
 
+    oski_offer_enabled = fields.Boolean(
+        string="Activer la remise nouveaux inscrits",
+        config_parameter='oski_lead_magnet.offer_enabled', default=True)
     oski_welcome_percent = fields.Integer(
         string="Remise nouveaux inscrits (%)",
         config_parameter='oski_lead_magnet.welcome_percent', default=30)
