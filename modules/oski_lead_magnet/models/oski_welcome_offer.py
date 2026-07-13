@@ -9,7 +9,7 @@ from odoo.tools import mute_logger
 
 class OskiWelcomeOffer(models.Model):
     _name = 'oski.welcome.offer'
-    _description = "Offre de bienvenue -50% (coupon personnel)"
+    _description = "Offre de bienvenue (coupon personnel)"
     _order = 'create_date desc'
 
     email = fields.Char(required=True, index=True)

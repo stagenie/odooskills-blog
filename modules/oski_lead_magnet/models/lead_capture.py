@@ -66,7 +66,7 @@ class OskiLeadCapture(models.AbstractModel):
             if lst not in contact.list_ids:
                 contact.list_ids = [(4, lst.id)]
 
-        # RGPD : la relance -50% est du marketing (mail welcome offer) ; on ne
+        # RGPD : la relance promo est du marketing (mail welcome offer) ; on ne
         # la déclenche que si l'internaute a coché le consentement. Sans
         # consentement : partner/tag/PDF quand même, mais pas d'offre.
         Offer = self.env['oski.welcome.offer'].sudo()

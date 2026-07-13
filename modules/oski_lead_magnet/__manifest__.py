@@ -1,8 +1,8 @@
 {
     'name': 'OdooSkills - Capture Email & Offre Bienvenue',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Website/Marketing',
-    'summary': "Popup + gate PDF de capture email et coupon personnel -50% (chrono 72h)",
+    'summary': "Popup + gate PDF de capture email et coupon personnel de bienvenue (taux et durée configurables)",
     'author': 'ADICOPS',
     'website': 'https://odooskills.com',
     'license': 'LGPL-3',
