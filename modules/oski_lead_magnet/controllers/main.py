@@ -22,6 +22,12 @@ class OskiLeadController(http.Controller):
             email, consent_bool, source, post,
             client_ip=request.httprequest.remote_addr)
 
+    @http.route('/oski/offer/grid', type='jsonrpc', auth='public',
+                methods=['POST'], website=True, csrf=False)
+    def offer_grid(self):
+        Offer = request.env['oski.welcome.offer'].sudo()
+        return {'percent': Offer._welcome_percent(), 'rows': Offer._price_grid()}
+
     @http.route('/oski/offer/<string:token>', type='http', auth='public',
                 website=True, sitemap=False)
     def offer_landing(self, token, **kw):

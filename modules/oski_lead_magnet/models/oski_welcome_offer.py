@@ -35,6 +35,38 @@ class OskiWelcomeOffer(models.Model):
         except (TypeError, ValueError):
             return 72
 
+    @api.model
+    def _welcome_percent(self):
+        val = self.env['ir.config_parameter'].sudo().get_param(
+            'oski_lead_magnet.welcome_percent', '30')
+        try:
+            pct = int(val)
+        except (TypeError, ValueError):
+            return 30
+        return pct if 0 < pct <= 90 else 30
+
+    @api.model
+    def _price_grid(self):
+        pct = self._welcome_percent()
+        factor = (100 - pct) / 100.0
+        # sudo justified: called from a public jsonrpc route (anonymous
+        # visitor) restricted to published products only.
+        prods = self.env['product.template'].sudo().search(
+            [('ebook_ids', '!=', False), ('is_published', '=', True)])
+        rows = []
+        for p in prods:
+            reg = p.oski_price_regular
+            if not reg:
+                continue
+            rows.append({
+                'name': p.name,
+                'is_pack': p.oski_is_pack,
+                'regular': reg,
+                'discounted': round(reg * factor, 2),
+            })
+        rows.sort(key=lambda r: (r['is_pack'], r['regular']))
+        return rows
+
     def _create_coupon(self, partner):
         program = self.env.ref('oski_lead_magnet.welcome_program')
         # sudo justified: this model is gated to base.group_system, and the

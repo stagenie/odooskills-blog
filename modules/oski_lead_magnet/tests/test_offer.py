@@ -72,3 +72,25 @@ class TestOffer(TransactionCase):
 
         self.assertEqual(second, first)
         self.assertEqual(Offer.search_count([('email', '=', 'race@example.com')]), 1)
+
+    def test_welcome_percent_reads_param(self):
+        Offer = self.env['oski.welcome.offer']
+        self.env['ir.config_parameter'].sudo().set_param('oski_lead_magnet.welcome_percent', '30')
+        self.assertEqual(Offer._welcome_percent(), 30)
+        self.env['ir.config_parameter'].sudo().set_param('oski_lead_magnet.welcome_percent', 'x')
+        self.assertEqual(Offer._welcome_percent(), 30)  # fallback
+
+    def test_price_grid_discount_30(self):
+        tmpl = self.env['product.template'].create({
+            'name': 'E-test', 'default_code': 'EBOOK-TEST', 'list_price': 0,
+            'is_published': True,
+        })
+        ebook = self.env['oski.ebook'].create({'code': 'ETEST', 'name': 'E-test',
+                                                'partner_category_id': self.env['res.partner.category'].create({'name': 'Client E-test'}).id})
+        tmpl.write({'ebook_ids': [(6, 0, ebook.ids)], 'oski_price_regular': 27.0,
+                    'oski_price_launch': 27.0})
+        self.env['ir.config_parameter'].sudo().set_param('oski_lead_magnet.welcome_percent', '30')
+        rows = self.env['oski.welcome.offer']._price_grid()
+        row = next(r for r in rows if r['regular'] == 27.0)
+        self.assertEqual(row['discounted'], 18.9)
+        self.assertFalse(row['is_pack'])
