@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills - Ebook Lifecycle',
-    'version': '19.0.2.0.0',
+    'version': '19.0.2.1.0',
     'category': 'Marketing',
     'summary': "Étiquetage client à l'achat d'ebooks/packs + sortie du nurture extrait",
     'author': 'ADICOPS',
@@ -13,6 +13,7 @@
         'data/oski_ebook_data.xml',
         'data/pricing_config_params.xml',
         'data/mail_template_ebook_delivery.xml',
+        'data/ir_cron.xml',
         'views/oski_ebook_views.xml',
         'views/product_template_views.xml',
     ],
