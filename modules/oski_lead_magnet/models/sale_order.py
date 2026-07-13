@@ -28,11 +28,13 @@ class SaleOrder(models.Model):
         for order in self:
             bad = order._oski_expired_welcome_cards()
             if bad:
-                hours = self.env['oski.welcome.offer']._offer_hours()
+                offer_model = self.env['oski.welcome.offer']
+                hours = offer_model._offer_hours()
+                pct = offer_model._welcome_percent()
                 raise UserError(_(
-                    "%(order)s : la remise de bienvenue -50%% a expiré (délai de %(hours)s h "
-                    "dépassé). Retirez le code pour poursuivre au tarif normal.",
-                    order=order.name, hours=hours))
+                    "%(order)s : la remise de bienvenue -%(pct)s%% a expiré (délai de "
+                    "%(hours)s h dépassé). Retirez le code pour poursuivre au tarif normal.",
+                    order=order.name, pct=pct, hours=hours))
         result = super()._action_confirm()
         now = fields.Datetime.now()
         for order in self:

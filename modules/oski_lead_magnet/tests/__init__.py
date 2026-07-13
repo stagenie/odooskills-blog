@@ -11,3 +11,4 @@ from . import test_popup_render
 from . import test_gate_render
 from . import test_checkout_guard
 from . import test_grid_route
+from . import test_wording
