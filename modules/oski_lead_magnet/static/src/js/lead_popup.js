@@ -2,6 +2,18 @@
 document.addEventListener("DOMContentLoaded", function () {
     initLeadPopup();
     initPdfGate();
+    document.addEventListener("click", function (e) {
+        const trigger = e.target.closest(".osk-open-popup");
+        if (!trigger) {
+            return;
+        }
+        e.preventDefault();
+        const popup = document.querySelector(".osk-lead-popup");
+        if (popup && !hasCookie(SEEN)) {
+            popup.style.display = "block";
+            popup.dispatchEvent(new CustomEvent("osk:forceGrid"));
+        }
+    });
 });
 
 const SEEN = "osk_lead_seen";
@@ -17,6 +29,10 @@ function initLeadPopup() {
     if (!popup) {
         return;
     }
+    // Ne pas interrompre un acheteur en cours de paiement.
+    if (/^\/shop\/(cart|checkout|payment|confirmation)/.test(location.pathname)) {
+        return;
+    }
     const isMobile = window.matchMedia("(max-width: 767px)").matches ||
         /Mobi|Android/i.test(navigator.userAgent);
     if (isMobile || hasCookie(SEEN)) {
@@ -24,14 +40,47 @@ function initLeadPopup() {
     }
 
     let shown = false;
+    let gridLoaded = false;
+    function loadGrid() {
+        if (gridLoaded) {
+            return;
+        }
+        gridLoaded = true;
+        fetch("/oski/offer/grid", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: {} }),
+        }).then((r) => r.json()).then((data) => {
+            const rows = (data.result && data.result.rows) || [];
+            const grid = popup.querySelector(".osk-lead-grid");
+            if (!grid || !rows.length) {
+                return;
+            }
+            grid.innerHTML = rows.map((row) =>
+                `<div class="osk-lead-grid-row"><span>${row.name}</span>` +
+                `<span><s>${row.regular.toFixed(2)}€</s> ` +
+                `<strong>${row.discounted.toFixed(2)}€</strong></span></div>`
+            ).join("");
+        }).catch(() => {});
+    }
+    popup.addEventListener("osk:forceGrid", loadGrid);
     function show() {
         if (shown) {
             return;
         }
         shown = true;
+        loadGrid();
         popup.style.display = "block";
         window.removeEventListener("scroll", onScroll);
+        document.removeEventListener("mouseout", onExit);
     }
+    // exit-intent (souris vers le haut de la fenêtre)
+    function onExit(e) {
+        if (e.clientY <= 0) {
+            show();
+        }
+    }
+    document.addEventListener("mouseout", onExit);
     // 5 min
     const timer = setTimeout(show, 5 * 60 * 1000);
     // scroll 60%
@@ -74,9 +123,10 @@ function initLeadPopup() {
             const data = await resp.json();
             const r = data.result || {};
             msg.style.display = "block";
+            const pct = popup.dataset.percent || "30";
             if (r.ok) {
                 msg.textContent = r.new
-                    ? "Merci ! Vérifiez votre boîte : votre remise -50% vous attend."
+                    ? `Merci ! Vérifiez votre boîte : votre remise -${pct}% vous attend.`
                     : "Merci, vous êtes inscrit !";
                 setCookie(SEEN, 30);
                 setTimeout(dismiss, 2500);
