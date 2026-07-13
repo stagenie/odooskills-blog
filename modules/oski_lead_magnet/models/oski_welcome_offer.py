@@ -101,7 +101,11 @@ class OskiWelcomeOffer(models.Model):
             return self.sudo().search([('email', '=', email)], limit=1)
         template = self.env.ref('oski_lead_magnet.mail_welcome_offer', raise_if_not_found=False)
         if template:
-            template.sudo().send_mail(offer.id, force_send=False)
+            # force_send=True : l'email de bienvenue est transactionnel, il doit
+            # partir immédiatement à l'inscription. On ne dépend PAS du cron
+            # « Mail: Email Queue Manager » (peu fiable) qui laissait le mail en
+            # file 'outgoing' sans jamais le flusher.
+            template.sudo().send_mail(offer.id, force_send=True)
         return offer
 
     def activate(self):
