@@ -2,18 +2,6 @@
 document.addEventListener("DOMContentLoaded", function () {
     initLeadPopup();
     initPdfGate();
-    document.addEventListener("click", function (e) {
-        const trigger = e.target.closest(".osk-open-popup");
-        if (!trigger) {
-            return;
-        }
-        e.preventDefault();
-        const popup = document.querySelector(".osk-lead-popup");
-        if (popup && !hasCookie(SEEN)) {
-            popup.style.display = "block";
-            popup.dispatchEvent(new CustomEvent("osk:forceGrid"));
-        }
-    });
 });
 
 const SEEN = "osk_lead_seen";
@@ -35,12 +23,10 @@ function initLeadPopup() {
     }
     const isMobile = window.matchMedia("(max-width: 767px)").matches ||
         /Mobi|Android/i.test(navigator.userAgent);
-    if (isMobile || hasCookie(SEEN)) {
-        return;
-    }
 
     let shown = false;
     let gridLoaded = false;
+    let timer = null;
     function loadGrid() {
         if (gridLoaded) {
             return;
@@ -63,16 +49,19 @@ function initLeadPopup() {
             ).join("");
         }).catch(() => {});
     }
-    popup.addEventListener("osk:forceGrid", loadGrid);
+    // show() est le SEUL chemin d'affichage : il démantèle systématiquement
+    // tous les déclencheurs auto (timer + scroll + exit-intent) au 1er appel,
+    // qu'il soit invoqué par un trigger auto OU par le CTA inline.
     function show() {
         if (shown) {
             return;
         }
         shown = true;
-        loadGrid();
-        popup.style.display = "block";
+        clearTimeout(timer);
         window.removeEventListener("scroll", onScroll);
         document.removeEventListener("mouseout", onExit);
+        loadGrid();
+        popup.style.display = "block";
     }
     // exit-intent (souris vers le haut de la fenêtre)
     function onExit(e) {
@@ -80,20 +69,14 @@ function initLeadPopup() {
             show();
         }
     }
-    document.addEventListener("mouseout", onExit);
-    // 5 min
-    const timer = setTimeout(show, 5 * 60 * 1000);
     // scroll 60%
     function onScroll() {
         const h = document.documentElement;
         const pct = (h.scrollTop + window.innerHeight) / h.scrollHeight;
         if (pct >= 0.6) {
-            clearTimeout(timer);
-            window.removeEventListener("scroll", onScroll);
             show();
         }
     }
-    window.addEventListener("scroll", onScroll, { passive: true });
 
     function dismiss() {
         popup.style.display = "none";
@@ -105,6 +88,26 @@ function initLeadPopup() {
             dismiss();
         }
     });
+    // Chargement grille sur demande explicite (event harmless : show() charge déjà).
+    popup.addEventListener("osk:forceGrid", loadGrid);
+    // CTA inline (Task 6) : ouverture explicite → passe par show() (PC uniquement).
+    document.addEventListener("click", function (e) {
+        const trigger = e.target.closest(".osk-open-popup");
+        if (!trigger) {
+            return;
+        }
+        e.preventDefault();
+        if (!isMobile) {
+            show();
+        }
+    });
+
+    // Déclencheurs AUTO : uniquement PC + visiteur pas encore vu.
+    if (!isMobile && !hasCookie(SEEN)) {
+        timer = setTimeout(show, 5 * 60 * 1000);
+        window.addEventListener("scroll", onScroll, { passive: true });
+        document.addEventListener("mouseout", onExit);
+    }
 
     popup.querySelector(".osk-lead-form").addEventListener("submit", async function (e) {
         e.preventDefault();
