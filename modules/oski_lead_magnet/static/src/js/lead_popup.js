@@ -98,6 +98,7 @@ function initLeadPopup() {
         }
         e.preventDefault();
         if (!isMobile) {
+            shown = false;
             show();
         }
     });

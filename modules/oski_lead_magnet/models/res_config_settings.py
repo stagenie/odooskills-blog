@@ -13,7 +13,10 @@ class ResConfigSettings(models.TransientModel):
 
     def set_values(self):
         super().set_values()
-        pct = int(self.oski_welcome_percent or 30)
+        Offer = self.env['oski.welcome.offer']
+        pct = Offer._welcome_percent()  # reads the param just written, returns the clamped value
+        # persist the clamped value so display surfaces and the real coupon can never diverge
+        self.env['ir.config_parameter'].sudo().set_param('oski_lead_magnet.welcome_percent', str(pct))
         reward = self.env.ref('oski_lead_magnet.welcome_reward', raise_if_not_found=False)
         if reward and reward.discount != pct:
             reward.discount = pct

@@ -30,3 +30,13 @@ class TestConfig(TransactionCase):
         self.assertEqual(
             int(self.env['ir.config_parameter'].sudo().get_param('oski_lead_magnet.welcome_percent')),
             40)
+
+    def test_settings_out_of_range_percent_clamped(self):
+        settings = self.env['res.config.settings'].create({'oski_welcome_percent': 95})
+        settings.set_values()
+        # display helper and real reward must agree, both clamped to 30
+        self.assertEqual(self.env['oski.welcome.offer']._welcome_percent(), 30)
+        self.assertEqual(self.env.ref('oski_lead_magnet.welcome_reward').discount, 30.0)
+        self.assertEqual(
+            int(self.env['ir.config_parameter'].sudo().get_param('oski_lead_magnet.welcome_percent')),
+            30)
