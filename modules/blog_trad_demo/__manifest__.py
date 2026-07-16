@@ -9,6 +9,7 @@
     'data': [
         'security/ir.model.access.csv',
         'views/trad_demo_views.xml',
+        'report/trad_demo_report.xml',
     ],
     'installable': True,
     'application': False,
