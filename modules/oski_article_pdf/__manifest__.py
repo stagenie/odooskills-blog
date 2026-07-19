@@ -11,6 +11,8 @@
         'security/ir.model.access.csv',
         'views/pdf_templates.xml',
         'views/pdf_gate_cta_series.xml',
+        'views/blog_post_views.xml',
+        'views/pdf_series_views.xml',
         'data/ir_cron.xml',
         'data/mail_template_pdf.xml',
     ],

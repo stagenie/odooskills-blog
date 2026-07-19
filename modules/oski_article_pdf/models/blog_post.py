@@ -104,6 +104,28 @@ class BlogPost(models.Model):
             posts._oski_trigger_generation()
         return posts
 
+    def action_oski_generate_pdf(self):
+        """Action groupée : vague de rattrapage, les plus lus d'abord.
+
+        Même piège que `_cron_generate_pending` (Tâche 7) : si plusieurs
+        articles sélectionnés appartiennent à la même série, il ne faut
+        déclencher le rendu combiné qu'UNE SEULE fois pour cette série,
+        pas une fois par membre sélectionné.
+        """
+        targets = self.filtered('is_published').sorted(
+            key=lambda p: p.visits or 0, reverse=True)
+        done_series_ids = set()
+        for post in targets:
+            series = post.oski_pdf_series_id
+            if series:
+                if series.id in done_series_ids:
+                    continue
+                done_series_ids.add(series.id)
+                series._oski_generate_pdf()
+            else:
+                post._oski_generate_pdf()
+        return True
+
     @api.model
     def _cron_generate_pending(self):
         """Génère les guides manquants ou périmés, les plus lus d'abord.
