@@ -45,14 +45,21 @@ class TestDelivery(TransactionCase):
         return self.env['mail.mail'].sudo().search([('email_to', 'like', email)])
 
     def test_capture_sends_delivery_mail(self):
+        # I3 : l'envoi est déféré via cr.postcommit pour ne jamais bloquer la
+        # réponse HTTP sur un SMTP lent ; en TransactionCase, TestCursor.commit()
+        # VIDE la file post-commit au lieu de l'exécuter (voir
+        # odoo/tests/test_cursor.py::TestCursor.commit), il faut donc
+        # déclencher manuellement postcommit.run() pour simuler le commit réel.
         self.env['oski.lead.capture'].sudo()._oski_capture_lead(
             'nouveau@example.com', True, 'pdf', self.post)
+        self.env.cr.postcommit.run()
         self.assertTrue(self._mails_to('nouveau@example.com'),
                         "un email de livraison doit partir")
 
     def test_delivery_mail_contains_tokenized_link(self):
         self.env['oski.lead.capture'].sudo()._oski_capture_lead(
             'jeton@example.com', True, 'pdf', self.post)
+        self.env.cr.postcommit.run()
         body = self._mails_to('jeton@example.com')[0].body_html or ''
         self.assertIn('access_token=', body)
 
@@ -66,7 +73,11 @@ class TestDelivery(TransactionCase):
         'outgoing' même avec force_send=True. On reproduit ici le mock
         officiel d'Odoo (mock_smtplib_connection) : on désactive ce
         garde-fou et on intercepte smtplib au plus bas niveau, pour
-        vérifier le comportement réel de bout en bout sans réseau."""
+        vérifier le comportement réel de bout en bout sans réseau.
+
+        I3 : l'envoi réel n'a lieu que dans le callback post-commit, donc
+        postcommit.run() doit être appelé PENDANT que les mocks smtplib sont
+        actifs (sinon l'appel réel à send_mail() n'a jamais lieu)."""
         IrMailServer = type(self.env['ir.mail_server'])
         fake_session = _FakeSMTPSession()
         with patch('smtplib.SMTP', side_effect=lambda *a, **kw: fake_session), \
@@ -74,6 +85,7 @@ class TestDelivery(TransactionCase):
              patch.object(IrMailServer, '_disable_send', lambda cls: False):
             self.env['oski.lead.capture'].sudo()._oski_capture_lead(
                 'envoye@example.com', True, 'pdf', self.post)
+            self.env.cr.postcommit.run()
         mail = self._mails_to('envoye@example.com')
         self.assertTrue(mail)
         self.assertEqual(mail[0].state, 'sent',
@@ -121,7 +133,33 @@ class TestDelivery(TransactionCase):
         with patch.object(MailTemplate, 'send_mail', _flaky_send_mail):
             res = self.env['oski.lead.capture'].sudo()._oski_capture_lead(
                 'echec-mail@example.com', True, 'pdf', self.post)
+            # I3 : l'envoi (et donc l'échec) n'a lieu que dans le callback
+            # post-commit ; il doit rester sans effet sur le pdf_url déjà
+            # renvoyé ci-dessus, et l'exception doit être avalée (loggée)
+            # sans jamais remonter hors de postcommit.run().
+            self.env.cr.postcommit.run()
         self.assertTrue(res['ok'])
         self.assertTrue(res['pdf_url'])
         self.assertIn('access_token=', res['pdf_url'])
         self.assertFalse(self._mails_to('echec-mail@example.com'))
+
+    def test_mail_send_deferred_to_postcommit_not_synchronous(self):
+        """I3 : un SMTP qui pend ne doit jamais retarder la réponse de
+        capture (et donc le téléchargement, qui n'attend que cette réponse).
+        Le moyen le plus direct de le prouver : l'envoi du guide PDF ne
+        doit PAS avoir eu lieu au retour de _oski_capture_lead — seulement
+        après que postcommit.run() ait été exécuté (ce que fait le vrai
+        commit() de la requête HTTP en production).
+
+        On ne consomme QUE le consentement désactivé pour ce test : avec
+        consent=True, l'offre de bienvenue (module amont, envoi
+        synchrone et hors périmètre de I3) appelle aussi
+        mail.template.send_mail(), ce qui pollue le mock si on ne le
+        neutralise pas."""
+        MailTemplate = self.env.registry['mail.template']
+        with patch.object(MailTemplate, 'send_mail') as mocked_send_mail:
+            self.env['oski.lead.capture'].sudo()._oski_capture_lead(
+                'differe@example.com', False, 'pdf', self.post)
+            mocked_send_mail.assert_not_called()
+            self.env.cr.postcommit.run()
+            mocked_send_mail.assert_called_once()
