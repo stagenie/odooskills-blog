@@ -126,8 +126,8 @@ class BlogPost(models.Model):
                 if series:
                     if series.id in done_series_ids:
                         continue
-                    series._oski_generate_pdf()
                     done_series_ids.add(series.id)
+                    series._oski_generate_pdf()
                 else:
                     post._oski_generate_pdf()
                 self.env.cr.commit()

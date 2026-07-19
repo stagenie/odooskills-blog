@@ -121,3 +121,38 @@ class TestPublishTrigger(TransactionCase):
             self.env['blog.post']._cron_generate_pending()
         self.assertTrue(ok.oski_pdf_attachment_id,
                         "un article en échec ne doit pas interrompre la vague")
+
+    def test_cron_series_failure_dedup_holds(self):
+        # Une série qui échoue doit être tentée une seule fois par vague, pas
+        # N fois (une par membre périmé restant). Le dédup de `done_series_ids`
+        # doit avoir lieu AVANT la tentative de rendu (ou dans un finally),
+        # sinon une exception dans _oski_generate_pdf() empêche la marque
+        # d'être enregistrée, et les membres suivants de la même série
+        # réessayent la génération combinée au sein du même pass de cron.
+        placeholder = self.env['ir.attachment'].create({
+            'name': 'p.pdf', 'datas': base64.b64encode(b'%PDF-fail'),
+            'mimetype': 'application/pdf'})
+        series = self.env['oski.pdf.series'].create({
+            'name': 'Série échouée', 'attachment_id': placeholder.id})
+        posts = self.env['blog.post']
+        for i in range(3):
+            posts |= self.env['blog.post'].create({
+                'name': 'Article série %s' % i, 'blog_id': self.blog.id,
+                'content': '<p>%s</p>' % i, 'is_published': True,
+                'oski_pdf_series_id': series.id, 'oski_series_seq': i * 10})
+        for post in posts:
+            self.assertTrue(post.oski_pdf_stale)
+        # Patch la génération de la série pour lever une exception.
+        # Neutralise aussi commit/rollback comme au test précédent.
+        with patch.object(self.cr, 'commit', lambda: None), \
+             patch.object(self.cr, 'rollback', lambda: None), \
+             patch(
+                 'odoo.addons.oski_article_pdf.models.pdf_series.'
+                 'OskiPdfSeries._oski_generate_pdf',
+                 side_effect=RuntimeError("template cassé")) as gen:
+            self.env['blog.post']._cron_generate_pending()
+        self.assertEqual(gen.call_count, 1,
+                          "même avec une exception, la série ne doit être "
+                          "générée qu'une seule fois par vague, pas une fois "
+                          "par membre périmé (cela brûlerait de la CPU à tous "
+                          "les passes de cron)")
