@@ -58,22 +58,30 @@ class BlogPost(models.Model):
         })
         pdf_bytes = self.env['oski.pdf.renderer']._render_pdf(str(html))
 
-        old = self.oski_pdf_attachment_id
-        attachment = self.env['ir.attachment'].sudo().create({
+        # Régénération EN PLACE : un lecteur a pu recevoir par email un lien
+        # tokenisé pointant sur cette pièce jointe précise
+        # (/web/content/<id>?access_token=<token>). La remplacer par une
+        # nouvelle pièce jointe (id différent) casserait tous les liens déjà
+        # livrés. On réécrit donc le contenu sur l'attachement existant ; on
+        # ne crée un nouvel enregistrement que s'il n'y en avait aucun.
+        attachment = self.oski_pdf_attachment_id
+        vals = {
             'name': self._oski_pdf_filename(),
             'datas': base64.b64encode(pdf_bytes),
             'mimetype': 'application/pdf',
             'res_model': 'blog.post',
             'res_id': self.id,
             'public': False,
-        })
+        }
+        if attachment:
+            attachment.sudo().write(vals)
+        else:
+            attachment = self.env['ir.attachment'].sudo().create(vals)
         self.write({
             'oski_pdf_attachment_id': attachment.id,
             'oski_pdf_generated_on': fields.Datetime.now(),
             'oski_pdf_source_hash': self._oski_source_hash(),
         })
-        if old:
-            old.sudo().unlink()
         _logger.info("Guide PDF généré pour l'article %s (%s o)", self.id, len(pdf_bytes))
         return attachment
 

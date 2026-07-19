@@ -31,11 +31,29 @@ class TestGeneratePost(TransactionCase):
         self.assertFalse(self.post.oski_pdf_stale)
         self.assertTrue(self.post.oski_pdf_generated_on)
 
-    def test_regeneration_replaces_previous_attachment(self):
+    def test_regeneration_keeps_attachment_id_and_token_stable(self):
+        """Un lecteur a déjà reçu par email un lien tokenisé pointant sur
+        cette pièce jointe (`/web/content/<id>?access_token=<token>`).
+        Corriger une coquille dans l'article régénère le guide : ce lien
+        déjà livré ne doit JAMAIS retourner 404 — l'id et le jeton doivent
+        rester stables, seul le contenu change."""
+        import base64
         first = self.post._oski_generate_pdf()
         first_id = first.id
+        first_datas = first.datas
+        first_token = first.sudo().generate_access_token()[0]
+
         self.post.content = '<p>réécrit</p>'
         second = self.post._oski_generate_pdf()
-        self.assertNotEqual(second.id, first_id)
-        self.assertFalse(self.env['ir.attachment'].browse(first_id).exists(),
-                         "l'ancienne pièce jointe doit être supprimée")
+
+        self.assertEqual(
+            second.id, first_id,
+            "l'id de la pièce jointe doit rester stable : un lien déjà "
+            "envoyé par email pointe dessus")
+        self.assertEqual(
+            second.access_token, first_token,
+            "le jeton d'accès déjà envoyé par email doit rester valide")
+        self.assertNotEqual(
+            second.datas, first_datas,
+            "le contenu doit refléter la nouvelle version de l'article")
+        self.assertTrue(base64.b64decode(second.datas).startswith(b'%PDF'))
