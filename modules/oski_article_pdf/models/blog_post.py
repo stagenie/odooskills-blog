@@ -1,6 +1,10 @@
+import base64
 import hashlib
+import logging
 
 from odoo import api, fields, models
+
+_logger = logging.getLogger(__name__)
 
 
 class BlogPost(models.Model):
@@ -31,3 +35,44 @@ class BlogPost(models.Model):
             else:
                 post.oski_pdf_stale = (
                     post.oski_pdf_source_hash != post._oski_source_hash())
+
+    def _oski_pdf_filename(self):
+        self.ensure_one()
+        slug = (self.name or 'guide').lower()
+        slug = ''.join(c if c.isalnum() else '-' for c in slug).strip('-')
+        while '--' in slug:
+            slug = slug.replace('--', '-')
+        return 'odooskills-%s.pdf' % slug[:60]
+
+    def _oski_generate_pdf(self):
+        """Rend le guide PDF de CET article et l'attache."""
+        self.ensure_one()
+        html = self.env['ir.qweb']._render('oski_article_pdf.guide_document', {
+            'posts': self,
+            'title': self.name or '',
+            'subtitle': self.subtitle or '',
+            'meta': '%s · %s · odooskills.com' % (
+                self.blog_id.name or '',
+                fields.Date.to_string(self.post_date) if self.post_date else ''),
+            'is_series': False,
+        })
+        pdf_bytes = self.env['oski.pdf.renderer']._render_pdf(str(html))
+
+        old = self.oski_pdf_attachment_id
+        attachment = self.env['ir.attachment'].sudo().create({
+            'name': self._oski_pdf_filename(),
+            'datas': base64.b64encode(pdf_bytes),
+            'mimetype': 'application/pdf',
+            'res_model': 'blog.post',
+            'res_id': self.id,
+            'public': False,
+        })
+        self.write({
+            'oski_pdf_attachment_id': attachment.id,
+            'oski_pdf_generated_on': fields.Datetime.now(),
+            'oski_pdf_source_hash': self._oski_source_hash(),
+        })
+        if old:
+            old.sudo().unlink()
+        _logger.info("Guide PDF généré pour l'article %s (%s o)", self.id, len(pdf_bytes))
+        return attachment
