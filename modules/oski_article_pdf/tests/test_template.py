@@ -22,10 +22,14 @@ class TestTemplate(TransactionCase):
         self.assertIn('GUIDE PDF', html.upper())
 
     def test_no_toc_for_single_article(self):
-        self.assertNotIn('osk-toc', str(self._render(is_series=False)))
+        html = str(self._render(is_series=False))
+        self.assertNotIn('<div class="osk-toc"', html)
+        self.assertNotIn('Sommaire', html)
 
     def test_toc_present_for_series(self):
-        self.assertIn('osk-toc', str(self._render(is_series=True)))
+        html = str(self._render(is_series=True))
+        self.assertIn('<div class="osk-toc"', html)
+        self.assertIn('Sommaire', html)
 
     def test_never_says_ebook(self):
         self.assertNotIn('ebook', str(self._render()).lower())
