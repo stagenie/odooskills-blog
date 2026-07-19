@@ -1,3 +1,4 @@
+import base64
 from unittest.mock import patch
 
 from odoo.tests import TransactionCase, tagged
@@ -52,6 +53,48 @@ class TestPublishTrigger(TransactionCase):
         post = self._make(False)
         self.env['blog.post']._cron_generate_pending()
         self.assertFalse(post.oski_pdf_attachment_id)
+
+    def test_cron_generates_series_once_per_pass(self):
+        # Une série avec plusieurs membres périmés ne doit être rendue
+        # qu'UNE SEULE fois par vague de cron : le rendu combiné (WeasyPrint
+        # sur tous les articles de la série) est l'opération la plus
+        # coûteuse du module, et générer la série efface la péremption de
+        # TOUS ses membres — les régénérer un par un est du gaspillage pur.
+        placeholder = self.env['ir.attachment'].create({
+            'name': 'p.pdf', 'datas': base64.b64encode(b'%PDF-old'),
+            'mimetype': 'application/pdf'})
+        series = self.env['oski.pdf.series'].create({
+            'name': 'Série test', 'attachment_id': placeholder.id})
+        posts = self.env['blog.post']
+        for i in range(3):
+            posts |= self.env['blog.post'].create({
+                'name': 'Article série %s' % i, 'blog_id': self.blog.id,
+                'content': '<p>%s</p>' % i, 'is_published': True,
+                'oski_pdf_series_id': series.id, 'oski_series_seq': i * 10})
+        for post in posts:
+            self.assertTrue(post.oski_pdf_stale)
+        with patch.object(self.cr, 'commit', lambda: None), \
+             patch.object(self.cr, 'rollback', lambda: None), \
+             patch(
+                 'odoo.addons.oski_article_pdf.models.pdf_series.'
+                 'OskiPdfSeries._oski_generate_pdf') as gen:
+            self.env['blog.post']._cron_generate_pending()
+        self.assertEqual(gen.call_count, 1,
+                          "la série ne doit être générée qu'une seule fois "
+                          "par vague de cron, quel que soit le nombre de "
+                          "membres périmés")
+
+    def test_create_published_triggers_cron(self):
+        with patch('odoo.addons.base.models.ir_cron.IrCron._trigger') as trig:
+            self._make(True)
+            self.assertTrue(
+                trig.called,
+                "créer un article déjà publié doit déclencher le cron")
+
+    def test_create_unpublished_does_not_trigger(self):
+        with patch('odoo.addons.base.models.ir_cron.IrCron._trigger') as trig:
+            self._make(False)
+            self.assertFalse(trig.called)
 
     def test_cron_isolates_failures(self):
         ok = self._make(True)

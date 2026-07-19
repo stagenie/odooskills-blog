@@ -97,16 +97,37 @@ class BlogPost(models.Model):
         if cron:
             cron.sudo()._trigger()
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        posts = super().create(vals_list)
+        if any(post.is_published for post in posts):
+            posts._oski_trigger_generation()
+        return posts
+
     @api.model
     def _cron_generate_pending(self):
-        """Génère les guides manquants ou périmés, les plus lus d'abord."""
+        """Génère les guides manquants ou périmés, les plus lus d'abord.
+
+        Une série est générée au plus une fois par vague : le rendu combiné
+        (WeasyPrint sur tous les articles de la série) est coûteux, et le
+        générer efface la péremption de TOUS ses membres. `pending` est
+        calculé une seule fois en amont et n'est jamais réévalué pendant la
+        boucle : sans garde explicite, les membres suivants de la même
+        série resteraient dans la liste et provoqueraient un rendu par
+        membre périmé au lieu d'un seul rendu pour la série entière.
+        """
         pending = self.search([('is_published', '=', True)]).filtered(
             lambda p: p.oski_pdf_stale)
         pending = pending.sorted(key=lambda p: p.visits or 0, reverse=True)
+        done_series_ids = set()
         for post in pending:
             try:
-                if post.oski_pdf_series_id:
-                    post.oski_pdf_series_id._oski_generate_pdf()
+                series = post.oski_pdf_series_id
+                if series:
+                    if series.id in done_series_ids:
+                        continue
+                    series._oski_generate_pdf()
+                    done_series_ids.add(series.id)
                 else:
                     post._oski_generate_pdf()
                 self.env.cr.commit()
