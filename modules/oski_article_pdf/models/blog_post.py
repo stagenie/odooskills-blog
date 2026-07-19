@@ -88,11 +88,25 @@ class BlogPost(models.Model):
     # champs dont la modification rend le PDF obsolète
     _OSKI_PDF_SOURCE_FIELDS = {'name', 'subtitle', 'content', 'oski_pdf_series_id',
                                'oski_series_seq'}
+    # sous-ensemble de _OSKI_PDF_SOURCE_FIELDS qui touche la STRUCTURE d'une
+    # série (et non son contenu texte) : _oski_source_hash() ne les hache
+    # jamais, donc les modifier déclenche le cron sans jamais rendre le hash
+    # périmé. Sans invalidation explicite, attacher/réordonner/détacher un
+    # article ne produit aucune régénération réelle.
+    _OSKI_PDF_STRUCTURE_FIELDS = {'oski_pdf_series_id', 'oski_series_seq'}
 
     def write(self, vals):
+        structure_touched = bool(self._OSKI_PDF_STRUCTURE_FIELDS & set(vals))
+        old_series = (self.mapped('oski_pdf_series_id') if structure_touched
+                      else self.env['oski.pdf.series'])
         res = super().write(vals)
         becomes_published = vals.get('is_published') is True
         content_touched = bool(self._OSKI_PDF_SOURCE_FIELDS & set(vals))
+        if structure_touched:
+            new_series = self.mapped('oski_pdf_series_id')
+            affected_posts = (self | old_series.mapped('post_ids')
+                              | new_series.mapped('post_ids'))
+            affected_posts.write({'oski_pdf_source_hash': False})
         if becomes_published or content_touched:
             if any(p.is_published for p in self):
                 self._oski_trigger_generation()

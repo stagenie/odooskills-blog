@@ -4,6 +4,7 @@ from . import test_renderer
 from . import test_template
 from . import test_generate_post
 from . import test_generate_series
+from . import test_series_structure_stale
 from . import test_publish_trigger
 from . import test_delivery
 from . import test_gate_cta_series
