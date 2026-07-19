@@ -1,13 +1,11 @@
-import logging
 import re
 
 from odoo import api, models
 from odoo.exceptions import UserError
 
-_logger = logging.getLogger(__name__)
-
-# src="/…" ou href="/…" mais PAS "//" (protocol-relative) ni "#ancre"
-_REL_URL_RE = re.compile(r'(\s(?:src|href)=")(/(?!/))')
+# src="/…" ou href='/…' mais PAS "//" (protocol-relative) ni "#ancre"
+# Capture le guillemet utilisé (simple ou double) pour le réémettre tel quel.
+_REL_URL_RE = re.compile(r'(\s(?:src|href)=)(["\'])(/(?!/))')
 
 
 class OskiPdfRenderer(models.AbstractModel):
@@ -16,14 +14,24 @@ class OskiPdfRenderer(models.AbstractModel):
 
     @api.model
     def _base_url(self):
-        return self.env['ir.config_parameter'].sudo().get_param(
-            'web.base.url', 'https://odooskills.com').rstrip('/')
+        base_url = self.env['ir.config_parameter'].sudo().get_param(
+            'web.base.url')
+        if not base_url:
+            raise UserError(
+                "Le paramètre système « web.base.url » n'est pas configuré. "
+                "Il doit être renseigné pour générer un guide PDF."
+            )
+        return base_url.rstrip('/')
 
     @api.model
     def _absolutize(self, html):
         """WeasyPrint n'a pas de contexte de session : les URL relatives
         doivent être résolues avant le rendu."""
-        return _REL_URL_RE.sub(r'\g<1>%s/' % self._base_url(), html or '')
+        base_url = self._base_url()
+        return _REL_URL_RE.sub(
+            lambda m: '%s%s%s%s' % (m.group(1), m.group(2), base_url,
+                                     m.group(3)),
+            html or '')
 
     @api.model
     def _render_pdf(self, html):
