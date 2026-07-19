@@ -14,8 +14,15 @@ class OskiPdfSeries(models.Model):
     generated_on = fields.Datetime(string="Généré le", readonly=True)
 
     def _oski_ordered_posts(self):
+        """Articles publiés de la série, dans l'ordre de lecture.
+
+        Les brouillons ne doivent JAMAIS entrer dans le rendu combiné : le
+        cron tourne sans règle d'accès website (contexte interne), donc sans
+        ce filtre un brouillon attaché à la série serait rendu et livré à
+        n'importe quel lecteur qui laisse son email sur le premier article
+        publié."""
         self.ensure_one()
-        return self.post_ids.sorted(
+        return self.post_ids.filtered('is_published').sorted(
             key=lambda p: (p.oski_series_seq, p.post_date or fields.Datetime.now()))
 
     def _oski_generate_pdf(self):

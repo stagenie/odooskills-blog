@@ -1,4 +1,5 @@
 import base64
+from unittest.mock import patch
 
 from odoo.tests import TransactionCase, tagged
 
@@ -31,6 +32,50 @@ class TestGenerateSeries(TransactionCase):
         self.assertEqual(
             self.series._oski_ordered_posts().mapped('name'),
             ['Premier', 'Deuxième', 'Troisième'])
+
+    def test_ordered_posts_excludes_drafts(self):
+        draft = self.env['blog.post'].create({
+            'name': 'Brouillon', 'blog_id': self.blog.id, 'is_published': False,
+            'content': '<p>Brouillon</p>',
+            'oski_pdf_series_id': self.series.id, 'oski_series_seq': 5})
+        self.assertNotIn(draft, self.series._oski_ordered_posts())
+        self.assertEqual(
+            self.series._oski_ordered_posts().mapped('name'),
+            ['Premier', 'Deuxième', 'Troisième'])
+
+    def test_draft_member_excluded_from_generated_pdf_content(self):
+        """Un brouillon attaché à une série publiée ne doit jamais être
+        rendu dans le PDF combiné : sinon publier le premier article de la
+        série suffit à divulguer tout le contenu non publié aux lecteurs qui
+        laissent leur email."""
+        draft = self.env['blog.post'].create({
+            'name': 'Brouillon secret', 'blog_id': self.blog.id,
+            'is_published': False, 'content': '<p>Brouillon secret</p>',
+            'oski_pdf_series_id': self.series.id, 'oski_series_seq': 5})
+        captured = {}
+        IrQweb = type(self.env['ir.qweb'])
+        original_render = IrQweb._render
+
+        def _capture(self_qweb, template, values=None, **kw):
+            captured['posts'] = values.get('posts')
+            return original_render(self_qweb, template, values, **kw)
+
+        with patch.object(IrQweb, '_render', _capture):
+            self.series._oski_generate_pdf()
+
+        names = captured['posts'].mapped('name')
+        self.assertNotIn('Brouillon secret', names,
+                         "un brouillon ne doit jamais apparaître dans les données "
+                         "passées au rendu QWeb du PDF de série")
+        self.assertIn('Premier', names)
+
+        self.assertFalse(
+            draft.oski_pdf_generated_on,
+            "un brouillon exclu du rendu ne doit pas être marqué comme généré")
+        self.assertFalse(
+            draft.oski_pdf_source_hash,
+            "la péremption du brouillon ne doit pas être touchée par la "
+            "génération de la série")
 
     def test_generates_single_pdf_with_all_articles(self):
         att = self.series._oski_generate_pdf()
