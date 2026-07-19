@@ -1,2 +1,3 @@
 from . import test_install
 from . import test_stale
+from . import test_renderer
