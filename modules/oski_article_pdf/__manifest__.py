@@ -9,6 +9,7 @@
     'depends': ['oski_lead_magnet'],
     'data': [
         'security/ir.model.access.csv',
+        'views/pdf_templates.xml',
     ],
     'external_dependencies': {'python': ['weasyprint']},
     'installable': True,
