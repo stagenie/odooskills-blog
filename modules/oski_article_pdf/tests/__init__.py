@@ -10,3 +10,4 @@ from . import test_delivery
 from . import test_gate_cta_series
 from . import test_no_popup
 from . import test_action
+from . import test_copy

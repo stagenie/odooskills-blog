@@ -1,4 +1,5 @@
 import base64
+from unittest.mock import patch
 
 from odoo.tests import TransactionCase, tagged
 
@@ -80,3 +81,57 @@ class TestSeriesStructureStale(TransactionCase):
             "reste False (hash intact hérité de la série) alors que "
             "oski_pdf_attachment_id reste vide pour toujours, ce qui "
             "supprime silencieusement sa porte de capture email")
+
+    def test_unpublish_member_marks_whole_series_stale(self):
+        """FIX2 : `is_published` passant à False n'est ni un champ de
+        structure ni de contenu (_OSKI_PDF_STRUCTURE_FIELDS /
+        _OSKI_PDF_SOURCE_FIELDS) : sans traitement dédié, retirer un
+        article publié d'une série n'efface le hash d'AUCUN membre, donc
+        le cron ne régénère jamais rien et l'article rétracté reste
+        diffusé indéfiniment dans le PDF combiné."""
+        series = self._series('Série D')
+        a = self._post('A', oski_series_seq=10, oski_pdf_series_id=series.id)
+        b = self._post('B', oski_series_seq=20, oski_pdf_series_id=series.id)
+        series._oski_generate_pdf()
+        self.assertFalse(a.oski_pdf_stale)
+        self.assertFalse(b.oski_pdf_stale)
+
+        a.write({'is_published': False})
+
+        self.assertTrue(
+            b.oski_pdf_stale,
+            "retirer un membre publié de la série doit rendre périmés TOUS "
+            "les membres restants, sinon le cron ne trouve jamais rien à "
+            "régénérer et le PDF combiné garde indéfiniment le contenu "
+            "rétracté")
+
+    def test_unpublishing_member_regenerates_series_pdf_without_it(self):
+        """Bout en bout : la prochaine passe de cron après rétractation
+        d'un membre doit produire un nouveau PDF combiné qui ne contient
+        plus le contenu de l'article rétracté."""
+        series = self._series('Série E')
+        a = self._post('Rétracté', oski_series_seq=10, oski_pdf_series_id=series.id)
+        b = self._post('Restant', oski_series_seq=20, oski_pdf_series_id=series.id)
+        series._oski_generate_pdf()
+
+        a.write({'is_published': False})
+
+        captured = {}
+        IrQweb = type(self.env['ir.qweb'])
+        original_render = IrQweb._render
+
+        def _capture(self_qweb, template, values=None, **kw):
+            captured['posts'] = values.get('posts')
+            return original_render(self_qweb, template, values, **kw)
+
+        with patch.object(IrQweb, '_render', _capture), \
+             patch.object(self.env.cr, 'commit', lambda: None), \
+             patch.object(self.env.cr, 'rollback', lambda: None):
+            self.env['blog.post']._cron_generate_pending()
+
+        names = captured['posts'].mapped('name')
+        self.assertNotIn(
+            'Rétracté', names,
+            "le PDF combiné régénéré ne doit plus contenir l'article "
+            "rétracté")
+        self.assertIn('Restant', names)

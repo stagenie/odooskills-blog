@@ -14,8 +14,18 @@ class BlogPost(models.Model):
         string="Ordre dans la série", default=10,
         help="Ordre de lecture dans le guide combiné. La date de publication "
              "ne reflète pas toujours l'ordre pédagogique.")
-    oski_pdf_generated_on = fields.Datetime(string="Guide PDF généré le", readonly=True)
-    oski_pdf_source_hash = fields.Char(string="Empreinte source", readonly=True)
+    oski_pdf_generated_on = fields.Datetime(
+        string="Guide PDF généré le", readonly=True, copy=False)
+    oski_pdf_source_hash = fields.Char(
+        string="Empreinte source", readonly=True, copy=False)
+    # oski_pdf_attachment_id est défini dans oski_lead_magnet (module dont
+    # celui-ci dépend) sans copy=False : sans cette surcharge, dupliquer un
+    # article copierait la référence à l'attachement PDF de l'original. Or
+    # la régénération réécrit désormais EN PLACE (même id de pièce jointe,
+    # même res_id réécrit) pour préserver les liens tokenisés déjà envoyés
+    # par email : régénérer le PDF du doublon écraserait alors silencieusement
+    # le PDF de l'ORIGINAL.
+    oski_pdf_attachment_id = fields.Many2one(copy=False)
     oski_pdf_stale = fields.Boolean(
         string="Guide PDF périmé", compute='_compute_oski_pdf_stale')
 
@@ -99,6 +109,19 @@ class BlogPost(models.Model):
         structure_touched = bool(self._OSKI_PDF_STRUCTURE_FIELDS & set(vals))
         old_series = (self.mapped('oski_pdf_series_id') if structure_touched
                       else self.env['oski.pdf.series'])
+        # un article rétracté (is_published -> False) qui appartient à une
+        # série n'est ni un champ de STRUCTURE ni de CONTENU au sens de
+        # _OSKI_PDF_STRUCTURE_FIELDS / _OSKI_PDF_SOURCE_FIELDS : sans ce
+        # traitement dédié, aucun hash n'est jamais effacé et le PDF combiné
+        # continue de diffuser indéfiniment le contenu rétracté aux
+        # lecteurs qui capturent sur n'importe quel autre membre de la
+        # série. La série est capturée AVANT le write car is_published ne
+        # change jamais oski_pdf_series_id, donc l'ordre n'a pas
+        # d'importance ici, mais on reste cohérent avec le traitement des
+        # champs de structure ci-dessus.
+        unpublished_series = (self.mapped('oski_pdf_series_id')
+                              if vals.get('is_published') is False
+                              else self.env['oski.pdf.series'])
         res = super().write(vals)
         becomes_published = vals.get('is_published') is True
         content_touched = bool(self._OSKI_PDF_SOURCE_FIELDS & set(vals))
@@ -107,6 +130,9 @@ class BlogPost(models.Model):
             affected_posts = (self | old_series.mapped('post_ids')
                               | new_series.mapped('post_ids'))
             affected_posts.write({'oski_pdf_source_hash': False})
+        if unpublished_series:
+            unpublished_series.mapped('post_ids').write(
+                {'oski_pdf_source_hash': False})
         if becomes_published or content_touched:
             if any(p.is_published for p in self):
                 self._oski_trigger_generation()

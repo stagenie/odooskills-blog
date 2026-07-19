@@ -23,12 +23,26 @@ class OskiLeadCapture(models.AbstractModel):
         immédiat reste la voie principale : un échec d'envoi ne doit jamais
         casser la livraison.
 
-        L'envoi reste `force_send=True` (exigence propriétaire : le mail
-        doit être réellement expédié, pas seulement mis en file), mais il
-        est différé après le commit de la requête via `cr.postcommit` : un
-        serveur SMTP qui ne répond pas ne doit jamais faire attendre le
-        lecteur, dont le téléchargement n'est déclenché qu'à la réception de
-        la réponse JSON de capture."""
+        Le mail.mail est créé et rendu EN REQUÊTE
+        (`send_mail(force_send=False)`), dans la même transaction que la
+        capture : c'est ce qui permet au commit normal de la requête HTTP de
+        le persister réellement, avec son mail.message associé. Écrire
+        depuis un callback `cr.postcommit` ne suffirait PAS : Cursor.commit()
+        exécute postcommit.run() sur le curseur de requête encore ouvert
+        (odoo/sql_db.py:555), puis la couche HTTP referme ensuite ce même
+        curseur (odoo/http.py:2270-2272), et Cursor._close() appelle
+        rollback() (odoo/sql_db.py:536) — tout ce qui aurait été écrit
+        depuis ce callback serait donc systématiquement perdu, alors même
+        que l'email est réellement parti.
+
+        Seul l'envoi SMTP proprement dit reste différé, via le pattern
+        canonique `mail.mail.send_after_commit()`
+        (odoo/addons/mail/models/mail_mail.py:668-688) : celui-ci ouvre,
+        dans un callback post-commit, un NOUVEAU curseur de registre qu'il
+        committe lui-même à la sortie — donc bien en dehors du curseur de
+        la requête. Un serveur SMTP qui ne répond pas ne retarde ainsi
+        jamais la réponse JSON de capture (et donc le téléchargement, qui
+        n'attend que cette réponse)."""
         template = self.env.ref('oski_article_pdf.mail_pdf_delivery',
                                 raise_if_not_found=False)
         if not template:
@@ -37,12 +51,10 @@ class OskiLeadCapture(models.AbstractModel):
             'web.base.url', 'https://odooskills.com').rstrip('/')
         absolute = pdf_url if pdf_url.startswith('http') else base + pdf_url
 
-        def _send():
-            try:
-                template.sudo().with_context(pdf_url=absolute).send_mail(
-                    blog_post.id, force_send=True,
-                    email_values={'email_to': email})
-            except Exception:
-                _logger.exception("Échec d'envoi du guide PDF à %s", email)
-
-        self.env.cr.postcommit.add(_send)
+        try:
+            mail_id = template.sudo().with_context(pdf_url=absolute).send_mail(
+                blog_post.id, force_send=False,
+                email_values={'email_to': email})
+            self.env['mail.mail'].sudo().browse(mail_id).send_after_commit()
+        except Exception:
+            _logger.exception("Échec d'envoi du guide PDF à %s", email)
