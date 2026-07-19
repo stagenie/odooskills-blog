@@ -3,3 +3,4 @@ from . import test_stale
 from . import test_renderer
 from . import test_template
 from . import test_generate_post
+from . import test_generate_series
