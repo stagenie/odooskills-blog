@@ -13,7 +13,13 @@ class TestWording(HttpCase):
         html = self.url_open('/').text
         self.assertNotIn('-30%', html)
 
-    def test_product_page_shows_cta(self):
+    def test_product_cta_absent_on_shop_card_and_product_page(self):
+        """CTA remise inscrit retiré le 19/07/2026 (product_cta_templates.xml
+        supprimé) : la remise est désormais permanente sur le prix affiché et
+        communiquée par email aux abonnés, plus par ce lien/badge qui
+        n'ouvrait plus rien depuis le retrait du popup (cf.
+        test_popup_render.py). Ni le badge de la carte catalogue ni le lien
+        de la fiche produit ne doivent plus être rendus."""
         tmpl = self.env['product.template'].create({
             'name': 'E-cta', 'is_published': True, 'list_price': 27,
         })
@@ -26,6 +32,9 @@ class TestWording(HttpCase):
                     'oski_price_launch': 27.0})
         self.env['ir.config_parameter'].sudo().set_param(
             'oski_lead_magnet.welcome_percent', '30')
-        html = self.url_open('/shop/%s' % tmpl.id).text
-        self.assertIn('osk-open-popup', html)
-        self.assertIn('-30%', html)
+        product_html = self.url_open('/shop/%s' % tmpl.id).text
+        self.assertNotIn('osk-open-popup', product_html)
+        self.assertNotIn('-30%', product_html)
+        shop_html = self.url_open('/shop').text
+        self.assertNotIn('osk-open-popup', shop_html)
+        self.assertNotIn('si inscrit', shop_html)
