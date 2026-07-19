@@ -3,12 +3,15 @@ from odoo.tests import HttpCase, tagged
 
 @tagged('post_install', '-at_install')
 class TestWording(HttpCase):
-    def test_popup_shows_current_percent(self):
+    def test_homepage_no_longer_shows_popup_percent(self):
+        """Popup retiré le 19/07/2026 (cf. test_popup_render.py) : la mention
+        du pourcentage de bienvenue portée par le popup ne doit plus
+        apparaître sur la page d'accueil. Le CTA produit (test suivant)
+        continue lui de l'afficher, indépendamment du popup."""
         self.env['ir.config_parameter'].sudo().set_param(
             'oski_lead_magnet.welcome_percent', '30')
         html = self.url_open('/').text
-        self.assertIn('-30%', html)
-        self.assertNotIn('-50%', html)
+        self.assertNotIn('-30%', html)
 
     def test_product_page_shows_cta(self):
         tmpl = self.env['product.template'].create({

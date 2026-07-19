@@ -214,6 +214,5 @@ function initPdfGate() {
 // ci-dessus soient initialisées quand onReady s'exécute en mode synchrone
 // (DOM déjà prêt, cas fréquent des bundles frontend Odoo).
 onReady(function () {
-    initLeadPopup();
     initPdfGate();
 });
