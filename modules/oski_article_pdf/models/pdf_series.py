@@ -43,13 +43,14 @@ class OskiPdfSeries(models.Model):
             'res_id': self.id,
             'public': False,
         })
+        now = fields.Datetime.now()
         self.write({'attachment_id': attachment.id,
-                    'generated_on': fields.Datetime.now()})
-        posts.write({
-            'oski_pdf_generated_on': fields.Datetime.now(),
-        })
+                    'generated_on': now})
         for post in posts:
-            post.oski_pdf_source_hash = post._oski_source_hash()
+            post.write({
+                'oski_pdf_generated_on': now,
+                'oski_pdf_source_hash': post._oski_source_hash(),
+            })
         if old:
             old.sudo().unlink()
         _logger.info("Guide PDF de série %s généré (%s articles, %s o)",
