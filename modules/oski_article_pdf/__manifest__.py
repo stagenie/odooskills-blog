@@ -11,6 +11,7 @@
         'security/ir.model.access.csv',
         'views/pdf_templates.xml',
         'data/ir_cron.xml',
+        'data/mail_template_pdf.xml',
     ],
     'external_dependencies': {'python': ['weasyprint']},
     'installable': True,
