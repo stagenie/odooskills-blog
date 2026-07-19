@@ -76,3 +76,41 @@ class BlogPost(models.Model):
             old.sudo().unlink()
         _logger.info("Guide PDF généré pour l'article %s (%s o)", self.id, len(pdf_bytes))
         return attachment
+
+    # champs dont la modification rend le PDF obsolète
+    _OSKI_PDF_SOURCE_FIELDS = {'name', 'subtitle', 'content', 'oski_pdf_series_id',
+                               'oski_series_seq'}
+
+    def write(self, vals):
+        res = super().write(vals)
+        becomes_published = vals.get('is_published') is True
+        content_touched = bool(self._OSKI_PDF_SOURCE_FIELDS & set(vals))
+        if becomes_published or content_touched:
+            if any(p.is_published for p in self):
+                self._oski_trigger_generation()
+        return res
+
+    def _oski_trigger_generation(self):
+        """Planifie la génération hors requête HTTP."""
+        cron = self.env.ref('oski_article_pdf.cron_generate_pdf',
+                            raise_if_not_found=False)
+        if cron:
+            cron.sudo()._trigger()
+
+    @api.model
+    def _cron_generate_pending(self):
+        """Génère les guides manquants ou périmés, les plus lus d'abord."""
+        pending = self.search([('is_published', '=', True)]).filtered(
+            lambda p: p.oski_pdf_stale)
+        pending = pending.sorted(key=lambda p: p.visits or 0, reverse=True)
+        for post in pending:
+            try:
+                if post.oski_pdf_series_id:
+                    post.oski_pdf_series_id._oski_generate_pdf()
+                else:
+                    post._oski_generate_pdf()
+                self.env.cr.commit()
+            except Exception:
+                self.env.cr.rollback()
+                _logger.exception(
+                    "Échec de génération du guide PDF pour l'article %s", post.id)

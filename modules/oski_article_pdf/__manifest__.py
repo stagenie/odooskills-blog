@@ -10,6 +10,7 @@
     'data': [
         'security/ir.model.access.csv',
         'views/pdf_templates.xml',
+        'data/ir_cron.xml',
     ],
     'external_dependencies': {'python': ['weasyprint']},
     'installable': True,
