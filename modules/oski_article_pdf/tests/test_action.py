@@ -54,3 +54,13 @@ class TestAction(TransactionCase):
             "la série ne doit être générée qu'une seule fois par appel de "
             "l'action groupée, quel que soit le nombre de membres "
             "sélectionnés")
+
+    def test_action_restricted_to_website_editors(self):
+        """Verify server action is restricted to website editors to prevent resource hazard."""
+        action = self.env.ref('oski_article_pdf.action_generate_guide_pdf')
+        editor_group = self.env.ref('website.group_website_restricted_editor')
+        self.assertIn(
+            editor_group, action.group_ids,
+            "action_generate_guide_pdf must be restricted to "
+            "website.group_website_restricted_editor to prevent "
+            "unauthorized bulk PDF rendering")
