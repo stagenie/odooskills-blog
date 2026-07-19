@@ -108,12 +108,21 @@ class TestGenerateSeries(TransactionCase):
         self.assertFalse(self.p3.oski_pdf_stale,
                           "l'empreinte d'un autre article ne doit pas contaminer p3")
 
-    def test_regeneration_unlinks_old_attachment(self):
+    def test_regeneration_keeps_attachment_stable_not_unlinked(self):
+        """Même exigence que pour l'article seul (I2) : un lien de série déjà
+        envoyé par email pointe sur cette pièce jointe. La régénérer ne doit
+        jamais la remplacer — l'ancienne pièce jointe (même un placeholder)
+        doit être réutilisée en place, jamais supprimée."""
         placeholder_id = self.series.attachment_id.id
         att = self.series._oski_generate_pdf()
-        self.assertFalse(
+        self.assertEqual(
+            att.id, placeholder_id,
+            "la génération doit réutiliser la pièce jointe existante en "
+            "place, pas la remplacer par une nouvelle")
+        self.assertTrue(
             self.env['ir.attachment'].browse(placeholder_id).exists(),
-            "l'ancienne pièce jointe placeholder doit être supprimée")
+            "la pièce jointe déjà envoyée par email ne doit jamais être "
+            "supprimée")
         self.assertEqual(self.series.attachment_id, att)
 
     def test_empty_series_returns_empty_and_keeps_attachment(self):
