@@ -133,6 +133,12 @@ class BlogPost(models.Model):
         if unpublished_series:
             unpublished_series.mapped('post_ids').write(
                 {'oski_pdf_source_hash': False})
+            # Une rétractation est le cas URGENT : tant que la série n'est pas
+            # régénérée, le PDF combiné continue de diffuser l'article retiré.
+            # Sans ce déclenchement, il faudrait attendre la passe quotidienne
+            # du cron — jusqu'à 24 h — alors qu'une simple coquille corrigée,
+            # elle, déclenche immédiatement. On aligne donc l'urgence réelle.
+            self._oski_trigger_generation()
         if becomes_published or content_touched:
             if any(p.is_published for p in self):
                 self._oski_trigger_generation()
