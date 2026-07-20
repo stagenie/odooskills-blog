@@ -42,6 +42,11 @@ class TestCoverUrl(TransactionCase):
         post = self._post('{"background-image": "url(\'/web/image/1-abc/x.png\')"}')
         self.assertEqual(post._oski_cover_url(), '/web/image/1-abc/x.png')
 
+    def test_cover_id_simple_redimensionnee(self):
+        """Le bandeau fait 92 px : inutile de servir l'original."""
+        post = self._post('{"background-image": "url(/web/image/859)"}')
+        self.assertEqual(post._oski_cover_url(), '/web/image/859/800x368')
+
     def test_cover_double_quotes(self):
         post = self._post('{"background-image": "url(\\"/web/image/9/y.jpg\\")"}')
         self.assertEqual(post._oski_cover_url(), '/web/image/9/y.jpg')

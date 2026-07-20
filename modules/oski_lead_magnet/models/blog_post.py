@@ -5,6 +5,8 @@ from odoo import fields, models
 
 # cover_properties stocke la couverture sous la forme CSS `url("/web/image/…")`.
 _COVER_URL_RE = re.compile(r'url\((["\']?)(?P<url>.+?)\1\)')
+# Forme simple `/web/image/123` : la seule à laquelle on peut ajouter une taille.
+_COVER_PLAIN_ID_RE = re.compile(r'^/web/image/\d+$')
 
 
 class OskiPdfSeries(models.Model):
@@ -66,4 +68,11 @@ class BlogPost(models.Model):
         url = match.group('url').strip()
         # Une couverture externe (autre domaine) est ignorée : le modal ne doit
         # pas dépendre d'un hôte tiers pour s'afficher.
-        return url if url.startswith('/') else False
+        if not url.startswith('/'):
+            return False
+        # Le bandeau fait 92 px de haut : servir la pleine résolution (souvent
+        # plus de 500 Ko) serait du gâchis. La forme /web/image/<id> accepte un
+        # suffixe de taille ; les autres formes sont laissées telles quelles.
+        if _COVER_PLAIN_ID_RE.match(url):
+            return '%s/800x368' % url
+        return url
