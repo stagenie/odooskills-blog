@@ -158,16 +158,36 @@ function initPdfGate() {
         return;
     }
     let pendingPostId = null;
+    let autoCloseTimer = null;
     const gMsg = modal.querySelector(".osk-lead-msg");
+    const cover = modal.querySelector(".osk-gate-cover");
+
+    function closeModal() {
+        clearTimeout(autoCloseTimer);
+        modal.style.display = "none";
+    }
+
+    // Le modal se referme seul une fois qu'il n'attend plus rien de personne.
+    function autoClose(delay) {
+        clearTimeout(autoCloseTimer);
+        autoCloseTimer = setTimeout(closeModal, delay);
+    }
+
     document.querySelectorAll(".osk-pdf-gate .osk-pdf-btn").forEach((btn) => {
         btn.addEventListener("click", function () {
-            pendingPostId = this.closest(".osk-pdf-gate").dataset.postId;
+            const gate = this.closest(".osk-pdf-gate");
+            pendingPostId = gate.dataset.postId;
+            // Habille le bandeau avec la couverture de l'article ; sans
+            // couverture on laisse le dégradé défini en CSS.
+            if (cover) {
+                const url = gate.dataset.cover;
+                cover.style.backgroundImage = url ? 'url("' + url + '")' : "";
+            }
+            clearTimeout(autoCloseTimer);
             modal.style.display = "flex";
         });
     });
-    modal.querySelector(".osk-lead-close").addEventListener("click", () => {
-        modal.style.display = "none";
-    });
+    modal.querySelector(".osk-lead-close").addEventListener("click", closeModal);
     const form = modal.querySelector(".osk-gate-form");
     const done = modal.querySelector(".osk-gate-done");
     const optin = done ? done.querySelector(".osk-gate-optin") : null;
@@ -178,7 +198,7 @@ function initPdfGate() {
     // inutile de le lui redemander.
     function showDone(askConsent) {
         if (!done) {
-            modal.style.display = "none";
+            closeModal();
             return;
         }
         form.style.display = "none";
@@ -189,12 +209,15 @@ function initPdfGate() {
             optin.style.display = "none";
         }
         done.style.display = "block";
+        // Rien n'est attendu de l'internaute déjà inscrit : on referme.
+        // Sinon on laisse le temps de lire et de répondre.
+        if (!askConsent) {
+            autoClose(3500);
+        }
     }
 
     if (done) {
-        done.querySelector(".osk-optin-no").addEventListener("click", () => {
-            modal.style.display = "none";
-        });
+        done.querySelector(".osk-optin-no").addEventListener("click", closeModal);
         done.querySelector(".osk-optin-yes").addEventListener("click", async () => {
             try {
                 const resp = await fetch("/oski/lead/consent", {
@@ -205,12 +228,16 @@ function initPdfGate() {
                 const data = await resp.json();
                 optin.style.display = "none";
                 optinMsg.style.display = "block";
-                optinMsg.textContent = (data.result || {}).ok
+                const ok = (data.result || {}).ok;
+                optinMsg.textContent = ok
                     ? "C'est noté, merci ! À bientôt."
                     : "Une erreur est survenue, réessayez plus tard.";
+                // Réponse donnée : le modal n'a plus rien à demander.
+                autoClose(ok ? 2200 : 4000);
             } catch (err) {
                 optinMsg.style.display = "block";
                 optinMsg.textContent = "Une erreur est survenue, réessayez plus tard.";
+                autoClose(4000);
             }
         });
     }

@@ -1,4 +1,10 @@
+import json
+import re
+
 from odoo import fields, models
+
+# cover_properties stocke la couverture sous la forme CSS `url("/web/image/…")`.
+_COVER_URL_RE = re.compile(r'url\((["\']?)(?P<url>.+?)\1\)')
 
 
 class OskiPdfSeries(models.Model):
@@ -37,3 +43,27 @@ class BlogPost(models.Model):
             return False
         token = att.access_token or att.sudo().generate_access_token()[0]
         return '/web/content/%s?access_token=%s&download=true' % (att.id, token)
+
+    def _oski_cover_url(self):
+        """URL de la couverture de l'article, pour habiller le modal.
+
+        La couverture vit dans `cover_properties`, un JSON dont la clé
+        `background-image` vaut soit `none`, soit une valeur CSS
+        `url("/web/image/…")`. Renvoie False si l'article n'a pas de
+        couverture : le modal retombe alors sur son dégradé.
+        """
+        self.ensure_one()
+        try:
+            props = json.loads(self.cover_properties or '{}')
+        except (TypeError, ValueError):
+            return False
+        raw = (props.get('background-image') or '').strip()
+        if not raw or raw == 'none':
+            return False
+        match = _COVER_URL_RE.search(raw)
+        if not match:
+            return False
+        url = match.group('url').strip()
+        # Une couverture externe (autre domaine) est ignorée : le modal ne doit
+        # pas dépendre d'un hôte tiers pour s'afficher.
+        return url if url.startswith('/') else False

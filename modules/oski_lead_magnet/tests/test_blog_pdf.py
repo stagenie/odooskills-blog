@@ -27,3 +27,33 @@ class TestBlogPdf(TransactionCase):
         post.oski_pdf_series_id = series
         url = post._oski_pdf_download_url()
         self.assertIn(str(series.attachment_id.id), url)
+
+
+@tagged('post_install', '-at_install')
+class TestCoverUrl(TransactionCase):
+    """Couverture d'article servant d'habillage au modal."""
+
+    def _post(self, cover):
+        blog = self.env['blog.blog'].create({'name': 'B'})
+        return self.env['blog.post'].create({
+            'name': 'A', 'blog_id': blog.id, 'cover_properties': cover})
+
+    def test_cover_url_extraite(self):
+        post = self._post('{"background-image": "url(\'/web/image/1-abc/x.png\')"}')
+        self.assertEqual(post._oski_cover_url(), '/web/image/1-abc/x.png')
+
+    def test_cover_double_quotes(self):
+        post = self._post('{"background-image": "url(\\"/web/image/9/y.jpg\\")"}')
+        self.assertEqual(post._oski_cover_url(), '/web/image/9/y.jpg')
+
+    def test_sans_cover(self):
+        self.assertFalse(self._post('{"background-image": "none"}')._oski_cover_url())
+        self.assertFalse(self._post('{}')._oski_cover_url())
+
+    def test_json_casse_ne_leve_pas(self):
+        self.assertFalse(self._post('pas du json')._oski_cover_url())
+
+    def test_cover_externe_ignoree(self):
+        """Le modal ne doit pas dépendre d'un hôte tiers pour s'afficher."""
+        post = self._post('{"background-image": "url(https://ailleurs.example/x.png)"}')
+        self.assertFalse(post._oski_cover_url())
