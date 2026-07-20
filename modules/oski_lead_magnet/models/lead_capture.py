@@ -80,4 +80,48 @@ class OskiLeadCapture(models.AbstractModel):
                 Offer.create_for_email(email, partner, source)
 
         pdf_url = blog_post._oski_pdf_gated_url() if blog_post else None
-        return {'ok': True, 'error': None, 'pdf_url': pdf_url or None, 'new': is_new}
+        return {
+            'ok': True, 'error': None, 'pdf_url': pdf_url or None, 'new': is_new,
+            'subscribed': self._oski_is_subscribed(email),
+        }
+
+    @api.model
+    def _oski_is_subscribed(self, email):
+        """L'adresse est-elle déjà dans la liste Prospects ?
+
+        Sert à ne pas redemander son accord à quelqu'un qui l'a déjà donné.
+        """
+        email = (email or '').strip().lower()
+        if not _EMAIL_RE.match(email):
+            return False
+        contact = self.env['mailing.contact'].sudo().search(
+            [('email', '=ilike', email)], limit=1)
+        return bool(contact and self._prospects_list() in contact.list_ids)
+
+    @api.model
+    def _oski_grant_consent(self, email):
+        """Enregistre un consentement donné APRÈS le téléchargement.
+
+        L'écran de confirmation propose l'inscription une fois le PDF obtenu :
+        le clic sur le bouton est un acte positif explicite, donc un
+        consentement valide (RGPD art. 4-11) — contrairement à une case
+        pré-cochée, cf. CJUE Planet49 C-673/17.
+
+        L'offre de bienvenue n'est PAS déclenchée ici : depuis le revert du
+        19/07 la remise est découplée de l'inscription et pilotée par
+        campagne email. Ce point d'entrée ne fait qu'inscrire à la liste.
+        """
+        email = (email or '').strip().lower()
+        if not _EMAIL_RE.match(email):
+            return False
+        partner = self.env['res.partner'].sudo().search(
+            [('email', '=ilike', email)], limit=1)
+        MC = self.env['mailing.contact'].sudo()
+        contact = MC.search([('email', '=ilike', email)], limit=1)
+        if not contact:
+            contact = MC.create({'name': partner.name if partner else email,
+                                 'email': email})
+        lst = self._prospects_list()
+        if lst not in contact.list_ids:
+            contact.list_ids = [(4, lst.id)]
+        return True

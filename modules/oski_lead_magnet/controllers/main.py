@@ -18,9 +18,28 @@ class OskiLeadController(http.Controller):
                 if post and not post.website_published:
                     post = None
         consent_bool = consent in (True, 'true', 'True', '1', 1, 'on', 'yes')
-        return request.env['oski.lead.capture'].sudo()._oski_capture_lead(
+        res = request.env['oski.lead.capture'].sudo()._oski_capture_lead(
             email, consent_bool, source, post,
             client_ip=request.httprequest.remote_addr)
+        if res.get('ok'):
+            # Mémorise l'adresse pour l'écran de confirmation : /oski/lead/consent
+            # ne prend AUCUN email en paramètre, sinon n'importe qui pourrait
+            # inscrire n'importe quelle adresse à la liste.
+            request.session['oski_lead_email'] = (email or '').strip().lower()
+        return res
+
+    @http.route('/oski/lead/consent', type='jsonrpc', auth='public',
+                methods=['POST'], website=True, csrf=False)
+    def grant_consent(self):
+        """Consentement donné après le téléchargement, sur l'adresse de la session.
+
+        Aucun paramètre : l'adresse vient de la session posée par subscribe().
+        """
+        email = request.session.get('oski_lead_email')
+        if not email:
+            return {'ok': False, 'error': 'no_session'}
+        ok = request.env['oski.lead.capture'].sudo()._oski_grant_consent(email)
+        return {'ok': bool(ok), 'error': None if ok else 'invalid'}
 
     @http.route('/oski/offer/grid', type='jsonrpc', auth='public',
                 methods=['POST'], website=True, csrf=False)

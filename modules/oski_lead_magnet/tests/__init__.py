@@ -12,3 +12,4 @@ from . import test_gate_render
 from . import test_checkout_guard
 from . import test_grid_route
 from . import test_wording
+from . import test_post_download_consent

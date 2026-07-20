@@ -168,7 +168,54 @@ function initPdfGate() {
     modal.querySelector(".osk-lead-close").addEventListener("click", () => {
         modal.style.display = "none";
     });
-    modal.querySelector(".osk-gate-form").addEventListener("submit", async function (e) {
+    const form = modal.querySelector(".osk-gate-form");
+    const done = modal.querySelector(".osk-gate-done");
+    const optin = done ? done.querySelector(".osk-gate-optin") : null;
+    const optinMsg = done ? done.querySelector(".osk-optin-msg") : null;
+
+    // Bascule le modal en écran de confirmation. `askConsent` est faux si
+    // l'internaute a déjà donné son accord (case cochée, ou déjà inscrit) :
+    // inutile de le lui redemander.
+    function showDone(askConsent) {
+        if (!done) {
+            modal.style.display = "none";
+            return;
+        }
+        form.style.display = "none";
+        modal.querySelector(".osk-gate-icon").style.display = "none";
+        modal.querySelector(".osk-lead-title").style.display = "none";
+        modal.querySelector(".osk-lead-sub").style.display = "none";
+        if (optin && !askConsent) {
+            optin.style.display = "none";
+        }
+        done.style.display = "block";
+    }
+
+    if (done) {
+        done.querySelector(".osk-optin-no").addEventListener("click", () => {
+            modal.style.display = "none";
+        });
+        done.querySelector(".osk-optin-yes").addEventListener("click", async () => {
+            try {
+                const resp = await fetch("/oski/lead/consent", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: {} }),
+                });
+                const data = await resp.json();
+                optin.style.display = "none";
+                optinMsg.style.display = "block";
+                optinMsg.textContent = (data.result || {}).ok
+                    ? "C'est noté, merci ! À bientôt."
+                    : "Une erreur est survenue, réessayez plus tard.";
+            } catch (err) {
+                optinMsg.style.display = "block";
+                optinMsg.textContent = "Une erreur est survenue, réessayez plus tard.";
+            }
+        });
+    }
+
+    form.addEventListener("submit", async function (e) {
         e.preventDefault();
         const email = this.email.value;
         const consent = this.consent.checked;
@@ -185,9 +232,11 @@ function initPdfGate() {
             const r = data.result || {};
             gMsg.style.display = "block";
             if (r.ok && r.pdf_url) {
-                gMsg.textContent = "Merci ! Téléchargement en cours…";
+                gMsg.style.display = "none";
                 window.location.href = r.pdf_url;
-                setTimeout(() => { modal.style.display = "none"; }, 1500);
+                // On garde le modal ouvert : l'accord se demande une fois le
+                // PDF obtenu, quand l'attention n'est plus sur le bouton.
+                showDone(!consent && !r.subscribed);
             } else if (r.ok) {
                 gMsg.textContent = "Merci ! Le PDF n'est pas encore disponible.";
             } else if (r.error === "disposable") {
