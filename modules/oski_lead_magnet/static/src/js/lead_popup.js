@@ -99,18 +99,12 @@ function initLeadPopup() {
     });
     // Chargement grille sur demande explicite (event harmless : show() charge déjà).
     popup.addEventListener("osk:forceGrid", loadGrid);
-    // CTA inline (Task 6) : ouverture explicite → passe par show() (PC uniquement).
-    document.addEventListener("click", function (e) {
-        const trigger = e.target.closest(".osk-open-popup");
-        if (!trigger) {
-            return;
-        }
-        e.preventDefault();
-        if (!isMobile) {
-            shown = false;
-            show();
-        }
-    });
+    // Le CTA inline ".osk-open-popup" (badge carte catalogue + lien fiche
+    // produit) a été retiré le 19/07/2026 (product_cta_templates.xml
+    // supprimé, remise désormais permanente sur le prix affiché) : plus
+    // aucun élément ne porte cette classe, le handler de clic dédié est
+    // retiré pour ne pas laisser de référence morte à une classe qui n'est
+    // plus jamais rendue.
 
     // Déclencheurs AUTO : uniquement PC + visiteur pas encore vu.
     if (!isMobile && !hasCookie(SEEN)) {
@@ -214,6 +208,5 @@ function initPdfGate() {
 // ci-dessus soient initialisées quand onReady s'exécute en mode synchrone
 // (DOM déjà prêt, cas fréquent des bundles frontend Odoo).
 onReady(function () {
-    initLeadPopup();
     initPdfGate();
 });

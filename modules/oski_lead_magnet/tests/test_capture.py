@@ -17,6 +17,12 @@ class TestCapture(TransactionCase):
         self.assertEqual(res['error'], 'invalid')
 
     def test_new_email_creates_offer_and_partner(self):
+        # Le moteur de remise reste dormant par défaut à l'installation
+        # (Minor 1 / décision produit) ; ce test vérifie le comportement du
+        # moteur lui-même quand il est activé, indépendamment du défaut
+        # livré en base.
+        self.env['ir.config_parameter'].sudo().set_param(
+            'oski_lead_magnet.offer_enabled', 'True')
         res = self._capture('brand-new@example.com')
         self.assertTrue(res['ok'])
         self.assertTrue(res['new'])
@@ -47,6 +53,11 @@ class TestCapture(TransactionCase):
                 [('email', '=', 'noconsent@example.com'), ('list_ids', 'in', ml.ids)]))
 
     def test_duplicate_email_no_second_offer(self):
+        # Même remarque que test_new_email_creates_offer_and_partner : le
+        # moteur est dormant par défaut, on l'active explicitement pour
+        # tester sa logique d'idempotence.
+        self.env['ir.config_parameter'].sudo().set_param(
+            'oski_lead_magnet.offer_enabled', 'True')
         self._capture('again@example.com')
         self._capture('again@example.com')
         self.assertEqual(self.env['oski.welcome.offer'].search_count(

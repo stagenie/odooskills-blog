@@ -20,7 +20,6 @@
         'views/res_config_settings_views.xml',
         'views/offer_landing.xml',
         'views/popup_templates.xml',
-        'views/product_cta_templates.xml',
         'views/pdf_gate_templates.xml',
     ],
     'assets': {
