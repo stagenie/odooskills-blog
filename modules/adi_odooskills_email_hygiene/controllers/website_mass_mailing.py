@@ -40,4 +40,15 @@ class MassMailControllerHygiene(MassMailController):
                         status, REJECT_MESSAGES_FR['syntax_ko']
                     ),
                 }
+
+            # Anti-doublon concurrent : sérialise les POST simultanés du même
+            # email (double-clic, double-fire JS). Verrou transactionnel PG
+            # relâché au COMMIT ; ne bloque que ce même email. Le search-then-
+            # create natif s'exécute alors après le COMMIT du racer gagnant et
+            # réutilise le contact existant au lieu d'en recréer un.
+            normalized = (value or '').strip().lower()
+            if normalized:
+                request.env.cr.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))", (normalized,)
+                )
         return super().subscribe(list_id, value, subscription_type, **post)

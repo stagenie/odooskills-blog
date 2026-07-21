@@ -51,6 +51,13 @@ class OskiLeadCapture(models.AbstractModel):
         if email.split('@')[-1] in self._disposable_domains():
             return {'ok': False, 'error': 'disposable', 'pdf_url': None, 'new': False}
 
+        # Anti-doublon concurrent : deux POST simultanés du même email
+        # (double-clic sur le popup) racaient le search-then-create ci-dessous
+        # et créaient deux fois le partner ET le mailing.contact. Ce verrou
+        # transactionnel PG (relâché au COMMIT, propre à cet email) sérialise
+        # les deux : le second voit l'enregistrement du premier et le réutilise.
+        self.env.cr.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (email,))
+
         Partner = self.env['res.partner'].sudo()
         partner = Partner.search([('email', '=ilike', email)], limit=1)
         if not partner:
@@ -114,6 +121,8 @@ class OskiLeadCapture(models.AbstractModel):
         email = (email or '').strip().lower()
         if not _EMAIL_RE.match(email):
             return False
+        # Même garde anti-doublon concurrent que _oski_capture_lead.
+        self.env.cr.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (email,))
         partner = self.env['res.partner'].sudo().search(
             [('email', '=ilike', email)], limit=1)
         MC = self.env['mailing.contact'].sudo()

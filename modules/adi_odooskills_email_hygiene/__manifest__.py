@@ -1,6 +1,6 @@
 {
     'name': "OdooSkills - Email Hygiene Validation",
-    'version': '19.0.1.1.0',
+    'version': '19.0.1.2.0',
     'category': 'Marketing/Email Marketing',
     'summary': "Server-side validation of subscriber emails on lead-magnet forms",
     'description': """
