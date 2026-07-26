@@ -1,0 +1,21 @@
+{
+    'name': 'Invoice Reminder',
+    'version': '19.0.1.0.0',
+    'category': 'Accounting',
+    'summary': 'Relance automatique des factures echues',
+    'description': "Module vitrine servant d'exemple pour la publication sur l'Odoo Apps Store.",
+    'author': 'OdooSkills',
+    'website': 'https://www.odooskills.com',
+    'license': 'OPL-1',
+    'depends': ['base'],
+    'images': [
+        'static/description/icon.png',
+        'images/main_screenshot.png',
+    ],
+    'price': 49.00,
+    'currency': 'EUR',
+    'support': 'support@odooskills.com',
+    'live_test_url': 'https://demo.odooskills.com',
+    'installable': True,
+    'application': True,
+}
