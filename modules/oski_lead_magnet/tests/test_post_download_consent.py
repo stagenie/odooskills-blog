@@ -31,7 +31,14 @@ class TestGrantConsentModel(TransactionCase):
         contacts = self.env['mailing.contact'].search(
             [('email', '=ilike', 'deuxfois@example.com')])
         self.assertEqual(len(contacts), 1, "pas de doublon de contact")
-        self.assertEqual(len(contacts.list_ids), 1, "pas d'inscription en double")
+        # Le contact peut appartenir à d'autres listes (oski_newsletter_global
+        # le fait entrer dans la Newsletter Globale) : ce qui se vérifie ici
+        # est l'absence de DOUBLE souscription à la liste Prospects.
+        souscriptions = self.env['mailing.subscription'].search([
+            ('contact_id', '=', contacts.id),
+            ('list_id', '=', self._liste().id),
+        ])
+        self.assertEqual(len(souscriptions), 1, "pas d'inscription en double")
 
     def test_grant_consent_email_invalide_refuse(self):
         self.assertFalse(self.Capture._oski_grant_consent('pas-un-email'))
