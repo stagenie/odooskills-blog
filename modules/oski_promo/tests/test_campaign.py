@@ -212,3 +212,33 @@ class TestOskiPromoCampaign(TransactionCase):
         camp.action_apply()
         with self.assertRaises(UserError):
             camp.date_end = '2026-08-15 00:00:00'
+
+    def test_cancel_restores_single_item(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        camp.action_cancel()
+        items = self._items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items.fixed_price, 24.0)
+        self.assertFalse(items.date_start)
+        self.assertFalse(items.date_end)
+        self.assertFalse(camp.applied)
+
+    def test_cancel_then_reapply(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        camp.action_cancel()
+        camp.action_apply()
+        self.assertEqual(len(self._items()), 3)
+
+    def test_cancel_spares_orphan_item(self):
+        orphelin = self.env['product.pricelist.item'].create({
+            'pricelist_id': self.pricelist.id,
+            'applied_on': '3_global', 'compute_price': 'fixed', 'fixed_price': 5.0})
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        camp.action_cancel()
+        self.assertTrue(orphelin.exists())

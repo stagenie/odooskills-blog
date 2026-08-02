@@ -59,8 +59,8 @@ class OskiPromoCampaign(models.Model):
             if verrouillees:
                 raise UserError(
                     "Campagne déjà appliquée (%s) : impossible d'en changer "
-                    "les dates. Annulez-la d'abord (repassez « Appliquée » à "
-                    "faux), sinon les items de prix resteraient sur les "
+                    "les dates. Annulez-la d'abord (bouton « Annuler la "
+                    "campagne »), sinon les items de prix resteraient sur les "
                     "anciennes bornes pendant que le compteur et le bandeau "
                     "afficheraient les nouvelles." % ', '.join(verrouillees.mapped('name')))
         return super().write(vals)
@@ -72,9 +72,10 @@ class OskiPromoCampaign(models.Model):
         for rec in self:
             if rec.applied:
                 raise UserError(
-                    "Campagne déjà appliquée : annulez-la avant de régénérer "
-                    "ses lignes, sinon les prix affichés et les items de liste "
-                    "de prix divergeraient.")
+                    "Campagne déjà appliquée : annulez-la (bouton « Annuler "
+                    "la campagne ») avant de régénérer ses lignes, sinon les "
+                    "prix affichés et les items de liste de prix "
+                    "divergeraient.")
             rec.line_ids.unlink()
             facteur = 1.0 - (rec.discount_percent / 100.0)
             produits = Product.search([('ebook_ids', '!=', False)])
@@ -122,7 +123,7 @@ class OskiPromoCampaign(models.Model):
                 lambda c: c.line_ids.product_tmpl_id & self.line_ids.product_tmpl_id)[:1]
             raise UserError(
                 "Campagne « %s » déjà appliquée et non terminée sur : %s. "
-                "Annulez-la d'abord (repassez « Appliquée » à faux) avant "
+                "Annulez-la d'abord (bouton « Annuler la campagne ») avant "
                 "d'appliquer celle-ci, sinon son application écraserait en "
                 "silence les items de prix encore actifs et le prix affiché "
                 "deviendrait indéterminé." % (
@@ -161,6 +162,27 @@ class OskiPromoCampaign(models.Model):
                 Item.create({**base, 'fixed_price': courant,
                              'date_start': rec.date_end + une_seconde})
             rec.applied = True
+
+    def action_cancel(self):
+        """Retour à l'état hors promotion : un item unique, sans date,
+        au prix courant."""
+        Item = self.env['product.pricelist.item']
+        for rec in self:
+            pricelist = rec._pricelist()
+            if not pricelist:
+                raise UserError(
+                    "Liste de prix EUR introuvable : impossible d'annuler "
+                    "proprement la campagne.")
+            for line in rec.line_ids:
+                produit = line.product_tmpl_id
+                courant = produit.oski_price_launch or produit.oski_price_regular
+                Item.search([('pricelist_id', '=', pricelist.id),
+                             ('product_tmpl_id', '=', produit.id)]).unlink()
+                Item.create({'pricelist_id': pricelist.id,
+                             'product_tmpl_id': produit.id,
+                             'applied_on': '1_product', 'compute_price': 'fixed',
+                             'fixed_price': courant})
+            rec.applied = False
 
     def oski_deadline_iso(self):
         """Échéance au format ISO 8601 UTC, consommée par le JS du compteur."""
