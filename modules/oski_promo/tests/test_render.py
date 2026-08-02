@@ -91,3 +91,18 @@ class TestOskiPromoRender(TransactionCase):
     def test_heritage_layout_present(self):
         vue = self.env.ref('oski_promo.banner_in_layout')
         self.assertEqual(vue.inherit_id, self.env.ref('website.layout'))
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_squelette_rend_les_prix_dynamiques(self):
+        html = str(self.env['ir.qweb']._render(
+            'oski_promo.landing_skeleton',
+            {'sku': 'TESTR-E1', 'website': self.website}))
+        self.assertIn('16,80', html)
+        self.assertIn('data-oski-price="TESTR-E1"', html)
+
+    def test_squelette_ne_contient_aucun_prix_en_dur(self):
+        """Le squelette ne doit contenir aucun montant figé, sinon il
+        recréerait la dette qu'il est censé supprimer."""
+        import re
+        arch = self.env.ref('oski_promo.landing_skeleton').arch
+        self.assertIsNone(re.search(r'\d{1,4}(?:[,.]\d{2})?\s*€', arch))
