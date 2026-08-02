@@ -63,6 +63,38 @@ class TestOskiPromoDetector(TransactionCase):
                   if f['url'] == '/test-tail']
         self.assertTrue(any(f['value'] == '19' for f in trouve))
 
+    def test_detecte_prix_dans_un_attribut(self):
+        # Un prix porté par un attribut (ex. data-price-regular sur les
+        # anciennes landing pages) est invisible au rendu textuel mais
+        # réécrit le DOM au même titre qu'un prix en clair — souvent
+        # réécrit en JS toutes les secondes. Le canal attribut doit être
+        # scanné au même titre que le texte.
+        self._page(
+            '<t name="P"><div><span class="lp-ebook-price" '
+            'data-price-launch="16,80 €" data-price-regular="24 €">'
+            '16,80 €</span></div></t>',
+            '/test-attribut')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-attribut']
+        self.assertTrue(any(f['channel'] == 'attribut' and f['value'] == '24'
+                             for f in trouve))
+        self.assertTrue(any(f['channel'] == 'attribut' and f['value'] == '16,80'
+                             for f in trouve))
+
+    def test_ignore_les_attributs_du_bloc_tarif(self):
+        # data-after / data-barre / data-after-value / data-oski-price
+        # sont recalculés à chaque rendu par oski_price() : ce ne sont pas
+        # des prix en dur, même logique d'exclusion que pour le texte du
+        # bloc.
+        self._page(
+            '<t name="P"><div><span data-oski-price="EBOOK-E1" '
+            'data-after="16,80" data-barre="27.0" data-after-value="16.8">'
+            '<span>27 €</span><span>16,80 €</span></span></div></t>',
+            '/test-bloc-attribut')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-bloc-attribut']
+        self.assertFalse(any(f['channel'] == 'attribut' for f in trouve))
+
     def test_page_cassee_n_empeche_pas_le_scan_des_autres(self):
         # Une page à l'arch non parsable ne doit pas interrompre le scan
         # des pages suivantes. ir.ui.view valide l'XML à l'écriture, donc

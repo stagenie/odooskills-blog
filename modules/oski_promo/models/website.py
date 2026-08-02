@@ -39,9 +39,23 @@ class Website(models.Model):
     _OSKI_PRICE_RE = re.compile(
         r'(?<![\d,.])(\d{1,4}(?:[,.]\d{2})?)\s*(?:\xa0|&nbsp;)?\s*€')
 
+    # Attributs des blocs tarif dynamiques (oski_promo.price_block) : leur
+    # valeur n'est pas une dette, elle est recalculée à chaque rendu par
+    # oski_price(). Ne jamais les signaler — même logique d'exclusion que
+    # pour le texte du bloc, qui est déjà retiré de l'arbre ci-dessous.
+    _OSKI_ATTRS_DYNAMIQUES = frozenset((
+        'data-oski-price', 'data-after', 'data-barre', 'data-after-value',
+    ))
+
     @api.model
     def oski_scan_hardcoded_prices(self):
         """Prix écrits en dur dans les pages, hors bloc tarif.
+
+        Scanne deux canaux : le texte des nœuds et leurs attributs. Un prix
+        porté par un attribut (ex. data-price-regular, data-r) est invisible
+        au rendu textuel mais réécrit le DOM au même titre qu'un prix en
+        clair — souvent réécrit par un script JS toutes les secondes, ce qui
+        rend une conversion partielle (texte seul) inopérante en silence.
 
         Ne bloque rien : rend une liste de signalements. Une régression
         silencieuse devient une régression visible.
@@ -85,5 +99,22 @@ class Website(models.Model):
                     'url': page.url,
                     'value': trouve.group(1),
                     'excerpt': texte[debut:trouve.end() + 20],
+                    'channel': 'texte',
                 })
+            # Canal attribut : les blocs tarif dynamiques ont déjà été
+            # retirés de l'arbre ci-dessus, mais on exclut explicitement
+            # leurs attributs par nom pour rester correct si un jour un
+            # attribut dynamique apparaît sur un nœud non retiré.
+            for noeud in arbre.iter():
+                for nom_attr, valeur_attr in noeud.attrib.items():
+                    if nom_attr in self._OSKI_ATTRS_DYNAMIQUES:
+                        continue
+                    for trouve in self._OSKI_PRICE_RE.finditer(valeur_attr):
+                        signalements.append({
+                            'page_id': page.id,
+                            'url': page.url,
+                            'value': trouve.group(1),
+                            'excerpt': '%s=%s' % (nom_attr, valeur_attr),
+                            'channel': 'attribut',
+                        })
         return signalements
