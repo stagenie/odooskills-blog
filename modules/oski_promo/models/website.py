@@ -1,3 +1,7 @@
+import re
+
+from lxml import etree
+
 from odoo import api, fields, models
 
 
@@ -27,3 +31,39 @@ class Website(models.Model):
             ('applied', '=', True), ('active', '=', True),
             ('date_start', '<=', now), ('date_end', '>=', now),
         ], limit=1)
+
+    # Un montant suivi d'un symbole euro, avec ou sans décimales.
+    _OSKI_PRICE_RE = re.compile(
+        r'(?<![\d,.])(\d{1,4}(?:[,.]\d{2})?)\s*(?:\xa0|&nbsp;)?\s*€')
+
+    @api.model
+    def oski_scan_hardcoded_prices(self):
+        """Prix écrits en dur dans les pages, hors bloc tarif.
+
+        Ne bloque rien : rend une liste de signalements. Une régression
+        silencieuse devient une régression visible.
+        """
+        signalements = []
+        pages = self.env['website.page'].sudo().search([])
+        for page in pages:
+            arch = page.view_id.arch or ''
+            if not arch.strip():
+                continue
+            try:
+                arbre = etree.fromstring(arch)
+            except etree.XMLSyntaxError:
+                continue
+            # Les blocs tarif sont dynamiques : leur contenu n'est pas une dette.
+            for noeud in arbre.xpath('//*[@data-oski-price]'):
+                noeud.getparent().remove(noeud)
+            texte = ' '.join(etree.tostring(
+                arbre, encoding='unicode', method='text').split())
+            for trouve in self._OSKI_PRICE_RE.finditer(texte):
+                debut = max(0, trouve.start() - 60)
+                signalements.append({
+                    'page_id': page.id,
+                    'url': page.url,
+                    'value': trouve.group(1),
+                    'excerpt': texte[debut:trouve.end() + 20],
+                })
+        return signalements
