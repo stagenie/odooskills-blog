@@ -242,3 +242,14 @@ class TestOskiPromoCampaign(TransactionCase):
         camp.action_apply()
         camp.action_cancel()
         self.assertTrue(orphelin.exists())
+
+    def test_action_view_mode_uses_list(self):
+        """« tree » n'existe plus en v19 : l'action planterait au chargement."""
+        action = self.env.ref('oski_promo.action_campaign')
+        self.assertEqual(action.view_mode, 'list,form')
+
+    def test_form_view_loads(self):
+        camp = self._campaign()
+        vue = self.env.ref('oski_promo.view_campaign_form')
+        arch = camp.get_view(vue.id, 'form')['arch']
+        self.assertIn('label_public', arch)

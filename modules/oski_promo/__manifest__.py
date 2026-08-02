@@ -10,6 +10,7 @@
     'data': [
         'security/ir.model.access.csv',
         'views/templates.xml',
+        'views/oski_promo_campaign_views.xml',
     ],
     'assets': {
         'web.assets_frontend': [
