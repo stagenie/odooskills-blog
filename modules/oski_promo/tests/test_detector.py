@@ -1,3 +1,5 @@
+import json
+
 from odoo.tests import TransactionCase, tagged
 
 
@@ -47,3 +49,36 @@ class TestOskiPromoDetector(TransactionCase):
         self.assertEqual(len(trouve), 1)
         self.assertIn('11', trouve[0]['value'])
         self.assertIn('Économisez', trouve[0]['excerpt'])
+
+    def test_detecte_prix_juste_apres_un_bloc_tarif(self):
+        # Le texte qui suit un bloc tarif (.tail en lxml) ne doit pas
+        # disparaître avec lui quand le nœud est retiré de l'arbre.
+        self._page(
+            '<t name="P"><div><p>Prix normal :'
+            '<span data-oski-price="EBOOK-E1">'
+            '<span>27 €</span><span>24 €</span></span>'
+            ' Offre valable jusqu\'au 15 août à 19 € !</p></div></t>',
+            '/test-tail')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-tail']
+        self.assertTrue(any(f['value'] == '19' for f in trouve))
+
+    def test_page_cassee_n_empeche_pas_le_scan_des_autres(self):
+        # Une page à l'arch non parsable ne doit pas interrompre le scan
+        # des pages suivantes. ir.ui.view valide l'XML à l'écriture, donc
+        # on corrompt arch_db directement en base pour simuler un arch
+        # réellement illisible (cas d'une déclaration XML mal supportée
+        # par lxml.etree.fromstring sur une chaîne unicode, entre autres).
+        page_cassee = self._page(
+            '<t name="P"><div><p>Provisoire</p></div></t>', '/test-cassee')
+        self.env.cr.execute(
+            "UPDATE ir_ui_view SET arch_db = %s WHERE id = %s",
+            (json.dumps({'en_US': '<?xml version="1.0" encoding="utf-8"?>'
+                                   '<t name="P"><p>Incomplet'}),
+             page_cassee.view_id.id))
+        page_cassee.view_id.invalidate_recordset(['arch_db', 'arch'])
+
+        self._page('<t name="P"><div><p>Accès complet à 24 €.</p></div></t>',
+                   '/test-apres-cassee')
+        trouve = self.website.oski_scan_hardcoded_prices()
+        self.assertTrue(any(f['url'] == '/test-apres-cassee' for f in trouve))

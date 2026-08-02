@@ -1,8 +1,11 @@
+import logging
 import re
 
 from lxml import etree
 
 from odoo import api, fields, models
+
+_logger = logging.getLogger(__name__)
 
 
 class Website(models.Model):
@@ -51,13 +54,30 @@ class Website(models.Model):
                 continue
             try:
                 arbre = etree.fromstring(arch)
-            except etree.XMLSyntaxError:
+                # Les blocs tarif sont dynamiques : leur contenu n'est pas
+                # une dette. On réattache le texte qui les suit (.tail)
+                # avant de les retirer, sinon lxml l'emporte avec le nœud.
+                for noeud in arbre.xpath('//*[@data-oski-price]'):
+                    parent = noeud.getparent()
+                    if parent is None:
+                        continue
+                    if noeud.tail:
+                        precedent = noeud.getprevious()
+                        if precedent is not None:
+                            precedent.tail = (
+                                (precedent.tail or '') + noeud.tail)
+                        else:
+                            parent.text = (parent.text or '') + noeud.tail
+                    parent.remove(noeud)
+                texte = ' '.join(etree.tostring(
+                    arbre, encoding='unicode', method='text').split())
+            except Exception as exc:
+                # Une page illisible ne doit pas faire taire le scan des
+                # autres : on le signale et on continue.
+                _logger.warning(
+                    "oski_scan_hardcoded_prices : page %s ignorée (%s)",
+                    page.url, exc)
                 continue
-            # Les blocs tarif sont dynamiques : leur contenu n'est pas une dette.
-            for noeud in arbre.xpath('//*[@data-oski-price]'):
-                noeud.getparent().remove(noeud)
-            texte = ' '.join(etree.tostring(
-                arbre, encoding='unicode', method='text').split())
             for trouve in self._OSKI_PRICE_RE.finditer(texte):
                 debut = max(0, trouve.start() - 60)
                 signalements.append({
