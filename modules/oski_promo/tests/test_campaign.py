@@ -105,3 +105,76 @@ class TestOskiPromoCampaign(TransactionCase):
         camp.applied = True
         with self.assertRaises(UserError):
             camp.action_generate_lines()
+
+    def _items(self, produit=None):
+        return self.env['product.pricelist.item'].search([
+            ('pricelist_id', '=', self.pricelist.id),
+            ('product_tmpl_id', '=', (produit or self.mono).id)])
+
+    def _prix_a(self, date):
+        return self.pricelist._get_product_price(
+            self.mono.product_variant_id, 1.0, date=date)
+
+    def test_apply_creates_three_items(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        self.assertEqual(len(self._items()), 3)
+        self.assertTrue(camp.applied)
+
+    def test_apply_price_before_during_after(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        self.assertEqual(self._prix_a('2026-07-01 12:00:00'), 24.0)
+        self.assertEqual(self._prix_a('2026-08-01 12:00:00'), 16.80)
+        self.assertEqual(self._prix_a('2026-08-03 12:00:00'), 24.0)
+
+    def test_apply_never_two_active_items(self):
+        """Aucune date ne doit voir deux items actifs : le prix serait ambigu."""
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        dates = ['2026-07-01 00:00:00', '2026-07-29 23:59:59',
+                 '2026-07-30 00:00:00', '2026-08-01 00:00:00',
+                 '2026-08-02 22:00:00', '2026-08-02 22:00:01',
+                 '2026-09-01 00:00:00']
+        for date in dates:
+            actifs = self._items().filtered(
+                lambda i: (not i.date_start or fields.Datetime.to_string(i.date_start) <= date)
+                and (not i.date_end or fields.Datetime.to_string(i.date_end) >= date))
+            self.assertEqual(len(actifs), 1, "prix ambigu au %s" % date)
+
+    def test_apply_is_idempotent(self):
+        """Deux applications successives laissent trois items, pas six."""
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        camp.action_apply()
+        self.assertEqual(len(self._items()), 3)
+
+    def test_apply_refuses_overlapping_campaign(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        autre = self._campaign(name='Chevauchante',
+                               date_start='2026-08-01 00:00:00',
+                               date_end='2026-08-10 00:00:00')
+        autre.action_generate_lines()
+        with self.assertRaises(UserError):
+            autre.action_apply()
+
+    def test_apply_refuses_without_lines(self):
+        camp = self._campaign()
+        with self.assertRaises(UserError):
+            camp.action_apply()
+
+    def test_apply_spares_orphan_item(self):
+        """Un item sans produit (il en existe un en prod) doit survivre."""
+        orphelin = self.env['product.pricelist.item'].create({
+            'pricelist_id': self.pricelist.id,
+            'applied_on': '3_global', 'compute_price': 'fixed', 'fixed_price': 5.0})
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        self.assertTrue(orphelin.exists())

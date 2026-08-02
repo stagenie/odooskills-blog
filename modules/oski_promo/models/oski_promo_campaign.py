@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
@@ -73,6 +75,62 @@ class OskiPromoCampaign(models.Model):
                 })
                 for produit in produits
             ]
+
+    def _pricelist(self):
+        """Liste de prix EUR déclarée en paramètre système."""
+        ICP = self.env['ir.config_parameter'].sudo()
+        pl_id = int(ICP.get_param('oski.pricing.eur_pricelist_id') or 0)
+        return self.env['product.pricelist'].browse(pl_id).exists()
+
+    def _check_no_overlap(self):
+        """Deux campagnes appliquées sur un même produit à la même période
+        produiraient deux items actifs, donc un prix indéterminé."""
+        self.ensure_one()
+        autres = self.search([
+            ('id', '!=', self.id), ('applied', '=', True),
+            ('date_start', '<=', self.date_end), ('date_end', '>=', self.date_start),
+        ])
+        collision = autres.line_ids.product_tmpl_id & self.line_ids.product_tmpl_id
+        if collision:
+            raise UserError(
+                "Campagne « %s » en conflit sur : %s. Deux promotions "
+                "simultanées sur un même produit rendraient le prix appliqué "
+                "indéterminé." % (
+                    autres[0].name,
+                    ', '.join(collision.mapped('display_name'))))
+
+    def action_apply(self):
+        """Couvre toute la ligne du temps par trois items exclusifs :
+        courant → promo → courant. Le repli est le prix COURANT, pas le barré."""
+        Item = self.env['product.pricelist.item']
+        for rec in self:
+            if not rec.line_ids:
+                raise UserError("Campagne sans ligne : rien à appliquer.")
+            pricelist = rec._pricelist()
+            if not pricelist:
+                raise UserError(
+                    "Liste de prix EUR introuvable : renseignez le paramètre "
+                    "système « oski.pricing.eur_pricelist_id ».")
+            rec._check_no_overlap()
+            une_seconde = timedelta(seconds=1)
+            for line in rec.line_ids:
+                produit = line.product_tmpl_id
+                courant = produit.oski_price_launch or produit.oski_price_regular
+                # On ne purge que les items du produit : l'item global de la
+                # liste (sans produit) n'appartient pas à la campagne.
+                Item.search([('pricelist_id', '=', pricelist.id),
+                             ('product_tmpl_id', '=', produit.id)]).unlink()
+                base = {'pricelist_id': pricelist.id,
+                        'product_tmpl_id': produit.id,
+                        'applied_on': '1_product', 'compute_price': 'fixed'}
+                Item.create({**base, 'fixed_price': courant,
+                             'date_end': rec.date_start - une_seconde})
+                Item.create({**base, 'fixed_price': line.price_promo,
+                             'date_start': rec.date_start,
+                             'date_end': rec.date_end})
+                Item.create({**base, 'fixed_price': courant,
+                             'date_start': rec.date_end + une_seconde})
+            rec.applied = True
 
     def oski_deadline_iso(self):
         """Échéance au format ISO 8601 UTC, consommée par le JS du compteur."""
