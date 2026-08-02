@@ -33,6 +33,18 @@ function eteindre(el) {
     if (apres && paye) {
         paye.textContent = apres + " €";
     }
+    // Le barré n'est pas propre à la campagne : il ne survit que si le
+    // prix courant après l'échéance lui reste inférieur, exactement comme
+    // le rendu serveur (info['barre'] > info['payer']). Défensif : un
+    // attribut absent ou non numérique ne retire rien.
+    const barre = parseFloat(el.dataset.barre);
+    const apresValeur = parseFloat(el.dataset.afterValue);
+    if (!Number.isNaN(barre) && !Number.isNaN(apresValeur) && barre <= apresValeur) {
+        const barreEl = el.querySelector(".oski-price-strike");
+        if (barreEl) {
+            barreEl.remove();
+        }
+    }
     delete el.dataset.deadline;
 }
 

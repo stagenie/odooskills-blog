@@ -47,6 +47,15 @@ class TestOskiPromoRender(TransactionCase):
         self.assertIn('data-after="24"', html)
         self.assertIn('oski-countdown', html)
 
+    @freeze_time('2026-08-01 12:00:00')
+    def test_bloc_pendant_promo_expose_valeurs_numeriques(self):
+        """data-barre / data-after-value : la version numérique brute que le
+        JS de Task 8 doit comparer pour décider si le barré survit à
+        l'échéance (barre <= after ⇒ le barré n'était que promotionnel)."""
+        html = str(self._render())
+        self.assertIn('data-barre="27.0"', html)
+        self.assertIn('data-after-value="24.0"', html)
+
     @freeze_time('2026-08-03 12:00:00')
     def test_bloc_apres_promo(self):
         html = str(self._render())
