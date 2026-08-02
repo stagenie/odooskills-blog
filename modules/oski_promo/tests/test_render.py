@@ -1,6 +1,14 @@
+import re
+
 from freezegun import freeze_time
 
 from odoo.tests import TransactionCase, tagged
+
+# Montant figé : chiffres + symbole € OU écriture en toutes lettres
+# (euro/euros/EUR, insensible à la casse) — un rédacteur écrit aussi
+# naturellement « 24 euros » que « 24 € ».
+OSKI_MONTANT_EN_DUR_RE = re.compile(
+    r'\d{1,4}(?:[,.]\d{1,2})?\s*(?:€|euros?\b|EUR\b)', re.IGNORECASE)
 
 
 @tagged('post_install', '-at_install')
@@ -103,6 +111,12 @@ class TestOskiPromoRender(TransactionCase):
     def test_squelette_ne_contient_aucun_prix_en_dur(self):
         """Le squelette ne doit contenir aucun montant figé, sinon il
         recréerait la dette qu'il est censé supprimer."""
-        import re
         arch = self.env.ref('oski_promo.landing_skeleton').arch
-        self.assertIsNone(re.search(r'\d{1,4}(?:[,.]\d{2})?\s*€', arch))
+        self.assertIsNone(OSKI_MONTANT_EN_DUR_RE.search(arch))
+
+    def test_garde_fou_prix_en_dur_detecte_montant_en_lettres(self):
+        """Preuve que le garde-fou ci-dessus est réellement contraignant :
+        un montant écrit en toutes lettres (sans le symbole €) doit être
+        détecté, sinon la garantie est illusoire."""
+        self.assertIsNotNone(
+            OSKI_MONTANT_EN_DUR_RE.search("la formation à 24 euros"))
