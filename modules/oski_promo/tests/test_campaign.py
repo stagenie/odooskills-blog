@@ -178,3 +178,37 @@ class TestOskiPromoCampaign(TransactionCase):
         camp.action_generate_lines()
         camp.action_apply()
         self.assertTrue(orphelin.exists())
+
+    def test_apply_price_at_exact_boundaries(self):
+        """Interroge le moteur réel _get_product_price aux quatre secondes
+        de bascule, là où une erreur de borne se manifesterait."""
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        self.assertEqual(self._prix_a('2026-07-29 23:59:59'), 24.0)
+        self.assertEqual(self._prix_a('2026-07-30 00:00:00'), 16.80)
+        self.assertEqual(self._prix_a('2026-08-02 22:00:00'), 16.80)
+        self.assertEqual(self._prix_a('2026-08-02 22:00:01'), 24.0)
+
+    def test_apply_refuses_unfinished_campaign_without_overlap(self):
+        """Deux campagnes sans aucun chevauchement de période, sur le même
+        produit : la seconde application purgerait quand même les items
+        encore actifs de la première, donc doit être refusée."""
+        camp = self._campaign(name='Septembre',
+                               date_start='2026-09-01 00:00:00',
+                               date_end='2026-09-10 00:00:00')
+        camp.action_generate_lines()
+        camp.action_apply()
+        autre = self._campaign(name='Octobre',
+                               date_start='2026-10-01 00:00:00',
+                               date_end='2026-10-10 00:00:00')
+        autre.action_generate_lines()
+        with self.assertRaises(UserError):
+            autre.action_apply()
+
+    def test_write_dates_refused_when_applied(self):
+        camp = self._campaign()
+        camp.action_generate_lines()
+        camp.action_apply()
+        with self.assertRaises(UserError):
+            camp.date_end = '2026-08-15 00:00:00'

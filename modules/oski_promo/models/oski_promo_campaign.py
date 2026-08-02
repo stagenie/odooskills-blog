@@ -53,6 +53,18 @@ class OskiPromoCampaign(models.Model):
                 raise ValidationError(
                     "La fin de campagne doit être postérieure à son début.")
 
+    def write(self, vals):
+        if 'date_start' in vals or 'date_end' in vals:
+            verrouillees = self.filtered('applied')
+            if verrouillees:
+                raise UserError(
+                    "Campagne déjà appliquée (%s) : impossible d'en changer "
+                    "les dates. Annulez-la d'abord (repassez « Appliquée » à "
+                    "faux), sinon les items de prix resteraient sur les "
+                    "anciennes bornes pendant que le compteur et le bandeau "
+                    "afficheraient les nouvelles." % ', '.join(verrouillees.mapped('name')))
+        return super().write(vals)
+
     def action_generate_lines(self):
         """Recrée une ligne par produit tarifé, au prix courant remisé.
         Les prix restent éditables ligne à ligne après coup."""
@@ -84,19 +96,37 @@ class OskiPromoCampaign(models.Model):
 
     def _check_no_overlap(self):
         """Deux campagnes appliquées sur un même produit à la même période
-        produiraient deux items actifs, donc un prix indéterminé."""
+        produiraient deux items actifs, donc un prix indéterminé — premier
+        filet, basé sur les dates des deux campagnes.
+
+        Second filet, plus large : action_apply() purge TOUS les items du
+        produit (quelle que soit la campagne qui les a posés) et les items
+        créés couvrent −∞ → +∞. Donc une campagne déjà appliquée et non
+        terminée (date_end dans le futur) doit aussi bloquer, même sans
+        chevauchement de période : sinon son application serait écrasée en
+        silence par une campagne future sur le même produit."""
         self.ensure_one()
-        autres = self.search([
+        now = fields.Datetime.now()
+        chevauchantes = self.search([
             ('id', '!=', self.id), ('applied', '=', True),
             ('date_start', '<=', self.date_end), ('date_end', '>=', self.date_start),
         ])
+        non_terminees = self.search([
+            ('id', '!=', self.id), ('applied', '=', True),
+            ('date_end', '>', now),
+        ])
+        autres = chevauchantes | non_terminees
         collision = autres.line_ids.product_tmpl_id & self.line_ids.product_tmpl_id
         if collision:
+            conflit = autres.filtered(
+                lambda c: c.line_ids.product_tmpl_id & self.line_ids.product_tmpl_id)[:1]
             raise UserError(
-                "Campagne « %s » en conflit sur : %s. Deux promotions "
-                "simultanées sur un même produit rendraient le prix appliqué "
-                "indéterminé." % (
-                    autres[0].name,
+                "Campagne « %s » déjà appliquée et non terminée sur : %s. "
+                "Annulez-la d'abord (repassez « Appliquée » à faux) avant "
+                "d'appliquer celle-ci, sinon son application écraserait en "
+                "silence les items de prix encore actifs et le prix affiché "
+                "deviendrait indéterminé." % (
+                    conflit.name,
                     ', '.join(collision.mapped('display_name'))))
 
     def action_apply(self):
