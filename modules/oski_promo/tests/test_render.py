@@ -61,3 +61,24 @@ class TestOskiPromoRender(TransactionCase):
         html = str(self._render())
         self.assertIn('oski-price-strike', html)
         self.assertIn('27', html)
+
+    def _render_banner(self):
+        return str(self.env['ir.qweb']._render(
+            'oski_promo.banner', {'website': self.website}))
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_bandeau_pendant_promo(self):
+        html = self._render_banner()
+        # t-out échappe l'apostrophe ASCII de label_public en entité HTML.
+        self.assertIn("Promotion d&#39;été", html)
+        self.assertIn('data-deadline="2026-08-02T22:00:00Z"', html)
+
+    @freeze_time('2026-08-03 12:00:00')
+    def test_bandeau_absent_apres_promo(self):
+        html = self._render_banner()
+        self.assertNotIn("Promotion d'été", html)
+        self.assertNotIn('oski-promo-banner', html)
+
+    def test_heritage_layout_present(self):
+        vue = self.env.ref('oski_promo.banner_in_layout')
+        self.assertEqual(vue.inherit_id, self.env.ref('website.layout'))
