@@ -1,5 +1,5 @@
 from odoo import api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 
 
 class OskiPromoCampaign(models.Model):
@@ -50,6 +50,29 @@ class OskiPromoCampaign(models.Model):
             if rec.date_start and rec.date_end and rec.date_end <= rec.date_start:
                 raise ValidationError(
                     "La fin de campagne doit être postérieure à son début.")
+
+    def action_generate_lines(self):
+        """Recrée une ligne par produit tarifé, au prix courant remisé.
+        Les prix restent éditables ligne à ligne après coup."""
+        Product = self.env['product.template']
+        for rec in self:
+            if rec.applied:
+                raise UserError(
+                    "Campagne déjà appliquée : annulez-la avant de régénérer "
+                    "ses lignes, sinon les prix affichés et les items de liste "
+                    "de prix divergeraient.")
+            rec.line_ids.unlink()
+            facteur = 1.0 - (rec.discount_percent / 100.0)
+            produits = Product.search([('ebook_ids', '!=', False)])
+            rec.line_ids = [
+                (0, 0, {
+                    'product_tmpl_id': produit.id,
+                    'price_promo': round(
+                        (produit.oski_price_launch or produit.oski_price_regular)
+                        * facteur, 2),
+                })
+                for produit in produits
+            ]
 
     def oski_deadline_iso(self):
         """Échéance au format ISO 8601 UTC, consommée par le JS du compteur."""
