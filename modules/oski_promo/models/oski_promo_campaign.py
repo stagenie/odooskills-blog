@@ -130,6 +130,44 @@ class OskiPromoCampaign(models.Model):
                     conflit.name,
                     ', '.join(collision.mapped('display_name'))))
 
+    def _check_prices(self):
+        """Aucun item ne doit être écrit tant qu'un prix est aberrant.
+
+        L'item de repli créé par action_apply() n'a PAS de date de fin :
+        un prix nul y survivrait à la campagne et rendrait le produit
+        gratuit pour toujours. Or action_generate_lines() enrôle tous les
+        produits tarifés, y compris un produit créé avant la saisie de ses
+        prix — c'est le revers de la découverte automatique.
+
+        Le contrôle tourne en entier AVANT toute écriture : une campagne
+        refusée ne laisse aucun item derrière elle.
+        """
+        self.ensure_one()
+        for line in self.line_ids:
+            produit = line.product_tmpl_id
+            courant = produit.oski_price_launch or produit.oski_price_regular
+            if courant <= 0:
+                raise UserError(
+                    "Prix courant absent ou négatif sur « %s » (%.2f €). "
+                    "Renseignez le prix régulier ou le prix remisé du "
+                    "produit avant d'appliquer la campagne : l'item de repli "
+                    "créé pour l'après-campagne n'a pas de date de fin, un "
+                    "prix nul y resterait pour toujours."
+                    % (produit.display_name, courant))
+            if line.price_promo <= 0:
+                raise UserError(
+                    "Prix promotionnel absent ou négatif sur « %s » (%.2f €). "
+                    "Une remise supérieure à 100 %% n'est pas applicable : "
+                    "corrigez la ligne avant d'appliquer la campagne."
+                    % (produit.display_name, line.price_promo))
+            if line.price_promo > courant:
+                raise UserError(
+                    "Prix promotionnel supérieur au prix courant sur "
+                    "« %s » : %.2f € contre %.2f €. Vérifiez la saisie "
+                    "(168 au lieu de 16,80 ?) — une campagne qui augmente "
+                    "un prix n'est pas une promotion."
+                    % (produit.display_name, line.price_promo, courant))
+
     def action_apply(self):
         """Couvre toute la ligne du temps par trois items exclusifs :
         courant → promo → courant. Le repli est le prix COURANT, pas le barré."""
@@ -143,6 +181,7 @@ class OskiPromoCampaign(models.Model):
                     "Liste de prix EUR introuvable : renseignez le paramètre "
                     "système « oski.pricing.eur_pricelist_id ».")
             rec._check_no_overlap()
+            rec._check_prices()
             une_seconde = timedelta(seconds=1)
             for line in rec.line_ids:
                 produit = line.product_tmpl_id
@@ -183,6 +222,19 @@ class OskiPromoCampaign(models.Model):
                              'applied_on': '1_product', 'compute_price': 'fixed',
                              'fixed_price': courant})
             rec.applied = False
+
+    def _oski_effective(self):
+        """La campagne accorde-t-elle RÉELLEMENT une remise en caisse ?
+
+        `applied` est un booléen écrit ; les items de liste de prix, eux,
+        peuvent avoir été écrasés depuis, notamment par le script de
+        tarification du module oski_ebook_lifecycle qui purge le même
+        espace d'items avec la même clé. On interroge donc le prix
+        appliqué, jamais le drapeau.
+        """
+        self.ensure_one()
+        return any(line.product_tmpl_id._oski_promo_effective()
+                   for line in self.line_ids)
 
     def oski_deadline_iso(self):
         """Échéance au format ISO 8601 UTC, consommée par le JS du compteur."""

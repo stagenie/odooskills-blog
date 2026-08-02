@@ -71,3 +71,30 @@ class TestOskiPriceInfo(TransactionCase):
         self.camp.active = False
         info = self.mono._oski_price_info()
         self.assertFalse(info['promo'])
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_items_ecrases_eteignent_tout_le_mobilier_promo(self):
+        """CRITICAL — `applied` peut mentir. Le script de tarification du
+        module voisin oski_ebook_lifecycle purge le même espace d'items
+        avec la même clé : après son passage, la campagne reste `applied`
+        et « running » alors que le prix facturé est redevenu le plein
+        tarif. Le mobilier promotionnel est piloté par le PRIX, jamais par
+        le drapeau — sinon le site annonce une remise que la caisse
+        n'accorde pas."""
+        self.mono._oski_apply_pricing_offer()
+        info = self.mono._oski_price_info()
+        self.assertTrue(self.camp.applied)
+        self.assertEqual(self.camp.state, 'running')
+        self.assertEqual(info['payer'], 24.0)
+        self.assertFalse(info['promo'])
+        self.assertEqual(info['deadline_iso'], '')
+        self.assertEqual(info['label'], '')
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_campagne_non_effective_ne_sort_pas_du_bandeau(self):
+        """Même cause, autre surface : le bandeau de site est alimenté par
+        website.oski_running_campaign(), qui doit lui aussi croire au prix."""
+        website = self.env['website'].search([], limit=1)
+        self.assertTrue(website.oski_running_campaign())
+        self.mono._oski_apply_pricing_offer()
+        self.assertFalse(website.oski_running_campaign())

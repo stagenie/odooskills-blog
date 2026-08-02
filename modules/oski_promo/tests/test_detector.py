@@ -95,6 +95,40 @@ class TestOskiPromoDetector(TransactionCase):
                   if f['url'] == '/test-bloc-attribut']
         self.assertFalse(any(f['channel'] == 'attribut' for f in trouve))
 
+    def test_detecte_montant_ecrit_en_toutes_lettres(self):
+        # Le détecteur de PRODUCTION doit voir « 24 euros » aussi bien que
+        # « 24 € » : sinon une page qui vante « la formation à 24 euros »
+        # rend une liste vide et délivre un quitus mensonger.
+        self._page('<t name="P"><div><p>La formation à 24 euros.</p></div></t>',
+                   '/test-euros')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-euros']
+        self.assertTrue(any(f['value'] == '24' for f in trouve))
+
+    def test_lit_les_milliers_en_entier(self):
+        # « 1 500 € » doit être lu comme 1 500, jamais comme 500 : un
+        # signalement à 500 envoie corriger un montant qui n'existe pas.
+        self._page('<t name="P"><div><p>Prestation sur mesure à 1 500 €.</p>'
+                   '</div></t>', '/test-milliers')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-milliers']
+        valeurs = {f['value'] for f in trouve}
+        self.assertIn('1 500', valeurs)
+        self.assertNotIn('500', valeurs)
+
+    def test_faux_amis_non_signales(self):
+        # « meilleur », « heure(s) », « leur », « européens » contiennent
+        # tous la séquence « eur ». Aucun ne doit être signalé, sinon le
+        # détecteur devient du bruit qu'on finit par ignorer.
+        self._page(
+            '<t name="P"><div><p>Le meilleur atelier de 14 heures pour les '
+            'européens : leur montée en compétence en 3 heures par module, '
+            "et 12 leurres de moins qu'ailleurs.</p></div></t>",
+            '/test-faux-amis')
+        trouve = [f for f in self.website.oski_scan_hardcoded_prices()
+                  if f['url'] == '/test-faux-amis']
+        self.assertEqual(trouve, [])
+
     def test_page_cassee_n_empeche_pas_le_scan_des_autres(self):
         # Une page à l'arch non parsable ne doit pas interrompre le scan
         # des pages suivantes. ir.ui.view valide l'XML à l'écriture, donc

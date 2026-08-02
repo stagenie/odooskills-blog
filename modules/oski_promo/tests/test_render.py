@@ -1,14 +1,12 @@
-import re
-
 from freezegun import freeze_time
 
 from odoo.tests import TransactionCase, tagged
 
-# Montant figé : chiffres + symbole € OU écriture en toutes lettres
-# (euro/euros/EUR, insensible à la casse) — un rédacteur écrit aussi
-# naturellement « 24 euros » que « 24 € ».
-OSKI_MONTANT_EN_DUR_RE = re.compile(
-    r'\d{1,4}(?:[,.]\d{1,2})?\s*(?:€|euros?\b|EUR\b)', re.IGNORECASE)
+# Le garde-fou des tests et le détecteur de production doivent parler du
+# MÊME filet. On IMPORTE donc le motif au lieu de le recopier : une copie
+# diverge, et le quitus « liste vide » du détecteur devient mensonger sans
+# qu'aucun test ne tombe.
+from odoo.addons.oski_promo.models.website import OSKI_PRICE_RE
 
 
 @tagged('post_install', '-at_install')
@@ -112,11 +110,48 @@ class TestOskiPromoRender(TransactionCase):
         """Le squelette ne doit contenir aucun montant figé, sinon il
         recréerait la dette qu'il est censé supprimer."""
         arch = self.env.ref('oski_promo.landing_skeleton').arch
-        self.assertIsNone(OSKI_MONTANT_EN_DUR_RE.search(arch))
+        self.assertIsNone(OSKI_PRICE_RE.search(arch))
+
+    def test_squelette_documente_la_pose_du_sku(self):
+        """La consigne « poser t-set sku en tête de page » ne doit pas
+        vivre uniquement dans le README : celui qui duplique le template
+        lit le template."""
+        arch = self.env.ref('oski_promo.landing_skeleton').arch
+        self.assertIn('t-set="sku"', arch)
 
     def test_garde_fou_prix_en_dur_detecte_montant_en_lettres(self):
         """Preuve que le garde-fou ci-dessus est réellement contraignant :
         un montant écrit en toutes lettres (sans le symbole €) doit être
         détecté, sinon la garantie est illusoire."""
         self.assertIsNotNone(
-            OSKI_MONTANT_EN_DUR_RE.search("la formation à 24 euros"))
+            OSKI_PRICE_RE.search("la formation à 24 euros"))
+
+    def test_dict_neutre_a_les_memes_cles_que_le_resolveur(self):
+        """Le dict de repli d'oski_price() est recopié à la main depuis
+        _oski_price_info(). Toute divergence donnerait une KeyError au
+        rendu d'une page dont le sku a été mal saisi — c'est-à-dire
+        exactement le cas que le repli est censé amortir."""
+        neutre = self.website.oski_price('NEXISTE-PAS')
+        reel = self.website.oski_price('TESTR-E1')
+        self.assertEqual(set(neutre), set(reel))
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_bloc_et_bandeau_muets_si_items_ecrases(self):
+        """CRITICAL — le module lifecycle écrit le même espace d'items avec
+        la même purge. Rejouer sa tarification pendant une campagne efface
+        les items promotionnels sans rien écrire côté campagne : `applied`
+        reste vrai, `state` reste « running », mais la caisse encaisse de
+        nouveau le plein tarif. Ni bandeau, ni libellé, ni compteur, ni
+        barré promotionnel ne doivent survivre à ça."""
+        self.mono._oski_apply_pricing_offer()
+        self.assertTrue(self.camp.applied)
+        self.assertEqual(self.camp.state, 'running')
+
+        html = str(self._render())
+        self.assertNotIn('16,80', html)
+        self.assertNotIn('data-deadline', html)
+        self.assertNotIn('oski-countdown', html)
+
+        bandeau = self._render_banner()
+        self.assertNotIn('oski-promo-banner', bandeau)
+        self.assertNotIn("Promotion d&#39;été", bandeau)

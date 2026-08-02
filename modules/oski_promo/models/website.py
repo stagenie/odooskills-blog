@@ -7,6 +7,37 @@ from odoo import api, fields, models
 
 _logger = logging.getLogger(__name__)
 
+# Séparateurs de milliers rencontrés dans les pages : espace normale,
+# insécable (U+00A0), insécable fine (U+202F), fine (U+2009). Sans eux,
+# « 1 500 € » n'est lu que comme « 500 » — le lookbehind ne franchit pas
+# l'espace et seul le dernier groupe de chiffres est capturé.
+_OSKI_ESPACE_MILLIERS = '[ \\u00a0\\u202f\\u2009]'
+
+# Blanc admis entre le montant et sa marque monétaire. Volontairement sans
+# saut de ligne : « Chapitre 3 \n Euro… » n'est pas un prix.
+_OSKI_BLANC = r'(?:&nbsp;|[ \t\u00a0\u202f\u2009])*'
+
+#: Un montant figé : chiffres suivis d'une marque monétaire, soit le
+#: symbole €, soit la forme littérale euro/euros/EUR (insensible à la
+#: casse) — un rédacteur écrit aussi naturellement « 24 euros » que
+#: « 24 € ». Une ou deux décimales, séparateur de milliers lu en entier.
+#:
+#: Motif UNIQUE du chantier : le détecteur de production et le garde-fou
+#: des tests doivent parler du même filet, sinon le quitus « liste vide »
+#: est mensonger. Les tests l'IMPORTENT, ils ne le recopient pas.
+#:
+#: Faux amis tenus dehors : « meilleur », « heure », « leur »,
+#: « européens », « 14 heures » — l'exigence d'un chiffre en tête écarte
+#: les trois premiers, le \b final écarte « européens », et « heures »
+#: ne commence par aucune des marques.
+OSKI_PRICE_RE = re.compile(
+    r'(?<![\d,.])'
+    r'(\d{1,3}(?:' + _OSKI_ESPACE_MILLIERS + r'\d{3})+(?:[,.]\d{1,2})?'
+    r'|\d{1,4}(?:[,.]\d{1,2})?)'
+    + _OSKI_BLANC +
+    r'(?:€|euros?\b|eur\b)',
+    re.IGNORECASE)
+
 
 class Website(models.Model):
     _inherit = 'website'
@@ -28,16 +59,24 @@ class Website(models.Model):
 
     @api.model
     def oski_running_campaign(self):
-        """Campagne en cours, tous produits confondus : alimente le bandeau."""
+        """Campagne en cours, tous produits confondus : alimente le bandeau.
+
+        Une campagne dont les items de liste de prix ont été écrasés (voir
+        product_template._oski_promo_effective) n'est pas en cours : elle
+        est marquée `applied` mais n'accorde plus rien. Le bandeau doit
+        alors disparaître au même titre que le compteur — annoncer une
+        remise pendant que la caisse encaisse le plein tarif est le seul
+        défaut que ce module ne peut pas se permettre.
+        """
         now = fields.Datetime.now()
-        return self.env['oski.promo.campaign'].sudo().search([
+        campagnes = self.env['oski.promo.campaign'].sudo().search([
             ('applied', '=', True), ('active', '=', True),
             ('date_start', '<=', now), ('date_end', '>=', now),
-        ], limit=1)
-
-    # Un montant suivi d'un symbole euro, avec ou sans décimales.
-    _OSKI_PRICE_RE = re.compile(
-        r'(?<![\d,.])(\d{1,4}(?:[,.]\d{2})?)\s*(?:\xa0|&nbsp;)?\s*€')
+        ])
+        for campagne in campagnes:
+            if campagne._oski_effective():
+                return campagne
+        return self.env['oski.promo.campaign'].sudo().browse()
 
     # Attributs des blocs tarif dynamiques (oski_promo.price_block) : leur
     # valeur n'est pas une dette, elle est recalculée à chaque rendu par
@@ -92,7 +131,7 @@ class Website(models.Model):
                     "oski_scan_hardcoded_prices : page %s ignorée (%s)",
                     page.url, exc)
                 continue
-            for trouve in self._OSKI_PRICE_RE.finditer(texte):
+            for trouve in OSKI_PRICE_RE.finditer(texte):
                 debut = max(0, trouve.start() - 60)
                 signalements.append({
                     'page_id': page.id,
@@ -109,7 +148,7 @@ class Website(models.Model):
                 for nom_attr, valeur_attr in noeud.attrib.items():
                     if nom_attr in self._OSKI_ATTRS_DYNAMIQUES:
                         continue
-                    for trouve in self._OSKI_PRICE_RE.finditer(valeur_attr):
+                    for trouve in OSKI_PRICE_RE.finditer(valeur_attr):
                         signalements.append({
                             'page_id': page.id,
                             'url': page.url,
