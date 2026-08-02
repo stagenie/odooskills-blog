@@ -11,6 +11,12 @@
         'security/ir.model.access.csv',
         'views/templates.xml',
     ],
+    'assets': {
+        'web.assets_frontend': [
+            'oski_promo/static/src/scss/oski_promo.scss',
+            'oski_promo/static/src/js/oski_promo_countdown.js',
+        ],
+    },
     'installable': True,
     'application': False,
 }
