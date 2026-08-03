@@ -20,8 +20,13 @@ function formatReste(ms) {
 }
 
 function eteindre(el) {
-    // Le bandeau disparaît entièrement.
-    if (el.classList.contains("oski-promo-banner")) {
+    // Le bandeau disparaît entièrement — comme tout élément qui n'a de
+    // raison d'être que pendant la campagne. Les pages converties marquent
+    // ainsi leur compte à rebours et leur bandeau de lancement : ils ne
+    // sont plus masqués par un script propre à la page, ils sont retirés
+    // par celui du module.
+    if (el.classList.contains("oski-promo-banner") ||
+        el.hasAttribute("data-oski-promo-only")) {
         el.remove();
         return;
     }
@@ -32,6 +37,15 @@ function eteindre(el) {
     const paye = el.querySelector(".oski-price-pay");
     if (apres && paye) {
         paye.textContent = apres + " €";
+    } else if (el.dataset.afterText && !paye) {
+        // Une page qui garde son propre balisage tarifaire n'a pas de
+        // .oski-price-pay à alimenter : elle publie le texte complet à
+        // afficher après l'échéance, séparateur et marque monétaire
+        // compris, et c'est le nœud lui-même qui le reçoit. Sans cela, la
+        // page continuerait d'afficher le prix promotionnel alors que la
+        // caisse est déjà repassée au plein tarif — exactement la faute
+        // que ce module existe pour empêcher.
+        el.textContent = el.dataset.afterText;
     }
     // Le barré n'est pas propre à la campagne : il ne survit que si le
     // prix courant après l'échéance lui reste inférieur, exactement comme
