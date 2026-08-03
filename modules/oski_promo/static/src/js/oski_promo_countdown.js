@@ -48,6 +48,20 @@ function eteindre(el) {
     delete el.dataset.deadline;
 }
 
+/**
+ * Publie la hauteur réelle du bandeau dans --oski-promo-banner-h, que le
+ * SCSS reporte sur tout ce qui est ancré en bas de page (bouton d'achat
+ * collant des landings, retour en haut, pied de page). Mesurée et non
+ * figée : un libellé long passe à la ligne sur mobile. Remise à 0 dès que
+ * le bandeau disparaît, sinon la page garderait un blanc au pied.
+ */
+function mesurerBandeau() {
+    const bandeau = document.querySelector(".oski-promo-banner");
+    const hauteur = bandeau ? bandeau.offsetHeight : 0;
+    document.documentElement.style.setProperty(
+        "--oski-promo-banner-h", hauteur + "px");
+}
+
 function tic() {
     const maintenant = Date.now();
     document.querySelectorAll("[data-deadline]").forEach((el) => {
@@ -65,6 +79,7 @@ function tic() {
             horloge.textContent = formatReste(reste);
         }
     });
+    mesurerBandeau();
 }
 
 whenReady(() => {
