@@ -116,3 +116,41 @@ class TestOskiPriceInfo(TransactionCase):
         website = self.env['website'].search([], limit=1)
         self.camp.action_cancel()
         self.assertEqual(website.oski_price_valid_until(), '2027-01-28')
+
+    def test_catalogue_separe_unites_et_packs(self):
+        """Le hub /formations se construit à partir de cette séparation :
+        les unités deviennent des cartes, les packs une ligne."""
+        website = self.env['website'].search([], limit=1)
+        pack = self.env['product.template'].create({
+            'name': 'TEST INFO PACK', 'default_code': 'TESTI-PACK',
+            'ebook_ids': [(6, 0, (self.eb1 | self.env.ref(
+                'oski_ebook_lifecycle.ebook_e2')).ids)],
+            'is_published': True, 'website_sequence': 20,
+        })
+        self.mono.write({'is_published': True, 'website_sequence': 10})
+        cat = website.oski_catalogue()
+        self.assertIn(self.mono, cat['monos'])
+        self.assertNotIn(self.mono, cat['packs'])
+        self.assertIn(pack, cat['packs'])
+        self.assertNotIn(pack, cat['monos'])
+
+    def test_catalogue_ignore_le_non_publie(self):
+        """Dépublier un produit doit le retirer du hub sans toucher la vue."""
+        website = self.env['website'].search([], limit=1)
+        self.mono.write({'is_published': True})
+        self.assertIn(self.mono, website.oski_catalogue()['monos'])
+        self.mono.write({'is_published': False})
+        self.assertNotIn(self.mono, website.oski_catalogue()['monos'])
+
+    def test_catalogue_montre_un_produit_sans_presentation(self):
+        """CRITICAL — un ebook publié dont personne n'a rempli les champs de
+        présentation doit APPARAÎTRE quand même. Le filtrer produirait le
+        pire défaut possible : un produit en vente, absent du catalogue, et
+        personne pour s'en apercevoir."""
+        website = self.env['website'].search([], limit=1)
+        nu = self.env['product.template'].create({
+            'name': 'TEST INFO NU', 'default_code': 'TESTI-NU',
+            'ebook_ids': [(6, 0, self.eb1.ids)], 'is_published': True,
+        })
+        self.assertFalse(nu.oski_hub_title)
+        self.assertIn(nu, website.oski_catalogue()['monos'])

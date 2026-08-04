@@ -16,6 +16,32 @@ def oski_fmt(value):
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
+    # Ce qu'il faut pour qu'un produit se présente tout seul dans le hub
+    # /formations. Sans ces champs, ajouter un ebook obligeait à éditer la
+    # vue à la main — et à y réintroduire des prix figés au passage.
+    #
+    # Aucun n'est obligatoire : le hub retombe sur le nom du produit, sa
+    # fiche boutique et sa description de vente. Un ebook publié apparaît
+    # donc toujours, même mal présenté. L'oubli se voit à l'écran plutôt
+    # que de faire disparaître un produit qu'on vend.
+    oski_hub_kicker = fields.Char(
+        string='Hub — surtitre',
+        help="Mot-clé au-dessus du titre de la carte (ex. « Technique »).")
+    oski_hub_title = fields.Char(
+        string='Hub — titre',
+        help="Titre de la carte. Vide : le nom du produit est utilisé.")
+    oski_hub_specs = fields.Char(
+        string='Hub — caractéristiques',
+        help="Ligne de détails (pages, chapitres, ressources). Vide : la "
+             "description de vente est utilisée.")
+    oski_hub_color = fields.Char(
+        string='Hub — couleur',
+        help="Couleur d'accent de la carte, en hexadécimal. Vide : la "
+             "couleur de marque.")
+    oski_hub_url = fields.Char(
+        string='Hub — lien',
+        help="Page de vente dédiée. Vide : la fiche boutique du produit.")
+
     def _oski_running_campaign(self):
         """Campagne appliquée et en cours couvrant ce produit, sinon vide."""
         self.ensure_one()

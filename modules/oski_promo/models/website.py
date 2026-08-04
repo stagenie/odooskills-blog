@@ -58,6 +58,30 @@ class Website(models.Model):
         info['found'] = True
         return info
 
+    @api.model
+    def oski_catalogue(self):
+        """Les produits ebook publiés, séparés en unités et en packs.
+
+        Point d'entrée du hub /formations, qui se construisait jusqu'ici
+        carte par carte dans l'arch : ajouter un ebook demandait d'éditer
+        une vue, et chaque édition réintroduisait des prix figés.
+
+        Aucun filtre sur les champs de présentation : un produit publié
+        apparaît toujours, quitte à retomber sur son nom et sa fiche
+        boutique. Un oubli de présentation doit se voir à l'écran, pas
+        faire disparaître un produit qu'on vend.
+
+        L'ordre est celui de la boutique (`website_sequence`) : une seule
+        notion d'ordre pour toutes les surfaces.
+        """
+        produits = self.env['product.template'].sudo().search(
+            [('ebook_ids', '!=', False), ('website_published', '=', True)],
+            order='website_sequence, id')
+        return {
+            'monos': produits.filtered(lambda p: not p.oski_is_pack),
+            'packs': produits.filtered(lambda p: p.oski_is_pack),
+        }
+
     #: Horizon de validité annoncé aux moteurs de recherche hors campagne.
     #: Une date lointaine écrite en dur finirait par être dépassée sans que
     #: personne ne s'en aperçoive — c'est exactement ce qui s'est produit
