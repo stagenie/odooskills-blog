@@ -98,3 +98,21 @@ class TestOskiPriceInfo(TransactionCase):
         self.assertTrue(website.oski_running_campaign())
         self.mono._oski_apply_pricing_offer()
         self.assertFalse(website.oski_running_campaign())
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_validite_annoncee_suit_l_echeance_de_campagne(self):
+        """Pendant une campagne, le prix n'est annoncé valable que jusqu'à
+        son échéance : au-delà il change, et l'annonce faite aux moteurs de
+        recherche ne vaut plus."""
+        website = self.env['website'].search([], limit=1)
+        self.assertEqual(website.oski_price_valid_until(), '2026-08-02')
+
+    @freeze_time('2026-08-01 12:00:00')
+    def test_validite_hors_campagne_est_glissante(self):
+        """Hors campagne, l'horizon glisse avec le temps. Une date écrite en
+        dur finit par être dépassée sans que personne ne le voie — c'est ce
+        qui est arrivé au priceValidUntil de deux landings, périmé depuis un
+        mois quand on l'a regardé."""
+        website = self.env['website'].search([], limit=1)
+        self.camp.action_cancel()
+        self.assertEqual(website.oski_price_valid_until(), '2027-01-28')

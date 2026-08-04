@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import timedelta
 
 from lxml import etree
 
@@ -56,6 +57,28 @@ class Website(models.Model):
         info = produit._oski_price_info()
         info['found'] = True
         return info
+
+    #: Horizon de validité annoncé aux moteurs de recherche hors campagne.
+    #: Une date lointaine écrite en dur finirait par être dépassée sans que
+    #: personne ne s'en aperçoive — c'est exactement ce qui s'est produit
+    #: sur deux landings, dont le `priceValidUntil` était périmé depuis un
+    #: mois. Une durée glissante ne peut pas pourrir.
+    OSKI_VALIDITE_JOURS = 180
+
+    @api.model
+    def oski_price_valid_until(self):
+        """Date jusqu'à laquelle le prix affiché est annoncé valable, au
+        format ISO court attendu par schema.org.
+
+        Pendant une campagne, c'est son échéance : au-delà, le prix change
+        et l'annonce ne vaut plus. Hors campagne, un horizon glissant.
+        """
+        campagne = self.oski_running_campaign()
+        if campagne:
+            return fields.Date.to_string(campagne.date_end.date())
+        horizon = fields.Date.context_today(self) + timedelta(
+            days=self.OSKI_VALIDITE_JOURS)
+        return fields.Date.to_string(horizon)
 
     @api.model
     def oski_running_campaign(self):
