@@ -88,16 +88,28 @@ class OskiMailInbox(models.Model):
     def message_update(self, msg_dict, update_vals=None):
         vals = dict(update_vals or {})
         vals['date_received'] = msg_dict.get('date') or fields.Datetime.now()
-        if self.state != 'spam':
+        blocked = self.env['oski.mail.blocklist']._is_blocked(msg_dict.get('email_from'))
+        if self.state != 'spam' and not blocked:
             # Une relance ranime le fil : on le sort d'archive et on le
             # remet en Nouveau. Un fil marqué indésirable reste indésirable
             # et archivé : c'est tout le sens du marquage, la routing ne
             # doit pas le ramener en tête de boîte.
             vals['state'] = 'new'
             vals['active'] = True
+        elif blocked:
+            # L'expéditeur a été bloqué depuis le dernier message de ce fil :
+            # une relance ne doit pas ramener une fiche non-spam en tête de
+            # boîte sous prétexte qu'elle existait déjà avant le blocage.
+            vals['state'] = 'spam'
+            vals['active'] = False
         if not self.email_message_id and msg_dict.get('message_id'):
             vals['email_message_id'] = msg_dict['message_id']
-        return super().message_update(msg_dict, update_vals=vals)
+        result = super().message_update(msg_dict, update_vals=vals)
+        if blocked:
+            # immediate=False : la relève ne doit pas dépendre d'une connexion
+            # IMAP sortante ; le cron s'en charge quelques minutes plus tard.
+            self._oski_imap_dispatch('junk', immediate=False, notify_missing_id=False)
+        return result
 
     def message_post(self, **kwargs):
         if (len(self) == 1 and self.mailbox_id.email
@@ -176,8 +188,16 @@ class OskiMailInbox(models.Model):
 
     def action_mark_spam(self):
         Blocklist = self.env['oski.mail.blocklist']
+        # Ne jamais bloquer une des boîtes du module elle-même : un mauvais
+        # clic sur un message auto-envoyé/relayé par une de nos boîtes ne
+        # doit pas nous couper de notre propre adresse, sans retour possible
+        # pour un simple utilisateur. Le déplacement en indésirable reste
+        # effectué, seule la mémorisation est sautée.
+        own_addresses = set(filter(None, (
+            email_normalize(email)
+            for email in self.env['oski.mailbox'].sudo().search([]).mapped('email'))))
         for record in self:
-            if record.email_from:
+            if record.email_from and email_normalize(record.email_from) not in own_addresses:
                 Blocklist._block(record.email_from, origin_inbox=record)
         self._oski_imap_dispatch('junk')
         self.write({'state': 'spam', 'active': False})

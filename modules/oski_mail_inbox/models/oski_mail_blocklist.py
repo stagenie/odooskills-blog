@@ -8,7 +8,7 @@ class OskiMailBlocklist(models.Model):
     _order = 'blocked_date desc, id desc'
     _rec_name = 'email'
 
-    email = fields.Char(string='Adresse', required=True, index=True)
+    email = fields.Char(string='Adresse', required=True)
     origin_inbox_id = fields.Many2one(
         'oski.mail.inbox', string='Email d\'origine', ondelete='set null', readonly=True)
     active = fields.Boolean(default=True)
@@ -39,7 +39,7 @@ class OskiMailBlocklist(models.Model):
 
     @api.model
     def _is_blocked(self, email_from):
-        normalised = email_normalize(email_from or '')
+        normalised = self._normalise(email_from)
         if not normalised:
             return False
         # sudo : la passerelle entrante s'exécute sans utilisateur applicatif.
@@ -51,7 +51,7 @@ class OskiMailBlocklist(models.Model):
 
         La contrainte UNIQUE porte sur toutes les lignes, archivées comprises :
         recréer après un déblocage échouerait."""
-        normalised = email_normalize(email_from or '')
+        normalised = self._normalise(email_from)
         if not normalised:
             return self.browse()
         existing = self.sudo().with_context(active_test=False).search(
@@ -60,8 +60,13 @@ class OskiMailBlocklist(models.Model):
             # sudo borné à la réactivation : bloquer est un geste d'utilisateur,
             # débloquer reste réservé au Manager par les droits d'accès.
             if not existing.active:
-                existing.write({'active': True})
-            return existing
+                existing.write({
+                    'active': True,
+                    'blocked_uid': self.env.user.id,
+                    'blocked_date': fields.Datetime.now(),
+                    'origin_inbox_id': origin_inbox.id if origin_inbox else False,
+                })
+            return existing.with_env(self.env)
         return self.create({
             'email': normalised,
             'origin_inbox_id': origin_inbox.id if origin_inbox else False,
