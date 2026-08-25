@@ -98,10 +98,12 @@ class TestDraft(TransactionCase):
         self.assertEqual(draft.body_html.count('data-oski-signature'), 1,
                          "changer d'expéditeur ne doit pas empiler les signatures")
         self.assertLess(
+            draft.body_html.index('<p><br'),
             draft.body_html.index('Ventes — OdooSkills'),
-            draft.body_html.index('message de test'),
-            "la signature doit rester à sa place, avant le message cité — pas "
-            "remonter en tête du corps")
+            "la signature doit rester à sa place, sous le <p><br/> initial de "
+            "_reply_body — pas remonter en tête du corps (un strip-puis-préfixe "
+            "la mettrait à l'index 0, toujours avant la citation, donc "
+            "indétectable si on ne compare qu'à la citation)")
 
     def test_signature_containing_a_div_is_removed_whole(self):
         # une expression régulière non gourmande couperait au premier </div>
@@ -115,9 +117,9 @@ class TestDraft(TransactionCase):
         self.assertIn('Ventes — OdooSkills', draft.body_html)
         self.assertEqual(draft.body_html.count('data-oski-signature'), 1)
         self.assertLess(
+            draft.body_html.index('<p><br'),
             draft.body_html.index('Ventes — OdooSkills'),
-            draft.body_html.index('message de test'),
-            "la signature doit rester à sa place, avant le message cité")
+            "la signature doit rester à sa place, sous le <p><br/> initial")
 
     def test_strip_signature_preserves_trailing_text(self):
         # node.getparent().remove(node) tout court jetterait aussi le texte
@@ -127,6 +129,20 @@ class TestDraft(TransactionCase):
         stripped = self.env['oski.mail.draft']._strip_signature(body)
         self.assertIn('Merci encore.', stripped,
                       "le texte suivant la signature ne doit pas disparaître")
+        self.assertNotIn('Support — OdooSkills', stripped)
+
+    def test_strip_signature_with_previous_sibling_preserves_trailing_text(self):
+        # même exigence, mais quand la signature n'est pas le premier enfant :
+        # _detach_node doit reporter le tail sur le frère précédent, pas sur
+        # fragment.text (l'autre branche, déjà couverte par le test ci-dessus).
+        body = ('<p>Avant la signature.</p>'
+                '<div data-oski-signature="1"><p>Support — OdooSkills</p></div>'
+                'Après la signature.')
+        stripped = self.env['oski.mail.draft']._strip_signature(body)
+        self.assertIn('Avant la signature.', stripped)
+        self.assertIn('Après la signature.', stripped,
+                      "le tail doit être reporté sur le frère précédent, "
+                      "pas perdu")
         self.assertNotIn('Support — OdooSkills', stripped)
 
     def test_signature_swap_preserves_text_typed_after_it(self):
