@@ -11,6 +11,15 @@ BACKLOG_BATCH_SIZE = 200
 IMAP_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
 
+# Noms de repli, testés par SELECT quand le serveur n'annonce pas SPECIAL-USE.
+# ASCII uniquement : un nom accentué serait encodé en IMAP-UTF-7 modifié
+# (« Indésirables » -> « Ind&AOk-sirables ») et ne se devine pas. Ces
+# serveurs-là annoncent presque toujours SPECIAL-USE.
+TRASH_CANDIDATES = ('Trash', 'INBOX.Trash', 'Deleted Items', 'Deleted Messages', 'Corbeille')
+JUNK_CANDIDATES = ('Junk', 'INBOX.Junk', 'Junk E-mail', 'Spam', 'INBOX.Spam')
+SPECIAL_USE_FLAGS = {'trash': b'\\trash', 'junk': b'\\junk'}
+FOLDER_FIELDS = {'trash': 'trash_folder', 'junk': 'junk_folder'}
+
 
 class OskiMailbox(models.Model):
     _name = 'oski.mailbox'
@@ -26,6 +35,12 @@ class OskiMailbox(models.Model):
     imap_ssl = fields.Boolean(string='SSL/TLS', default=True)
     imap_user = fields.Char(string='Utilisateur IMAP')
     imap_password = fields.Char(string='Mot de passe IMAP', groups='base.group_system')
+    trash_folder = fields.Char(
+        string='Dossier corbeille',
+        help="Laissez vide : le dossier est détecté puis mémorisé automatiquement.")
+    junk_folder = fields.Char(
+        string='Dossier indésirables',
+        help="Laissez vide : le dossier est détecté puis mémorisé automatiquement.")
     fetchmail_server_id = fields.Many2one(
         'fetchmail.server', string='Serveur entrant', readonly=True, copy=False)
     backlog_state = fields.Selection([
@@ -127,6 +142,126 @@ class OskiMailbox(models.Model):
         connection = klass(box.imap_host, box.imap_port or (993 if box.imap_ssl else 143))
         connection.login(box.imap_user, box.imap_password)
         return connection
+
+    @api.model
+    def _imap_quote(self, value):
+        """Encadre un nom de dossier ou une valeur de recherche pour IMAP."""
+        escaped = (value or '').replace('\\', '\\\\').replace('"', '\\"')
+        return '"%s"' % escaped
+
+    @api.model
+    def _imap_parse_list_name(self, line):
+        """Extrait le nom de dossier d'une ligne de réponse LIST.
+
+        Forme typique : (\\HasNoChildren \\Trash) "." "INBOX.Trash"
+        """
+        if isinstance(line, tuple):
+            line = b' '.join(part for part in line if isinstance(part, bytes))
+        text = line.decode('utf-8', 'replace').strip()
+        if text.endswith('"'):
+            start = text.rfind('"', 0, -1)
+            if start != -1:
+                return text[start + 1:-1]
+        return text.rsplit(' ', 1)[-1].strip('"')
+
+    def _imap_resolve_folder(self, connection, kind):
+        """Retourne le nom du dossier distant pour 'trash' ou 'junk'.
+
+        Ordre : valeur saisie, puis attribut SPECIAL-USE annoncé par LIST,
+        puis noms courants testés par SELECT. Le résultat est mémorisé pour
+        ne pas refaire la découverte à chaque geste."""
+        self.ensure_one()
+        field = FOLDER_FIELDS[kind]
+        if self[field]:
+            return self[field]
+
+        flag = SPECIAL_USE_FLAGS[kind]
+        status, lines = connection.list()
+        if status == 'OK':
+            for line in lines or []:
+                raw = line if isinstance(line, bytes) else b' '.join(
+                    part for part in line if isinstance(part, bytes))
+                if flag in raw.lower():
+                    name = self._imap_parse_list_name(line)
+                    if name:
+                        self.sudo().write({field: name})
+                        return name
+
+        candidates = TRASH_CANDIDATES if kind == 'trash' else JUNK_CANDIDATES
+        for name in candidates:
+            status, _data = connection.select(self._imap_quote(name), readonly=True)
+            if status == 'OK':
+                self.sudo().write({field: name})
+                return name
+
+        raise UserError(_(
+            "Aucun dossier « %(kind)s » trouvé sur %(email)s. Essayés : %(names)s. "
+            "Saisissez le nom exact dans la configuration de la boîte.",
+            kind=_('corbeille') if kind == 'trash' else _('indésirables'),
+            email=self.email, names=', '.join(candidates)))
+
+    @api.model
+    def _imap_capabilities(self, connection):
+        raw = getattr(connection, 'capabilities', ()) or ()
+        return tuple(
+            capability.decode() if isinstance(capability, bytes) else str(capability)
+            for capability in raw)
+
+    def _imap_move_message(self, connection, email_message_id, folder):
+        """Déplace un message d'INBOX vers `folder`, sans jamais purger le dossier.
+
+        Retourne 'moved', 'absent' (déjà plus là : objectif atteint) ou
+        'copied_not_purged' (serveur sans MOVE ni UIDPLUS)."""
+        self.ensure_one()
+        status, data = connection.uid(
+            'SEARCH', None, 'HEADER', 'Message-ID', self._imap_quote(email_message_id))
+        if status != 'OK':
+            raise UserError(_("Recherche IMAP en échec sur %s.", self.email))
+        uids = data[0].split() if data and data[0] else []
+        if not uids:
+            # Déjà déplacé, ou supprimé depuis le webmail. L'état visé est
+            # atteint : c'est un succès, et c'est ce qui rend la file rejouable.
+            return 'absent'
+
+        uid = uids[-1]
+        capabilities = self._imap_capabilities(connection)
+        quoted = self._imap_quote(folder)
+
+        if 'MOVE' in capabilities:
+            status, _data = connection.uid('MOVE', uid, quoted)
+            if status == 'OK':
+                return 'moved'
+
+        status, _data = connection.uid('COPY', uid, quoted)
+        if status != 'OK':
+            raise UserError(_(
+                "Copie vers %(folder)s impossible sur %(email)s.",
+                folder=folder, email=self.email))
+        connection.uid('STORE', uid, '+FLAGS', '(\\Deleted)')
+
+        if 'UIDPLUS' in capabilities:
+            # UID EXPUNGE ne purge QUE l'UID nommé (RFC 4315). Un EXPUNGE nu
+            # purgerait tous les messages \Deleted du dossier, y compris ceux
+            # marqués par un autre client au même instant.
+            status, _data = connection.uid('EXPUNGE', uid)
+            if status == 'OK':
+                return 'moved'
+
+        return 'copied_not_purged'
+
+    def action_detect_folders(self):
+        """Bouton de configuration : détecte et mémorise les deux dossiers."""
+        self.ensure_one()
+        connection = self._imap_connect()
+        try:
+            self._imap_resolve_folder(connection, 'trash')
+            self._imap_resolve_folder(connection, 'junk')
+        finally:
+            try:
+                connection.logout()
+            except Exception:
+                pass
+        return True
 
     @api.model
     def _cron_process_backlog(self):
