@@ -1,5 +1,9 @@
+import logging
+
 from odoo import api, fields, models, _
 from odoo.tools import email_normalize, formataddr
+
+_logger = logging.getLogger(__name__)
 
 
 class OskiMailInbox(models.Model):
@@ -33,6 +37,8 @@ class OskiMailInbox(models.Model):
         'oski.mail.imap.action', 'inbox_id', string='Actions distantes')
     imap_pending = fields.Boolean(
         string='Synchronisation en attente', compute='_compute_imap_pending', store=True)
+    imap_failed = fields.Boolean(
+        string='Synchronisation en échec', compute='_compute_imap_pending', store=True)
 
     @api.model
     def message_new(self, msg_dict, custom_values=None):
@@ -112,8 +118,9 @@ class OskiMailInbox(models.Model):
     def _compute_imap_pending(self):
         for record in self:
             record.imap_pending = any(
-                action.state in ('pending', 'failed')
-                for action in record.imap_action_ids)
+                action.state == 'pending' for action in record.imap_action_ids)
+            record.imap_failed = any(
+                action.state == 'failed' for action in record.imap_action_ids)
 
     def _oski_imap_dispatch(self, operation, immediate=True):
         """Enregistre l'intention de déplacer les emails côté serveur.
@@ -128,6 +135,12 @@ class OskiMailInbox(models.Model):
         actions = Action.browse()
         for record in self:
             if not (record.email_message_id and record.mailbox_id):
+                _logger.info(
+                    'Messagerie : geste %s sans identifiant de message, aucune action '
+                    'distante créée (fiche %s)', operation, record.id)
+                record.message_post(body=_(
+                    "Aucun identifiant de message : cet email n'a pas pu être déplacé "
+                    "sur le serveur."))
                 continue
             actions |= Action.create({
                 'mailbox_id': record.mailbox_id.id,
