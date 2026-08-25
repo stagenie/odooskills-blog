@@ -20,11 +20,12 @@ const REFRESH_DELAY_MAX = 30000;
  * _changes et remet dirty à false), ce qui ferait perdre à l'utilisateur
  * ce qu'il tape pendant que l'import tourne en tâche de fond.
  *
- * Elle réarme aussi son horloge à chaque transition d'état (useEffect sur
- * isImporting) : quand action_start_backlog() recharge le formulaire déjà
- * ouvert, OWL patche ce composant au lieu de le remonter (Renderer et
- * Field ne sont pas keyés), donc rien d'autre ne relancerait le minuteur
- * pour le geste « cliquer puis regarder ».
+ * Elle réarme aussi son horloge à chaque bascule du booléen isImporting
+ * (none/done <-> pending/running, via useEffect — pending -> running ne
+ * la redéclenche pas, les deux valant "true") : quand action_start_backlog()
+ * recharge le formulaire déjà ouvert, OWL patche ce composant au lieu de
+ * le remonter (Renderer et Field ne sont pas keyés), donc rien d'autre ne
+ * relancerait le minuteur pour le geste « cliquer puis regarder ».
  *
  * Enfin, l'intervalle s'élargit (5 s -> 30 s max) quand ni l'état ni le
  * compteur n'ont bougé d'un tick à l'autre : une boîte bloquée en
@@ -88,7 +89,11 @@ export class OskiBacklogGauge extends ProgressBarField {
         } catch {
             // Une jauge est un confort, pas une fonction critique : un
             // rafraîchissement en échec (réseau, session expirée...) ne
-            // doit jamais faire lever d'erreur non gérée au client.
+            // doit jamais faire lever d'erreur non gérée au client. Mais
+            // un serveur qui échoue à chaque appel doit lui aussi reculer,
+            // sinon il serait interrogé toutes les 5 s indéfiniment — la
+            // seule promesse du docstring qu'un échec pourrait rompre.
+            this.pollDelay = Math.min(this.pollDelay * 2, REFRESH_DELAY_MAX);
         } finally {
             if (!this.isDestroyed) {
                 this.scheduleRefresh();

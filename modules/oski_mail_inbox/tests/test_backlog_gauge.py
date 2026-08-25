@@ -105,3 +105,16 @@ class TestBacklogGauge(TransactionCase):
             self.box.backlog_progress, 100.0,
             "un import terminé sur une boîte sans historique ne doit pas afficher "
             "0 % à côté du badge « Terminé »")
+
+    def test_progress_reflects_a_shrunk_denominator_on_done(self):
+        # backlog_since reculé en cours de route peut faire grossir le total
+        # au-delà de ce que backlog_done_count a jamais compté (les UID déjà
+        # hors de portée ne sont pas revisités). L'état 'done' seul ne doit
+        # plus suffire à afficher 100 % : ce test aurait été vert sous
+        # l'ancien raccourci inconditionnel, il ne l'est plus.
+        self.box.write({
+            'backlog_state': 'done',
+            'backlog_total_count': 500,
+            'backlog_done_count': 305,
+        })
+        self.assertEqual(self.box.backlog_progress, 61.0)
