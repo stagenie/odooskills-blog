@@ -82,17 +82,19 @@ class OskiMailbox(models.Model):
     @api.depends('backlog_done_count', 'backlog_total_count', 'backlog_state')
     def _compute_backlog_progress(self):
         for box in self:
-            if box.backlog_state == 'done':
-                # Un import terminé affiche 100 %, même sur une boîte vide
-                # (total=0) : sans quoi la barre et le badge « Terminé »
-                # se contrediraient.
+            total = box.backlog_total_count
+            if box.backlog_state == 'done' and not total:
+                # Import terminé sur une boîte sans historique : aucun
+                # dénominateur pour calculer un pourcentage, mais la barre
+                # doit dire « terminé » comme le badge, pas 0 %.
                 box.backlog_progress = 100.0
                 continue
-            total = box.backlog_total_count
-            # Avancer `backlog_since` en cours de route peut faire retomber
-            # `total` sous `backlog_done_count` déjà écrit : le plafond à
-            # 100 % est un choix délibéré (barre pleine, badge « En cours »)
-            # plutôt qu'un pourcentage qui dépasserait 100.
+            # Reculer `backlog_since` en cours de route grossit `total` sans
+            # que les anciens UID déjà hors de portée (`> backlog_last_uid`
+            # ne les revoit plus) ne soient jamais recomptés dans
+            # `backlog_done_count` : le plafond à 100 % est un choix
+            # délibéré (barre pleine, jamais un pourcentage qui dépasse
+            # 100) — pas une prétention que tout a été traité.
             box.backlog_progress = (
                 min(100.0, box.backlog_done_count * 100.0 / total) if total else 0.0)
 
@@ -171,7 +173,14 @@ class OskiMailbox(models.Model):
             # Sans ce réarmement, le formulaire resterait figé à 'pending'
             # jusqu'au prochain passage du cron (dix minutes) : le geste
             # « cliquer puis regarder » verrait une barre immobile.
-            self.env.ref('oski_mail_inbox.ir_cron_backlog_import').sudo()._trigger()
+            # raise_if_not_found=False : un admin qui a supprimé l'action
+            # planifiée ne doit pas transformer ce bouton en traceback —
+            # l'import démarrera au prochain passage du cron s'il existe
+            # encore, sinon il ne démarrera jamais, mais silencieusement.
+            cron = self.env.ref(
+                'oski_mail_inbox.ir_cron_backlog_import', raise_if_not_found=False)
+            if cron:
+                cron.sudo()._trigger()
 
     @api.model
     def _imap_since_criteria(self, since_date):

@@ -51,10 +51,14 @@ class TestBacklogGauge(TransactionCase):
 
     def test_cron_rearms_while_running(self):
         cron = self.env.ref('oski_mail_inbox.ir_cron_backlog_import')
-        before = self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)])
         fake = FakeImap()
         fake.uids = list(range(1, 250))  # plus d'une tranche
         self.box.action_start_backlog()
+        # Échantillonné après action_start_backlog() : ce bouton arme lui
+        # aussi le cron (test_start_backlog_triggers_cron_immediately),
+        # sinon ce déclenchement-là suffirait à faire passer l'assertion
+        # même si le réarmement de fin de tranche était supprimé.
+        before = self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)])
         self._run(fake)
         self.assertEqual(self.box.backlog_state, 'running')
         after = self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)])
