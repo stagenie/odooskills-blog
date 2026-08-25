@@ -70,3 +70,34 @@ class TestBacklogGauge(TransactionCase):
         self._run(FakeImap())
         self.assertEqual(
             self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)]), before)
+
+    def test_start_backlog_triggers_cron_immediately(self):
+        cron = self.env.ref('oski_mail_inbox.ir_cron_backlog_import')
+        before = self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)])
+        self.box.action_start_backlog()
+        after = self.env['ir.cron.trigger'].search_count([('cron_id', '=', cron.id)])
+        self.assertGreater(
+            after, before,
+            "sans ce réarmement, le formulaire resterait figé sur 'pending' jusqu'au "
+            "prochain passage du cron (dix minutes) : le clic, le seul geste que "
+            "cette fonctionnalité sert, verrait une barre immobile")
+
+    def test_restart_resets_the_total(self):
+        self.box.action_start_backlog()
+        self._run(FakeImap())
+        self.box.action_start_backlog()
+        self.assertEqual(
+            self.box.backlog_total_count, 0,
+            "sans remise à zéro, le compteur lirait '0 / <total de la relance "
+            "précédente>' avant que la première tranche n'ait tourné")
+
+    def test_progress_full_on_empty_mailbox_done(self):
+        fake = FakeImap()
+        fake.uids = []
+        self.box.action_start_backlog()
+        self._run(fake)
+        self.assertEqual(self.box.backlog_state, 'done')
+        self.assertEqual(
+            self.box.backlog_progress, 100.0,
+            "un import terminé sur une boîte sans historique ne doit pas afficher "
+            "0 % à côté du badge « Terminé »")

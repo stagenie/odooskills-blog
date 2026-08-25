@@ -79,10 +79,20 @@ class OskiMailbox(models.Model):
     _email_unique = models.Constraint(
         'UNIQUE (email)', "Une boîte existe déjà avec cette adresse.")
 
-    @api.depends('backlog_done_count', 'backlog_total_count')
+    @api.depends('backlog_done_count', 'backlog_total_count', 'backlog_state')
     def _compute_backlog_progress(self):
         for box in self:
+            if box.backlog_state == 'done':
+                # Un import terminé affiche 100 %, même sur une boîte vide
+                # (total=0) : sans quoi la barre et le badge « Terminé »
+                # se contrediraient.
+                box.backlog_progress = 100.0
+                continue
             total = box.backlog_total_count
+            # Avancer `backlog_since` en cours de route peut faire retomber
+            # `total` sous `backlog_done_count` déjà écrit : le plafond à
+            # 100 % est un choix délibéré (barre pleine, badge « En cours »)
+            # plutôt qu'un pourcentage qui dépasserait 100.
             box.backlog_progress = (
                 min(100.0, box.backlog_done_count * 100.0 / total) if total else 0.0)
 
@@ -155,7 +165,13 @@ class OskiMailbox(models.Model):
                 'backlog_state': 'pending',
                 'backlog_last_uid': 0,
                 'backlog_done_count': 0,
+                'backlog_total_count': 0,
             })
+        if self:
+            # Sans ce réarmement, le formulaire resterait figé à 'pending'
+            # jusqu'au prochain passage du cron (dix minutes) : le geste
+            # « cliquer puis regarder » verrait une barre immobile.
+            self.env.ref('oski_mail_inbox.ir_cron_backlog_import').sudo()._trigger()
 
     @api.model
     def _imap_since_criteria(self, since_date):

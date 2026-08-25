@@ -96,3 +96,7 @@ class TestBacklog(TransactionCase):
             self.env['oski.mail.inbox'].search_count(
                 [('mailbox_id', '=', self.box.id)]), 5,
             "la relance complète doit être absorbée par la dédup Message-Id")
+        self.assertEqual(
+            self.box.backlog_progress, 100.0,
+            "la progression compte les messages traités, pas les fiches créées : "
+            "la dédup en écarte 5/5 ici, la jauge doit quand même finir pleine")
