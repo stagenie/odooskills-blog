@@ -306,10 +306,11 @@ class OskiMailbox(models.Model):
         chaque candidat par un FETCH d'en-tête et on ne garde que l'égalité
         exacte, pour ne jamais déplacer le mauvais message.
 
-        Si un FETCH échoue et qu'aucun autre candidat ne confirme un match
-        exact, on ne peut pas distinguer « vérifié absent » de « pas pu
-        vérifier » : mieux vaut lever que rendre 'absent', qui est un
-        succès contractuel et arrêterait la file à tort."""
+        Si un FETCH échoue, OU répond OK avec un payload que le parseur ne
+        sait pas lire (ex. forme "citée" plutôt que littérale), on ne peut
+        pas distinguer « vérifié absent » de « pas pu vérifier » : mieux
+        vaut lever que rendre 'absent', qui est un succès contractuel et
+        arrêterait la file à tort."""
         exact = []
         verification_failed = False
         for uid in uids:
@@ -318,7 +319,11 @@ class OskiMailbox(models.Model):
             if status != 'OK':
                 verification_failed = True
                 continue
-            if self._imap_header_message_id(data) == email_message_id:
+            header = self._imap_header_message_id(data)
+            if header is None:
+                verification_failed = True
+                continue
+            if header == email_message_id:
                 exact.append(uid)
         if not exact and verification_failed:
             raise UserError(_(

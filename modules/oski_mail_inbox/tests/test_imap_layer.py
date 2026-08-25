@@ -12,8 +12,8 @@ class FakeImapServer:
 
     def __init__(self, folders=None, capabilities=('IMAP4REV1',), uids_found=(7,),
                  message_ids=None, search_status='OK', fetch_status='OK',
-                 copy_status='OK', store_status='OK', move_status='OK',
-                 move_statuses=None, deny_inbox_select=False):
+                 fetch_unparseable=False, copy_status='OK', store_status='OK',
+                 move_status='OK', move_statuses=None, deny_inbox_select=False):
         self.folders = folders if folders is not None else [
             (br'(\HasNoChildren \Trash) "." "INBOX.Trash"'),
             (br'(\HasNoChildren \Junk) "." "INBOX.Junk"'),
@@ -28,6 +28,7 @@ class FakeImapServer:
         self.message_ids = dict(message_ids or {})
         self.search_status = search_status
         self.fetch_status = fetch_status
+        self.fetch_unparseable = fetch_unparseable
         self.copy_status = copy_status
         self.store_status = store_status
         self.move_status = move_status
@@ -75,6 +76,10 @@ class FakeImapServer:
         if upper == 'FETCH':
             if self.fetch_status != 'OK':
                 return self.fetch_status, [b'fetch failed']
+            if self.fetch_unparseable:
+                # OK, mais une forme "citée" plutôt que le tuple littéral
+                # attendu : le parseur d'en-tête ne doit rien en tirer.
+                return 'OK', [b'Message-ID: "cited, not literal"']
             uid = args[0]
             message_id = self.message_ids.get(uid, self._last_search_value)
             header = ('Message-ID: %s\r\n\r\n' % message_id).encode()
@@ -403,3 +408,21 @@ class TestImapLayer(TransactionCase):
         fake = FakeImapServer(uids_found=(7,), fetch_status='NO')
         with self.assertRaises(UserError):
             self.box._imap_move_message(fake, '<abc@example.com>', 'INBOX.Trash')
+
+    def test_fetch_unparseable_payload_raises_user_error_instead_of_reporting_absent(self):
+        # FETCH répond OK mais avec un payload que le parseur ne sait pas
+        # lire (forme "citée" plutôt que littérale) : ni confirmé ni
+        # écarté, donc pas 'absent' — même raisonnement que pour un FETCH
+        # qui échoue franchement.
+        fake = FakeImapServer(uids_found=(7,), fetch_unparseable=True)
+        with self.assertRaises(UserError):
+            self.box._imap_move_message(fake, '<abc@example.com>', 'INBOX.Trash')
+
+    # -- bout en bout avec un délimiteur / dans le nom de destination -------
+    def test_move_encodes_slash_bearing_gmail_folder_name(self):
+        # Les dossiers spéciaux de Gmail s'appellent littéralement
+        # "[Gmail]/Trash" : le / doit atteindre le fil intact.
+        fake = FakeImapServer(capabilities=('IMAP4REV1', 'MOVE'))
+        result = self.box._imap_move_message(fake, '<abc@example.com>', '[Gmail]/Trash')
+        self.assertEqual(result, 'moved')
+        self.assertEqual(fake.moved_to, ['"[Gmail]/Trash"'])
