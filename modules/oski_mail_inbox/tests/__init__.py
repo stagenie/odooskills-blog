@@ -5,3 +5,4 @@ from . import test_backlog
 from . import test_security
 from . import test_generic
 from . import test_imap_layer
+from . import test_imap_actions

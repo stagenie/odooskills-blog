@@ -29,6 +29,10 @@ class OskiMailInbox(models.Model):
         ('done', 'Clos'),
         ('spam', 'Indésirable'),
     ], string='État', default='new', index=True, tracking=True)
+    imap_action_ids = fields.One2many(
+        'oski.mail.imap.action', 'inbox_id', string='Actions distantes')
+    imap_pending = fields.Boolean(
+        string='Synchronisation en attente', compute='_compute_imap_pending', store=True)
 
     @api.model
     def message_new(self, msg_dict, custom_values=None):
@@ -103,6 +107,51 @@ class OskiMailInbox(models.Model):
                 (record.mailbox_id.name or record.mailbox_id.email,
                  record.mailbox_id.email))
         return result
+
+    @api.depends('imap_action_ids.state')
+    def _compute_imap_pending(self):
+        for record in self:
+            record.imap_pending = any(
+                action.state in ('pending', 'failed')
+                for action in record.imap_action_ids)
+
+    def _oski_imap_dispatch(self, operation, immediate=True):
+        """Enregistre l'intention de déplacer les emails côté serveur.
+
+        sudo : la file est un objet technique, et l'écriture distante suppose
+        le mot de passe IMAP, hors de portée de l'utilisateur.
+
+        immediate=False depuis la passerelle entrante : ouvrir une connexion
+        IMAP pendant le traitement d'un email entrant ralentirait la relève et
+        la ferait échouer en cascade si le serveur tousse."""
+        Action = self.env['oski.mail.imap.action'].sudo()
+        actions = Action.browse()
+        for record in self:
+            if not (record.email_message_id and record.mailbox_id):
+                continue
+            actions |= Action.create({
+                'mailbox_id': record.mailbox_id.id,
+                'inbox_id': record.id,
+                'email_message_id': record.email_message_id,
+                'operation': operation,
+            })
+        if actions and immediate:
+            actions._run_grouped()
+        return actions
+
+    def action_delete_email(self):
+        """Supprimer : corbeille côté serveur, fiche archivée côté Odoo.
+
+        La fiche n'est jamais détruite — elle porte la réponse envoyée depuis
+        Odoo, qui n'existe nulle part ailleurs."""
+        self._oski_imap_dispatch('trash')
+        self.write({'active': False})
+        return True
+
+    def action_mark_spam(self):
+        self._oski_imap_dispatch('junk')
+        self.write({'state': 'spam', 'active': False})
+        return True
 
     def action_mark_done(self):
         self.write({'state': 'done'})
