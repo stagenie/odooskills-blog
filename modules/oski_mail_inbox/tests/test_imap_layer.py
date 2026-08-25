@@ -11,9 +11,9 @@ class FakeImapServer:
     l'appeler sans avoir sélectionné une boîte lève AssertionError."""
 
     def __init__(self, folders=None, capabilities=('IMAP4REV1',), uids_found=(7,),
-                 message_ids=None, search_status='OK', copy_status='OK',
-                 store_status='OK', move_status='OK', move_statuses=None,
-                 deny_inbox_select=False):
+                 message_ids=None, search_status='OK', fetch_status='OK',
+                 copy_status='OK', store_status='OK', move_status='OK',
+                 move_statuses=None, deny_inbox_select=False):
         self.folders = folders if folders is not None else [
             (br'(\HasNoChildren \Trash) "." "INBOX.Trash"'),
             (br'(\HasNoChildren \Junk) "." "INBOX.Junk"'),
@@ -27,6 +27,7 @@ class FakeImapServer:
         # filtrage exact n'ont rien à configurer.
         self.message_ids = dict(message_ids or {})
         self.search_status = search_status
+        self.fetch_status = fetch_status
         self.copy_status = copy_status
         self.store_status = store_status
         self.move_status = move_status
@@ -72,6 +73,8 @@ class FakeImapServer:
             payload = ' '.join(str(u) for u in self.uids_found).encode()
             return 'OK', [payload]
         if upper == 'FETCH':
+            if self.fetch_status != 'OK':
+                return self.fetch_status, [b'fetch failed']
             uid = args[0]
             message_id = self.message_ids.get(uid, self._last_search_value)
             header = ('Message-ID: %s\r\n\r\n' % message_id).encode()
@@ -344,3 +347,59 @@ class TestImapLayer(TransactionCase):
         self.assertEqual(result, 'moved')
         self.assertEqual(fake.moved_to, ['"Ind&AOk-sirables"'],
                          "un nom de dossier accentué doit partir en UTF-7 modifié sur le fil")
+
+    # -- UTF-7 modifié : les délimiteurs ASCII ne doivent jamais être touchés
+    def test_utf7_encode_preserves_ascii_delimiters(self):
+        # Une substitution globale de + et / corromprait ces noms : Gmail
+        # nomme littéralement ses dossiers spéciaux "[Gmail]/Trash" etc.
+        self.assertEqual(self.box._imap_utf7_encode('[Gmail]/Trash'), '[Gmail]/Trash')
+        self.assertEqual(self.box._imap_utf7_encode('[Gmail]/Corbeille'), '[Gmail]/Corbeille')
+        self.assertEqual(self.box._imap_utf7_encode('C++'), 'C++')
+
+    def test_utf7_encode_escapes_literal_ampersand(self):
+        # Un & littéral doit sortir en &- ; laissé nu, le serveur lirait le
+        # reste du nom comme une séquence UTF-7 non terminée.
+        self.assertEqual(self.box._imap_utf7_encode('R&D'), 'R&-D')
+
+    def test_utf7_encode_accented_name_matches_wire_form(self):
+        self.assertEqual(self.box._imap_utf7_encode('Indésirables'), 'Ind&AOk-sirables')
+
+    def test_utf7_round_trip_ascii_and_accented_names(self):
+        for name in ('[Gmail]/Trash', 'R&D', 'C++', 'Indésirables',
+                     'Éléments supprimés', 'INBOX.Trash'):
+            encoded = self.box._imap_utf7_encode(name)
+            self.assertEqual(self.box._imap_utf7_decode(encoded), name,
+                             "aller-retour cassé pour %r" % name)
+
+    def test_utf7_decode_never_raises_on_malformed_input(self):
+        # Une séquence & jamais refermée par un - ne doit jamais faire
+        # planter le bouton « Détecter les dossiers » sur une trace Python.
+        self.assertEqual(self.box._imap_utf7_decode('R&AOk'), 'R&AOk')
+        self.assertEqual(self.box._imap_utf7_decode('foo&'), 'foo&')
+
+    def test_parse_list_name_decodes_raw_utf8_without_raising(self):
+        # Un serveur RFC 6855 peut envoyer un nom LIST déjà en UTF-8 brut,
+        # sans passer par l'UTF-7 modifié.
+        line = b'(\\HasNoChildren) "." "Ind\xc3\xa9sirables"'
+        self.assertEqual(self.box._imap_parse_list_name(line), 'Indésirables')
+
+    # -- filtrage exact du Message-ID : au-delà du simple préfixe -----------
+    def test_move_ignores_suffix_extended_match_and_reports_absent(self):
+        # Le Message-ID fetché COMMENCE par celui recherché sans lui être
+        # égal : un `startswith(target)` laisserait passer ce faux positif
+        # là où seule l'égalité stricte est correcte.
+        fake = FakeImapServer(uids_found=(9,),
+                              message_ids={b'9': '<abc@example.com>-old'})
+        result = self.box._imap_move_message(fake, '<abc@example.com>', 'INBOX.Trash')
+        self.assertEqual(result, 'absent')
+        self.assertEqual(fake.moved_to, [])
+        self.assertEqual(fake.copied_to, [])
+
+    # -- un FETCH en échec ne doit jamais se travestir en « absent » --------
+    def test_fetch_failure_raises_user_error_instead_of_reporting_absent(self):
+        # Si le FETCH échoue pour l'unique candidat, on ne sait pas s'il
+        # s'agit du message cherché : rendre 'absent' mentirait (c'est un
+        # succès contractuel) pour un message peut-être toujours présent.
+        fake = FakeImapServer(uids_found=(7,), fetch_status='NO')
+        with self.assertRaises(UserError):
+            self.box._imap_move_message(fake, '<abc@example.com>', 'INBOX.Trash')

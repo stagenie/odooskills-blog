@@ -1,3 +1,4 @@
+import base64
 import imaplib
 import logging
 import re
@@ -151,21 +152,67 @@ class OskiMailbox(models.Model):
         return '"%s"' % escaped
 
     @api.model
-    def _imap_utf7_encode(self, name):
-        """Encode un nom de dossier en UTF-7 modifié (RFC 3501), pour l'envoyer
-        sur le fil IMAP : + -> & et / -> , dans le bloc encodé, là où l'UTF-7
-        standard du stdlib utilise + et /."""
-        if not name:
-            return name
-        return name.encode('utf-7').decode('ascii').replace('+', '&').replace('/', ',')
+    def _imap_utf7_encode(self, value):
+        """Nom de dossier IMAP en UTF-7 modifié (RFC 3501 §5.1.3).
+
+        L'ASCII imprimable passe tel quel — un `/` de hiérarchie ou un `+`
+        doivent rester eux-mêmes. Seul `&` s'échappe, en `&-`. Le reste part
+        en base64 UTF-16BE entre `&` et `-`, avec `,` au lieu de `/`."""
+        if not value:
+            return value
+        out = []
+        buffer = []
+
+        def flush():
+            if buffer:
+                raw = ''.join(buffer).encode('utf-16-be')
+                encoded = base64.b64encode(raw).decode('ascii').rstrip('=')
+                out.append('&%s-' % encoded.replace('/', ','))
+                buffer.clear()
+
+        for char in value:
+            if char == '&':
+                flush()
+                out.append('&-')
+            elif '\x20' <= char <= '\x7e':
+                flush()
+                out.append(char)
+            else:
+                buffer.append(char)
+        flush()
+        return ''.join(out)
 
     @api.model
-    def _imap_utf7_decode(self, name):
-        """Décode un nom de dossier reçu d'un LIST vers le texte affiché à
-        l'utilisateur et mémorisé en base."""
-        if not name:
-            return name
-        return name.replace(',', '/').replace('&', '+').encode('ascii').decode('utf-7')
+    def _imap_utf7_decode(self, value):
+        """Inverse de _imap_utf7_encode. Ne lève jamais : un nom illisible
+        est rendu tel quel plutôt que de faire remonter une trace au lieu
+        d'un message."""
+        if not value:
+            return value
+        out = []
+        index = 0
+        while index < len(value):
+            char = value[index]
+            if char != '&':
+                out.append(char)
+                index += 1
+                continue
+            end = value.find('-', index + 1)
+            if end == -1:
+                out.append(value[index:])
+                break
+            run = value[index + 1:end]
+            if not run:
+                out.append('&')
+            else:
+                padded = run.replace(',', '/')
+                padded += '=' * (-len(padded) % 4)
+                try:
+                    out.append(base64.b64decode(padded).decode('utf-16-be'))
+                except Exception:
+                    out.append(value[index:end + 1])
+            index = end + 1
+        return ''.join(out)
 
     @api.model
     def _imap_quote_folder(self, name):
@@ -257,15 +304,26 @@ class OskiMailbox(models.Model):
         retourner un message dont le Message-ID CONTIENT celui demandé sans
         lui être égal (`<abc@x>` matche aussi `<sub-abc@x>`). On revérifie
         chaque candidat par un FETCH d'en-tête et on ne garde que l'égalité
-        exacte, pour ne jamais déplacer le mauvais message."""
+        exacte, pour ne jamais déplacer le mauvais message.
+
+        Si un FETCH échoue et qu'aucun autre candidat ne confirme un match
+        exact, on ne peut pas distinguer « vérifié absent » de « pas pu
+        vérifier » : mieux vaut lever que rendre 'absent', qui est un
+        succès contractuel et arrêterait la file à tort."""
         exact = []
+        verification_failed = False
         for uid in uids:
             status, data = connection.uid(
                 'FETCH', uid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
             if status != 'OK':
+                verification_failed = True
                 continue
             if self._imap_header_message_id(data) == email_message_id:
                 exact.append(uid)
+        if not exact and verification_failed:
+            raise UserError(_(
+                "Vérification IMAP en échec sur %s : impossible de confirmer "
+                "si le message est toujours présent.", self.email))
         return exact
 
     def _imap_move_message(self, connection, email_message_id, folder):
