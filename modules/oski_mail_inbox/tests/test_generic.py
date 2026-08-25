@@ -36,6 +36,37 @@ class TestGenericV2(TransactionCase):
         self.assertEqual(rec.email_message_id, '<t-gen-2@example.com>',
                          "la relance ne doit pas écraser la clé du message d'origine")
 
+    def test_reply_reactivates_archived_record(self):
+        rec_id = process_raw(self.env, self.box.fetchmail_server_id,
+                             msg_id='<t-gen-5@example.com>')
+        rec = self.env['oski.mail.inbox'].browse(rec_id)
+        rec.write({'state': 'done', 'active': False})
+        msg = rec.message_ids[0]
+        process_raw(self.env, self.box.fetchmail_server_id,
+                    msg_id='<t-gen-6@example.com>',
+                    subject='Re: Question produit',
+                    extra='In-Reply-To: %s\nReferences: %s\n' % (
+                        msg.message_id, msg.message_id))
+        self.assertTrue(rec.active,
+                        "une relance doit rouvrir un fil archivé : la conversation reprend")
+        self.assertEqual(rec.state, 'new')
+
+    def test_reply_to_spam_stays_archived_and_spam(self):
+        rec_id = process_raw(self.env, self.box.fetchmail_server_id,
+                             msg_id='<t-gen-7@example.com>')
+        rec = self.env['oski.mail.inbox'].browse(rec_id)
+        rec.write({'state': 'spam', 'active': False})
+        msg = rec.message_ids[0]
+        process_raw(self.env, self.box.fetchmail_server_id,
+                    msg_id='<t-gen-8@example.com>',
+                    subject='Re: Question produit',
+                    extra='In-Reply-To: %s\nReferences: %s\n' % (
+                        msg.message_id, msg.message_id))
+        self.assertFalse(rec.active,
+                         "un fil indésirable ne doit pas se ranimer tout seul")
+        self.assertEqual(rec.state, 'spam',
+                         "une relance ne doit pas sortir un fil de l'état indésirable")
+
     def test_record_is_archivable(self):
         rec_id = process_raw(self.env, self.box.fetchmail_server_id,
                              msg_id='<t-gen-4@example.com>')

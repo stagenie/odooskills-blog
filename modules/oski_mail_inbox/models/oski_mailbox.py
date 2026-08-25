@@ -150,7 +150,7 @@ class OskiMailbox(models.Model):
         connection = self._imap_connect()
         try:
             connection.select('INBOX', readonly=True)
-            since = self.backlog_since or fields.Date.to_date('2026-01-01')
+            since = self.backlog_since or self._default_backlog_since()
             status, data = connection.uid('search', None, self._imap_since_criteria(since))
             if status != 'OK':
                 raise UserError(_("Recherche IMAP en échec pour %s.", self.email))

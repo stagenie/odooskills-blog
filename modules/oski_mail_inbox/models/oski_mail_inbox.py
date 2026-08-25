@@ -70,10 +70,14 @@ class OskiMailInbox(models.Model):
 
     def message_update(self, msg_dict, update_vals=None):
         vals = dict(update_vals or {})
-        vals.update({
-            'state': 'new',
-            'date_received': msg_dict.get('date') or fields.Datetime.now(),
-        })
+        vals['date_received'] = msg_dict.get('date') or fields.Datetime.now()
+        if self.state != 'spam':
+            # Une relance ranime le fil : on le sort d'archive et on le
+            # remet en Nouveau. Un fil marqué indésirable reste indésirable
+            # et archivé : c'est tout le sens du marquage, la routing ne
+            # doit pas le ramener en tête de boîte.
+            vals['state'] = 'new'
+            vals['active'] = True
         if not self.email_message_id and msg_dict.get('message_id'):
             vals['email_message_id'] = msg_dict['message_id']
         return super().message_update(msg_dict, update_vals=vals)
