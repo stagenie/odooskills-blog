@@ -3,6 +3,7 @@ import logging
 from markupsafe import Markup
 
 from odoo import api, fields, models, _
+from odoo.exceptions import UserError
 from odoo.tools import email_normalize, format_datetime, formataddr
 
 _logger = logging.getLogger(__name__)
@@ -243,6 +244,10 @@ class OskiMailInbox(models.Model):
 
     def action_reply(self):
         self.ensure_one()
+        if not self.mailbox_id:
+            raise UserError(_(
+                "Cette fiche n'a plus de boîte associée (supprimée depuis) : "
+                "impossible de choisir un expéditeur pour la réponse."))
         subject = self.subject or ''
         if not subject.lower().startswith('re:'):
             subject = 'Re: %s' % subject
@@ -258,6 +263,10 @@ class OskiMailInbox(models.Model):
     @api.model
     def action_new_message(self):
         mailbox = self.env['oski.mailbox'].search([], limit=1)
+        if not mailbox:
+            raise UserError(_(
+                "Aucune boîte email n'est configurée : impossible de choisir "
+                "un expéditeur. Configurez d'abord une boîte."))
         draft = self.env['oski.mail.draft'].create({
             'mailbox_id': mailbox.id,
             'subject': '',

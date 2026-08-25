@@ -47,8 +47,12 @@ class OskiMailbox(models.Model):
         string='Signature', sanitize=True,
         help="Insérée dans le corps des brouillons envoyés depuis cette boîte. "
              "Vide : la signature Odoo de l'utilisateur est utilisée.")
+    # groups='base.group_system', comme imap_password : ir.mail_server n'est
+    # lisible que par le groupe système (base/security/ir.model.access.csv),
+    # un Manager qui ne l'est pas ne doit ni le voir dans ce formulaire ni
+    # pouvoir le lire par un autre chemin.
     mail_server_id = fields.Many2one(
-        'ir.mail_server', string='Serveur sortant',
+        'ir.mail_server', string='Serveur sortant', groups='base.group_system',
         domain="[('owner_user_id', '=', False)]",
         help="Laissez vide pour laisser Odoo choisir selon le domaine de l'adresse. "
              "Seuls les serveurs partagés sont proposés : un serveur personnel "

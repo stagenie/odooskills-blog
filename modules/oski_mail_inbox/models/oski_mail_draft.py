@@ -20,7 +20,16 @@ class OskiMailDraft(models.Model):
     inbox_id = fields.Many2one(
         'oski.mail.inbox', string='En réponse à', ondelete='set null', readonly=True)
     email_to = fields.Char(string='À', required=True)
-    email_cc = fields.Char(string='Copie')
+    # Pas d'"email_cc" : il n'existe pas de canal Cc côté mail_thread
+    # sans créer de partenaire (outgoing_email_to est seul disponible
+    # sans AccessError, voir action_send) ; un champ appelé "Copie" aurait
+    # promis un en-tête Cc jamais envoyé. Ces adresses sont donc fondues
+    # dans les destinataires principaux, et le champ le dit.
+    email_more_to = fields.Char(
+        string='Autres destinataires',
+        help="Adresses supplémentaires, séparées par des virgules. Ajoutées "
+             "aux destinataires principaux : il n'existe pas de copie "
+             "distincte sans créer de partenaire pour chacune.")
     subject = fields.Char(string='Sujet', required=True)
     # sanitize_attributes=False : le sanitizer HTML par défaut de l'ORM ne
     # garde qu'une liste blanche d'attributs qui n'inclut pas
@@ -60,9 +69,33 @@ class OskiMailDraft(models.Model):
         return Markup('<div %s="1">%s</div>') % (
             Markup(SIGNATURE_ATTRIBUTE), Markup(raw))
 
+    @staticmethod
+    def _detach_node(node):
+        """Retire un nœud lxml sans perdre le texte qui le suivait.
+
+        node.getparent().remove(node) tout court jette aussi node.tail : si
+        un utilisateur tape juste après la signature dans l'éditeur, ce
+        texte est le tail du nœud de signature, et un simple remove() le
+        ferait disparaître au premier changement d'expéditeur."""
+        parent = node.getparent()
+        tail = node.tail or ''
+        previous = node.getprevious()
+        if previous is not None:
+            previous.tail = (previous.tail or '') + tail
+        else:
+            parent.text = (parent.text or '') + tail
+        parent.remove(node)
+
+    @staticmethod
+    def _fragment_to_string(fragment):
+        rebuilt = fragment.text or ''
+        rebuilt += ''.join(
+            lxml_html.tostring(child, encoding='unicode') for child in fragment)
+        return rebuilt
+
     @api.model
     def _strip_signature(self, body):
-        """Retire le bloc de signature d'un corps, quel que soit son contenu.
+        """Retire tout bloc de signature d'un corps, quel que soit son contenu.
 
         lxml et non une expression régulière : une signature contenant un
         <div> ferait dérailler tout motif non gourmand, et couperait le corps
@@ -71,17 +104,44 @@ class OskiMailDraft(models.Model):
             return ''
         fragment = lxml_html.fragment_fromstring(body, create_parent='div')
         for node in fragment.xpath('//*[@%s]' % SIGNATURE_ATTRIBUTE):
-            node.getparent().remove(node)
-        rebuilt = fragment.text or ''
-        rebuilt += ''.join(
-            lxml_html.tostring(child, encoding='unicode') for child in fragment)
-        return rebuilt
+            self._detach_node(node)
+        return self._fragment_to_string(fragment)
+
+    def _swap_signature(self, body, mailbox):
+        """Remplace la signature en place plutôt que de la déplacer.
+
+        Rebâtir le corps en préfixant systématiquement le nouveau bloc — ce
+        que ferait _strip_signature() suivi d'une concaténation — ferait
+        remonter la signature au-dessus du message à chaque changement
+        d'expéditeur sur un brouillon déjà composé (une réponse, typiquement,
+        où _reply_body() place la signature avant la citation, pas en tête
+        du corps final). Le nœud marqué existant est donc repéré et
+        substitué à sa place ; seule une signature absente retombe sur un
+        préfixe, faute d'endroit où s'ancrer."""
+        self.ensure_one()
+        new_block = self._signature_block(mailbox)
+        if not body:
+            return new_block
+        fragment = lxml_html.fragment_fromstring(body, create_parent='div')
+        marked = fragment.xpath('//*[@%s]' % SIGNATURE_ATTRIBUTE)
+        if not marked:
+            stripped = self._fragment_to_string(fragment)
+            return new_block + Markup(stripped)
+        anchor, extra_nodes = marked[0], marked[1:]
+        if new_block:
+            new_node = lxml_html.fragment_fromstring(str(new_block))
+            new_node.tail = anchor.tail
+            anchor.getparent().replace(anchor, new_node)
+        else:
+            self._detach_node(anchor)
+        for node in extra_nodes:
+            self._detach_node(node)
+        return Markup(self._fragment_to_string(fragment))
 
     @api.onchange('mailbox_id')
     def _onchange_mailbox_signature(self):
         for draft in self:
-            stripped = draft._strip_signature(draft.body_html)
-            draft.body_html = draft._signature_block(draft.mailbox_id) + Markup(stripped)
+            draft.body_html = draft._swap_signature(draft.body_html, draft.mailbox_id)
 
     # ------------------------------------------------------------------
     # Envoi
@@ -108,7 +168,7 @@ class OskiMailDraft(models.Model):
 
     def _outgoing_emails(self):
         self.ensure_one()
-        addresses = email_split(self.email_to or '') + email_split(self.email_cc or '')
+        addresses = email_split(self.email_to or '') + email_split(self.email_more_to or '')
         return ','.join(dict.fromkeys(addresses))
 
     def action_send(self):
@@ -130,7 +190,11 @@ class OskiMailDraft(models.Model):
             author_id=self.env.user.partner_id.id,
             outgoing_email_to=recipients,
             attachment_ids=self.attachment_ids.ids,
-            mail_server_id=mailbox.mail_server_id.id or False,
+            # sudo() : mail_server_id porte groups="base.group_system" côté vue
+            # (le mot de passe SMTP qu'il implique n'est pas affaire de tout le
+            # monde) ; un Manager non-système doit pouvoir envoyer sans lire le
+            # champ lui-même.
+            mail_server_id=mailbox.sudo().mail_server_id.id or False,
         )
         self.write({
             'state': 'sent',

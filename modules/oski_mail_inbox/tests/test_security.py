@@ -65,3 +65,10 @@ class TestSecurity(TransactionCase):
     def test_password_hidden_from_non_system(self):
         with self.assertRaises(AccessError):
             self.box.with_user(self.manager).read(['imap_password'])
+
+    def test_mail_server_hidden_from_non_system(self):
+        # même restriction que imap_password, pour la même raison : un
+        # Manager Messagerie n'est pas forcément administrateur système, et
+        # ir.mail_server n'est lisible que par base.group_system.
+        with self.assertRaises(AccessError):
+            self.box.with_user(self.manager).read(['mail_server_id'])
