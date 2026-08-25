@@ -17,10 +17,17 @@ class OskiMailInbox(models.Model):
         'oski.mailbox', string='Boîte', index=True, ondelete='set null')
     date_received = fields.Datetime(
         string='Reçu le', default=fields.Datetime.now, index=True)
+    active = fields.Boolean(default=True)
+    email_message_id = fields.Char(
+        string='Identifiant du message', index=True, copy=False,
+        help="En-tête Message-ID de l'email d'origine. Seule clé stable pour "
+             "retrouver ce message sur le serveur : un UID IMAP change dès que "
+             "le message est déplacé.")
     state = fields.Selection([
         ('new', 'Nouveau'),
         ('answered', 'Répondu'),
         ('done', 'Clos'),
+        ('spam', 'Indésirable'),
     ], string='État', default='new', index=True, tracking=True)
 
     @api.model
@@ -55,6 +62,7 @@ class OskiMailInbox(models.Model):
             'mailbox_id': mailbox.id,
             'date_received': msg_dict.get('date') or fields.Datetime.now(),
             'state': 'new',
+            'email_message_id': msg_dict.get('message_id') or False,
         }
         if custom_values:
             values.update(custom_values)
@@ -66,6 +74,8 @@ class OskiMailInbox(models.Model):
             'state': 'new',
             'date_received': msg_dict.get('date') or fields.Datetime.now(),
         })
+        if not self.email_message_id and msg_dict.get('message_id'):
+            vals['email_message_id'] = msg_dict['message_id']
         return super().message_update(msg_dict, update_vals=vals)
 
     def message_post(self, **kwargs):

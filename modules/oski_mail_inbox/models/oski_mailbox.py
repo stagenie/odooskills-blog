@@ -14,7 +14,7 @@ IMAP_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 class OskiMailbox(models.Model):
     _name = 'oski.mailbox'
-    _description = 'Boîte email OdooSkills'
+    _description = 'Boîte email'
     _order = 'email'
 
     name = fields.Char(string='Nom', required=True)
@@ -35,13 +35,19 @@ class OskiMailbox(models.Model):
         ('done', 'Terminé'),
     ], string='Import historique', default='none', copy=False)
     backlog_since = fields.Date(
-        string='Importer depuis', default=lambda self: fields.Date.to_date('2026-01-01'),
+        string='Importer depuis', default=lambda self: self._default_backlog_since(),
         help="Seuls les emails reçus à partir de cette date sont importés (INBOX uniquement).")
     backlog_last_uid = fields.Integer(string='Dernier UID importé', default=0, copy=False)
     backlog_done_count = fields.Integer(string='Emails importés', default=0, copy=False)
 
     _email_unique = models.Constraint(
         'UNIQUE (email)', "Une boîte existe déjà avec cette adresse.")
+
+    @api.model
+    def _default_backlog_since(self):
+        """1ᵉʳ janvier de l'année en cours. Une année en dur vieillit mal
+        dans un module distribué."""
+        return fields.Date.to_date('%d-01-01' % fields.Date.today().year)
 
     @api.model_create_multi
     def create(self, vals_list):
