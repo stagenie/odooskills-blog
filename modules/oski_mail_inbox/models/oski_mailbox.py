@@ -1,5 +1,6 @@
 import imaplib
 import logging
+import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -150,37 +151,69 @@ class OskiMailbox(models.Model):
         return '"%s"' % escaped
 
     @api.model
+    def _imap_utf7_encode(self, name):
+        """Encode un nom de dossier en UTF-7 modifié (RFC 3501), pour l'envoyer
+        sur le fil IMAP : + -> & et / -> , dans le bloc encodé, là où l'UTF-7
+        standard du stdlib utilise + et /."""
+        if not name:
+            return name
+        return name.encode('utf-7').decode('ascii').replace('+', '&').replace('/', ',')
+
+    @api.model
+    def _imap_utf7_decode(self, name):
+        """Décode un nom de dossier reçu d'un LIST vers le texte affiché à
+        l'utilisateur et mémorisé en base."""
+        if not name:
+            return name
+        return name.replace(',', '/').replace('&', '+').encode('ascii').decode('utf-7')
+
+    @api.model
+    def _imap_quote_folder(self, name):
+        """Encode en UTF-7 modifié puis encadre un nom de dossier pour une
+        commande IMAP (SELECT/EXAMINE, COPY, MOVE)."""
+        return self._imap_quote(self._imap_utf7_encode(name))
+
+    @api.model
+    def _imap_flatten_list_line(self, line):
+        """Une ligne de réponse LIST peut arriver en tuple (littéral IMAP) ou
+        en bytes simple ; on la ramène toujours à des bytes."""
+        if isinstance(line, bytes):
+            return line
+        return b' '.join(part for part in line if isinstance(part, bytes))
+
+    @api.model
     def _imap_parse_list_name(self, line):
-        """Extrait le nom de dossier d'une ligne de réponse LIST.
+        """Extrait, décodé, le nom de dossier d'une ligne de réponse LIST.
 
         Forme typique : (\\HasNoChildren \\Trash) "." "INBOX.Trash"
         """
-        if isinstance(line, tuple):
-            line = b' '.join(part for part in line if isinstance(part, bytes))
-        text = line.decode('utf-8', 'replace').strip()
+        raw = self._imap_flatten_list_line(line)
+        text = raw.decode('utf-8', 'replace').strip()
         if text.endswith('"'):
             start = text.rfind('"', 0, -1)
             if start != -1:
-                return text[start + 1:-1]
-        return text.rsplit(' ', 1)[-1].strip('"')
+                return self._imap_utf7_decode(text[start + 1:-1])
+        return self._imap_utf7_decode(text.rsplit(' ', 1)[-1].strip('"'))
 
-    def _imap_resolve_folder(self, connection, kind):
-        """Retourne le nom du dossier distant pour 'trash' ou 'junk'.
+    def _imap_resolve_folder(self, connection, kind, force=False):
+        """Retourne le nom (décodé) du dossier distant pour 'trash' ou 'junk'.
 
-        Ordre : valeur saisie, puis attribut SPECIAL-USE annoncé par LIST,
-        puis noms courants testés par SELECT. Le résultat est mémorisé pour
-        ne pas refaire la découverte à chaque geste."""
+        Ordre : valeur saisie (sauf force=True), puis attribut SPECIAL-USE
+        annoncé par LIST, puis noms courants testés par SELECT. Le résultat
+        est mémorisé pour ne pas refaire la découverte à chaque geste.
+        force=True (bouton de configuration) ignore la valeur mémorisée, pour
+        pouvoir corriger une détection erronée ou un dossier renommé côté
+        serveur ; en cas d'échec, la valeur mémorisée n'est pas effacée."""
         self.ensure_one()
         field = FOLDER_FIELDS[kind]
-        if self[field]:
+        if self[field] and not force:
             return self[field]
 
         flag = SPECIAL_USE_FLAGS[kind]
         status, lines = connection.list()
         if status == 'OK':
             for line in lines or []:
-                raw = line if isinstance(line, bytes) else b' '.join(
-                    part for part in line if isinstance(part, bytes))
+                raw = self._imap_flatten_list_line(line)
                 if flag in raw.lower():
                     name = self._imap_parse_list_name(line)
                     if name:
@@ -189,7 +222,7 @@ class OskiMailbox(models.Model):
 
         candidates = TRASH_CANDIDATES if kind == 'trash' else JUNK_CANDIDATES
         for name in candidates:
-            status, _data = connection.select(self._imap_quote(name), readonly=True)
+            status, _data = connection.select(self._imap_quote_folder(name), readonly=True)
             if status == 'OK':
                 self.sudo().write({field: name})
                 return name
@@ -207,25 +240,68 @@ class OskiMailbox(models.Model):
             capability.decode() if isinstance(capability, bytes) else str(capability)
             for capability in raw)
 
-    def _imap_move_message(self, connection, email_message_id, folder):
-        """Déplace un message d'INBOX vers `folder`, sans jamais purger le dossier.
+    @api.model
+    def _imap_header_message_id(self, data):
+        """Extrait la valeur de l'en-tête Message-ID d'une réponse FETCH
+        BODY[HEADER.FIELDS (MESSAGE-ID)] : data[0] est un tuple
+        (descripteur, contenu littéral)."""
+        if not data or not data[0] or not isinstance(data[0], tuple):
+            return None
+        header_bytes = data[0][1] or b''
+        text = header_bytes.decode('utf-8', 'replace')
+        match = re.search(r'(?im)^Message-ID:\s*(.+?)\s*$', text)
+        return match.group(1).strip() if match else None
 
-        Retourne 'moved', 'absent' (déjà plus là : objectif atteint) ou
-        'copied_not_purged' (serveur sans MOVE ni UIDPLUS)."""
+    def _imap_exact_message_id_matches(self, connection, uids, email_message_id):
+        """`SEARCH HEADER` est un filtre par sous-chaîne (RFC 3501) : il peut
+        retourner un message dont le Message-ID CONTIENT celui demandé sans
+        lui être égal (`<abc@x>` matche aussi `<sub-abc@x>`). On revérifie
+        chaque candidat par un FETCH d'en-tête et on ne garde que l'égalité
+        exacte, pour ne jamais déplacer le mauvais message."""
+        exact = []
+        for uid in uids:
+            status, data = connection.uid(
+                'FETCH', uid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])')
+            if status != 'OK':
+                continue
+            if self._imap_header_message_id(data) == email_message_id:
+                exact.append(uid)
+        return exact
+
+    def _imap_move_message(self, connection, email_message_id, folder):
+        """Déplace vers `folder` tous les messages d'INBOX dont le
+        Message-ID est exactement `email_message_id`, sans jamais purger le
+        dossier au-delà des UID déplacés.
+
+        Retourne 'moved' (tous déplacés), 'absent' (aucun match exact :
+        déjà déplacé, supprimé depuis le webmail, ou faux positif de
+        sous-chaîne — l'état visé est atteint, c'est un succès) ou
+        'copied_not_purged' (au moins un message copié sans être purgé)."""
         self.ensure_one()
+        status, _data = connection.select('INBOX')
+        if status != 'OK':
+            raise UserError(_("Impossible de sélectionner INBOX sur %s.", self.email))
+
         status, data = connection.uid(
             'SEARCH', None, 'HEADER', 'Message-ID', self._imap_quote(email_message_id))
         if status != 'OK':
             raise UserError(_("Recherche IMAP en échec sur %s.", self.email))
-        uids = data[0].split() if data and data[0] else []
+        candidates = data[0].split() if data and data[0] else []
+        uids = self._imap_exact_message_id_matches(connection, candidates, email_message_id)
         if not uids:
-            # Déjà déplacé, ou supprimé depuis le webmail. L'état visé est
-            # atteint : c'est un succès, et c'est ce qui rend la file rejouable.
             return 'absent'
 
-        uid = uids[-1]
         capabilities = self._imap_capabilities(connection)
-        quoted = self._imap_quote(folder)
+        results = [
+            self._imap_move_one_uid(connection, uid, folder, capabilities)
+            for uid in uids]
+        return 'moved' if all(result == 'moved' for result in results) else 'copied_not_purged'
+
+    def _imap_move_one_uid(self, connection, uid, folder, capabilities):
+        """Déplace un seul UID déjà confirmé (Message-ID exact), en
+        cascade : UID MOVE, puis COPY + UID EXPUNGE, puis simple marquage
+        \\Deleted sans purge."""
+        quoted = self._imap_quote_folder(folder)
 
         if 'MOVE' in capabilities:
             status, _data = connection.uid('MOVE', uid, quoted)
@@ -237,7 +313,12 @@ class OskiMailbox(models.Model):
             raise UserError(_(
                 "Copie vers %(folder)s impossible sur %(email)s.",
                 folder=folder, email=self.email))
-        connection.uid('STORE', uid, '+FLAGS', '(\\Deleted)')
+
+        status, _data = connection.uid('STORE', uid, '+FLAGS', '(\\Deleted)')
+        if status != 'OK':
+            # Le message n'est pas marqué \Deleted : un EXPUNGE, même ciblé
+            # par UID, ne purgerait rien pour lui et ne prouverait rien.
+            return 'copied_not_purged'
 
         if 'UIDPLUS' in capabilities:
             # UID EXPUNGE ne purge QUE l'UID nommé (RFC 4315). Un EXPUNGE nu
@@ -250,12 +331,14 @@ class OskiMailbox(models.Model):
         return 'copied_not_purged'
 
     def action_detect_folders(self):
-        """Bouton de configuration : détecte et mémorise les deux dossiers."""
+        """Bouton de configuration : redétecte et mémorise les deux
+        dossiers, même si un nom (possiblement erroné) est déjà
+        enregistré."""
         self.ensure_one()
         connection = self._imap_connect()
         try:
-            self._imap_resolve_folder(connection, 'trash')
-            self._imap_resolve_folder(connection, 'junk')
+            self._imap_resolve_folder(connection, 'trash', force=True)
+            self._imap_resolve_folder(connection, 'junk', force=True)
         finally:
             try:
                 connection.logout()
