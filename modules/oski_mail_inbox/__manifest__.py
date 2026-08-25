@@ -9,11 +9,13 @@
     'data': [
         'security/security_groups.xml',
         'security/ir.model.access.csv',
+        'security/security_rules.xml',
         'data/ir_cron.xml',
         'views/oski_mail_inbox_views.xml',
         'views/oski_mailbox_views.xml',
         'views/oski_mail_imap_action_views.xml',
         'views/oski_mail_blocklist_views.xml',
+        'views/oski_mail_draft_views.xml',
         'views/menus.xml',
     ],
     'installable': True,

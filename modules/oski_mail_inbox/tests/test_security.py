@@ -46,6 +46,16 @@ class TestSecurity(TransactionCase):
         with self.assertRaises(AccessError):
             self.record.with_user(self.user).unlink()
 
+    def test_user_can_create_inbox_record_but_not_unlink_it(self):
+        # groundwork pour le message neuf (Tâche 5) : la fiche qui porte le
+        # fil d'un message composé par l'utilisateur doit pouvoir naître sous
+        # son propre uid, sans passer par le manager.
+        record = self.env['oski.mail.inbox'].with_user(self.user).create({
+            'subject': 'Créé par un utilisateur', 'mailbox_id': self.box.id})
+        self.assertTrue(record)
+        with self.assertRaises(AccessError):
+            record.with_user(self.user).unlink()
+
     def test_manager_crud_mailbox(self):
         box = self.env['oski.mailbox'].with_user(self.manager).create({
             'name': 'Info', 'email': 'info-sec-test@odooskills.com'})

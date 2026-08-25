@@ -1,7 +1,9 @@
 import logging
 
+from markupsafe import Markup
+
 from odoo import api, fields, models, _
-from odoo.tools import email_normalize, formataddr
+from odoo.tools import email_normalize, format_datetime, formataddr
 
 _logger = logging.getLogger(__name__)
 
@@ -17,6 +19,10 @@ class OskiMailInbox(models.Model):
     email_from = fields.Char(string='De', index=True)
     partner_id = fields.Many2one('res.partner', string='Contact')
     body_html = fields.Html(string='Message', sanitize=True)
+    attachment_ids = fields.One2many(
+        'ir.attachment', 'res_id', string='Pièces jointes',
+        domain=[('res_model', '=', 'oski.mail.inbox')],
+        help="Déposées par la passerelle entrante ; rien de neuf n'est stocké ici.")
     mailbox_id = fields.Many2one(
         'oski.mailbox', string='Boîte', index=True, ondelete='set null')
     date_received = fields.Datetime(
@@ -127,10 +133,13 @@ class OskiMailInbox(models.Model):
 
     def _notify_get_reply_to(self, default=None, author_id=False):
         result = super()._notify_get_reply_to(default=default, author_id=author_id)
-        for record in self.filtered(lambda r: r.mailbox_id.email):
-            result[record.id] = formataddr(
-                (record.mailbox_id.name or record.mailbox_id.email,
-                 record.mailbox_id.email))
+        forced_id = self.env.context.get('oski_reply_mailbox_id')
+        forced = self.env['oski.mailbox'].browse(forced_id).exists() if forced_id else None
+        for record in self:
+            mailbox = forced or record.mailbox_id
+            if mailbox and mailbox.email:
+                result[record.id] = formataddr(
+                    (mailbox.name or mailbox.email, mailbox.email))
         return result
 
     @api.depends('imap_action_ids.state')
@@ -208,3 +217,51 @@ class OskiMailInbox(models.Model):
 
     def action_mark_new(self):
         self.write({'state': 'new'})
+
+    def _reply_body(self):
+        """Corps initial d'une réponse : signature puis citation de l'original."""
+        self.ensure_one()
+        Draft = self.env['oski.mail.draft']
+        quote = Markup(
+            '<blockquote style="border-left:2px solid #ccc;padding-left:12px;color:#666;">'
+            '<p>Le %(date)s, %(author)s a écrit :</p>%(body)s</blockquote>'
+        ) % {
+            'date': format_datetime(self.env, self.date_received),
+            'author': self.email_from or '',
+            'body': Markup(self.body_html or ''),
+        }
+        return Markup('<p><br/></p>') + Draft._signature_block(self.mailbox_id) + quote
+
+    def _open_draft(self, draft):
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'oski.mail.draft',
+            'view_mode': 'form',
+            'res_id': draft.id,
+            'target': 'current',
+        }
+
+    def action_reply(self):
+        self.ensure_one()
+        subject = self.subject or ''
+        if not subject.lower().startswith('re:'):
+            subject = 'Re: %s' % subject
+        draft = self.env['oski.mail.draft'].create({
+            'mailbox_id': self.mailbox_id.id,
+            'inbox_id': self.id,
+            'email_to': self.email_from,
+            'subject': subject,
+            'body_html': self._reply_body(),
+        })
+        return self._open_draft(draft)
+
+    @api.model
+    def action_new_message(self):
+        mailbox = self.env['oski.mailbox'].search([], limit=1)
+        draft = self.env['oski.mail.draft'].create({
+            'mailbox_id': mailbox.id,
+            'subject': '',
+            'email_to': '',
+            'body_html': self.env['oski.mail.draft']._signature_block(mailbox),
+        })
+        return self._open_draft(draft)

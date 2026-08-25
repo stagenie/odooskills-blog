@@ -43,6 +43,16 @@ class OskiMailbox(models.Model):
     junk_folder = fields.Char(
         string='Dossier indésirables',
         help="Laissez vide : le dossier est détecté puis mémorisé automatiquement.")
+    signature = fields.Html(
+        string='Signature', sanitize=True,
+        help="Insérée dans le corps des brouillons envoyés depuis cette boîte. "
+             "Vide : la signature Odoo de l'utilisateur est utilisée.")
+    mail_server_id = fields.Many2one(
+        'ir.mail_server', string='Serveur sortant',
+        domain="[('owner_user_id', '=', False)]",
+        help="Laissez vide pour laisser Odoo choisir selon le domaine de l'adresse. "
+             "Seuls les serveurs partagés sont proposés : un serveur personnel "
+             "appartenant à un autre utilisateur ferait échouer l'envoi.")
     fetchmail_server_id = fields.Many2one(
         'fetchmail.server', string='Serveur entrant', readonly=True, copy=False)
     backlog_state = fields.Selection([
