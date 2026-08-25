@@ -70,9 +70,21 @@ class OskiMailbox(models.Model):
         help="Seuls les emails reçus à partir de cette date sont importés (INBOX uniquement).")
     backlog_last_uid = fields.Integer(string='Dernier UID importé', default=0, copy=False)
     backlog_done_count = fields.Integer(string='Emails importés', default=0, copy=False)
+    backlog_total_count = fields.Integer(
+        string='Emails à importer', default=0, copy=False,
+        help="Nombre d'emails correspondant au critère de date sur le serveur.")
+    backlog_progress = fields.Float(
+        string='Progression', compute='_compute_backlog_progress')
 
     _email_unique = models.Constraint(
         'UNIQUE (email)', "Une boîte existe déjà avec cette adresse.")
+
+    @api.depends('backlog_done_count', 'backlog_total_count')
+    def _compute_backlog_progress(self):
+        for box in self:
+            total = box.backlog_total_count
+            box.backlog_progress = (
+                min(100.0, box.backlog_done_count * 100.0 / total) if total else 0.0)
 
     @api.model
     def _default_backlog_since(self):
@@ -142,6 +154,7 @@ class OskiMailbox(models.Model):
             box.write({
                 'backlog_state': 'pending',
                 'backlog_last_uid': 0,
+                'backlog_done_count': 0,
             })
 
     @api.model
@@ -450,6 +463,7 @@ class OskiMailbox(models.Model):
             if status != 'OK':
                 raise UserError(_("Recherche IMAP en échec pour %s.", self.email))
             uids = sorted(int(u) for u in (data[0].split() if data and data[0] else []))
+            self.write({'backlog_total_count': len(uids)})
             pending = [u for u in uids if u > self.backlog_last_uid][:BACKLOG_BATCH_SIZE]
             if not pending:
                 self.write({'backlog_state': 'done'})
@@ -480,6 +494,10 @@ class OskiMailbox(models.Model):
                 self.write({'backlog_state': 'done'})
                 if not no_commit:
                     self.env.cr.commit()
+            else:
+                # Réarmement : à dix minutes d'intervalle, la jauge regarderait
+                # une barre immobile.
+                self.env.ref('oski_mail_inbox.ir_cron_backlog_import').sudo()._trigger()
         finally:
             try:
                 connection.logout()

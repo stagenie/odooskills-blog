@@ -8,3 +8,4 @@ from . import test_imap_layer
 from . import test_imap_actions
 from . import test_blocklist
 from . import test_draft
+from . import test_backlog_gauge

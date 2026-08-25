@@ -18,6 +18,11 @@
         'views/oski_mail_draft_views.xml',
         'views/menus.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'oski_mail_inbox/static/src/**/*.js',
+        ],
+    },
     'installable': True,
     'application': True,
 }
