@@ -13,6 +13,7 @@
         'views/oski_mail_inbox_views.xml',
         'views/oski_mailbox_views.xml',
         'views/oski_mail_imap_action_views.xml',
+        'views/oski_mail_blocklist_views.xml',
         'views/menus.xml',
     ],
     'installable': True,

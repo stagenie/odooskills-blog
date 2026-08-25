@@ -76,7 +76,14 @@ class OskiMailInbox(models.Model):
         }
         if custom_values:
             values.update(custom_values)
-        return super().message_new(msg_dict, custom_values=values)
+        record = super().message_new(msg_dict, custom_values=values)
+        if self.env['oski.mail.blocklist']._is_blocked(email_from):
+            record.write({'state': 'spam', 'active': False})
+            # immediate=False : la relève ne doit pas dépendre d'une connexion
+            # IMAP sortante ; le cron s'en charge quelques minutes plus tard.
+            # notify_missing_id=False : voir _oski_imap_dispatch.
+            record._oski_imap_dispatch('junk', immediate=False, notify_missing_id=False)
+        return record
 
     def message_update(self, msg_dict, update_vals=None):
         vals = dict(update_vals or {})
@@ -122,7 +129,7 @@ class OskiMailInbox(models.Model):
             record.imap_failed = any(
                 action.state == 'failed' for action in record.imap_action_ids)
 
-    def _oski_imap_dispatch(self, operation, immediate=True):
+    def _oski_imap_dispatch(self, operation, immediate=True, notify_missing_id=True):
         """Enregistre l'intention de déplacer les emails côté serveur.
 
         sudo : la file est un objet technique, et l'écriture distante suppose
@@ -130,7 +137,12 @@ class OskiMailInbox(models.Model):
 
         immediate=False depuis la passerelle entrante : ouvrir une connexion
         IMAP pendant le traitement d'un email entrant ralentirait la relève et
-        la ferait échouer en cascade si le serveur tousse."""
+        la ferait échouer en cascade si le serveur tousse.
+
+        notify_missing_id=False depuis la passerelle entrante : la note dans le
+        chatter promet une action de l'utilisateur qui n'a pas eu lieu — pour un
+        email qui vient d'arriver, elle serait un faux souvenir. Le journal
+        applicatif suffit à qui doit diagnostiquer."""
         Action = self.env['oski.mail.imap.action'].sudo()
         actions = Action.browse()
         for record in self:
@@ -138,9 +150,10 @@ class OskiMailInbox(models.Model):
                 _logger.info(
                     'Messagerie : geste %s sans identifiant de message, aucune action '
                     'distante créée (fiche %s)', operation, record.id)
-                record.message_post(body=_(
-                    "Aucun identifiant de message : cet email n'a pas pu être déplacé "
-                    "sur le serveur."))
+                if notify_missing_id:
+                    record.message_post(body=_(
+                        "Aucun identifiant de message : cet email n'a pas pu être "
+                        "déplacé sur le serveur."))
                 continue
             actions |= Action.create({
                 'mailbox_id': record.mailbox_id.id,
@@ -162,6 +175,10 @@ class OskiMailInbox(models.Model):
         return True
 
     def action_mark_spam(self):
+        Blocklist = self.env['oski.mail.blocklist']
+        for record in self:
+            if record.email_from:
+                Blocklist._block(record.email_from, origin_inbox=record)
         self._oski_imap_dispatch('junk')
         self.write({'state': 'spam', 'active': False})
         return True
