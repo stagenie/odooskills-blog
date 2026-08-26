@@ -11,7 +11,7 @@ class TestGenericV2(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
+            'name': 'Contact', 'email': 'tests-box@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })
@@ -83,7 +83,7 @@ class TestGenericV2(TransactionCase):
 
     def test_backlog_since_defaults_to_current_year(self):
         box = self.env['oski.mailbox'].create(
-            {'name': 'Neuve', 'email': 'tests-neuve@odooskills.example'})
+            {'name': 'Neuve', 'email': 'tests-neuve@societe.example'})
         self.assertEqual(box.backlog_since,
                          fields.Date.to_date('%d-01-01' % fields.Date.today().year),
                          "la date par défaut ne doit pas être une année figée en dur")

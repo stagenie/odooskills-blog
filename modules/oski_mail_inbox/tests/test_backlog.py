@@ -4,7 +4,7 @@ from odoo import fields
 from odoo.tests import TransactionCase, tagged
 
 RAW_TEMPLATE = (b"From: Client <client%d@example.com>\r\n"
-                b"To: odooers@odooskills.com\r\n"
+                b"To: contact@societe.example\r\n"
                 b"Subject: Historique %d\r\n"
                 b"Date: Mon, 02 Feb 2026 10:00:00 +0000\r\n"
                 b"Message-Id: <backlog-%d@example.com>\r\n"
@@ -45,7 +45,7 @@ class TestBacklog(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
+            'name': 'Contact', 'email': 'tests-box@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
             'backlog_since': fields.Date.to_date('2026-01-01'),

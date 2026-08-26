@@ -11,16 +11,16 @@ class TestDraft(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box_a = cls.env['oski.mailbox'].create({
-            'name': 'Support', 'email': 'support@odooskills.example',
+            'name': 'Support', 'email': 'support@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'a',
             'imap_password': 'fake-test-password',
-            'signature': '<p>Support — OdooSkills</p>',
+            'signature': '<p>Support — Société</p>',
         })
         cls.box_b = cls.env['oski.mailbox'].create({
-            'name': 'Ventes', 'email': 'ventes@odooskills.example',
+            'name': 'Ventes', 'email': 'ventes@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'b',
             'imap_password': 'fake-test-password',
-            'signature': '<p>Ventes — OdooSkills</p>',
+            'signature': '<p>Ventes — Société</p>',
         })
         rec_id = process_raw(cls.env, cls.box_a.fetchmail_server_id,
                              msg_id='<t-draft-1@example.com>')
@@ -51,17 +51,17 @@ class TestDraft(TransactionCase):
         draft = self._draft(mailbox_id=self.box_b.id, inbox_id=self.record.id)
         draft.action_send()
         message = draft.mail_message_id
-        self.assertIn('ventes@odooskills.example', message.email_from,
+        self.assertIn('ventes@societe.example', message.email_from,
                       "l'expéditeur choisi doit primer sur la boîte de l'email reçu")
 
     def test_reply_to_follows_chosen_mailbox(self):
         draft = self._draft(mailbox_id=self.box_b.id, inbox_id=self.record.id)
         draft.action_send()
-        self.assertIn('ventes@odooskills.example', draft.mail_message_id.reply_to)
+        self.assertIn('ventes@societe.example', draft.mail_message_id.reply_to)
 
     def test_reply_to_defaults_to_record_mailbox(self):
         reply_to = self.record._notify_get_reply_to()
-        self.assertIn('support@odooskills.example', reply_to[self.record.id],
+        self.assertIn('support@societe.example', reply_to[self.record.id],
                       "hors contexte d'envoi, la boîte de la fiche reste la référence")
 
     def test_mail_server_reaches_the_message(self):
@@ -85,7 +85,7 @@ class TestDraft(TransactionCase):
     # -- signature ---------------------------------------------------------
     def test_reply_body_carries_signature_and_quote(self):
         body = self.record._reply_body()
-        self.assertIn('Support — OdooSkills', body)
+        self.assertIn('Support — Société', body)
         self.assertIn('data-oski-signature', body)
         self.assertIn('message de test', body, "l'original doit être cité")
 
@@ -93,13 +93,13 @@ class TestDraft(TransactionCase):
         draft = self._draft(body_html=self.record._reply_body())
         draft.mailbox_id = self.box_b
         draft._onchange_mailbox_signature()
-        self.assertIn('Ventes — OdooSkills', draft.body_html)
-        self.assertNotIn('Support — OdooSkills', draft.body_html)
+        self.assertIn('Ventes — Société', draft.body_html)
+        self.assertNotIn('Support — Société', draft.body_html)
         self.assertEqual(draft.body_html.count('data-oski-signature'), 1,
                          "changer d'expéditeur ne doit pas empiler les signatures")
         self.assertLess(
             draft.body_html.index('<p><br'),
-            draft.body_html.index('Ventes — OdooSkills'),
+            draft.body_html.index('Ventes — Société'),
             "la signature doit rester à sa place, sous le <p><br/> initial de "
             "_reply_body — pas remonter en tête du corps (un strip-puis-préfixe "
             "la mettrait à l'index 0, toujours avant la citation, donc "
@@ -114,39 +114,39 @@ class TestDraft(TransactionCase):
         draft._onchange_mailbox_signature()
         self.assertNotIn('Bureau Support', draft.body_html)
         self.assertNotIn('Sous-titre', draft.body_html)
-        self.assertIn('Ventes — OdooSkills', draft.body_html)
+        self.assertIn('Ventes — Société', draft.body_html)
         self.assertEqual(draft.body_html.count('data-oski-signature'), 1)
         self.assertLess(
             draft.body_html.index('<p><br'),
-            draft.body_html.index('Ventes — OdooSkills'),
+            draft.body_html.index('Ventes — Société'),
             "la signature doit rester à sa place, sous le <p><br/> initial")
 
     def test_strip_signature_preserves_trailing_text(self):
         # node.getparent().remove(node) tout court jetterait aussi le texte
         # tapé juste après la signature (son "tail" lxml)
-        body = ('<div data-oski-signature="1"><p>Support — OdooSkills</p></div>'
+        body = ('<div data-oski-signature="1"><p>Support — Société</p></div>'
                 'Merci encore.')
         stripped = self.env['oski.mail.draft']._strip_signature(body)
         self.assertIn('Merci encore.', stripped,
                       "le texte suivant la signature ne doit pas disparaître")
-        self.assertNotIn('Support — OdooSkills', stripped)
+        self.assertNotIn('Support — Société', stripped)
 
     def test_strip_signature_with_previous_sibling_preserves_trailing_text(self):
         # même exigence, mais quand la signature n'est pas le premier enfant :
         # _detach_node doit reporter le tail sur le frère précédent, pas sur
         # fragment.text (l'autre branche, déjà couverte par le test ci-dessus).
         body = ('<p>Avant la signature.</p>'
-                '<div data-oski-signature="1"><p>Support — OdooSkills</p></div>'
+                '<div data-oski-signature="1"><p>Support — Société</p></div>'
                 'Après la signature.')
         stripped = self.env['oski.mail.draft']._strip_signature(body)
         self.assertIn('Avant la signature.', stripped)
         self.assertIn('Après la signature.', stripped,
                       "le tail doit être reporté sur le frère précédent, "
                       "pas perdu")
-        self.assertNotIn('Support — OdooSkills', stripped)
+        self.assertNotIn('Support — Société', stripped)
 
     def test_signature_swap_preserves_text_typed_after_it(self):
-        body = ('<div data-oski-signature="1"><p>Support — OdooSkills</p></div>'
+        body = ('<div data-oski-signature="1"><p>Support — Société</p></div>'
                 'Merci encore.')
         draft = self._draft(body_html=body)
         draft.mailbox_id = self.box_b
@@ -154,7 +154,7 @@ class TestDraft(TransactionCase):
         self.assertIn('Merci encore.', draft.body_html,
                       "un texte tapé juste après la signature ne doit pas s'effacer "
                       "au changement d'expéditeur")
-        self.assertIn('Ventes — OdooSkills', draft.body_html)
+        self.assertIn('Ventes — Société', draft.body_html)
 
     def test_falls_back_on_user_signature(self):
         self.box_a.signature = False
@@ -304,7 +304,7 @@ class TestDraftIsolation(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Support', 'email': 'iso@odooskills.example'})
+            'name': 'Support', 'email': 'iso@societe.example'})
         cls.alice = cls.env['res.users'].create({
             'name': 'Alice', 'login': 'draft_alice',
             'group_ids': [(6, 0, [

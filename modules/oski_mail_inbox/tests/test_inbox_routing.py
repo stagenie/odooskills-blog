@@ -16,7 +16,7 @@ Bonjour, ceci est un message de test.
 def process_raw(env, server, **kw):
     values = {
         'email_from': kw.get('email_from', 'client@example.com'),
-        'email_to': kw.get('email_to', 'odooers@odooskills.com'),
+        'email_to': kw.get('email_to', 'contact@societe.example'),
         'subject': kw.get('subject', 'Question produit'),
         'msg_id': kw.get('msg_id', '<test-1@example.com>'),
         'extra': kw.get('extra', ''),
@@ -34,7 +34,7 @@ class TestInboxRouting(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
+            'name': 'Contact', 'email': 'tests-box@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })
@@ -56,10 +56,10 @@ class TestInboxRouting(TransactionCase):
         # boîte sans serveur fetchmail (pas de credentials) : le mail arrive
         # sans contexte serveur utile -> rattachement par adresse destinataire
         box2 = self.env['oski.mailbox'].create({
-            'name': 'Info', 'email': 'tests-box2@odooskills.example'})
+            'name': 'Info', 'email': 'tests-box2@societe.example'})
         raw = MAIL_TEMPLATE.format(
             email_from='client@example.com',
-            email_to='tests-box2@odooskills.example',
+            email_to='tests-box2@societe.example',
             subject='Sans contexte serveur',
             msg_id='<t-fallback-1@example.com>',
             extra='')

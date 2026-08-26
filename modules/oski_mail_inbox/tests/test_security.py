@@ -11,7 +11,7 @@ class TestSecurity(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'tests-box@odooskills.example',
+            'name': 'Contact', 'email': 'tests-box@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })
@@ -40,7 +40,7 @@ class TestSecurity(TransactionCase):
     def test_user_cannot_create_mailbox(self):
         with self.assertRaises(AccessError):
             self.env['oski.mailbox'].with_user(self.user).create({
-                'name': 'Pirate', 'email': 'pirate@odooskills.com'})
+                'name': 'Pirate', 'email': 'pirate@societe.example'})
 
     def test_user_cannot_unlink_record(self):
         with self.assertRaises(AccessError):
@@ -58,7 +58,7 @@ class TestSecurity(TransactionCase):
 
     def test_manager_crud_mailbox(self):
         box = self.env['oski.mailbox'].with_user(self.manager).create({
-            'name': 'Info', 'email': 'info-sec-test@odooskills.com'})
+            'name': 'Info', 'email': 'info-sec-test@societe.example'})
         box.write({'name': 'Info 2'})
         box.unlink()
 

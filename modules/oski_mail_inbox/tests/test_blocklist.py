@@ -14,7 +14,7 @@ class TestBlocklist(TransactionCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.box = cls.env['oski.mailbox'].create({
-            'name': 'Odooers', 'email': 'tests-block@odooskills.example',
+            'name': 'Contact', 'email': 'tests-block@societe.example',
             'imap_host': 'imap.test.local', 'imap_user': 'u',
             'imap_password': 'fake-test-password',
         })
