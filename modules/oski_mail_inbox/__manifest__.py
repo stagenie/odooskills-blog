@@ -22,7 +22,9 @@ Ne dépend que du module « mail » livré avec Odoo Community.
     'author': 'ADICOPS',
     'website': 'https://apps.odooskills.com',
     'support': 'support@odooskills.com',
-    'license': 'LGPL-3',
+    'license': 'OPL-1',
+    'price': 69.0,
+    'currency': 'EUR',
     'images': ['static/description/banner.png'],
     'depends': ['mail'],
     'data': [
