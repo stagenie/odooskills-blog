@@ -110,3 +110,20 @@ class TestParcoursData(TransactionCase):
     def test_blog_has_parcours(self):
         self.assertTrue(self.blog._oski_has_parcours())
         self.assertFalse(self.blog_without_series._oski_has_parcours())
+
+    def test_archived_series_has_no_badge(self):
+        self.s19.active = False
+        self.assertEqual(self.p1._oski_series_badge(), {})
+
+    def test_archived_series_excluded_from_has_parcours(self):
+        only_blog = self.env['blog.blog'].create({'name': 'Blog une seule série'})
+        only_series = self.Series.create({'name': 'Seule', 'blog_id': only_blog.id})
+        self._post('Article', only_series, 1, blog=only_blog)
+        self.assertTrue(only_blog._oski_has_parcours())
+        only_series.active = False
+        self.assertFalse(only_blog._oski_has_parcours())
+
+    def test_archived_newer_edition_is_treated_as_absent(self):
+        self.s19.replaced_by_id = self.s20
+        self.s20.active = False
+        self.assertFalse(self.p1._oski_series_badge()['newer'])

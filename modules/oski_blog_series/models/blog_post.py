@@ -56,13 +56,13 @@ class BlogPost(models.Model):
         """Repère affiché en tête d'un article publié qui appartient à une série."""
         self.ensure_one()
         series = self.series_id
-        if not series or not self.is_published:
+        if not series or not series.active or not self.is_published:
             return {}
         posts = series._oski_published_posts()
         if self not in posts:
             return {}
         newer = series.replaced_by_id
-        if newer and not newer._oski_published_posts():
+        if newer and (not newer.active or not newer._oski_published_posts()):
             newer = False
         return {
             'series': series,
