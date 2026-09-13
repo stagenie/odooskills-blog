@@ -157,3 +157,67 @@ class TestEbookLifecycle(TransactionCase):
             ('subject', 'ilike', 'OdooSkills'),
             ('email_to', 'ilike', 'buyer@test.com')])
         self.assertEqual(mails, 1, "email renvoyé alors que déjà envoyé")
+
+    # ------------------------------------------------------------------
+    # Espace client : compte portail créé à la livraison (incident Pleux, 09/2026)
+    # ------------------------------------------------------------------
+    def _add_doc(self):
+        att = self.env['ir.attachment'].create({
+            'name': 'e1.pdf', 'datas': b'JVBERi0xLjQK',
+            'res_model': 'product.template', 'res_id': self.p_e1.product_tmpl_id.id,
+        })
+        self.env['product.document'].create({
+            'ir_attachment_id': att.id, 'attached_on_sale': 'sale_order',
+        })
+        self.p_e1.product_tmpl_id.invalidate_recordset(['product_document_ids'])
+        return att
+
+    def _buyer_mails(self):
+        return self.env['mail.mail'].search([('email_to', 'ilike', 'buyer@test.com')])
+
+    def test_guest_buyer_gets_portal_account(self):
+        self._add_doc()
+        self._order(self.p_e1).action_confirm()
+        user = self.partner.with_context(active_test=False).user_ids
+        self.assertEqual(len(user), 1, "aucun compte client créé pour l'acheteur invité")
+        self.assertTrue(user._is_portal())
+        self.assertEqual(user.login, 'buyer@test.com')
+        mails = self._buyer_mails()
+        self.assertEqual(len(mails), 1,
+                         "un seul email attendu : pas d'invitation séparée en plus de la livraison")
+        body = mails.body_html or ''
+        self.assertIn('/web/signup?', body, "lien « choisir mon mot de passe » absent")
+        self.assertNotIn('depuis votre compte', body,
+                         "l'email ne doit plus promettre un compte sans lien pour l'activer")
+
+    def test_login_taken_by_another_partner(self):
+        other = self.env['res.partner'].create({'name': 'Autre fiche', 'email': 'buyer@test.com'})
+        self.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Autre fiche', 'login': 'buyer@test.com', 'partner_id': other.id,
+            'group_ids': [(6, 0, [self.env.ref('base.group_portal').id])],
+        })
+        self._add_doc()
+        order = self._order(self.p_e1)
+        order.action_confirm()
+        self.assertFalse(self.partner.with_context(active_test=False).user_ids)
+        self.assertTrue(order.ebook_delivery_sent, "la livraison ne doit jamais être bloquée")
+        body = self._buyer_mails().body_html or ''
+        self.assertNotIn('/web/signup?', body)
+        self.assertIn('/my/orders/%d?access_token=' % order.id, body)
+
+    def test_existing_account_is_reused(self):
+        user = self.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Acheteur', 'login': 'buyer@test.com', 'partner_id': self.partner.id,
+            'group_ids': [(6, 0, [self.env.ref('base.group_portal').id])],
+        })
+        self._add_doc()
+        self._order(self.p_e1).action_confirm()
+        self.assertEqual(self.partner.with_context(active_test=False).user_ids, user)
+        body = self._buyer_mails().body_html or ''
+        self.assertNotIn('/web/signup?', body)
+        self.assertIn('votre espace client', body)
+
+    def test_no_account_without_delivery(self):
+        self._order(self.p_e1).action_confirm()
+        self.assertFalse(self.partner.with_context(active_test=False).user_ids,
+                         "commande sans fichier livrable : aucun compte à créer")

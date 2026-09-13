@@ -80,7 +80,53 @@ class SaleOrder(models.Model):
             # l'acheteur (anonyme ou portail). On garantit les tokens avant rendu.
             docs.ir_attachment_id.sudo().generate_access_token()
             order.sudo()._portal_ensure_token()
+            access = order._ensure_ebook_portal_access()
             # force_send=True : livraison transactionnelle immédiate à la confirmation,
             # sans passer par la file (sinon coincée derrière un éventuel mass-mailing).
-            template.send_mail(order.id, force_send=True)
+            template.with_context(**access).send_mail(order.id, force_send=True)
             order.ebook_delivery_sent = True
+
+    def _ensure_ebook_portal_access(self):
+        """Crée en silence le compte portail de l'acheteur, pour que l'espace
+        client annoncé par l'email de livraison existe vraiment.
+
+        Le paiement se fait sans compte obligatoire : sans ce compte, « Mot de
+        passe oublié » ne trouve personne et l'acheteur se croit effacé.
+
+        Retourne le contexte de rendu de l'email :
+        - ebook_signup_url : lien « choisir mon mot de passe » (compte créé ici) ;
+        - ebook_has_account : le contact avait déjà son compte.
+        Rien si l'adresse sert déjà d'identifiant à un AUTRE contact (doublon né
+        au paiement) : ce compte-là ne verrait pas la commande, l'email ne promet
+        donc rien de plus que le lien avec jeton.
+
+        sudo : la confirmation se fait en public (paiement web) ou par un vendeur
+        sans droits sur res.users. Jamais bloquant : un échec ne doit pas empêcher
+        la livraison."""
+        self.ensure_one()
+        partner = self.partner_id.sudo()
+        if partner.with_context(active_test=False).user_ids:
+            return {'ebook_has_account': True}
+        email = email_normalize(partner.email or '')
+        if not email:
+            return {}
+        Users = self.env['res.users'].sudo().with_context(active_test=False)
+        if Users.search_count([('login', '=ilike', email)]):
+            return {}
+        company = self.company_id or self.env.company
+        try:
+            with self.env.cr.savepoint():
+                Users.with_context(no_reset_password=True)._create_user_from_template({
+                    'email': email,
+                    'login': email,
+                    'partner_id': partner.id,
+                    'company_id': company.id,
+                    'company_ids': [(6, 0, company.ids)],
+                })
+                partner.signup_prepare()
+                signup_url = partner._get_signup_url()
+        except Exception:
+            _logger.exception(
+                'ebook lifecycle: compte client non créé pour le partner %s', partner.id)
+            return {}
+        return {'ebook_signup_url': signup_url}
