@@ -19,7 +19,8 @@ class TestParcoursData(TransactionCase):
         cls.website = cls.env.ref('website.default_website')
         cls.v19 = cls.env.ref('oski_blog_series.odoo_version_19')
         cls.v20 = cls.env.ref('oski_blog_series.odoo_version_20')
-        cls.blog = cls.env['blog.blog'].create({'name': 'Blog données'})
+        cls.blog = cls.env['blog.blog'].create({
+            'name': 'Blog données', 'parcours_slug': 'oski-blog-donnees-test'})
         cls.blog_without_series = cls.env['blog.blog'].create({'name': 'Blog sans série'})
         cls.s19 = cls.Series.create({'name': 'S19', 'blog_id': cls.blog.id,
                                      'odoo_version_id': cls.v19.id, 'sequence': 1})
@@ -145,3 +146,12 @@ class TestParcoursData(TransactionCase):
     def test_replaced_by_cannot_be_self(self):
         with self.assertRaises(ValidationError):
             self.s19.write({'replaced_by_id': self.s19.id})
+
+    def test_badge_has_no_url_when_blog_has_no_slug(self):
+        # RULING I3 : le repère existe (étape/total) mais ne pointe nulle part.
+        self.assertFalse(self.blog_without_series.parcours_slug)
+        series = self.Series.create({'name': 'Serie sans adresse', 'blog_id': self.blog_without_series.id})
+        post = self._post('Etape sans adresse', series, 1, blog=self.blog_without_series)
+        badge = post._oski_series_badge()
+        self.assertEqual((badge['step'], badge['total']), (1, 1))
+        self.assertFalse(badge['url'])

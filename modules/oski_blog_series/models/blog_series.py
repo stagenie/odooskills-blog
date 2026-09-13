@@ -64,10 +64,13 @@ class OskiBlogSeries(models.Model):
 
     def _oski_parcours_url(self):
         """Une série transverse ou de la version actuelle pointe vers la page du
-        blog sans suffixe de version."""
+        blog sans suffixe de version. RULING I3 : False si le blog n'a pas
+        d'adresse de parcours (pas de lien vers une page qui n'existe pas)."""
         self.ensure_one()
-        return '%s#serie-%s' % (
-            self.blog_id._oski_parcours_url(self.odoo_version_id or None), self.id)
+        blog_url = self.blog_id._oski_parcours_url(self.odoo_version_id or None)
+        if not blog_url:
+            return False
+        return '%s#serie-%s' % (blog_url, self.id)
 
     @api.model
     def _oski_visible_entries(self, blog, version):
@@ -109,9 +112,13 @@ class OskiBlogSeries(models.Model):
         """Une carte par blog du site ayant une adresse de parcours et au moins une
         série visible pour la version actuelle.
 
-        Bornée à 3 requêtes quel que soit le nombre de blogs/séries : pas de
-        recherche de série puis d'articles série par série (voir `_oski_has_parcours`),
-        et aucun chargement du corps HTML des articles."""
+        Bornée à 3 requêtes SQL (recherche des blogs, `search_fetch` des séries,
+        `_read_group` des articles publiés) quel que soit le nombre de blogs/séries :
+        pas de recherche de série puis d'articles série par série (voir
+        `_oski_has_parcours`), aucun chargement du corps HTML des articles, et
+        aucun appel à blog._oski_parcours_url() par carte (mesuré : 5 requêtes au
+        total pour cette méthode, tests + accès aux champs des blogs inclus —
+        voir tests/test_blog_blog_parcours.py::test_chooser_cards_query_count)."""
         version = self.env['oski.blog.odoo.version']._oski_current()
         Blog = self.env['blog.blog']
         Post = self.env['blog.post']

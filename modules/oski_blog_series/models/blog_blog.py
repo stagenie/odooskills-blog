@@ -3,16 +3,17 @@ import re
 from odoo import api, fields, models
 from odoo.exceptions import ValidationError
 
-VERSION_SLUG_RE = re.compile(r'odoo-\d+')
+SLUG_FORMAT_RE = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
+VERSION_SLUG_SHAPE_RE = re.compile(r'odoo-\d+')
 
 
 class BlogBlog(models.Model):
     _inherit = 'blog.blog'
 
     parcours_slug = fields.Char(
-        string="Adresse du parcours", compute='_compute_parcours_slug', store=True,
-        readonly=False, copy=False, index=True,
-        help="Adresse de la page de parcours de ce blog : /parcours/<adresse>.")
+        string="Adresse du parcours", copy=False, index=True,
+        help="Adresse de la page de parcours de ce blog : /parcours/<adresse>. "
+             "Vide : pas de page de parcours pour ce blog.")
     parcours_teaser = fields.Char(
         string="Accroche du parcours", translate=True,
         help="Phrase affichée sur la page de choix /parcours, "
@@ -22,19 +23,27 @@ class BlogBlog(models.Model):
         'UNIQUE (parcours_slug)',
         "Cette adresse de parcours est déjà utilisée par un autre blog.")
 
-    @api.depends('name')
-    def _compute_parcours_slug(self):
-        for blog in self:
-            if not blog.parcours_slug:
-                blog.parcours_slug = self.env['ir.http']._slugify(blog.name or '') or False
-
     @api.constrains('parcours_slug')
-    def _oski_check_parcours_slug_not_version(self):
+    def _oski_check_parcours_slug(self):
+        # RULING I2 (revue « avec réserves », correctif 1/5) : plus de calcul
+        # automatique depuis le nom (collisions possibles entre sites, entre un
+        # blog dupliqué et son original, ou avec un blog archivé lors d'un -u —
+        # une contrainte UNIQUE viole alors la mise à jour entière). L'adresse est
+        # un champ simple, facultatif, posé à la main.
+        Version = self.env['oski.blog.odoo.version']
+        version_slugs = set(Version.search([]).mapped('slug')) - {False}
         for blog in self:
-            if blog.parcours_slug and VERSION_SLUG_RE.fullmatch(blog.parcours_slug):
+            slug = blog.parcours_slug
+            if not slug:
+                continue
+            if not SLUG_FORMAT_RE.fullmatch(slug):
                 raise ValidationError(
-                    "Cette adresse est réservée aux anciennes adresses de version "
-                    "(ex. odoo-19). Choisissez une autre adresse de parcours.")
+                    "L'adresse de parcours ne peut contenir que des minuscules, "
+                    "des chiffres et des tirets simples (ex. « developpement »).")
+            if VERSION_SLUG_SHAPE_RE.fullmatch(slug) or slug in version_slugs:
+                raise ValidationError(
+                    "Cette adresse est réservée à une version d'Odoo (ex. odoo-19). "
+                    "Choisissez une autre adresse de parcours.")
 
     def _oski_has_parcours(self):
         """Vrai si le blog a au moins une série visible pour la version actuelle.
@@ -54,8 +63,13 @@ class BlogBlog(models.Model):
 
     def _oski_parcours_url(self, version=None):
         """Adresse de la page de parcours de ce blog, éventuellement pour une version
-        non actuelle (la version actuelle n'ajoute jamais de suffixe)."""
+        non actuelle (la version actuelle n'ajoute jamais de suffixe).
+
+        RULING I3 : renvoie False si le blog n'a pas d'adresse de parcours — un
+        blog sans adresse n'a ni carte, ni page, ni lien de bandeau/repère."""
         self.ensure_one()
+        if not self.parcours_slug:
+            return False
         url = '/parcours/%s' % self.parcours_slug
         current = self.env['oski.blog.odoo.version']._oski_current()
         if version and version != current:

@@ -14,7 +14,9 @@ class TestBlogTemplatesHttp(HttpCase):
         Series = cls.env['oski.blog.series']
         cls.v19 = cls.env.ref('oski_blog_series.odoo_version_19')
         cls.v20 = cls.env.ref('oski_blog_series.odoo_version_20')
-        cls.blog = cls.env['blog.blog'].create({'name': 'Blog avec série'})
+        cls.blog_slug = 'oski-blog-templates-test'
+        cls.blog = cls.env['blog.blog'].create({
+            'name': 'Blog avec série', 'parcours_slug': cls.blog_slug})
         cls.plain_blog = cls.env['blog.blog'].create({'name': 'Blog sans série'})
         cls.series = Series.create({'name': 'Serie repere test', 'blog_id': cls.blog.id,
                                     'odoo_version_id': cls.v19.id})
@@ -37,7 +39,7 @@ class TestBlogTemplatesHttp(HttpCase):
         self.assertIn('o_oski_series_badge', page)
         self.assertIn('Serie repere test', page)
         self.assertIn('étape 2/2', page)
-        self.assertIn('%s#serie-%s' % (self.blog._oski_parcours_url(), self.series.id), page)
+        self.assertIn('/parcours/%s#serie-%s' % (self.blog_slug, self.series.id), page)
         self.assertIn('Voir tout le parcours', page)
         self.assertNotIn('Une édition', page)
 
@@ -50,15 +52,39 @@ class TestBlogTemplatesHttp(HttpCase):
         page = self.url_open(self.first.website_url).text
         self.assertIn('Écrit pour Odoo 19', page)
         self.assertIn('Une édition Odoo 20 de ce parcours existe', page)
-        self.assertIn('%s/odoo-20#serie-%s' % (self.blog._oski_parcours_url(), self.series_20.id), page)
+        self.assertIn('/parcours/%s/odoo-20#serie-%s' % (self.blog_slug, self.series_20.id), page)
+
+    def test_badge_of_series_without_blog_slug_has_no_link(self):
+        # RULING I3 : le texte du repère apparaît, mais aucun lien mort /parcours/False.
+        blog = self.env['blog.blog'].create({'name': 'Blog badge sans adresse'})
+        series = self.env['oski.blog.series'].create(
+            {'name': 'Serie badge sans adresse', 'blog_id': blog.id})
+        post = self._post('Etape badge sans adresse', blog, series)
+        page = self.url_open(post.website_url).text
+        self.assertIn('o_oski_series_badge', page)
+        self.assertIn('étape 1/1', page)
+        self.assertNotIn('/parcours/False', page)
+        self.assertNotIn('Voir tout le parcours', page)
 
     def test_banner_on_blog_with_series_only(self):
         with_series = self.url_open('/blog/%s' % self.blog.id).text
         self.assertIn('o_oski_parcours_banner', with_series)
         self.assertIn('Suivez un parcours', with_series)
-        self.assertIn(self.blog._oski_parcours_url(), with_series)
+        self.assertIn('/parcours/%s' % self.blog_slug, with_series)
         self.assertNotIn('o_oski_parcours_banner', self.url_open('/blog/%s' % self.plain_blog.id).text)
         archive = self.url_open(
             '/blog/%s?date_begin=2026-04-01+00%%3A00%%3A00&date_end=2026-04-30+23%%3A59%%3A59' % self.blog.id)
         self.assertEqual(archive.status_code, 200)
         self.assertNotIn('o_oski_parcours_banner', archive.text)
+
+    def test_banner_hidden_when_blog_has_no_slug(self):
+        # RULING M7 : blog.parcours_slug est vérifié AVANT _oski_has_parcours() —
+        # un blog avec des séries publiées mais sans adresse n'a pas de bandeau.
+        blog = self.env['blog.blog'].create({'name': 'Blog série sans adresse'})
+        series = self.env['oski.blog.series'].create(
+            {'name': 'Serie sans adresse test', 'blog_id': blog.id})
+        self._post('Etape sans adresse', blog, series)
+        self.assertFalse(blog.parcours_slug)
+        self.assertTrue(blog._oski_has_parcours())
+        page = self.url_open('/blog/%s' % blog.id).text
+        self.assertNotIn('o_oski_parcours_banner', page)
