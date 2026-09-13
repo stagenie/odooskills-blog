@@ -27,6 +27,10 @@ class TestBlogTemplatesHttp(HttpCase):
         cls.second = cls._post('Seconde etape', cls.blog, cls.series)
         cls.standalone = cls._post('Article seul', cls.blog, None)
         cls.plain_post = cls._post('Article ailleurs', cls.plain_blog, None)
+        # État explicite des vues optionnelles de website_blog : « Read Next » actif (défaut, comme en
+        # prod), variante plein écran (`o_wblog_next_container`) plutôt que la couverture « regular ».
+        cls.env.ref('website_blog.opt_blog_post_read_next').active = True
+        cls.env.ref('website_blog.opt_blog_post_regular_cover').active = False
 
     @classmethod
     def _post(cls, name, blog, series, published=True):
@@ -132,3 +136,14 @@ class TestBlogTemplatesHttp(HttpCase):
         self.assertIn('o_oski_series_badge', response.text)
         self.assertIn('o_oski_series_nav', response.text)
         self.assertEqual(counting_badge.calls, 1)
+
+    def test_read_next_is_hidden_on_series_post(self):
+        page = self.url_open(self.second.website_url).text
+        self.assertIn('o_oski_series_nav', page)
+        self.assertNotIn('o_wblog_next_container', page)
+
+    def test_read_next_is_kept_on_standalone_post(self):
+        # le blog compte plusieurs articles : le contrôleur fournit toujours un next_post
+        page = self.url_open(self.standalone.website_url).text
+        self.assertNotIn('o_oski_series_badge', page)
+        self.assertIn('o_wblog_next_container', page)

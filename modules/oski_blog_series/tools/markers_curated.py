@@ -534,6 +534,12 @@ CURATED = {
          'Prochain article :',
          'R5 — code T retiré du bloc « Prochain article »'),
     ],
+    # 95 — Maîtriser les Achats & Approvisionnements dans Odoo 19 — Partie 1/4 : Contrats-cadres et appels d'offre
+    95: [
+        ('<p class="mt-3"><span class="btn btn-outline-light disabled">À paraître — Partie 2 : Frais d\'importation &amp; Landed Costs</span></p>',
+         '<p class="mt-3"><a href="/blog/fonctionnel-odoo-1/maitriser-les-achats-landed-costs-frais-import-96" class="btn btn-outline-light">Lire la Partie 2 : Frais d\'importation &amp; Landed Costs</a></p>',
+         "M — annonce « À paraître » périmée : lien vers l'article publié (96)"),
+    ],
     # 97 — Variantes produit dans Odoo 19 CE — attributs, valeurs et prix par variante
     97: [
         ("l'article S9·2/4 sur les pricelists",
@@ -545,12 +551,24 @@ CURATED = {
         ("l'article <strong>S10·2/N</strong>.",
          "l'article suivant.",
          'R6 — numérotation « x/y » retirée ou reformulée'),
+        ('<p class="mt-3"><span class="btn btn-outline-light disabled">À paraître — Partie 2 : Pricelists &amp; segmentation client</span></p>',
+         '<p class="mt-3"><a href="/blog/fonctionnel-odoo-1/pricelists-segmentation-client-pro-vip-revendeur-103" class="btn btn-outline-light">Lire la Partie 2 : Pricelists &amp; segmentation client</a></p>',
+         "M — annonce « À paraître » périmée : lien vers l'article publié (103)"),
+    ],
+    # 99 — Maîtriser les Achats & Approvisionnements dans Odoo 19 — Partie 3/4 : Valorisation de stock (Standard, FIFO, AVCO)
+    99: [
+        ('<a href="#"\n                       class="btn btn-primary">Partie 4/4 — Planification d\'approvisionnement</a>\n                </p>\n                <p class="mt-3 small"><em>À publier prochainement — orderpoints, MTO vs MTS,\n                    replenishment dashboard, multi-fournisseurs.</em></p>',
+         '<a href="/blog/fonctionnel-odoo-1/maitriser-approvisionnements-planification-orderpoints-mto-100"\n                       class="btn btn-primary">Partie 4 — Planification d\'approvisionnement</a>\n                </p>\n                <p class="mt-3 small"><em>Au programme — orderpoints, MTO vs MTS,\n                    replenishment dashboard, multi-fournisseurs.</em></p>',
+         'R6 — « Partie 4/4 » et « À publier prochainement » : article publié (100), lien réel'),
     ],
     # 103 — Pricelists & segmentation client dans Odoo 19 CE — Pro, VIP et Revendeur
     103: [
         ('Dans la <strong>Partie 3/3</strong> de la Saison 10',
          'Dans le <strong>prochain article</strong> de la Saison 10',
          'R6 — numérotation « x/y » retirée ou reformulée'),
+        ('<p class="mt-3"><span class="btn btn-outline-light disabled">À paraître — Partie 3 : Fidélité &amp; cartes-cadeaux</span></p>',
+         '<p class="mt-3"><a href="/blog/fonctionnel-odoo-1/fidelite-cartes-cadeaux-ewallet-club-infosphere-104" class="btn btn-outline-light">Lire la Partie 3 : Fidélité &amp; cartes-cadeaux</a></p>',
+         "M — annonce « À paraître » périmée : lien vers l'article publié (104)"),
     ],
     # 105 — Écrire des tests automatisés en Odoo 19 — TransactionCase, HttpCase, @tagged, Fo
     105: [
