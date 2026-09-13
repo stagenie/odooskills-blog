@@ -377,8 +377,10 @@ def tcode_label_edits(html):
 # Résidus, application, proposition
 # ---------------------------------------------------------------------------
 
+# « article » puis un blanc (espace, saut de ligne, &nbsp;, &#160;, U+00A0) puis x/y :
+# « <strong>Article&nbsp;5/5</strong> » (176), « l'article\n                1/3 » (171).
 _RESIDUAL = re.compile(
-    r'\bT[0-2]\d\b|(?i:article \d+ ?/ ?\d+)|Bloc \d+ ·|Voir aussi dans cette s[ée]rie'
+    r'\bT[0-2]\d\b|(?i:article(?:\s|&nbsp;|&#160;)+\d+ ?/ ?\d+)|Bloc \d+ ·|Voir aussi dans cette s[ée]rie'
     r'|<h[2-4][^>]*>\s*La s[ée]rie|Suite de la Saison')
 RESIDUAL_EXCERPT = 120
 
@@ -482,3 +484,22 @@ def propose(html, series_name, has_series):
         candidates += _nav_candidates(html)
     candidates += _see_also_candidates(html) + _series_list_candidates(html) + _tcode_candidates(html)
     return _finalize(html, candidates)
+
+
+_CURATED_RULE = re.compile(r'^(R\d)\b')
+
+
+def build_post_plan(html, series_name, has_series, curated=(), drop=()):
+    """Plan d'un article : les propositions de `propose`, relues, puis les remplacements manuels.
+    - une proposition dont `old` contient une entrée de `drop` est écartée (une entrée de `drop`
+      est un extrait qui identifie une seule proposition) ;
+    - une proposition sans effet (`old == new`, lien « Tnn » seul) n'est jamais gardée :
+      elle n'existe que pour être complétée dans `curated` ;
+    - chaque `(old, new, note)` de `curated` est ajouté après les propositions, sans relecture ;
+      sa règle est le préfixe « Rn » de la note (« R5 — … »), sinon « M »."""
+    edits = [edit for edit in propose(html, series_name, has_series)
+             if edit.old != edit.new and not any(extract in edit.old for extract in drop)]
+    for old, new, note in curated:
+        match = _CURATED_RULE.match(note)
+        edits.append(Edit(match.group(1) if match else 'M', old, new, False))
+    return edits

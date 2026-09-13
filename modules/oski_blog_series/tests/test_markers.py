@@ -4,7 +4,12 @@ Les extraits viennent de l'instantané de production (articles cités en comment
 raccourcis autour de la structure dont dépend chaque règle."""
 from odoo.tests import BaseCase, tagged
 
-from odoo.addons.oski_blog_series.tools import markers
+import json
+import os
+import re
+from html.parser import HTMLParser
+
+from odoo.addons.oski_blog_series.tools import markers, markers_curated
 from odoo.addons.oski_blog_series.tools.markers import Edit
 
 BODY = '<section class="s_text_block pt32 pb32"><p>Contenu de l\'article.</p></section>\n'
@@ -623,3 +628,127 @@ class TestMarkersPropose(BaseCase):
         new_html, statuses = markers.apply_edits(html, edits)
         self.assertEqual(new_html, html)
         self.assertIn('ambiguous', {s for _e, s in statuses})
+
+
+@tagged('post_install', '-at_install')
+class TestMarkersResidueAndPlan(BaseCase):
+
+    def test_residual_markers_see_article_number_after_any_blank(self):
+        # Article 176 : « Article&nbsp;5/5 » ; article 171 : « l'article » + saut de ligne + « 1/3 »
+        cases = [
+            '<p class="mb-0"><strong>Article&nbsp;5/5</strong> — précédent&nbsp;: …</p>',
+            "<p>ce que l'article\n                1/3 appelait « l'illusion de la protection ».</p>",
+            '<p>Article&#160;2/3</p>',
+            '<p>Article\u00a04/5</p>',
+        ]
+        for html in cases:
+            with self.subTest(html=html):
+                self.assertEqual(len(markers.residual_markers(html)), 1)
+        self.assertEqual(markers.residual_markers('<code>Article&nbsp;5/5</code>'), [])
+
+    def test_build_post_plan_drops_skips_placeholders_and_appends_curated(self):
+        html = BODY + '<p>Voir %s pour les relations.</p>' % LINK_T11_65 + NAV_61
+        proposed = markers.propose(html, 'Parcours', True)
+        self.assertIn(Edit('R5', LINK_T11_65, LINK_T11_65, True), proposed)
+        curated = [('Voir %s pour' % LINK_T11_65, 'Voir <a href="/x-62">Relations entre modèles</a> pour', 'R5 — lien complété'),
+                   ("Contenu de l'article.", 'Contenu.', 'reformulation')]
+        plan = markers.build_post_plan(html, 'Parcours', True, curated=curated, drop=['T11 — Relations entre modèles'])
+        self.assertNotIn(LINK_T11_65, [e.old for e in plan])        # lien « T11 » seul : jamais gardé tel quel
+        self.assertNotIn('R2', [e.rule for e in plan])              # navigation écartée par l'extrait
+        self.assertEqual(plan[-2:], [
+            Edit('R5', curated[0][0], curated[0][1], False),
+            Edit('M', curated[1][0], curated[1][1], False),
+        ])
+        new_html, statuses = markers.apply_edits(html, plan)
+        self.assertEqual({s for _e, s in statuses}, {'applied'})
+        self.assertIn('Relations entre modèles</a> pour', new_html)
+
+
+class _TagBalance(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.balance = {'section': 0, 'div': 0}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.balance:
+            self.balance[tag] += 1
+
+    def handle_endtag(self, tag):
+        if tag in self.balance:
+            self.balance[tag] -= 1
+
+
+def _balance(html):
+    parser = _TagBalance()
+    parser.feed(html)
+    parser.close()
+    return parser.balance
+
+
+@tagged('post_install', '-at_install')
+class TestMarkersSnapshot(BaseCase):
+    """Relecture complète sur l'instantané de production (non versionné) :
+    OSKI_MARKERS_SNAPSHOT=<chemin de prod_posts.json>, prod_series.json dans le même dossier."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        path = os.environ.get('OSKI_MARKERS_SNAPSHOT')
+        cls.posts = cls.series = None
+        if path and os.path.exists(path):
+            with open(path, encoding='utf-8') as handle:
+                cls.posts = json.load(handle)
+            with open(os.path.join(os.path.dirname(path), 'prod_series.json'), encoding='utf-8') as handle:
+                cls.series = json.load(handle)
+
+    def setUp(self):
+        super().setUp()
+        if self.posts is None:
+            self.skipTest('OSKI_MARKERS_SNAPSHOT absent : instantané de production non disponible')
+
+    def _plan(self, post):
+        name = self.series[str(post['series'])]['name'] if post['series'] else False
+        return markers.build_post_plan(post['content'], name, bool(post['series']),
+                                       markers_curated.CURATED.get(post['id'], ()),
+                                       markers_curated.DROP.get(post['id'], ()))
+
+    def test_curated_and_drop_entries_are_unique_in_the_snapshot(self):
+        by_id = {post['id']: post for post in self.posts}
+        for table in (markers_curated.CURATED, markers_curated.DROP):
+            for post_id, entries in table.items():
+                self.assertIn(post_id, by_id)
+                content = by_id[post_id]['content']
+                for entry in entries:
+                    old = entry[0] if isinstance(entry, tuple) else entry
+                    with self.subTest(post=post_id, old=old[:80]):
+                        self.assertEqual(content.count(old), 1)
+
+    def test_each_drop_entry_matches_exactly_one_proposal(self):
+        by_id = {post['id']: post for post in self.posts}
+        for post_id, extracts in markers_curated.DROP.items():
+            post = by_id[post_id]
+            name = self.series[str(post['series'])]['name'] if post['series'] else False
+            proposals = markers.propose(post['content'], name, bool(post['series']))
+            for extract in extracts:
+                with self.subTest(post=post_id, extract=extract[:80]):
+                    self.assertEqual(sum(extract in edit.old for edit in proposals), 1)
+
+    def test_plan_applies_everywhere_and_leaves_only_accepted_residue(self):
+        for post in self.posts:
+            with self.subTest(post=post['id']):
+                new_html, statuses = markers.apply_edits(post['content'], self._plan(post))
+                self.assertFalse([s for _e, s in statuses if s in ('missing', 'ambiguous')])
+                accepted = markers_curated.ACCEPTED_RESIDUE.get(post['id'], [])
+                residue = markers.residual_markers(new_html)
+                self.assertLessEqual(set(residue), set(accepted))
+                self.assertLessEqual(set(accepted), set(residue))  # pas d'entrée périmée
+
+    def test_plan_keeps_section_and_div_balance(self):
+        for post in self.posts:
+            with self.subTest(post=post['id']):
+                new_html, _statuses = markers.apply_edits(post['content'], self._plan(post))
+                self.assertEqual(_balance(new_html), _balance(post['content']))
+                removed = sum(edit.old.count('<section') - edit.new.count('<section') for edit in self._plan(post))
+                self.assertEqual(len(re.findall(r'<section\b', new_html)),
+                                 len(re.findall(r'<section\b', post['content'])) - removed)
+
