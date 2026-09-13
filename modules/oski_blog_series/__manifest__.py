@@ -7,7 +7,9 @@
 Parcours de lecture du blog OdooSkills
 ======================================
 - Séries d'articles ordonnées, rattachées automatiquement par étiquette.
-- Page /parcours par version d'Odoo, séries « toutes versions » dans chaque onglet.
+- /parcours : page de choix du profil (une carte par blog ayant une adresse de
+  parcours), puis /parcours/<adresse> : page de profil propre à ce blog, avec les
+  versions d'Odoo regroupées en onglets (séries « toutes versions » dans chacun).
 - Bandeau en tête des listes de blog et repère « étape n/N » dans chaque article de série.
 """,
     'author': 'ADICOPS',
