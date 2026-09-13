@@ -13,6 +13,7 @@
         'views/parcours_templates.xml',
         'views/blog_templates.xml',
     ],
+    'post_init_hook': 'post_init',
     'installable': True,
     'application': False,
 }
