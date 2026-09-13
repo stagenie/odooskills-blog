@@ -383,6 +383,9 @@ _RESIDUAL = re.compile(
     r'\bT[0-2]\d\b|(?i:article(?:\s|&nbsp;|&#160;)+\d+ ?/ ?\d+)|Bloc \d+ ·|Voir aussi dans cette s[ée]rie'
     r'|<h[2-4][^>]*>\s*La s[ée]rie|Suite de la Saison')
 RESIDUAL_EXCERPT = 120
+# Codes internes de série (F11·2, ADM·1 / ADM2, épisodes S01–S05), cherchés dans le texte
+# seulement : les attributs (« data-name="Checklist ADM7" »), le code et les commentaires sont exclus.
+_RESIDUAL_CODES = re.compile(r'\bF\d+(?:·|&middot;)\d+|\bADM(?:·|&middot;)?\d+|\bS0[1-5]\b')
 
 
 def residual_markers(html):
@@ -393,6 +396,10 @@ def residual_markers(html):
     masked = ''.join(masked)
     found = []
     for match in _RESIDUAL.finditer(masked):
+        window = masked[max(0, match.start() - 40):match.end() + 60]
+        found.append(re.sub(r'\s+', ' ', window).strip()[:RESIDUAL_EXCERPT])
+    text_only = re.sub(r'<[^>]*>', lambda tag: ' ' * len(tag.group(0)), masked)
+    for match in _RESIDUAL_CODES.finditer(text_only):
         window = masked[max(0, match.start() - 40):match.end() + 60]
         found.append(re.sub(r'\s+', ' ', window).strip()[:RESIDUAL_EXCERPT])
     return found

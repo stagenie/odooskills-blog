@@ -646,6 +646,29 @@ class TestMarkersResidueAndPlan(BaseCase):
                 self.assertEqual(len(markers.residual_markers(html)), 1)
         self.assertEqual(markers.residual_markers('<code>Article&nbsp;5/5</code>'), [])
 
+    def test_residual_markers_see_internal_series_codes_in_text_only(self):
+        # Extraits réels : 111 (F11·2), 126 (ADM·1), 122 (ADM2), 116 (épisode S05)
+        seen = [
+            "<p>L'article F11·2 de cette saison détaille les contournements concrets.</p>",
+            '<p class="small text-muted mb-1">Saison 12 · ADM·1</p>',
+            "<p>utilisateurs et droits d'accès (ADM2), plan comptable par société (ADM3)</p>",
+            "<p>L'épisode S05 détaille les patterns <code>pg_dump</code>.</p>",
+        ]
+        for html in seen:
+            with self.subTest(html=html):
+                self.assertTrue(markers.residual_markers(html))
+        self.assertEqual(len(markers.residual_markers(seen[2])), 2)
+        ignored = [
+            '<div class="s_newsletter_list" data-name="Checklist ADM7"></div>',   # 137 : attribut
+            '<!-- ===== Série S01 — Prism + colorisation différenciée ===== -->',  # 116 : commentaire
+            '<pre><code># épisode S05, F11·2, ADM·3</code></pre>',
+            '<a href="/blog/developpement-odoo-2/s01-linux-116">Linux</a>',
+            '<p>Cet article boucle la saison S11 sur le volet pilotage.</p>',       # code de saison, hors motif
+        ]
+        for html in ignored:
+            with self.subTest(html=html):
+                self.assertEqual(markers.residual_markers(html), [])
+
     def test_build_post_plan_drops_skips_placeholders_and_appends_curated(self):
         html = BODY + '<p>Voir %s pour les relations.</p>' % LINK_T11_65 + NAV_61
         proposed = markers.propose(html, 'Parcours', True)

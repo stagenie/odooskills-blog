@@ -3,8 +3,11 @@
 Données pures (aucun import), consommées par `markers.build_post_plan` et l'application (tâche 4).
 - CURATED[post_id] = [(old, new, note)] : `old` présent une seule fois dans l'article ; la note
   commence par la règle (« R5 — … ») ; `new == ''` = suppression.
-- DROP[post_id] = [extrait] : extrait unique qui identifie une proposition de `markers.propose`
-  à ne pas appliquer (la raison est en commentaire).
+- DROP[post_id] = [extrait] : propositions de `markers.propose` à ne pas appliquer (raison en
+  commentaire). Règle de correspondance : une proposition est écartée si son `old` CONTIENT
+  l'extrait (test de sous-chaîne, sensible à la casse, sur le HTML d'origine). Chaque extrait
+  apparaît une seule fois dans l'article et correspond à exactement une proposition de cet
+  article (vérifié par les tests) : la tâche 4 le résout sans ambiguïté en recalculant `propose`.
 - ACCEPTED_RESIDUE[post_id] = [extrait de `residual_markers`] : résidus volontairement gardés."""
 
 # Table T → article vérifiée sur l'instantané (noms, positions dans la série « Parcours
@@ -32,6 +35,81 @@ CURATED = {
         ('<p><a href="/blog/fonctionnel-odoo-1/configurer-linventaire-dans-odoo-19-entrepot-produits-et-stock-initial-40" class="text-white-75">← Article précédent : Configurer l\'inventaire</a></p>',
          '',
          'R2 — lien « ← Article précédent » intra-série retiré ; le bloc « Prochain article » et son résumé restent'),
+        ('>Article 3 : Traçabilité lots/séries →</a>',
+         '>Traçabilité lots/séries →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 42 — Traçabilité par lots et numéros de série dans Odoo 19
+    42: [
+        ('<strong>Article 4 &rarr; Inventaire : Routes multi-étapes</strong>',
+         '<strong>Inventaire : Routes multi-étapes</strong>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 4 → Routes multi-étapes</a>',
+         '>Routes multi-étapes →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 44 — Les achats dans Odoo 19 : fournisseurs, commandes et réception
+    44: [
+        ('<strong>Article 6 → Ventes : clients, devis, livraison et facturation</strong>',
+         '<strong>Ventes : clients, devis, livraison et facturation</strong>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 6 → Les ventes</a>',
+         '>Les ventes →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 45 — Les ventes dans Odoo 19 : devis, commande client, livraison et facturation
+    45: [
+        ('<strong>Article 7 → CRM : prospects, opportunités et pipeline de vente</strong>',
+         '<strong>CRM : prospects, opportunités et pipeline de vente</strong>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 7 → Le CRM</a>',
+         '>Le CRM →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 46 — Le CRM dans Odoo 19 : pipeline, leads et opportunités
+    46: [
+        ('<li>Article 5 — Module Achats',
+         '<li>Module Achats',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('<li>Article 6 — Module Ventes',
+         '<li>Module Ventes',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('<li>Article 7 — Module CRM',
+         '<li>Module CRM',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 8 → La comptabilité</a>',
+         '>La comptabilité →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 47 — La comptabilité dans Odoo 19 : plan comptable algérien, taxes et journaux
+    47: [
+        ('<h2>Article 9 — Facturation &amp; paiements dans Odoo 19</h2>',
+         '<h2>Facturation &amp; paiements dans Odoo 19</h2>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('créée en Article 6, enregistrement',
+         "créée dans l'article sur les ventes, enregistrement",
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 9 → Facturation &amp; paiements</a>',
+         '>Facturation &amp; paiements →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 48 — Facturation et paiements dans Odoo 19 : de la facture au lettrage
+    48: [
+        ('<h2>Article 10 — La fabrication dans Odoo 19 (MRP)</h2>',
+         '<h2>La fabrication dans Odoo 19 (MRP)</h2>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 10 → Nomenclatures MRP</a>',
+         '>Nomenclatures MRP →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+    ],
+    # 49 — La fabrication dans Odoo 19 : nomenclatures et coûts de production
+    49: [
+        ('<h2>Article 11 — Ordres de fabrication dans Odoo 19</h2>',
+         '<h2>Ordres de fabrication dans Odoo 19</h2>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
+        ('>Article 11 → Ordres de fabrication</a>',
+         '>Ordres de fabrication →</a>',
+         'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
     ],
     # 54 — Configurer l'environnement de développement Odoo 19
     54: [
@@ -478,6 +556,12 @@ CURATED = {
         ('(<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a>) qui',
          '(<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Tests automatisés</a>) qui',
          "R5 — code T remplacé par le titre de l'article visé"),
+        ('<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 Ubuntu</a>',
+         'R5 — lien de carte vers le mauvais article corrigé (id 56 Architecture technique → 50 Installer Odoo 19 sur Ubuntu) ; code T retiré du libellé'),
+        ('<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 Docker</a>',
+         'R5 — lien de carte vers le mauvais article corrigé (id 58 Les employés → 53 Installer Odoo 19 avec Docker) ; code T retiré du libellé'),
     ],
     # 107 — OWL composants custom Odoo 19
     107: [
@@ -512,6 +596,9 @@ CURATED = {
         ('pattern v19 utilisé par T26.',
          "pattern v19 utilisé dans l'article sur les composants OWL.",
          'R5 — code T reformulé'),
+        ('<a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15 — create/write/unlink</a>',
+         '<a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">create/write/unlink</a>',
+         'R5 — lien de carte vers le mauvais article corrigé (id 65 Hiérarchie de modèles → 66 Méthodes de modèle) ; code T retiré du libellé'),
     ],
     # 109 — Mesurer la performance de bus.bus en Odoo 19
     109: [
@@ -563,24 +650,788 @@ CURATED = {
         (' (T24 → T28)',
          '',
          'R5 — plage de codes T retirée'),
+        ('<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 Ubuntu</a>',
+         'R5 — lien de carte vers le mauvais article corrigé (id 56 Architecture technique → 50 Installer Odoo 19 sur Ubuntu) ; code T retiré du libellé'),
+        ('<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 Docker</a>',
+         'R5 — lien de carte vers le mauvais article corrigé (id 58 Les employés → 53 Installer Odoo 19 avec Docker) ; code T retiré du libellé'),
+    ],
+    # 111 — Démarrer ses projets dans Odoo CE — structure, kanban, équipes
+    111: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans ce hub Projet &amp; Services</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">F11·1 — Démarrer ses projets dans Odoo CE</h5>\n'
+          '                <p class="card-text small text-muted">Structure, kanban, équipes — la fondation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">F11·2 — Tâches, dépendances &amp; suivi en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Ce qui existe en CE, et ce qui demande EE.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">F11·3 — Feuilles de temps en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>hr_timesheet</code> — saisie, suivi, facturation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4 — Comptabilité analytique Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Plans, distribution, marges projet.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">F11·5 — Facturer au temps &amp; rentabilité projet</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>sale_timesheet</code>, dashboard marge, KPI.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ("L'article F11·2 de cette saison",
+         'L\'article <a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">Tâches, dépendances &amp; suivi en Odoo CE</a> de cette saison',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ("L'article F11·4 reviendra",
+         'L\'article <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">Comptabilité analytique Odoo CE</a> reviendra',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('Le prochain article F11·2 ouvrira',
+         'Le prochain article, <a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">Tâches, dépendances &amp; suivi en Odoo CE</a>, ouvrira',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('voir F11·3.</p>',
+         'voir <a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">Feuilles de temps en Odoo CE</a>.</p>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+    ],
+    # 112 — Tâches, dépendances & suivi en Odoo CE (et ce qui demande EE)
+    112: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans ce hub Projet &amp; Services</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">F11·1 — Démarrer ses projets dans Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Structure, kanban, équipes — la fondation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">F11·2 — Tâches, dépendances &amp; suivi en Odoo CE</h5>\n'
+          '                <p class="card-text small text-muted">Ce qui existe en CE, et ce qui demande EE.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">F11·3 — Feuilles de temps : du chrono à la facturation</a></h5>\n'
+          '                <p class="card-text small text-muted">hr_timesheet et la chaîne saisie → validation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4 — Maîtriser la comptabilité analytique en CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Plans, distributions, marges.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">F11·5 — Facturer au temps &amp; analyser la rentabilité projet</a></h5>\n'
+          '                <p class="card-text small text-muted">sale_timesheet, dashboard marge, KPI.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('déjà vu en F11·1.',
+         'déjà vu dans <a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">Démarrer ses projets dans Odoo CE</a>.',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('">F11·3 — Feuilles de temps</a> ouvrira',
+         '">Feuilles de temps</a> ouvrira',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('assignées et F11·3 timesheet.',
+         'assignées et les feuilles de temps.',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+    ],
+    # 113 — Feuilles de temps en Odoo CE — du chrono à la facturation
+    113: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans ce hub Projet &amp; Services</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">F11·1 — Démarrer ses projets dans Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Structure, kanban, équipes — la fondation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">F11·2 — Tâches, dépendances &amp; suivi en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Ce qui existe en CE, et ce qui demande EE.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">F11·3 — Feuilles de temps en Odoo CE</h5>\n'
+          '                <p class="card-text small text-muted"><code>hr_timesheet</code> — saisie, suivi, facturation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4 — Comptabilité analytique Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Plans, distribution, marges projet.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">F11·5 — Facturer au temps &amp; rentabilité projet</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>sale_timesheet</code>, dashboard marge, KPI.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('">F11·4 — Maîtriser la comptabilité analytique en CE</a>',
+         '">Maîtriser la comptabilité analytique en CE</a>',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('">F11·5 — Facturer au temps &amp; analyser la rentabilité projet</a>',
+         '">Facturer au temps &amp; analyser la rentabilité projet</a>',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('utile en amont de F11·5.',
+         'utile en amont de <a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">Facturer au temps &amp; rentabilité projet</a>.',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+    ],
+    # 114 — Comptabilité analytique Odoo CE : plans, distribution, marges projet
+    114: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans ce hub Projet &amp; Services</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">F11·1 — Démarrer ses projets dans Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Structure, kanban, équipes — la fondation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">F11·2 — Tâches, dépendances &amp; suivi en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Ce qui existe en CE, et ce qui demande EE.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">F11·3 — Feuilles de temps en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>hr_timesheet</code> — saisie, suivi, facturation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">F11·4 — Comptabilité analytique Odoo CE</h5>\n'
+          '                <p class="card-text small text-muted">Plans, distribution, marges projet.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-primary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">F11·5 — Facturer au temps &amp; rentabilité projet</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>sale_timesheet</code>, dashboard marge, KPI.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('(cas F11·5)',
+         '(voir <a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">Facturer au temps &amp; rentabilité projet</a>)',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+    ],
+    # 115 — Facturer au temps & rentabilité projet Odoo CE
+    115: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans ce hub Projet &amp; Services</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">F11·1 — Démarrer ses projets dans Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Structure, kanban, équipes — la fondation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/taches-dependances-suivi-en-odoo-ce-et-ce-qui-demande-ee-112">F11·2 — Tâches, dépendances &amp; suivi en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Ce qui existe en CE, et ce qui demande EE.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">F11·3 — Feuilles de temps en Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>hr_timesheet</code> — saisie, suivi, facturation.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4 — Comptabilité analytique Odoo CE</a></h5>\n'
+          '                <p class="card-text small text-muted">Plans, distribution, marges projet.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">F11·5 — Facturer au temps &amp; rentabilité projet</h5>\n'
+          '                <p class="card-text small text-muted"><code>sale_timesheet</code>, dashboard marge, KPI.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('>plans analytiques posés en F11·4</a>',
+         '>plans analytiques déjà posés</a>',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('>trois projets créés en F11·1</a>',
+         '>trois projets créés en début de saison</a>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('déjà saisies en F11·3 (16h',
+         'déjà saisies dans les feuilles de temps (16h',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('par les feuilles de temps de F11·3)',
+         'par les feuilles de temps)',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('>mécanisme F11·4</a>',
+         '>mécanisme de distribution analytique</a>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('vu en <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4</a>',
+         'vu dans <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">Comptabilité analytique Odoo CE</a>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('les 12 000 DA Cisco de F11·4)',
+         "les 12 000 DA Cisco vus dans l'article sur l'analytique)",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<strong>F11·1</strong> a',
+         '<strong>Démarrer ses projets</strong> a',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<strong>F11·2</strong> a',
+         '<strong>Tâches, dépendances &amp; suivi</strong> a',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<strong>F11·3</strong> a',
+         '<strong>Feuilles de temps</strong> a',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<strong>F11·4</strong> a',
+         '<strong>Comptabilité analytique</strong> a',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<strong>F11·5</strong> boucle',
+         '<strong>Facturer au temps</strong> boucle',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('suite logique de F11·5.',
+         'suite logique de cet article.',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+    ],
+    # 116 — Linux pour le dev Odoo : 30 commandes pour reprendre la main sur sa sandbox
+    116: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans la série</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">S01 — Linux : 30 commandes pour la sandbox</h5>\n'
+          '                <p class="card-text small text-muted">logs, processus, ports, permissions, systemd, alias <code>.bashrc</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/git-github-pour-le-dev-odoo-20-commandes-pour-cloner-brancher-contribuer-117">S02 — Git & GitHub : 20 commandes pour cloner, brancher, contribuer</a></h5>\n'
+          '                <p class="card-text small text-muted">clone shallow, submodules OCA, workflow feature-branch, PR via <code>gh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/bash-pour-odoo-5-scripts-qui-font-gagner-1-heure-par-jour-118">S03 — Bash : 5 scripts qui font gagner 1 heure par jour</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>start-odoo.sh</code>, <code>restore-db.sh</code>, <code>dump-and-clean.sh</code>, <code>install-and-test.sh</code>, <code>update-all-addons.sh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">S04 — odoo-bin shell : 15 patterns ORM essentiels</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>env</code>, <code>search_fetch</code> v19, <code>Domain</code>, <code>flush_model</code> / <code>invalidate_model</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">S05 — PostgreSQL : psql, SELECT, dump propre</a></h5>\n'
+          '                <p class="card-text small text-muted">Requêtes <code>psql</code>, <code>EXPLAIN ANALYZE</code>, garde-fous <code>UPDATE</code> / <code>DELETE</code>, CTA E3.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('S01 — Boîte à outils Linux du dev Odoo',
+         'Boîte à outils Linux du dev Odoo',
+         'R5 — code de série retiré du nom de la série'),
+        ("L'épisode S05 détaille",
+         'L\'épisode <a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a> détaille',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 117 — Git & GitHub pour le dev Odoo : 20 commandes pour cloner, brancher, contribuer
     117: [
         ("<strong>l'épisode 2/5</strong>",
          '<strong>le deuxième épisode</strong>',
          'R6 — numérotation « x/y » retirée ou reformulée'),
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans la série</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/linux-pour-le-dev-odoo-30-commandes-pour-reprendre-la-main-sur-sa-sandbox-116">S01 — Linux : 30 commandes pour la sandbox</a></h5>\n'
+          '                <p class="card-text small text-muted">logs, processus, ports, permissions, systemd, alias <code>.bashrc</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">S02 — Git & GitHub : 20 commandes pour cloner, brancher, contribuer</h5>\n'
+          '                <p class="card-text small text-muted">clone shallow, submodules OCA, workflow feature-branch, PR via <code>gh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/bash-pour-odoo-5-scripts-qui-font-gagner-1-heure-par-jour-118">S03 — Bash : 5 scripts qui font gagner 1 heure par jour</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>start-odoo.sh</code>, <code>restore-db.sh</code>, <code>dump-and-clean.sh</code>, <code>install-and-test.sh</code>, <code>update-all-addons.sh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">S04 — odoo-bin shell : 15 patterns ORM essentiels</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>env</code>, <code>search_fetch</code> v19, <code>Domain</code>, <code>flush_model</code> / <code>invalidate_model</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">S05 — PostgreSQL : psql, SELECT, dump propre</a></h5>\n'
+          '                <p class="card-text small text-muted">Requêtes <code>psql</code>, <code>EXPLAIN ANALYZE</code>, garde-fous <code>UPDATE</code> / <code>DELETE</code>, CTA E3.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('S01 — Boîte à outils Linux du dev Odoo',
+         'Boîte à outils Linux du dev Odoo',
+         'R5 — code de série retiré du nom de la série'),
+        ('>épisode S01 Linux</a>',
+         '>épisode Linux</a>',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('>épisode S03 — Bash</a>',
+         '>épisode Bash</a>',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
     ],
     # 118 — Bash pour Odoo : 5 scripts qui font gagner 1 heure par jour
     118: [
         ("<strong>l'épisode 3/5</strong>",
          '<strong>le troisième épisode</strong>',
          'R6 — numérotation « x/y » retirée ou reformulée'),
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans la série</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/linux-pour-le-dev-odoo-30-commandes-pour-reprendre-la-main-sur-sa-sandbox-116">S01 — Linux : 30 commandes pour la sandbox</a></h5>\n'
+          '                <p class="card-text small text-muted">logs, processus, ports, permissions, systemd, alias <code>.bashrc</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/git-github-pour-le-dev-odoo-20-commandes-pour-cloner-brancher-contribuer-117">S02 — Git & GitHub : 20 commandes pour cloner, brancher, contribuer</a></h5>\n'
+          '                <p class="card-text small text-muted">clone shallow, submodules OCA, workflow feature-branch, PR via <code>gh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">S03 — Bash : 5 scripts qui font gagner 1 heure par jour</h5>\n'
+          '                <p class="card-text small text-muted"><code>start-odoo.sh</code>, <code>restore-db.sh</code>, <code>dump-and-clean.sh</code>, <code>install-and-test.sh</code>, <code>update-all-addons.sh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">S04 — odoo-bin shell : 15 patterns ORM essentiels</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>env</code>, <code>search_fetch</code> v19, <code>Domain</code>, <code>flush_model</code> / <code>invalidate_model</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">S05 — PostgreSQL : psql, SELECT, dump propre</a></h5>\n'
+          '                <p class="card-text small text-muted">Requêtes <code>psql</code>, <code>EXPLAIN ANALYZE</code>, garde-fous <code>UPDATE</code> / <code>DELETE</code>, CTA E3.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('S01 — Boîte à outils Linux du dev Odoo',
+         'Boîte à outils Linux du dev Odoo',
+         'R5 — code de série retiré du nom de la série'),
+        ("L'épisode S04 de la série",
+         'L\'épisode <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">odoo-bin shell</a> de la série',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 119 — odoo-bin shell : la console cachée d'Odoo et 15 patterns ORM essentiels
     119: [
         ("<strong>l'épisode 4/5 de la série",
          '<strong>le quatrième épisode de la série',
          'R6 — numérotation « x/y » retirée ou reformulée'),
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans la série</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/linux-pour-le-dev-odoo-30-commandes-pour-reprendre-la-main-sur-sa-sandbox-116">S01 — Linux : 30 commandes pour la sandbox</a></h5>\n'
+          '                <p class="card-text small text-muted">logs, processus, ports, permissions, systemd, alias <code>.bashrc</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/git-github-pour-le-dev-odoo-20-commandes-pour-cloner-brancher-contribuer-117">S02 — Git & GitHub : 20 commandes pour cloner, brancher, contribuer</a></h5>\n'
+          '                <p class="card-text small text-muted">clone shallow, submodules OCA, workflow feature-branch, PR via <code>gh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/bash-pour-odoo-5-scripts-qui-font-gagner-1-heure-par-jour-118">S03 — Bash : 5 scripts qui font gagner 1 heure par jour</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>start-odoo.sh</code>, <code>restore-db.sh</code>, <code>dump-and-clean.sh</code>, <code>install-and-test.sh</code>, <code>update-all-addons.sh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">S04 — odoo-bin shell : 15 patterns ORM essentiels</h5>\n'
+          '                <p class="card-text small text-muted"><code>env</code>, <code>search_fetch</code> v19, <code>Domain</code>, <code>flush_model</code> / <code>invalidate_model</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">S05 — PostgreSQL : psql, SELECT, dump propre</a></h5>\n'
+          '                <p class="card-text small text-muted">Requêtes <code>psql</code>, <code>EXPLAIN ANALYZE</code>, garde-fous <code>UPDATE</code> / <code>DELETE</code>, CTA E3.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('S01 — Boîte à outils Linux du dev Odoo',
+         'Boîte à outils Linux du dev Odoo',
+         'R5 — code de série retiré du nom de la série'),
+        ('disponible — épisode S05</td>',
+         "disponible — voir l'épisode PostgreSQL</td>",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('détails épisode S05</td>',
+         "détails dans l'épisode PostgreSQL</td>",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('le prochain épisode S05, consacré',
+         'le prochain épisode, consacré',
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+    ],
+    # 120 — PostgreSQL pour le dev Odoo : psql, SELECT utiles, dump propre — sans casser sa 
+    120: [
+        (('<section class="s_features_grid pt48 pb24 oe_structure_solo bg-light">\n'
+          '  <div class="container">\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <h3 class="mb-4">Voir aussi dans la série</h3>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '    <div class="row">\n'
+          '      <div class="col-lg-10 mx-auto">\n'
+          '        <div class="row g-3">\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/linux-pour-le-dev-odoo-30-commandes-pour-reprendre-la-main-sur-sa-sandbox-116">S01 — Linux : 30 commandes pour la sandbox</a></h5>\n'
+          '                <p class="card-text small text-muted">logs, processus, ports, permissions, systemd, alias <code>.bashrc</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/git-github-pour-le-dev-odoo-20-commandes-pour-cloner-brancher-contribuer-117">S02 — Git & GitHub : 20 commandes pour cloner, brancher, contribuer</a></h5>\n'
+          '                <p class="card-text small text-muted">clone shallow, submodules OCA, workflow feature-branch, PR via <code>gh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/bash-pour-odoo-5-scripts-qui-font-gagner-1-heure-par-jour-118">S03 — Bash : 5 scripts qui font gagner 1 heure par jour</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>start-odoo.sh</code>, <code>restore-db.sh</code>, <code>dump-and-clean.sh</code>, <code>install-and-test.sh</code>, <code>update-all-addons.sh</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-secondary mb-2">Publié</span>\n'
+          '                <h5 class="card-title"><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">S04 — odoo-bin shell : 15 patterns ORM essentiels</a></h5>\n'
+          '                <p class="card-text small text-muted"><code>env</code>, <code>search_fetch</code> v19, <code>Domain</code>, <code>flush_model</code> / <code>invalidate_model</code>.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '          <div class="col-md-6 col-lg-4">\n'
+          '            <div class="card h-100 border-success">\n'
+          '              <div class="card-body">\n'
+          '                <span class="badge bg-success mb-2">Article actuel</span>\n'
+          '                <h5 class="card-title">S05 — PostgreSQL : psql, SELECT, dump propre</h5>\n'
+          '                <p class="card-text small text-muted">Requêtes <code>psql</code>, <code>EXPLAIN ANALYZE</code>, garde-fous <code>UPDATE</code> / <code>DELETE</code>, CTA E3.</p>\n'
+          '              </div>\n'
+          '            </div>\n'
+          '          </div>\n'
+          '        </div>\n'
+          '      </div>\n'
+          '    </div>\n'
+          '  </div>\n'
+          '</section>'),
+         '',
+         'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
+        ('S01 — Boîte à outils Linux du dev Odoo',
+         'Boîte à outils Linux du dev Odoo',
+         'R5 — code de série retiré du nom de la série'),
+        ("l'épisode S04 sur",
+         "l'épisode sur",
+         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+    ],
+    # 122 — Multi-société dans Odoo 19 Community : créer, configurer, basculer
+    122: [
+        ("utilisateurs et droits d'accès (ADM2), plan comptable par société (ADM3), modèles de rapports et format d'impression (ADM4)",
+         '<a href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">utilisateurs et droits d\'accès</a>, <a href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">plan comptable par société</a>, <a href="/blog/fonctionnel-odoo-1/modeles-de-rapports-et-format-dimpression-dans-odoo-19-community-131">modèles de rapports et format d\'impression</a>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 124 — Utilisateurs, groupes et droits d'accès dans Odoo 19 Community
     124: [
@@ -598,6 +1449,9 @@ CURATED = {
           '</section>'),
          '',
          'R1 — barre de progression « x / 7 » de la Saison 12 retirée (repère de position, rendu par le module)'),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·1</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
     ],
     # 126 — Plan comptable par société dans Odoo 19 Community
     126: [
@@ -615,6 +1469,21 @@ CURATED = {
           '</section>'),
          '',
          'R1 — barre de progression « x / 7 » de la Saison 12 retirée (repère de position, rendu par le module)'),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·2</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
+        (">l'article ADM·1</a>",
+         ">l'article sur le multi-société</a>",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('>ADM·2 §5</a>',
+         ">Utilisateurs, groupes &amp; droits d'accès, §5</a>",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('(cf. ADM·1)',
+         "(cf. l'article sur le multi-société)",
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+        ('<em>cf. ADM·5</em>',
+         '<em>cf. Paramétrer Ventes &amp; Achats</em>',
+         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 131 — Modèles de rapports et format d'impression dans Odoo 19 Community
     131: [
@@ -632,6 +1501,12 @@ CURATED = {
           '</section>'),
          '',
          'R1 — barre de progression « x / 7 » de la Saison 12 retirée (repère de position, rendu par le module)'),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·1</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·3</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
     ],
     # 134 — Paramétrer Ventes et Achats dans Odoo 19 Community
     134: [
@@ -649,6 +1524,12 @@ CURATED = {
           '</section>'),
          '',
          'R1 — barre de progression « x / 7 » de la Saison 12 retirée (repère de position, rendu par le module)'),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·3</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·4</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
     ],
     # 136 — Paramétrer Stock et Comptabilité dans Odoo 19 Community
     136: [
@@ -666,6 +1547,12 @@ CURATED = {
           '</section>'),
          '',
          'R1 — barre de progression « x / 7 » de la Saison 12 retirée (repère de position, rendu par le module)'),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·3</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
+        ('<p class="small text-muted mb-1">Saison 12 · ADM·5</p>',
+         '<p class="small text-muted mb-1">Saison 12</p>',
+         "R5 — code de série retiré de l'étiquette de carte (la carte reste)"),
     ],
     # 137 — Checklist de mise en service d'Odoo 19 PME — 40 points
     137: [
@@ -947,6 +1834,22 @@ DROP = {
     74: [
         # la section contient le lien hors série vers /guide-technique-odoo : seul le lien « précédent » part (CURATED)
         'Récupérer le guide technique complet',
+    ],
+    106: [
+        # carte au lien faux : remplacée entière (href + libellé) dans CURATED
+        'T01 — Installer Odoo 19 Ubuntu',
+        # carte au lien faux : remplacée entière (href + libellé) dans CURATED
+        'T03 — Installer Odoo 19 Docker',
+    ],
+    108: [
+        # carte au lien faux : remplacée entière (href + libellé) dans CURATED
+        'T15 — create/write/unlink',
+    ],
+    109: [
+        # carte au lien faux : remplacée entière (href + libellé) dans CURATED
+        'T01 — Installer Odoo 19 Ubuntu',
+        # carte au lien faux : remplacée entière (href + libellé) dans CURATED
+        'T03 — Installer Odoo 19 Docker',
     ],
     124: [
         # bandeau de la barre de progression : la section entière part (CURATED)

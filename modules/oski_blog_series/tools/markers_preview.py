@@ -23,8 +23,8 @@ RULES = {
     'R2': 'Navigation précédent / suivant',
     'R3': '« Voir aussi dans cette série »',
     'R4': 'Liste « La série »',
-    'R5': 'Code T',
-    'R6': 'Numérotation « x/y » en prose',
+    'R5': 'Code de série (T, F, ADM, S)',
+    'R6': 'Numérotation en prose',
     'M': 'Remplacement manuel',
 }
 _LINK = re.compile(r'''href\s*=\s*["']((?:https?://[^/"']+)?/blog/([\w-]+)/([\w-]+)-(\d+))''')
