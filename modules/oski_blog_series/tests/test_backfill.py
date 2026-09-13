@@ -99,6 +99,15 @@ class TestBackfill(TransactionCase):
         self.assertEqual([r['post'] for r in rows], [other, self.intro])
         self.assertEqual(rows[0]['marker'], '1/2')
 
+    def test_tag_found_by_french_name_when_active(self):
+        self.env['res.lang']._activate_lang('fr_FR')
+        tag = self.env['blog.tag'].create({'name': 'etiquette-en-anglais'})
+        tag.with_context(lang='fr_FR').write({'name': 'etiquette-en-francais'})
+        specs = self._specs(tag='etiquette-en-francais')
+        plan, problems, _leftovers = backfill.build_plan(self.env, specs)
+        self.assertEqual(problems, [])
+        self.assertEqual(plan[0]['tag'], tag)
+
     def test_production_mapping_is_consistent(self):
         from odoo.addons.oski_blog_series.tools.backfill_mapping import SERIES
         ids = [pid for spec in SERIES for _block, block_ids in spec['blocks'] for pid in block_ids]

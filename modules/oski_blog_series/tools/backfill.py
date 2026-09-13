@@ -16,7 +16,7 @@ def build_plan(env, specs):
     lang = 'fr_FR' if env['res.lang'].search_count([('code', '=', 'fr_FR')]) else env.context.get('lang')
     Post = env['blog.post'].with_context(active_test=False, lang=lang)
     Version = env['oski.blog.odoo.version']
-    Tag = env['blog.tag']
+    Tag = env['blog.tag'].with_context(lang=lang)
     plan, problems, seen = [], [], {}
     for spec in specs:
         version = Version.search([('code', '=', spec['version'])], limit=1) if spec['version'] else Version
