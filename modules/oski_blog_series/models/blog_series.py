@@ -138,8 +138,11 @@ class OskiBlogSeries(models.Model):
             if not counts:
                 continue
             cards.append({
+                # Toujours la version actuelle : construite ici sans repasser par
+                # blog._oski_parcours_url() (qui interrogerait `_oski_current()` à
+                # nouveau pour chaque carte, cassant la borne de requêtes).
                 'blog': blog,
-                'url': blog._oski_parcours_url(),
+                'url': '/parcours/%s' % blog.parcours_slug,
                 'series_count': len(counts),
                 'post_count': sum(counts),
             })

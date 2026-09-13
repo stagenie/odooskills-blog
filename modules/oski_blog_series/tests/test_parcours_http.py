@@ -119,6 +119,9 @@ class TestParcoursChooserSingleBlog(HttpCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # Neutralise tout parcours déjà publié sur le site (démo, données de
+        # recette) : sans cela, le compte de cartes n'est pas déterministe.
+        cls.env['oski.blog.series'].search([]).write({'active': False})
         Series = cls.env['oski.blog.series']
         cls.blog = cls.env['blog.blog'].create({'name': 'Blog seul parcours http'})
         series = Series.create({'name': 'Serie unique', 'blog_id': cls.blog.id})
@@ -135,6 +138,13 @@ class TestParcoursChooserSingleBlog(HttpCase):
 @tagged('post_install', '-at_install')
 class TestParcoursChooserEmpty(HttpCase):
     """Aucun blog publié n'a de parcours : la page de choix reste servie (200)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Neutralise tout parcours déjà publié sur le site (démo, données de
+        # recette) : ce test veut vraiment zéro carte.
+        cls.env['oski.blog.series'].search([]).write({'active': False})
 
     def test_chooser_shows_empty_message_when_no_card(self):
         response = self.url_open('/parcours')

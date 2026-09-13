@@ -22,6 +22,9 @@ class TestBlogBlogParcours(TransactionCase):
         cls.website = cls.env.ref('website.default_website')
         cls.v19 = cls.env.ref('oski_blog_series.odoo_version_19')
         cls.v20 = cls.env.ref('oski_blog_series.odoo_version_20')
+        # Neutralise tout parcours déjà publié sur le site (démo, données de recette)
+        # pour que les comptes de _oski_chooser_cards restent déterministes ici.
+        cls.Series.search([]).write({'active': False})
 
     def test_slug_is_computed_from_name(self):
         blog = self.Blog.create({'name': 'Développement Odoo'})
@@ -34,10 +37,10 @@ class TestBlogBlogParcours(TransactionCase):
         self.assertEqual(blog.parcours_slug, 'developpement-odoo')
 
     def test_manually_set_slug_is_kept(self):
-        blog = self.Blog.create({'name': 'Développement Odoo', 'parcours_slug': 'developpement'})
-        self.assertEqual(blog.parcours_slug, 'developpement')
+        blog = self.Blog.create({'name': 'Développement Odoo', 'parcours_slug': 'adresse-posee-a-la-main'})
+        self.assertEqual(blog.parcours_slug, 'adresse-posee-a-la-main')
         blog.name = 'Autre nom'
-        self.assertEqual(blog.parcours_slug, 'developpement')
+        self.assertEqual(blog.parcours_slug, 'adresse-posee-a-la-main')
 
     def test_slug_must_be_unique(self):
         self.Blog.create({'name': 'Premier', 'parcours_slug': 'meme-adresse'})
@@ -95,6 +98,6 @@ class TestBlogBlogParcours(TransactionCase):
             self._series_with_posts(blog_b, 'Série perf B%s' % i, count=3)
         self.env.invalidate_all()
         self.assertTrue(self.Series._oski_chooser_cards(self.website))
-        with self.assertQueryCount(default=7):
+        with self.assertQueryCount(default=5):
             self.env.invalidate_all()
             self.Series._oski_chooser_cards(self.website)
