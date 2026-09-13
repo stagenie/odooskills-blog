@@ -389,7 +389,14 @@ _RESIDUAL_CODES = re.compile(r'\bF\d+(?:·|&middot;)\d+|\bADM(?:·|&middot;)?\d+
 
 
 def residual_markers(html):
-    """Extraits (≤ 120 c.) autour de chaque marqueur R1–R6 hors zones protégées."""
+    """Extraits (≤ 120 c.) autour de chaque marqueur R1–R6 hors zones protégées.
+
+    Asymétrie volontaire (à connaître pour la tâche 4) :
+    - codes T, « article x/y », « Bloc N · », « Voir aussi dans cette série », « La série »,
+      « Suite de la Saison » : cherchés dans tout le HTML hors zones protégées, attributs compris
+      (un code T dans un `alt` ou un `title` ressort comme résidu) ;
+    - codes internes F11·n, ADM·n / ADMn, S01–S05 : cherchés dans le texte seulement, balises
+      blanchies (sinon `data-name="Checklist ADM7"` ou `data-name="Newsletter S11"` ressortiraient)."""
     masked = list(html)
     for start, end in protected_spans(html):
         masked[start:end] = ' ' * (end - start)

@@ -191,7 +191,9 @@ def render(report, counts, dropped_total):
     out = ['<title>Nettoyage des repères de série</title>', '<style>%s</style>' % CSS, '<main>',
            '<h1>Nettoyage des repères de série — aperçu</h1>',
            '<p class="lead lede">Ce que deviendrait chaque article du blog OdooSkills : bandeaux numérotés, '
-           'liens « précédent / suivant » écrits à la main, codes T01–T28 et numéros « article x/y ». '
+           'liens « précédent / suivant » écrits à la main, listes « La série », grilles « Article actuel / Publié » '
+           'et barres de progression, codes internes (T01–T28, F11·n, ADM·n, S01–S05) et numéros '
+           '« article x/y » ou « Article N ». Les liens vers des articles hors série sont gardés. '
            'Le module affiche désormais l\'étape de la série et sa navigation. Rien n\'est encore modifié en ligne.</p>',
            '<section class="summary">',
            '<div class="tile"><b>%d</b><span>modifications</span></div>' % total,

@@ -111,6 +111,18 @@ CURATED = {
          '>Ordres de fabrication →</a>',
          'R6 — « Article N » retiré du bloc « Prochain article » (le bloc et son résumé restent)'),
     ],
+    # 51 — Ordres de fabrication dans Odoo 19 : produire, consommer et clôturer
+    51: [
+        ('<em>Article suivant :</em>',
+         '<em>Saison suivante :</em>',
+         'R2 — lien hors série conservé (saison suivante)'),
+        ('>Article 12 : Les employés →</a>',
+         '>Les employés →</a>',
+         'R6 — « Article N » retiré, lien hors série conservé'),
+        ('<em>Saison 4 — Bientôt disponible</em>',
+         '<em>Saison 4 — Ressources humaines</em>',
+         'R6 — annonce périmée corrigée : la Saison 4 existe (58, 75, 76)'),
+    ],
     # 54 — Configurer l'environnement de développement Odoo 19
     54: [
         ('(article T01 ou T02 de cette série)',
@@ -180,8 +192,8 @@ CURATED = {
          'l\'article <a href="/blog/developpement-odoo-2/contraintes-et-champs-calcules-odoo-19-apidepends-modelsconstraint-63">Contraintes et champs calculés</a>',
          "R5 — code T remplacé par un lien vers l'article visé"),
         ("sans l'expliquer dans T08.",
-         'sans l\'expliquer dans <a href="/blog/developpement-odoo-2/modeles-de-base-odoo-19-model-transientmodel-abstractmodel-59">Modèles de base</a>.',
-         "R5 — code T remplacé par un lien vers l'article visé"),
+         'sans l\'expliquer dans l\'article <a href="/blog/developpement-odoo-2/modeles-de-base-odoo-19-model-transientmodel-abstractmodel-59">Modèles de base</a>.',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ("L'article T13 couvrira",
          'L\'article <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">Héritage des modèles</a> couvrira',
          "R5 — code T remplacé par un lien vers l'article visé"),
@@ -192,8 +204,8 @@ CURATED = {
          '<strong>Article suivant</strong>',
          "R5 — code T retiré (doublon d'un lien voisin ou article courant)"),
         ('<strong>Article T12</strong>',
-         '<strong><a href="/blog/developpement-odoo-2/contraintes-et-champs-calcules-odoo-19-apidepends-modelsconstraint-63">Contraintes et champs calculés</a></strong>',
-         "R5 — code T remplacé par un lien vers l'article visé"),
+         '<strong>Article <a href="/blog/developpement-odoo-2/contraintes-et-champs-calcules-odoo-19-apidepends-modelsconstraint-63">Contraintes et champs calculés</a></strong>',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
     ],
     # 61 — Champs non-relationnels Odoo 19 : Char, Float, Date, Html, Monetary…
     61: [
@@ -243,8 +255,8 @@ CURATED = {
          "Jusqu'ici, une",
          'R5 — code T reformulé'),
         ('En T12, on avait posé',
-         'Dans <a href="/blog/developpement-odoo-2/contraintes-et-champs-calcules-odoo-19-apidepends-modelsconstraint-63">Contraintes et champs calculés</a>, on avait posé',
-         "R5 — code T remplacé par un lien vers l'article visé"),
+         'Dans l\'article <a href="/blog/developpement-odoo-2/contraintes-et-champs-calcules-odoo-19-apidepends-modelsconstraint-63">Contraintes et champs calculés</a>, on avait posé',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('fichier complet T14</h2>',
          'fichier complet</h2>',
          "R5 — code T retiré (doublon d'un lien voisin ou article courant)"),
@@ -273,10 +285,10 @@ CURATED = {
          '<code>create()</code> (voir <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>).</figcaption>',
          "R5 — code T remplacé par un lien vers l'article visé"),
         ('<code>action_resolve</code> de T15).',
-         '<code>action_resolve</code> de <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>).',
+         '<code>action_resolve</code>, voir <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>).',
          "R5 — code T remplacé par un lien vers l'article visé"),
         ('du T14 affiche',
-         'vue dans <a href="/blog/developpement-odoo-2/hierarchie-de-modeles-odoo-19-parent-id-child-ids-parent-store-65">Hiérarchie de modèles</a> affiche',
+         '(voir <a href="/blog/developpement-odoo-2/hierarchie-de-modeles-odoo-19-parent-id-child-ids-parent-store-65">Hiérarchie de modèles</a>) affiche',
          "R5 — code T remplacé par un lien vers l'article visé"),
     ],
     # 68 — Vues Kanban, Graph et Pivot en Odoo 19 : QWeb, widgets et dashboards
@@ -291,8 +303,8 @@ CURATED = {
          '(<a href="/blog/developpement-odoo-2/vues-kanban-graph-et-pivot-en-odoo-19-qweb-widgets-et-dashboards-68">Vues Kanban, Graph et Pivot</a>).',
          "R5 — code T remplacé par le titre de l'article visé"),
         ('dès <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">T13</a>.',
-         'dès <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">Héritage des modèles</a>.',
-         "R5 — code T remplacé par le titre de l'article visé"),
+         'dès l\'article <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">Héritage des modèles</a>.',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         (('SARL</em> en\n'
           '                    <a href="/blog/developpement-odoo-2/vues-form-list-et-search-en-odoo-19-actions-menus-et-widgets-67">T16</a>)'),
          ('SARL</em> dans\n'
@@ -314,8 +326,8 @@ CURATED = {
          '<strong>Wizards (cet article)</strong>',
          "R5 — code T retiré (doublon d'un lien voisin ou article courant)"),
         ('démarre au T20.',
-         'démarre avec <a href="/blog/developpement-odoo-2/rapports-qweb-pdf-en-odoo-19-iractionsreport-external-layout-et-wkhtmltopdf-71">Rapports QWeb PDF</a>.',
-         "R5 — code T remplacé par un lien vers l'article visé"),
+         'démarre avec l\'article <a href="/blog/developpement-odoo-2/rapports-qweb-pdf-en-odoo-19-iractionsreport-external-layout-et-wkhtmltopdf-71">Rapports QWeb PDF</a>.',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
     ],
     # 71 — Rapports QWeb PDF en Odoo 19 : ir.actions.report, external_layout et wkhtmltopdf
     71: [
@@ -335,8 +347,8 @@ CURATED = {
          '(<a href="/blog/developpement-odoo-2/rapports-qweb-pdf-en-odoo-19-iractionsreport-external-layout-et-wkhtmltopdf-71">Rapports QWeb PDF</a>).</li>',
          "R5 — code T remplacé par le titre de l'article visé"),
         ('ajouté en <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">T13</a>',
-         'ajouté dans <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">Héritage des modèles</a>',
-         "R5 — code T remplacé par le titre de l'article visé"),
+         'ajouté dans l\'article <a href="/blog/developpement-odoo-2/heritage-des-modeles-odoo-19-inherit-inherits-abstractmodel-64">Héritage des modèles</a>',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('rapports QWeb vus en <a href="/blog/developpement-odoo-2/rapports-qweb-pdf-en-odoo-19-iractionsreport-external-layout-et-wkhtmltopdf-71">T20</a>)',
          '<a href="/blog/developpement-odoo-2/rapports-qweb-pdf-en-odoo-19-iractionsreport-external-layout-et-wkhtmltopdf-71">rapports QWeb PDF</a>)',
          "R5 — code T remplacé par le titre de l'article visé"),
@@ -352,8 +364,8 @@ CURATED = {
         (('comme vu en\n'
           '                                <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">T19</a>'),
          ('comme vu dans\n'
-          '                                <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">Wizards et assistants</a>'),
-         "R5 — code T remplacé par le titre de l'article visé"),
+          '                                l\'article <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">Wizards et assistants</a>'),
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
     ],
     # 74 — Controllers HTTP et API REST en Odoo 19 : http.Controller, @http.route et modes 
     74: [
@@ -554,13 +566,13 @@ CURATED = {
          'tests automatisés</a>',
          "R5 — code T retiré (doublon d'un lien voisin ou article courant)"),
         ('(<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a>) qui',
-         '(<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Tests automatisés</a>) qui',
-         "R5 — code T remplacé par le titre de l'article visé"),
+         '(voir <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Tests automatisés</a>) qui',
+         'R5 — code remplacé par « voir <titre> »'),
         ('<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a>',
-         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 Ubuntu</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 sur Ubuntu</a>',
          'R5 — lien de carte vers le mauvais article corrigé (id 56 Architecture technique → 50 Installer Odoo 19 sur Ubuntu) ; code T retiré du libellé'),
         ('<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a>',
-         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 Docker</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 avec Docker</a>',
          'R5 — lien de carte vers le mauvais article corrigé (id 58 Les employés → 53 Installer Odoo 19 avec Docker) ; code T retiré du libellé'),
     ],
     # 107 — OWL composants custom Odoo 19
@@ -581,8 +593,8 @@ CURATED = {
          '<code>sla_badge</code> de l\'article <a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107">OWL composants custom</a>).',
          "R5 — code T remplacé par le titre de l'article visé"),
         ('(<a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a>) et des widgets OWL (T26).',
-         '(<a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>) et des widgets OWL.',
-         "R5 — code T remplacé par le titre de l'article visé ; ancre d'origine vers le mauvais article, corrigée"),
+         '(voir <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>) et des widgets OWL.',
+         'R5 — code remplacé par « voir <titre> »'),
         ('<code>SlaBadgeField</code> (T26) devient',
          '<code>SlaBadgeField</code> (voir <a href="/blog/developpement-odoo-2/owl-composants-custom-odoo-19-107">OWL composants custom</a>) devient',
          "R5 — code T remplacé par un lien vers l'article visé"),
@@ -591,7 +603,7 @@ CURATED = {
          'l\'<a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">article sur les tests automatisés</a>.',
          "R5 — code T remplacé par le titre de l'article visé"),
         ('la suite T27 ajoute',
-         'la suite de cet article ajoute',
+         'cet article ajoute',
          "R5 — code T de l'article courant reformulé"),
         ('pattern v19 utilisé par T26.',
          "pattern v19 utilisé dans l'article sur les composants OWL.",
@@ -611,15 +623,15 @@ CURATED = {
         ('minimum (<a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108">T27</a>).',
          'minimum (<a href="/blog/developpement-odoo-2/bus-bus-websocket-temps-reel-108">bus.bus + WebSocket</a>).',
          "R5 — code T remplacé par le titre de l'article visé"),
-        ('patterns <a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a> (write override) et <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a> (tests).',
-         'patterns <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a> (write override) et <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Tests automatisés</a>.',
+        ('des patterns <a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a> (write override) et <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">T24</a> (tests).',
+         'du pattern write override (voir <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>) et des tests (voir <a href="/blog/developpement-odoo-2/tests-automatises-odoo-19-105">Tests automatisés</a>).',
          "R5 — code T remplacé par le titre de l'article visé ; ancre d'origine vers le mauvais article, corrigée"),
         ('coût du pattern T27 ?',
          'coût du pattern live ?',
          'R5 — code T reformulé (« pattern live », comme le chapeau)'),
         ('<code>write()</code> du <a href="/blog/developpement-odoo-2/cycle-vie-donnees-create-write-unlink-odoo-65">T15</a>',
-         '<code>write()</code> vue dans <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>',
-         "R5 — code T remplacé par le titre de l'article visé ; ancre d'origine vers le mauvais article, corrigée"),
+         '<code>write()</code> de l\'article <a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>,',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('avant/après du T27 ne',
          'avant/après ne',
          "R5 — code T retiré (doublon d'un lien voisin ou article courant)"),
@@ -651,10 +663,10 @@ CURATED = {
          '',
          'R5 — plage de codes T retirée'),
         ('<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-debian-guide-debutant-56">T01 — Installer Odoo 19 Ubuntu</a>',
-         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 Ubuntu</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-sur-ubuntu-2404-lts-50">Installer Odoo 19 sur Ubuntu</a>',
          'R5 — lien de carte vers le mauvais article corrigé (id 56 Architecture technique → 50 Installer Odoo 19 sur Ubuntu) ; code T retiré du libellé'),
         ('<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-58">T03 — Installer Odoo 19 Docker</a>',
-         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 Docker</a>',
+         '<a href="/blog/developpement-odoo-2/installer-odoo-19-avec-docker-53">Installer Odoo 19 avec Docker</a>',
          'R5 — lien de carte vers le mauvais article corrigé (id 58 Les employés → 53 Installer Odoo 19 avec Docker) ; code T retiré du libellé'),
     ],
     # 111 — Démarrer ses projets dans Odoo CE — structure, kanban, équipes
@@ -799,13 +811,13 @@ CURATED = {
          '',
          'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
         ('déjà vu en F11·1.',
-         'déjà vu dans <a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">Démarrer ses projets dans Odoo CE</a>.',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
-        ('">F11·3 — Feuilles de temps</a> ouvrira',
-         '">Feuilles de temps</a> ouvrira',
-         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+         'déjà vu dans l\'article <a href="/blog/fonctionnel-odoo-1/demarrer-ses-projets-dans-odoo-ce-structure-kanban-equipes-111">Démarrer ses projets</a>.',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
+        ('facturation, <a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">F11·3 — Feuilles de temps</a> ouvrira',
+         'facturation, l\'article <a href="/blog/fonctionnel-odoo-1/feuilles-de-temps-en-odoo-ce-du-chrono-a-la-facturation-113">Feuilles de temps</a> ouvrira',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('assignées et F11·3 timesheet.',
-         'assignées et les feuilles de temps.',
+         'assignées et feuilles de temps.',
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 113 — Feuilles de temps en Odoo CE — du chrono à la facturation
@@ -872,15 +884,15 @@ CURATED = {
           '</section>'),
          '',
          'R4 — grille « Article actuel / Publié » retirée : toutes ses cartes sont des articles de la série (progression rendue par le module)'),
-        ('">F11·4 — Maîtriser la comptabilité analytique en CE</a>',
-         '">Maîtriser la comptabilité analytique en CE</a>',
-         "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
+        ('régulière. <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4 — Maîtriser la comptabilité analytique en CE</a>',
+         'régulière. L\'article <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">Maîtriser la comptabilité analytique en CE</a>',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('">F11·5 — Facturer au temps &amp; analyser la rentabilité projet</a>',
          '">Facturer au temps &amp; analyser la rentabilité projet</a>',
          "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
         ('utile en amont de F11·5.',
-         'utile en amont de <a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">Facturer au temps &amp; rentabilité projet</a>.',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         'utile en amont de l\'article <a href="/blog/fonctionnel-odoo-1/facturer-au-temps-rentabilite-projet-odoo-ce-115">Facturer au temps &amp; rentabilité projet</a>.',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
     ],
     # 114 — Comptabilité analytique Odoo CE : plans, distribution, marges projet
     114: [
@@ -1030,26 +1042,26 @@ CURATED = {
          '>mécanisme de distribution analytique</a>',
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
         ('vu en <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">F11·4</a>',
-         'vu dans <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">Comptabilité analytique Odoo CE</a>',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         'vu dans l\'article <a href="/blog/fonctionnel-odoo-1/comptabilite-analytique-odoo-ce-plans-distribution-marges-projet-114">Comptabilité analytique Odoo CE</a>',
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('les 12 000 DA Cisco de F11·4)',
          "les 12 000 DA Cisco vus dans l'article sur l'analytique)",
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
         ('<strong>F11·1</strong> a',
-         '<strong>Démarrer ses projets</strong> a',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         '<strong>Le premier article</strong> a',
+         'R5 — code de série remplacé par un ordinal (récapitulatif « Cinq articles, cinq briques »)'),
         ('<strong>F11·2</strong> a',
-         '<strong>Tâches, dépendances &amp; suivi</strong> a',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         '<strong>Le deuxième</strong> a',
+         'R5 — code de série remplacé par un ordinal (récapitulatif « Cinq articles, cinq briques »)'),
         ('<strong>F11·3</strong> a',
-         '<strong>Feuilles de temps</strong> a',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         '<strong>Le troisième</strong> a',
+         'R5 — code de série remplacé par un ordinal (récapitulatif « Cinq articles, cinq briques »)'),
         ('<strong>F11·4</strong> a',
-         '<strong>Comptabilité analytique</strong> a',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         '<strong>Le quatrième</strong> a',
+         'R5 — code de série remplacé par un ordinal (récapitulatif « Cinq articles, cinq briques »)'),
         ('<strong>F11·5</strong> boucle',
-         '<strong>Facturer au temps</strong> boucle',
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         '<strong>Celui-ci</strong> boucle',
+         'R5 — code de série remplacé par un ordinal (récapitulatif « Cinq articles, cinq briques »)'),
         ('suite logique de F11·5.',
          'suite logique de cet article.',
          "R5 — code de série retiré (préfixe d'un titre déjà présent, ou article courant)"),
@@ -1476,13 +1488,13 @@ CURATED = {
          ">l'article sur le multi-société</a>",
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
         ('>ADM·2 §5</a>',
-         ">Utilisateurs, groupes &amp; droits d'accès, §5</a>",
-         "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
+         ">l'article sur les utilisateurs et droits d'accès</a>, §5",
+         "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
         ('(cf. ADM·1)',
          "(cf. l'article sur le multi-société)",
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
         ('<em>cf. ADM·5</em>',
-         '<em>cf. Paramétrer Ventes &amp; Achats</em>',
+         "<em>cf. l'article sur le paramétrage des ventes et achats</em>",
          "R5 — code de série (F11·n, ADM·n, S0n) remplacé par le titre de l'article visé"),
     ],
     # 131 — Modèles de rapports et format d'impression dans Odoo 19 Community
@@ -1674,6 +1686,20 @@ CURATED = {
          '',
          'R2 — encadré « La Saison Restaurant, du début à la fin » retiré : ses deux liens sont intra-série (précédent, début de saison)'),
     ],
+    # 160 — Personnaliser un rapport PDF existant dans Odoo 19
+    160: [
+        (('\n'
+          '                <a href="/blog/developpement-odoo-2/creer-son-rapport-pdf-de-a-a-z-dans-odoo-19-161" class="btn btn-outline-primary">Article 2 — Créer son rapport PDF de A à Z →</a>'),
+         '',
+         'R2 — lien « suivant » intra-série retiré ; le bouton « ← Tous les articles Développement » (hors série) reste'),
+    ],
+    # 165 — Ajouter une langue à Odoo 19 et traduire l'interface
+    165: [
+        (('\n'
+          '                <a href="/blog/developpement-odoo-2/traduire-son-propre-module-odoo-19-vers-larabe-166" class="btn btn-outline-primary">Article 2 — Traduire ton module →</a>'),
+         '',
+         'R2 — lien « suivant » intra-série retiré ; le bouton « ← Tous les articles Développement » (hors série) reste'),
+    ],
     # 169 — Quelle licence pour votre module Odoo 19 ?
     169: [
         ("L'article 2/3",
@@ -1831,6 +1857,12 @@ CURATED = {
 }
 
 DROP = {
+    51: [
+        # lien hors série vers la saison suivante (58) : section gardée, libellés corrigés (CURATED)
+        'Article 12 : Les employés',
+        # bandeau de clôture sans numérotation : « Saison 3 » employé comme nom (hors périmètre)
+        'Fin de la Saison 3',
+    ],
     74: [
         # la section contient le lien hors série vers /guide-technique-odoo : seul le lien « précédent » part (CURATED)
         'Récupérer le guide technique complet',
@@ -1894,6 +1926,14 @@ DROP = {
     159: [
         # remplacé par la suppression de toute la section (CURATED) : sans liens, la phrase d'appel n'a plus d'objet
         'Revenir au début de la saison &rarr;',
+    ],
+    160: [
+        # la navigation contient un lien hors série (index du blog) : seul le lien intra-série part (CURATED)
+        'Tous les articles Développement',
+    ],
+    165: [
+        # la navigation contient un lien hors série (index du blog) : seul le lien intra-série part (CURATED)
+        'Tous les articles Développement',
     ],
     171: [
         # la grille contient une carte hors série : seules les cartes de la série partent (CURATED)
