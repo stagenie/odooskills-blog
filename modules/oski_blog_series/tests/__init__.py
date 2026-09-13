@@ -9,3 +9,4 @@ from . import test_backend_views
 from . import test_backfill
 from . import test_query_count
 from . import test_markers
+from . import test_markers_apply
