@@ -86,6 +86,19 @@ class TestBackfill(TransactionCase):
         self.assertIn('PROBLÈMES : 0', report)
         self.assertIn('HORS SÉRIE', report)
 
+    def test_marker_read_from_french_translation_when_active(self):
+        self.env['res.lang']._activate_lang('fr_FR')
+        other = self.env['blog.post'].create({
+            'name': 'Trois', 'blog_id': self.blog.id, 'content': '<p>sans marqueur</p>',
+            'is_published': True, 'post_date': PAST})
+        other.with_context(lang='fr_FR').write({'content': '<p>Saison 1 · Article 1/2</p>'})
+        specs = self._specs(blocks=[(None, [other.id, self.intro.id])])
+        plan, problems, _leftovers = backfill.build_plan(self.env, specs)
+        self.assertEqual(problems, [])
+        rows = plan[0]['rows']
+        self.assertEqual([r['post'] for r in rows], [other, self.intro])
+        self.assertEqual(rows[0]['marker'], '1/2')
+
     def test_production_mapping_is_consistent(self):
         from odoo.addons.oski_blog_series.tools.backfill_mapping import SERIES
         ids = [pid for spec in SERIES for _block, block_ids in spec['blocks'] for pid in block_ids]

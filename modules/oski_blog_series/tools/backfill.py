@@ -11,7 +11,10 @@ NO_MARKER = 10 ** 6
 
 
 def build_plan(env, specs):
-    Post = env['blog.post'].with_context(active_test=False)
+    # Les marqueurs « Article n/N » vivent dans le contenu français : lire en fr_FR
+    # quand la langue est active, sinon garder celle de l'environnement appelant.
+    lang = 'fr_FR' if env['res.lang'].search_count([('code', '=', 'fr_FR')]) else env.context.get('lang')
+    Post = env['blog.post'].with_context(active_test=False, lang=lang)
     Version = env['oski.blog.odoo.version']
     Tag = env['blog.tag']
     plan, problems, seen = [], [], {}
