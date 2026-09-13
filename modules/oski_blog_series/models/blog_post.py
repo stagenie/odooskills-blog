@@ -58,17 +58,20 @@ class BlogPost(models.Model):
         series = self.series_id
         if not series or not series.active or not self.is_published:
             return {}
-        posts = series._oski_published_posts()
+        posts = series._oski_published_posts(['name', 'blog_id', 'series_position', 'post_date'])
         if self not in posts:
             return {}
         newer = series.replaced_by_id
         if newer and (not newer.active or not newer._oski_published_posts()):
             newer = False
+        idx = posts.ids.index(self.id)
         return {
             'series': series,
-            'step': posts.ids.index(self.id) + 1,
+            'step': idx + 1,
             'total': len(posts),
             'url': series._oski_parcours_url(),
             'newer': newer or False,
             'newer_url': newer._oski_parcours_url() if newer else False,
+            'prev': posts[idx - 1] if idx > 0 else False,
+            'next': posts[idx + 1] if idx + 1 < len(posts) else False,
         }

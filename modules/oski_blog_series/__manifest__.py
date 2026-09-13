@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills - Parcours de lecture du blog',
-    'version': '19.0.1.1.0',
+    'version': '19.0.1.2.0',
     'category': 'Website/Website',
     'summary': "Séries d'articles dans l'ordre de lecture, page /parcours et versions d'Odoo",
     'description': """

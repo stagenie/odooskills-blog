@@ -88,3 +88,27 @@ class TestBlogTemplatesHttp(HttpCase):
         self.assertTrue(blog._oski_has_parcours())
         page = self.url_open('/blog/%s' % blog.id).text
         self.assertNotIn('o_oski_parcours_banner', page)
+
+    def test_series_nav_first_step_links_next_only(self):
+        page = self.url_open(self.first.website_url).text
+        self.assertIn('o_oski_series_nav', page)
+        self.assertIn('Étape suivante', page)
+        self.assertIn(self.second.website_url, page)
+        self.assertNotIn('Étape précédente', page)
+
+    def test_series_nav_last_step_links_previous_and_says_last(self):
+        page = self.url_open(self.second.website_url).text
+        self.assertIn('Étape précédente', page)
+        self.assertIn(self.first.website_url, page)
+        self.assertIn('Dernière étape de la série', page)
+        self.assertNotIn('Étape suivante', page)
+
+    def test_standalone_post_has_no_series_nav(self):
+        self.assertNotIn('o_oski_series_nav', self.url_open(self.standalone.website_url).text)
+
+    def test_series_nav_skips_unpublished_step(self):
+        hidden = self._post('Etape cachee', self.blog, self.series, published=False)
+        third = self._post('Troisieme etape', self.blog, self.series)
+        page = self.url_open(self.second.website_url).text
+        self.assertIn(third.website_url, page)
+        self.assertNotIn(hidden.website_url, page)

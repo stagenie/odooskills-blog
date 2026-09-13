@@ -56,3 +56,31 @@ class TestQueryCount(TransactionCase):
         with self.assertQueryCount(default=5):
             self.env.invalidate_all()
             post._oski_series_badge()
+
+    def test_badge_does_not_load_article_bodies(self):
+        series = self.env['oski.blog.series'].create(
+            {'name': 'Série repère corps', 'blog_id': self.blog.id})
+        first = self.env['blog.post'].create({
+            'name': 'Corps repère 1', 'blog_id': self.blog.id,
+            'content': '<p>%s</p>' % ('x' * 2000),
+            'series_id': series.id, 'series_position': 1,
+            'is_published': True, 'post_date': PAST,
+        })
+        second = self.env['blog.post'].create({
+            'name': 'Corps repère 2', 'blog_id': self.blog.id,
+            'content': '<p>%s</p>' % ('x' * 2000),
+            'series_id': series.id, 'series_position': 2,
+            'is_published': True, 'post_date': PAST,
+        })
+        third = self.env['blog.post'].create({
+            'name': 'Corps repère 3', 'blog_id': self.blog.id,
+            'content': '<p>%s</p>' % ('x' * 2000),
+            'series_id': series.id, 'series_position': 3,
+            'is_published': True, 'post_date': PAST,
+        })
+        posts = first + second + third
+        posts.invalidate_recordset()
+        badge = second._oski_series_badge()
+        self.assertEqual((badge['prev'], badge['next']), (first, third))
+        content = self.env['blog.post']._fields['content']
+        self.assertFalse(any(self.env.cache.contains(p, content) for p in posts - second))
