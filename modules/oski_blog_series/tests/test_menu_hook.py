@@ -1,6 +1,6 @@
 from odoo.tests import TransactionCase, tagged
 
-from odoo.addons.oski_blog_series.hooks import PARCOURS_URL, _oski_ensure_parcours_menu
+from odoo.addons.oski_blog_series.hooks import PARCOURS_URL, _oski_ensure_parcours_menu, uninstall_hook
 
 
 @tagged('post_install', '-at_install')
@@ -35,3 +35,12 @@ class TestMenuHook(TransactionCase):
     def test_entry_at_top_level_without_blog_menus(self):
         _oski_ensure_parcours_menu(self.env)
         self.assertEqual(self._entries().parent_id, self.website.menu_id)
+
+    def test_uninstall_removes_the_entry_on_every_site(self):
+        _oski_ensure_parcours_menu(self.env)
+        other_website = self.env['website'].create({'name': 'Autre site'})
+        _oski_ensure_parcours_menu(self.env)
+        self.assertTrue(self._entries())
+        self.assertTrue(self.Menu.search([('url', '=', PARCOURS_URL), ('website_id', '=', other_website.id)]))
+        uninstall_hook(self.env)
+        self.assertFalse(self.Menu.search([('url', '=', PARCOURS_URL)]))

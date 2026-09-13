@@ -1,3 +1,3 @@
 from . import controllers
 from . import models
-from .hooks import post_init
+from .hooks import post_init, uninstall_hook
