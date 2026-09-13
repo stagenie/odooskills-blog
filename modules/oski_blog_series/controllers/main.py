@@ -52,7 +52,16 @@ class OskiBlogSeriesController(http.Controller):
             raise NotFound()
         current = Version._oski_current()
         if version == current:
-            return request.redirect(blog._oski_parcours_url(), code=301)
+            # RULING I1 : 302, pas 301. « Actuelle » change dans le temps (Odoo 20
+            # deviendra un jour la version actuelle) ; un 301 mis en cache par un
+            # navigateur/CDN masquerait alors l'onglet Odoo 19 pour toujours. Seule
+            # l'ancienne adresse /parcours/odoo-N (route à un seul segment,
+            # ci-dessus) reste un 301 : elle ne dépend d'aucune version « actuelle ».
+            return request.redirect(blog._oski_parcours_url(), code=302)
+        # RULING M4 : une version qui existe globalement mais n'a aucun contenu
+        # propre à CE blog n'a pas d'onglet ici (cf. _oski_tab_versions(blog)).
+        if version not in Version._oski_tab_versions(blog):
+            raise NotFound()
         return self._oski_render_profile(blog, version)
 
     def _oski_find_blog(self, key):
