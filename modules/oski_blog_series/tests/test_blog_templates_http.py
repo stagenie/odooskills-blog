@@ -37,7 +37,7 @@ class TestBlogTemplatesHttp(HttpCase):
         self.assertIn('o_oski_series_badge', page)
         self.assertIn('Serie repere test', page)
         self.assertIn('étape 2/2', page)
-        self.assertIn('/parcours/odoo-19#serie-%s' % self.series.id, page)
+        self.assertIn('%s#serie-%s' % (self.blog._oski_parcours_url(), self.series.id), page)
         self.assertIn('Voir tout le parcours', page)
         self.assertNotIn('Une édition', page)
 
@@ -50,12 +50,13 @@ class TestBlogTemplatesHttp(HttpCase):
         page = self.url_open(self.first.website_url).text
         self.assertIn('Écrit pour Odoo 19', page)
         self.assertIn('Une édition Odoo 20 de ce parcours existe', page)
-        self.assertIn('/parcours/odoo-20#serie-%s' % self.series_20.id, page)
+        self.assertIn('%s/odoo-20#serie-%s' % (self.blog._oski_parcours_url(), self.series_20.id), page)
 
     def test_banner_on_blog_with_series_only(self):
         with_series = self.url_open('/blog/%s' % self.blog.id).text
         self.assertIn('o_oski_parcours_banner', with_series)
         self.assertIn('Suivez un parcours', with_series)
+        self.assertIn(self.blog._oski_parcours_url(), with_series)
         self.assertNotIn('o_oski_parcours_banner', self.url_open('/blog/%s' % self.plain_blog.id).text)
         archive = self.url_open(
             '/blog/%s?date_begin=2026-04-01+00%%3A00%%3A00&date_end=2026-04-30+23%%3A59%%3A59' % self.blog.id)
