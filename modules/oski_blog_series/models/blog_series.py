@@ -1,4 +1,5 @@
 from odoo import api, fields, models
+from odoo.exceptions import ValidationError
 
 # Champs suffisants pour afficher /parcours (titre, bloc, tri, lien) sans charger le
 # corps HTML de l'article : `content` partage son groupe de préchargement par défaut
@@ -31,6 +32,12 @@ class OskiBlogSeries(models.Model):
 
     _tag_unique = models.Constraint(
         'UNIQUE (tag_id)', "Cette étiquette rattache déjà une autre série.")
+
+    @api.constrains('replaced_by_id')
+    def _oski_check_replaced_by_not_self(self):
+        for series in self:
+            if series.replaced_by_id == series:
+                raise ValidationError("Une série ne peut pas être remplacée par elle-même.")
 
     def _oski_next_position(self, exclude=None):
         """Position suivante dans la série : max des positions + 1."""

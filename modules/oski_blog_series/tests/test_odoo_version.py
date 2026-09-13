@@ -39,3 +39,10 @@ class TestOdooVersion(TransactionCase):
         with mute_logger('odoo.sql_db'), self.assertRaises(IntegrityError):
             with self.env.cr.savepoint():
                 self.Version.create({'name': 'Doublon', 'code': '19.0'})
+
+    def test_current_fallback_picks_lowest_id_not_highest_sequence(self):
+        # v20 (séquence 5) est trié avant v19 (séquence 10) par `_order`, mais
+        # v19 est la première créée (id le plus bas) : le repli doit la choisir.
+        (self.v19 | self.v20).write({'is_current': False})
+        self.assertFalse(self.Version.search([('is_current', '=', True)]))
+        self.assertEqual(self.Version._oski_current(), self.v19)

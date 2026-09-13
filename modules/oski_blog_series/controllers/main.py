@@ -6,10 +6,15 @@ from odoo.http import request
 
 def sitemap_parcours(env, rule, qs):
     """Une entrée par adresse de parcours ; appelée une seule fois par le site
-    (les fonctions de sitemap identiques sont dédoublonnées)."""
+    (les fonctions de sitemap identiques sont dédoublonnées).
+
+    `/parcours` sert déjà la version actuelle : son propre slug serait un doublon.
+    Les autres versions ne sont listées que si elles ont du contenu (mêmes onglets
+    que ceux affichés sur la page, `_oski_tab_versions`)."""
+    Version = env['oski.blog.odoo.version']
+    other_tabs = Version._oski_tab_versions() - Version._oski_current()
     locs = ['/parcours'] + [
-        '/parcours/%s' % version.slug
-        for version in env['oski.blog.odoo.version'].search([]) if version.slug]
+        '/parcours/%s' % version.slug for version in other_tabs if version.slug]
     for loc in locs:
         if not qs or qs.lower() in loc:
             yield {'loc': loc}

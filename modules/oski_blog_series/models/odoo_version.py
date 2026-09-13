@@ -46,7 +46,11 @@ class OskiBlogOdooVersion(models.Model):
 
     @api.model
     def _oski_current(self):
-        return self.search([('is_current', '=', True)], limit=1) or self.search([], limit=1)
+        # Repli explicite par id (première version créée) : `_order` trie par
+        # `sequence`, et une version plus récente (ex. Odoo 20) peut porter une
+        # séquence plus basse sans être la version actuelle.
+        return self.search([('is_current', '=', True)], limit=1) \
+            or self.search([], order='id', limit=1)
 
     @api.model
     def _oski_from_slug(self, slug):

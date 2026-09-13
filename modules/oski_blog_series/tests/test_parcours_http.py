@@ -45,6 +45,24 @@ class TestParcoursHttp(HttpCase):
             self.assertIn(expected, page)
         self.assertNotIn('Etape brouillon omega', page)
 
+    def test_tab_without_slug_is_not_rendered(self):
+        # Code dégénéré (majeur vide) : slug calculé à False. La page ne doit
+        # jamais produire de lien /parcours/False.
+        Version = self.env['oski.blog.odoo.version']
+        Series = self.env['oski.blog.series']
+        weird = Version.create({'name': 'Édition sans code', 'code': '.0'})
+        self.assertFalse(weird.slug)
+        weird_series = Series.create({
+            'name': 'Serie sans code test', 'blog_id': self.blog.id, 'odoo_version_id': weird.id})
+        self.env['blog.post'].create({
+            'name': 'Etape sans code', 'blog_id': self.blog.id, 'content': '<p>x</p>',
+            'series_id': weird_series.id, 'is_published': True, 'post_date': PAST})
+        page = self.url_open('/parcours').text
+        # `#{tab.slug}` rend une chaîne vide pour False (pas le texte « False ») :
+        # le symptôme est un onglet dont le lien pointe sur /parcours/ tout court.
+        self.assertNotIn('href="/parcours/"', page)
+        self.assertNotIn('Édition sans code', page)
+
     def test_version_pages(self):
         page_20 = self.url_open('/parcours/odoo-20')
         self.assertEqual(page_20.status_code, 200)
@@ -54,8 +72,23 @@ class TestParcoursHttp(HttpCase):
         self.assertEqual(self.url_open('/parcours/odoo-99').status_code, 404)
 
     def test_sitemap_lists_parcours(self):
+        # Odoo 20 n'a pas encore de série propre publiée : pas de doublon avec
+        # /parcours (version actuelle) et pas d'entrée pour une version sans contenu.
         website = self.env.ref('website.default_website')
         locs = [page['loc'] for page in website._enumerate_pages(query_string='/parcours')]
         self.assertIn('/parcours', locs)
-        self.assertIn('/parcours/odoo-19', locs)
+        self.assertNotIn('/parcours/odoo-19', locs)
+        self.assertNotIn('/parcours/odoo-20', locs)
+
+    def test_sitemap_lists_non_current_version_with_own_content(self):
+        Series = self.env['oski.blog.series']
+        Post = self.env['blog.post']
+        series_20 = Series.create({'name': 'Serie sitemap vingt', 'blog_id': self.blog.id,
+                                    'odoo_version_id': self.v20.id})
+        Post.create({'name': 'Etape vingt sitemap', 'blog_id': self.blog.id, 'content': '<p>x</p>',
+                     'series_id': series_20.id, 'is_published': True, 'post_date': PAST})
+        website = self.env.ref('website.default_website')
+        locs = [page['loc'] for page in website._enumerate_pages(query_string='/parcours')]
+        self.assertIn('/parcours', locs)
+        self.assertNotIn('/parcours/odoo-19', locs)
         self.assertIn('/parcours/odoo-20', locs)

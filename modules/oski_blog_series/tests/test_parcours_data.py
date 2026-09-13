@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from odoo import fields
+from odoo.exceptions import ValidationError
 from odoo.tests import TransactionCase, tagged
 
 PAST = datetime(2026, 4, 26, 6, 57)
@@ -127,3 +128,7 @@ class TestParcoursData(TransactionCase):
         self.s19.replaced_by_id = self.s20
         self.s20.active = False
         self.assertFalse(self.p1._oski_series_badge()['newer'])
+
+    def test_replaced_by_cannot_be_self(self):
+        with self.assertRaises(ValidationError):
+            self.s19.write({'replaced_by_id': self.s19.id})
