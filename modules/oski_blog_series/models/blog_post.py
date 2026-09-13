@@ -47,6 +47,11 @@ class BlogPost(models.Model):
             if vals:
                 post.write(vals)
 
+    @api.model
+    def _oski_published_domain(self):
+        """Domaine des articles visibles publiquement : publiés et déjà parus."""
+        return [('is_published', '=', True), ('post_date', '<=', fields.Datetime.now())]
+
     def _oski_series_badge(self):
         """Repère affiché en tête d'un article publié qui appartient à une série."""
         self.ensure_one()

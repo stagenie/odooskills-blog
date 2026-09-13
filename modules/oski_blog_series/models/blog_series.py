@@ -1,5 +1,10 @@
 from odoo import api, fields, models
 
+# Champs suffisants pour afficher /parcours (titre, bloc, tri, lien) sans charger le
+# corps HTML de l'article : `content` partage son groupe de préchargement par défaut
+# avec les autres champs stockés, donc le lire en accéderait un pour tous les autres.
+PARCOURS_POST_FIELDS = ('name', 'blog_id', 'series_position', 'series_block', 'post_date')
+
 
 class OskiBlogSeries(models.Model):
     _name = 'oski.blog.series'
@@ -37,14 +42,18 @@ class OskiBlogSeries(models.Model):
             domain, order='series_position desc', limit=1)
         return (last.series_position or 0) + 1
 
-    def _oski_published_posts(self):
-        """Articles publiés de la série, dans l'ordre de lecture."""
+    def _oski_published_posts(self, fields_to_fetch=None):
+        """Articles publiés de la série, dans l'ordre de lecture.
+
+        `fields_to_fetch` restreint les colonnes ramenées en cache (ex. pour éviter
+        de charger le corps HTML de chaque article, non nécessaire à /parcours)."""
         self.ensure_one()
-        return self.env['blog.post'].search([
-            ('series_id', '=', self.id),
-            ('is_published', '=', True),
-            ('post_date', '<=', fields.Datetime.now()),
-        ], order='series_position, post_date, id')
+        Post = self.env['blog.post']
+        domain = [('series_id', '=', self.id)] + Post._oski_published_domain()
+        order = 'series_position, post_date, id'
+        if fields_to_fetch is None:
+            return Post.search(domain, order=order)
+        return Post.search_fetch(domain, fields_to_fetch, order=order)
 
     def _oski_parcours_url(self):
         self.ensure_one()
@@ -62,7 +71,7 @@ class OskiBlogSeries(models.Model):
             '|', ('odoo_version_id', '=', False), ('odoo_version_id', '=', version.id),
         ])
         for series in series_list:
-            posts = series._oski_published_posts()
+            posts = series._oski_published_posts(fields_to_fetch=PARCOURS_POST_FIELDS)
             if not posts:
                 continue
             rows, previous_block = [], False
@@ -77,15 +86,15 @@ class OskiBlogSeries(models.Model):
     def _oski_parcours_sections(self, version, website):
         """Une section par blog du site ayant au moins une série visible."""
         sections = []
+        Post = self.env['blog.post']
         for blog in self.env['blog.blog'].search(website.website_domain(), order='id'):
             entries = self._oski_visible_entries(blog, version)
             if not entries:
                 continue
-            independents = self.env['blog.post'].search([
+            independents = Post.search_fetch([
                 ('blog_id', '=', blog.id),
                 ('series_id', '=', False),
-                ('is_published', '=', True),
-                ('post_date', '<=', fields.Datetime.now()),
-            ], order='post_date desc, id desc', limit=6)
+            ] + Post._oski_published_domain(), PARCOURS_POST_FIELDS,
+                order='post_date desc, id desc', limit=6)
             sections.append({'blog': blog, 'series': entries, 'independents': independents})
         return sections
