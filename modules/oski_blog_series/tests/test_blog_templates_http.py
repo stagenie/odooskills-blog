@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest.mock import patch
 
 from odoo.tests import HttpCase, tagged
 
@@ -112,3 +113,22 @@ class TestBlogTemplatesHttp(HttpCase):
         page = self.url_open(self.second.website_url).text
         self.assertIn(third.website_url, page)
         self.assertNotIn(hidden.website_url, page)
+
+    def test_series_nav_reuses_badge_computation(self):
+        # Finding 1 (revue Task 1) : le gabarit de navigation (bas de page) doit
+        # réutiliser `oski_badge`, posé par le gabarit de repère (haut de page),
+        # plutôt que de rappeler `_oski_series_badge()` une seconde fois.
+        BlogPost = type(self.env['blog.post'])
+        original = BlogPost._oski_series_badge
+
+        def counting_badge(self, *args, **kwargs):
+            counting_badge.calls += 1
+            return original(self, *args, **kwargs)
+        counting_badge.calls = 0
+
+        with patch.object(BlogPost, '_oski_series_badge', counting_badge):
+            response = self.url_open(self.second.website_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('o_oski_series_badge', response.text)
+        self.assertIn('o_oski_series_nav', response.text)
+        self.assertEqual(counting_badge.calls, 1)

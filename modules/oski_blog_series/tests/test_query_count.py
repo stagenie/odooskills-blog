@@ -58,29 +58,37 @@ class TestQueryCount(TransactionCase):
             post._oski_series_badge()
 
     def test_badge_does_not_load_article_bodies(self):
+        # F2 : ni le calcul du repère, ni la lecture ultérieure de `.name` /
+        # `.website_url` sur `prev`/`next` (ce que font réellement les gabarits
+        # QWeb, badge et nav) ne doivent charger le corps HTML des étapes
+        # DISTANTES de l'article affiché — série de 5 étapes, repère demandé sur
+        # la 3e : les 1re et 5e ne doivent jamais voir leur `content` en cache.
+        #
+        # `prev`/`next` eux-mêmes finissent par charger leur PROPRE `content` dès
+        # que `website_url` est lu : ce champ calculé partage le groupe de
+        # préchargement par défaut de `blog.post` avec tous les champs stockés,
+        # `content` compris (voir le commentaire dans models/blog_series.py). Ce
+        # coût est borné à 2 lignes (les voisins immédiats, déjà nécessaires au
+        # rendu), jamais aux N-3 étapes distantes — c'est cette dernière garantie
+        # que ce test vérifie, pas l'absence totale de tout chargement de corps.
         series = self.env['oski.blog.series'].create(
-            {'name': 'Série repère corps', 'blog_id': self.blog.id})
-        first = self.env['blog.post'].create({
-            'name': 'Corps repère 1', 'blog_id': self.blog.id,
-            'content': '<p>%s</p>' % ('x' * 2000),
-            'series_id': series.id, 'series_position': 1,
-            'is_published': True, 'post_date': PAST,
-        })
-        second = self.env['blog.post'].create({
-            'name': 'Corps repère 2', 'blog_id': self.blog.id,
-            'content': '<p>%s</p>' % ('x' * 2000),
-            'series_id': series.id, 'series_position': 2,
-            'is_published': True, 'post_date': PAST,
-        })
-        third = self.env['blog.post'].create({
-            'name': 'Corps repère 3', 'blog_id': self.blog.id,
-            'content': '<p>%s</p>' % ('x' * 2000),
-            'series_id': series.id, 'series_position': 3,
-            'is_published': True, 'post_date': PAST,
-        })
-        posts = first + second + third
+            {'name': 'Série repère corps distant', 'blog_id': self.blog.id})
+        posts = self.env['blog.post']
+        for j in range(5):
+            posts |= self.env['blog.post'].create({
+                'name': 'Corps repère distant %s' % j, 'blog_id': self.blog.id,
+                'content': '<p>%s</p>' % ('x' * 2000),
+                'series_id': series.id, 'series_position': j + 1,
+                'is_published': True, 'post_date': PAST,
+            })
+        posts = posts.sorted('series_position')
+        far = posts[0] + posts[4]
         posts.invalidate_recordset()
-        badge = second._oski_series_badge()
-        self.assertEqual((badge['prev'], badge['next']), (first, third))
+        badge = posts[2]._oski_series_badge()
+        self.assertEqual((badge['prev'], badge['next']), (posts[1], posts[3]))
+        badge['prev'].name
+        badge['next'].name
+        badge['prev'].website_url
+        badge['next'].website_url
         content = self.env['blog.post']._fields['content']
-        self.assertFalse(any(self.env.cache.contains(p, content) for p in posts - second))
+        self.assertFalse(any(self.env.cache.contains(p, content) for p in far))
