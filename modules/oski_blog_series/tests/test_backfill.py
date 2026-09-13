@@ -40,8 +40,9 @@ class TestBackfill(TransactionCase):
         return [spec]
 
     def test_plan_orders_by_block_then_marker_and_writes_nothing(self):
-        plan, problems, leftovers = backfill.build_plan(self.env, self._specs())
+        plan, problems, leftovers, notes = backfill.build_plan(self.env, self._specs())
         self.assertEqual(problems, [])
+        self.assertEqual(notes, [])
         rows = plan[0]['rows']
         self.assertEqual([r['post'] for r in rows], [self.intro, self.first, self.second])
         self.assertEqual([r['position'] for r in rows], [1, 2, 3])
@@ -55,12 +56,43 @@ class TestBackfill(TransactionCase):
     def test_problems_are_reported(self):
         specs = self._specs(tag='etiquette-inexistante', blocks=[(None, [self.intro.id, self.foreign.id, 999999])])
         specs.append(dict(specs[0], name='Doublon', tag=None, blocks=[(None, [self.intro.id])]))
-        _plan, problems, _leftovers = backfill.build_plan(self.env, specs)
+        _plan, problems, _leftovers, _notes = backfill.build_plan(self.env, specs)
         report = '\n'.join(problems)
         self.assertIn('etiquette-inexistante', report)
         self.assertIn('999999', report)
         self.assertIn(str(self.foreign.id), report)
         self.assertIn('deux séries', report)
+
+    def test_partial_markers_fall_back_to_mapping_order_with_info_line(self):
+        # Un bloc où seuls certains articles portent un marqueur (cas prod de
+        # l'emailing : 1/14 et 2/14 sur 14 articles) ne doit jamais se fier aux
+        # marqueurs : l'ordre suivi est celui de la table §9 (ordre de `ids`).
+        unmarked = self.env['blog.post'].create({
+            'name': 'Sans marqueur', 'blog_id': self.blog.id, 'content': '<p>x</p>',
+            'is_published': True, 'post_date': PAST})
+        specs = self._specs(blocks=[('Bloc mixte', [unmarked.id, self.first.id, self.second.id])])
+        plan, problems, _leftovers, notes = backfill.build_plan(self.env, specs)
+        self.assertEqual(problems, [])
+        rows = plan[0]['rows']
+        self.assertEqual([r['post'] for r in rows], [unmarked, self.first, self.second])
+        self.assertEqual([r['position'] for r in rows], [1, 2, 3])
+        # L'affichage du marqueur par ligne est conservé même hors tri par marqueur.
+        self.assertEqual(rows[1]['marker'], '1/2')
+        self.assertTrue(any('marqueurs partiels' in note and 'Bloc mixte' in note for note in notes))
+        self.assertTrue(any('Série reprise' in note for note in notes))
+
+    def test_inconsistent_marker_totals_fall_back_to_mapping_order_with_info_line(self):
+        # Deux articles marqués mais avec des totaux différents (données incohérentes) :
+        # même repli, même avertissement, pas de blocage.
+        odd_total = self.env['blog.post'].create({
+            'name': 'Total différent', 'blog_id': self.blog.id, 'content': '<p>Article 1/3</p>',
+            'is_published': True, 'post_date': PAST})
+        specs = self._specs(blocks=[('Bloc incohérent', [odd_total.id, self.first.id])])
+        plan, problems, _leftovers, notes = backfill.build_plan(self.env, specs)
+        self.assertEqual(problems, [])
+        rows = plan[0]['rows']
+        self.assertEqual([r['post'] for r in rows], [odd_total, self.first])
+        self.assertTrue(any('marqueurs partiels' in note for note in notes))
 
     def test_apply_writes_series_and_is_idempotent(self):
         backfill.run(self.env, self._specs(), apply=True)
@@ -93,7 +125,7 @@ class TestBackfill(TransactionCase):
             'is_published': True, 'post_date': PAST})
         other.with_context(lang='fr_FR').write({'content': '<p>Saison 1 · Article 1/2</p>'})
         specs = self._specs(blocks=[(None, [other.id, self.intro.id])])
-        plan, problems, _leftovers = backfill.build_plan(self.env, specs)
+        plan, problems, _leftovers, _notes = backfill.build_plan(self.env, specs)
         self.assertEqual(problems, [])
         rows = plan[0]['rows']
         self.assertEqual([r['post'] for r in rows], [other, self.intro])
@@ -104,7 +136,7 @@ class TestBackfill(TransactionCase):
         tag = self.env['blog.tag'].create({'name': 'etiquette-en-anglais'})
         tag.with_context(lang='fr_FR').write({'name': 'etiquette-en-francais'})
         specs = self._specs(tag='etiquette-en-francais')
-        plan, problems, _leftovers = backfill.build_plan(self.env, specs)
+        plan, problems, _leftovers, _notes = backfill.build_plan(self.env, specs)
         self.assertEqual(problems, [])
         self.assertEqual(plan[0]['tag'], tag)
 
