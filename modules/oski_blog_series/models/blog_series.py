@@ -1,4 +1,4 @@
-from odoo import fields, models
+from odoo import api, fields, models
 
 
 class OskiBlogSeries(models.Model):
@@ -36,3 +36,56 @@ class OskiBlogSeries(models.Model):
         last = self.env['blog.post'].with_context(active_test=False).search(
             domain, order='series_position desc', limit=1)
         return (last.series_position or 0) + 1
+
+    def _oski_published_posts(self):
+        """Articles publiés de la série, dans l'ordre de lecture."""
+        self.ensure_one()
+        return self.env['blog.post'].search([
+            ('series_id', '=', self.id),
+            ('is_published', '=', True),
+            ('post_date', '<=', fields.Datetime.now()),
+        ], order='series_position, post_date, id')
+
+    def _oski_parcours_url(self):
+        self.ensure_one()
+        version = self.odoo_version_id or self.env['oski.blog.odoo.version']._oski_current()
+        base = '/parcours/%s' % version.slug if version else '/parcours'
+        return '%s#serie-%s' % (base, self.id)
+
+    @api.model
+    def _oski_visible_entries(self, blog, version):
+        """Séries du blog à montrer pour cette version : la version elle-même ou
+        toutes versions, et au moins un article publié."""
+        entries = []
+        series_list = self.search([
+            ('blog_id', '=', blog.id),
+            '|', ('odoo_version_id', '=', False), ('odoo_version_id', '=', version.id),
+        ])
+        for series in series_list:
+            posts = series._oski_published_posts()
+            if not posts:
+                continue
+            rows, previous_block = [], False
+            for post in posts:
+                block = post.series_block or False
+                rows.append({'post': post, 'block': block if block and block != previous_block else False})
+                previous_block = block
+            entries.append({'series': series, 'posts': posts, 'rows': rows})
+        return entries
+
+    @api.model
+    def _oski_parcours_sections(self, version, website):
+        """Une section par blog du site ayant au moins une série visible."""
+        sections = []
+        for blog in self.env['blog.blog'].search(website.website_domain(), order='id'):
+            entries = self._oski_visible_entries(blog, version)
+            if not entries:
+                continue
+            independents = self.env['blog.post'].search([
+                ('blog_id', '=', blog.id),
+                ('series_id', '=', False),
+                ('is_published', '=', True),
+                ('post_date', '<=', fields.Datetime.now()),
+            ], order='post_date desc, id desc', limit=6)
+            sections.append({'blog': blog, 'series': entries, 'independents': independents})
+        return sections

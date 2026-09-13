@@ -46,3 +46,24 @@ class BlogPost(models.Model):
                 vals['series_position'] = series._oski_next_position(exclude=post)
             if vals:
                 post.write(vals)
+
+    def _oski_series_badge(self):
+        """Repère affiché en tête d'un article publié qui appartient à une série."""
+        self.ensure_one()
+        series = self.series_id
+        if not series or not self.is_published:
+            return {}
+        posts = series._oski_published_posts()
+        if self not in posts:
+            return {}
+        newer = series.replaced_by_id
+        if newer and not newer._oski_published_posts():
+            newer = False
+        return {
+            'series': series,
+            'step': posts.ids.index(self.id) + 1,
+            'total': len(posts),
+            'url': series._oski_parcours_url(),
+            'newer': newer or False,
+            'newer_url': newer._oski_parcours_url() if newer else False,
+        }
