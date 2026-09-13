@@ -57,3 +57,7 @@ class TestBlogTemplatesHttp(HttpCase):
         self.assertIn('o_oski_parcours_banner', with_series)
         self.assertIn('Suivez un parcours', with_series)
         self.assertNotIn('o_oski_parcours_banner', self.url_open('/blog/%s' % self.plain_blog.id).text)
+        archive = self.url_open(
+            '/blog/%s?date_begin=2026-04-01+00%%3A00%%3A00&date_end=2026-04-30+23%%3A59%%3A59' % self.blog.id)
+        self.assertEqual(archive.status_code, 200)
+        self.assertNotIn('o_oski_parcours_banner', archive.text)
