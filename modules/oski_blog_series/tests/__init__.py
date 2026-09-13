@@ -4,3 +4,4 @@ from . import test_parcours_data
 from . import test_parcours_http
 from . import test_blog_templates_http
 from . import test_menu_hook
+from . import test_backend_views
