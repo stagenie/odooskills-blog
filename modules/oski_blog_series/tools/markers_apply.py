@@ -12,6 +12,12 @@ Classement de chaque article (le HTML est lu tel quel dans le jsonb, toutes lang
 - `clean` : aucun plan et aucun résidu non admis ;
 - `problem` : tout le reste (langues divergentes, `old` absent ou ambigu, état partiel,
   résidu non admis, plan non idempotent).
+
+Concurrence — ne PAS lancer l'application pendant qu'un article est ouvert dans l'éditeur du site :
+un enregistrement de l'éditeur renvoie tout l'ancien HTML et réintroduirait les repères. Protection
+réelle contre une écriture concurrente validée : `SELECT … FOR UPDATE` en REPEATABLE READ lève une
+erreur de sérialisation (le lanceur annule tout) ; la comparaison au contenu planifié ne voit, elle,
+que les changements faits dans la même transaction.
 """
 import json
 import os
@@ -19,10 +25,12 @@ import time
 from collections import Counter
 
 from odoo.exceptions import UserError
+from odoo.tools import config
 
 from . import markers, markers_curated
 
 EXCERPT = 80
+BACKUP_SUBDIR = 'oski_blog_markers'
 
 
 def _series_lang(env):
@@ -40,6 +48,10 @@ def _unaccepted(post_id, html):
     return [extract for extract in markers.residual_markers(html) if extract not in accepted]
 
 
+def _curated_ok(edit, status):
+    return (status == 'already' and edit.new) or (status == 'missing' and not edit.new)
+
+
 def _classify(post_id, html, series_name, has_series):
     """(statut, plan, nouveau HTML, détail du problème)."""
     curated = markers_curated.CURATED.get(post_id, ())
@@ -52,16 +64,13 @@ def _classify(post_id, html, series_name, has_series):
         residue = _unaccepted(post_id, new_html)
         if residue:
             return 'problem', plan, new_html, "résidu non admis après nettoyage : %s" % ' | '.join(residue)
-        again, _plan, _html, _detail = _classify_cleaned(post_id, new_html, series_name, has_series)
+        again, detail = _classify_cleaned(post_id, new_html, series_name, has_series)
         if again not in ('already', 'clean'):
             return 'problem', plan, new_html, (
-                "plan non idempotent : un second passage trouverait encore à modifier (%s)" % _detail)
+                "plan non idempotent : un second passage trouverait encore à modifier (%s)" % detail)
         return 'change', plan, new_html, ''
 
-    already = automatic == 0 and all(
-        (status == 'already' and edit.new) or (status == 'missing' and not edit.new)
-        for edit, status in statuses)
-    if already:
+    if automatic == 0 and all(_curated_ok(edit, status) for edit, status in statuses):
         residue = _unaccepted(post_id, html)
         if residue:
             return 'problem', plan, html, "résidu non admis : %s" % ' | '.join(residue)
@@ -76,7 +85,7 @@ def _classify(post_id, html, series_name, has_series):
 
 
 def _classify_cleaned(post_id, html, series_name, has_series):
-    """Classement d'un HTML supposé nettoyé, pour le contrôle d'idempotence (sans récursion)."""
+    """(statut, détail) d'un HTML supposé nettoyé, pour le contrôle d'idempotence (sans récursion)."""
     curated = markers_curated.CURATED.get(post_id, ())
     drop = markers_curated.DROP.get(post_id, ())
     plan = markers.build_post_plan(html, series_name, has_series, curated, drop)
@@ -84,33 +93,38 @@ def _classify_cleaned(post_id, html, series_name, has_series):
     _new, statuses = markers.apply_edits(html, plan)
     leftovers = ['%s « %s »' % (edit.rule, _excerpt(edit.old)) for edit in automatic]
     leftovers += ['%s %s « %s »' % (edit.rule, status, _excerpt(edit.old))
-                  for edit, status in statuses[len(automatic):]
-                  if not ((status == 'already' and edit.new) or (status == 'missing' and not edit.new))]
+                  for edit, status in statuses[len(automatic):] if not _curated_ok(edit, status)]
     residue = _unaccepted(post_id, html)
     if leftovers or residue:
-        return 'problem', plan, html, ' ; '.join(leftovers + ['résidu « %s »' % r for r in residue])
-    return ('already' if plan else 'clean'), plan, html, ''
+        return 'problem', ' ; '.join(leftovers + ['résidu « %s »' % r for r in residue])
+    return ('already' if plan else 'clean'), ''
+
+
+def _check_blog_id(blog_id):
+    if blog_id is not None and (isinstance(blog_id, bool) or not isinstance(blog_id, int) or blog_id <= 0):
+        raise UserError("Identifiant de blog invalide : %r (entier positif attendu)." % (blog_id,))
 
 
 def _scan(env, blog_id=None):
     """Lit les articles en SQL (jsonb brut) et classe chacun. Ordre : blog, id."""
-    env['blog.post'].flush_model(['content', 'blog_id', 'series_id', 'is_published'])
-    query = "SELECT id, blog_id, series_id, is_published, content FROM blog_post"
+    _check_blog_id(blog_id)
+    env['blog.post'].flush_model(['content', 'blog_id', 'series_id', 'is_published', 'active'])
+    query = "SELECT id, blog_id, series_id, is_published, active, content FROM blog_post"
     params = []
-    if blog_id:
+    if blog_id is not None:
         query += " WHERE blog_id = %s"
         params.append(blog_id)
     env.cr.execute(query + " ORDER BY blog_id, id", params)
     records = env.cr.fetchall()
 
-    series_ids = sorted({series_id for _id, _blog, series_id, _pub, _content in records if series_id})
+    series_ids = sorted({record[2] for record in records if record[2]})
     Series = env['oski.blog.series'].with_context(active_test=False, lang=_series_lang(env))
     series_names = {series.id: series.name for series in Series.browse(series_ids)}
 
     rows = []
-    for post_id, post_blog_id, series_id, published, content in records:
-        row = {'id': post_id, 'blog_id': post_blog_id, 'published': published, 'original': content,
-               'status': 'clean', 'edits': [], 'langs': {}, 'detail': '', 'residue': 0}
+    for post_id, post_blog_id, series_id, published, active, content in records:
+        row = {'id': post_id, 'blog_id': post_blog_id, 'published': published, 'active': active,
+               'original': content, 'status': 'clean', 'edits': [], 'langs': {}, 'detail': '', 'residue': 0}
         rows.append(row)
         if content is None:
             continue
@@ -153,8 +167,9 @@ def _summary(rows):
     blogs = {}
     for row in rows:
         counts = blogs.setdefault(row['blog_id'], Counter(
-            posts=0, to_change=0, edits=0, already=0, clean=0, problems=0, residue=0))
+            posts=0, archived=0, to_change=0, edits=0, already=0, clean=0, problems=0, residue=0))
         counts['posts'] += 1
+        counts['archived'] += 0 if row['active'] else 1
         counts['residue'] += row['residue']
         if row['status'] == 'change':
             counts['to_change'] += 1
@@ -168,31 +183,41 @@ def _summary(rows):
     return {blog: dict(counts) for blog, counts in blogs.items()}
 
 
+def _flags(row):
+    return ('' if row['published'] else ' · BROUILLON') + ('' if row['active'] else ' · ARCHIVÉ')
+
+
 def _report(rows, blogs, emit):
     for blog, counts in sorted(blogs.items()):
-        emit("RESULT blog %s : articles %d · à modifier %d · modifications %d · déjà nettoyés %d · "
-             "sans objet %d · problèmes %d · résidus %d" % (
-                 blog, counts['posts'], counts['to_change'], counts['edits'], counts['already'],
-                 counts['clean'], counts['problems'], counts['residue']))
+        emit("RESULT blog %s : articles %d (dont archivés %d) · à modifier %d · modifications %d · "
+             "déjà nettoyés %d · sans objet %d · problèmes %d · résidus %d" % (
+                 blog, counts['posts'], counts['archived'], counts['to_change'], counts['edits'],
+                 counts['already'], counts['clean'], counts['problems'], counts['residue']))
     for row in rows:
         if row['status'] == 'change':
             rules = Counter(edit.rule for edit in row['edits'])
             emit("RESULT   [%s] blog %s · %d modification(s) : %s%s" % (
                 row['id'], row['blog_id'], len(row['edits']),
-                ' '.join('%s×%d' % item for item in sorted(rules.items())),
-                '' if row['published'] else ' · BROUILLON'))
+                ' '.join('%s×%d' % item for item in sorted(rules.items())), _flags(row)))
     for row in rows:
         if row['status'] == 'problem':
-            emit("RESULT PROBLÈME [%s] blog %s : %s" % (row['id'], row['blog_id'], row['detail']))
+            emit("RESULT PROBLÈME [%s] blog %s%s : %s" % (row['id'], row['blog_id'], _flags(row), row['detail']))
+
+
+def default_backup_dir():
+    return os.path.join(config['data_dir'], BACKUP_SUBDIR)
 
 
 def _write_backup(backup_dir, originals):
-    """Sauvegarde {id: contenu jsonb d'origine}, synchronisée sur disque avant toute écriture."""
+    """Sauvegarde {id: contenu jsonb d'origine}, fichier 0600, synchronisée sur disque avant toute écriture."""
     path = os.path.join(backup_dir, 'blog-markers-%s.json' % time.strftime('%Y%m%d-%H%M%S'))
+    payload = json.dumps({str(post_id): content for post_id, content in sorted(originals.items())},
+                         ensure_ascii=False, indent=1).encode('utf-8')
     try:
-        with open(path, 'x', encoding='utf-8') as handle:
-            json.dump({str(post_id): content for post_id, content in sorted(originals.items())},
-                      handle, ensure_ascii=False, indent=1)
+        os.makedirs(backup_dir, mode=0o700, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         directory = os.open(backup_dir, os.O_RDONLY)
@@ -206,9 +231,32 @@ def _write_backup(backup_dir, originals):
     return path
 
 
-def run(env, apply=False, blog_id=None, backup_dir='/tmp'):
+def _check_written(env, plan, ids, blog_id):
+    """Contrôle relu en base après écriture : (erreurs, résidus non admis)."""
+    env.cr.execute("SELECT id, content FROM blog_post WHERE id = ANY(%s)", [ids])
+    stored = dict(env.cr.fetchall())
+    errors = ["[%s] valeur relue différente de la valeur écrite" % post_id
+              for post_id in ids if stored.get(post_id) != plan[post_id]['langs']]
+    after = {row['id']: row for row in _scan(env, blog_id)}
+    residue = 0
+    for post_id in ids:
+        for lang, value in (stored.get(post_id) or {}).items():
+            extracts = _unaccepted(post_id, value)
+            residue += len(extracts)
+            if extracts:
+                errors.append("[%s] %s : résidu non admis %s" % (post_id, lang, ' | '.join(extracts)))
+        row = after.get(post_id)
+        if not row or row['status'] not in ('already', 'clean'):
+            errors.append("[%s] second passage : %s" % (post_id, row['detail'] if row else 'article introuvable'))
+    return errors, residue
+
+
+def run(env, apply=False, blog_id=None, backup_dir=None):
     """Aperçu (défaut) ou application. Imprime des lignes « RESULT … » et renvoie un dict :
-    {'apply', 'blog_id', 'blogs': {blog: compteurs}, 'problems', 'written', 'backup'}."""
+    {'apply', 'blog_id', 'blogs': {blog: compteurs}, 'problems', 'written', 'backup', 'lines'}.
+    Sauvegarde par défaut dans `<data_dir>/oski_blog_markers/`."""
+    _check_blog_id(blog_id)
+    backup_dir = backup_dir or default_backup_dir()
     lines = []
 
     def emit(line):
@@ -219,7 +267,7 @@ def run(env, apply=False, blog_id=None, backup_dir='/tmp'):
     plan, problems = _plan_and_problems(rows)
     blogs = _summary(rows)
     emit("RESULT %s · périmètre : %s" % ('APPLICATION' if apply else 'APERÇU',
-                                         'blog %s' % blog_id if blog_id else 'tous les blogs'))
+                                         'blog %s' % blog_id if blog_id is not None else 'tous les blogs'))
     _report(rows, blogs, emit)
     result = {'apply': apply, 'blog_id': blog_id, 'blogs': blogs, 'problems': problems,
               'written': [], 'backup': None, 'lines': lines}
@@ -235,7 +283,8 @@ def run(env, apply=False, blog_id=None, backup_dir='/tmp'):
         return result
 
     ids = sorted(plan)
-    # Verrouille les lignes et vérifie qu'elles n'ont pas bougé depuis la lecture du plan.
+    # Verrou des lignes. Une écriture concurrente déjà validée fait lever ce SELECT (sérialisation) ;
+    # la comparaison attrape un changement fait plus tôt dans la même transaction.
     env.cr.execute("SELECT id, content FROM blog_post WHERE id = ANY(%s) ORDER BY id FOR UPDATE", [ids])
     current = dict(env.cr.fetchall())
     moved = [post_id for post_id in ids if current.get(post_id) != plan[post_id]['original']]
@@ -247,33 +296,25 @@ def run(env, apply=False, blog_id=None, backup_dir='/tmp'):
     result['backup'] = backup
     emit("RESULT sauvegarde : %s (%d article(s))" % (backup, len(ids)))
 
-    for post_id in ids:
-        env.cr.execute("UPDATE blog_post SET content = %s::jsonb, write_date = now() WHERE id = %s",
-                       (json.dumps(plan[post_id]['langs']), post_id))
-        if env.cr.rowcount != 1:
-            raise UserError("Nettoyage interrompu : article %s non mis à jour (transaction à annuler)." % post_id)
-    env['blog.post'].invalidate_model(['content', 'write_date'])
+    # Point de sauvegarde : si le contrôle relu échoue, les UPDATE sont annulés ici même,
+    # quel que soit l'appelant.
+    try:
+        with env.cr.savepoint(flush=False):
+            for post_id in ids:
+                env.cr.execute(
+                    "UPDATE blog_post SET content = %s::jsonb, write_date = (now() AT TIME ZONE 'UTC'), "
+                    "write_uid = %s WHERE id = %s",
+                    (json.dumps(plan[post_id]['langs']), env.uid, post_id))
+                if env.cr.rowcount != 1:
+                    raise UserError("Nettoyage interrompu : article %s non mis à jour." % post_id)
+            env['blog.post'].invalidate_model(['content', 'write_date', 'write_uid'])
+            errors, residue = _check_written(env, plan, ids, blog_id)
+            emit("RESULT contrôle relu en base : %d article(s) · résidus non admis %d · erreurs %d"
+                 % (len(ids), residue, len(errors)))
+            if errors:
+                raise UserError("Contrôle après écriture en échec, écritures annulées :\n%s" % '\n'.join(errors))
+    except Exception:
+        env['blog.post'].invalidate_model(['content', 'write_date', 'write_uid'])
+        raise
     result['written'] = ids
-
-    # Contrôle final, relu en base : valeurs écrites, résidus, second passage sans effet.
-    env.cr.execute("SELECT id, content FROM blog_post WHERE id = ANY(%s)", [ids])
-    stored = dict(env.cr.fetchall())
-    errors = ["[%s] valeur relue différente de la valeur écrite" % post_id
-              for post_id in ids if stored.get(post_id) != plan[post_id]['langs']]
-    after = {row['id']: row for row in _scan(env, blog_id)}
-    residue = 0
-    for post_id in ids:
-        for lang, value in stored.get(post_id, {}).items():
-            extracts = _unaccepted(post_id, value)
-            residue += len(extracts)
-            if extracts:
-                errors.append("[%s] %s : résidu non admis %s" % (post_id, lang, ' | '.join(extracts)))
-        row = after.get(post_id)
-        if not row or row['status'] not in ('already', 'clean'):
-            errors.append("[%s] second passage : %s" % (post_id, row['detail'] if row else 'article introuvable'))
-    emit("RESULT contrôle relu en base : %d article(s) · résidus non admis %d · erreurs %d"
-         % (len(ids), residue, len(errors)))
-    if errors:
-        raise UserError("Contrôle après écriture en échec, la transaction doit être annulée :\n%s"
-                        % '\n'.join(errors))
     return result

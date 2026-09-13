@@ -362,9 +362,10 @@ CURATED = {
          '(<a href="/blog/developpement-odoo-2/methodes-de-modele-odoo-19-create-write-unlink-et-apimodel-create-multi-66">Méthodes de modèle</a>).',
          "R5 — code T remplacé par le titre de l'article visé"),
         (('comme vu en\n'
-          '                                <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">T19</a>'),
+          '                                <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">T19</a>\n'
+          '                                pour les wizards.'),
          ('comme vu dans\n'
-          '                                l\'article <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">Wizards et assistants</a>'),
+          '                                l\'article <a href="/blog/developpement-odoo-2/wizards-et-assistants-en-odoo-19-transientmodel-targetnew-et-binding-model-id-70">Wizards et assistants</a>.'),
          "R5 — code remplacé par « l'article <titre> » (titre seul maladroit dans la phrase)"),
     ],
     # 74 — Controllers HTTP et API REST en Odoo 19 : http.Controller, @http.route et modes 
@@ -1858,8 +1859,9 @@ CURATED = {
 
 DROP = {
     51: [
-        # lien hors série vers la saison suivante (58) : section gardée, libellés corrigés (CURATED)
-        'Article 12 : Les employés',
+        # lien hors série vers la saison suivante (58) : section gardée, libellés corrigés (CURATED).
+        # Extrait pris dans le lien (href + classe), inchangé par le CURATED : un second passage l'écarte encore.
+        'les-employes-dans-odoo-19-departements-postes-et-fiches-rh-58" class="btn btn-primary">',
         # bandeau de clôture sans numérotation : « Saison 3 » employé comme nom (hors périmètre)
         'Fin de la Saison 3',
     ],
