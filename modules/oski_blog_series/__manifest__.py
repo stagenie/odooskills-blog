@@ -11,6 +11,7 @@
         'security/ir.model.access.csv',
         'data/odoo_version_data.xml',
         'views/parcours_templates.xml',
+        'views/blog_templates.xml',
     ],
     'installable': True,
     'application': False,
