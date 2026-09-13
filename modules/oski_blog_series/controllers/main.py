@@ -5,16 +5,19 @@ from odoo.http import request
 
 
 def sitemap_parcours(env, rule, qs):
-    """Une entrée par adresse de parcours ; appelée une seule fois par le site
-    (les fonctions de sitemap identiques sont dédoublonnées).
-
-    `/parcours` sert déjà la version actuelle : son propre slug serait un doublon.
-    Les autres versions ne sont listées que si elles ont du contenu (mêmes onglets
-    que ceux affichés sur la page, `_oski_tab_versions`)."""
+    """Une entrée par page de parcours : la page de choix, une par blog (version
+    actuelle), puis un onglet par blog et version non actuelle ayant du contenu
+    propre à ce blog (mêmes onglets que ceux affichés sur la page)."""
+    Series = env['oski.blog.series']
     Version = env['oski.blog.odoo.version']
-    other_tabs = Version._oski_tab_versions() - Version._oski_current()
-    locs = ['/parcours'] + [
-        '/parcours/%s' % version.slug for version in other_tabs if version.slug]
+    website = env['website'].get_current_website()
+    cards = Series._oski_chooser_cards(website)
+    locs = ['/parcours'] + [card['url'] for card in cards]
+    for card in cards:
+        blog = card['blog']
+        for version in Version._oski_tab_versions(blog) - Version._oski_current():
+            if version.slug:
+                locs.append('%s/%s' % (card['url'], version.slug))
     for loc in locs:
         if not qs or qs.lower() in loc:
             yield {'loc': loc}
@@ -22,18 +25,51 @@ def sitemap_parcours(env, rule, qs):
 
 class OskiBlogSeriesController(http.Controller):
 
-    @http.route(['/parcours', '/parcours/<string:version_slug>'], type='http', auth='public',
-                website=True, sitemap=sitemap_parcours)
-    def parcours(self, version_slug=None, **kwargs):
+    @http.route('/parcours', type='http', auth='public', website=True, sitemap=sitemap_parcours)
+    def parcours_chooser(self, **kwargs):
+        cards = request.env['oski.blog.series']._oski_chooser_cards(request.website)
+        if len(cards) == 1:
+            return request.redirect(cards[0]['url'], code=302)
+        return request.render('oski_blog_series.parcours_chooser', {'cards': cards})
+
+    @http.route('/parcours/<string:key>', type='http', auth='public', website=True)
+    def parcours_profile(self, key, **kwargs):
         Version = request.env['oski.blog.odoo.version']
-        if version_slug:
-            version = Version._oski_from_slug(version_slug)
-            if not version:
-                raise NotFound()
-        else:
-            version = Version._oski_current()
-        return request.render('oski_blog_series.parcours_page', {
+        if Version._oski_from_slug(key):
+            # Ancienne adresse /parcours/odoo-19 : la page de choix les remplace.
+            return request.redirect('/parcours', code=301)
+        blog = self._oski_find_blog(key)
+        if not blog:
+            raise NotFound()
+        return self._oski_render_profile(blog, Version._oski_current())
+
+    @http.route('/parcours/<string:key>/<string:version_slug>', type='http', auth='public', website=True)
+    def parcours_profile_version(self, key, version_slug, **kwargs):
+        Version = request.env['oski.blog.odoo.version']
+        blog = self._oski_find_blog(key)
+        version = Version._oski_from_slug(version_slug)
+        if not blog or not version:
+            raise NotFound()
+        current = Version._oski_current()
+        if version == current:
+            return request.redirect(blog._oski_parcours_url(), code=301)
+        return self._oski_render_profile(blog, version)
+
+    def _oski_find_blog(self, key):
+        return request.env['blog.blog'].search(
+            request.website.website_domain() + [('parcours_slug', '=', key)], limit=1)
+
+    def _oski_render_profile(self, blog, version):
+        Series = request.env['oski.blog.series']
+        Version = request.env['oski.blog.odoo.version']
+        values = Series._oski_profile_values(blog, version)
+        cards = Series._oski_chooser_cards(request.website)
+        other_cards = [card for card in cards if card['blog'] != blog]
+        return request.render('oski_blog_series.parcours_profile', {
+            'blog': blog,
             'version': version,
-            'tabs': Version._oski_tab_versions(),
-            'sections': request.env['oski.blog.series']._oski_parcours_sections(version, request.website),
+            'tabs': Version._oski_tab_versions(blog),
+            'entries': values['entries'],
+            'independents': values['independents'],
+            'other_cards': other_cards,
         })
