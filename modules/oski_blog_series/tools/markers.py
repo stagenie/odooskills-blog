@@ -311,16 +311,22 @@ def _series_list_candidates(html):
         if not titles or _in_protected(spans, section.start, section.end):
             continue
         title = titles[0]
-        if len(headings) == 1:
-            review = _contains_block_code(html, section.start, section.end)
+        following = [e for e in inside if e.start >= title.end and e.parent is title.parent]
+        if (not following or following[0].tag not in ('ul', 'ol', 'div')
+                or html[title.end:following[0].start].strip()):
+            continue
+        listing = following[0]
+        # Une grille de cartes (`div`, articles 137 et 171) peut mêler des liens hors série : à relire.
+        grid = listing.tag == 'div'
+        remainder = html[section.open_end:title.start] + html[listing.end:section.close_start]
+        if not _text(remainder) and not re.search(r'<a\b', remainder, re.I):
+            # La section ne contient que le titre et sa liste : elle part entière.
+            review = grid or _contains_block_code(html, section.start, section.end)
             candidates.append((section.start, section.end, Edit('R4', html[section.start:section.end], '', review)))
             continue
-        # Autre contenu titré dans la section : seulement le titre et la liste qui le suit.
-        following = [e for e in inside if e.start >= title.end and e.parent is title.parent]
-        if not following or following[0].tag not in ('ul', 'ol') or html[title.end:following[0].start].strip():
-            continue
-        end = following[0].end
-        candidates.append((title.start, end, Edit('R4', html[title.start:end], '', True)))
+        # Autre contenu dans la section (phrase, navigation, bloc « Côté fonctionnel ») :
+        # seulement le titre et la liste qui le suit, à relire.
+        candidates.append((title.start, listing.end, Edit('R4', html[title.start:listing.end], '', True)))
     return candidates
 
 
@@ -391,7 +397,13 @@ def residual_markers(html):
 
 
 def apply_edits(html, edits):
-    """Applique les Edit dans l'ordre. Statuts : applied, already, missing, ambiguous.
+    """Applique les Edit dans l'ordre. Statuts :
+    - applied : `old` présent une fois ;
+    - ambiguous : `old` présent plusieurs fois ;
+    - already : `old` absent, `new` non vide et présent ;
+    - missing : sinon. Une suppression (`new == ''`) dont `old` est absent est donc toujours
+      `missing`, jamais `already` : on ne distingue pas « déjà retiré » de « jamais existé ».
+      L'idempotence au niveau de l'article est du ressort de l'appelant.
     Si un statut est missing ou ambiguous, rien n'est appliqué (HTML d'origine renvoyé)."""
     result, statuses = html, []
     for edit in edits:
@@ -401,7 +413,7 @@ def apply_edits(html, edits):
             statuses.append((edit, 'applied'))
         elif count > 1:
             statuses.append((edit, 'ambiguous'))
-        elif edit.new in result:
+        elif edit.new and edit.new in result:
             statuses.append((edit, 'already'))
         else:
             statuses.append((edit, 'missing'))
@@ -441,13 +453,21 @@ def _finalize(html, candidates):
     """Sans chevauchement, dans l'ordre du document ; `old` rendu unique en l'élargissant
     de texte voisin inchangé, sans jamais empiéter sur une autre proposition."""
     kept = _dedupe(candidates)
+    spans = protected_spans(html)
     edits = []
     for index, (start, end, edit) in enumerate(kept):
         low = kept[index - 1][1] if index else 0
         high = kept[index + 1][0] if index + 1 < len(kept) else len(html)
+        # L'élargissement ne franchit jamais une zone protégée (<pre>, <code>, commentaire…).
+        low = max([low] + [p_end for _p_start, p_end in spans if p_end <= start])
+        high = min([high] + [p_start for p_start, _p_end in spans if p_start >= end])
         left, right = start, end
         if html.count(html[start:end]) > 1:
             left, right = _widen(html, start, end, low, high)
+            if html.count(html[left:right]) > 1:
+                # Unicité impossible sans franchir une limite : `old` étroit, à relire
+                # (apply_edits le signalera « ambiguous »).
+                edit = edit._replace(review=True)
         if (left, right) != (start, end):
             prefix, suffix = html[left:start], html[end:right]
             edit = edit._replace(old=prefix + edit.old + suffix, new=prefix + edit.new + suffix)

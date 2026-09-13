@@ -239,6 +239,58 @@ SERIES_165 = """<section class="s_text_block pt8 pb24">
     </div>
 </section>"""
 
+# Article 173 : titre + liste + phrase précédent / suivant
+SERIES_173 = """<section class="s_text_block pt8 pb24">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>La série — Reprendre ses données dans Odoo 19</h3>
+                <ul>
+                    <li>Article 1/5 — Importer clients et fournisseurs.</li>
+                    <li><strong>Article 2/5 — Importer son catalogue articles</strong> — tu y es.</li>
+                    <li>Article 3/5 — Charger son stock initial.</li>
+                    <li>Article 4/5 — Reprendre sa balance d'ouverture.</li>
+                    <li>Article 5/5 — Recetter sa reprise de données.</li>
+                </ul>
+                <p class="mb-0"><strong>Article&nbsp;2/5</strong> — précédent&nbsp;:
+                    <em>Importer clients et fournisseurs dans Odoo 19 Community</em>. Suivant&nbsp;:
+                    <em>Charger son stock initial dans Odoo 19 Community</em>.</p>
+            </div>
+        </div>
+    </div>
+</section>"""
+
+# Article 171 : grille de cartes « La série » avec une carte hors série
+SERIES_171 = """<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">La série « Licences &amp; distribution »</h3>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/quelle-licence-pour-votre-module-odoo-19-169">1/3 — Quelle licence pour votre module ?</a></h5>
+                            <p class="small">Les 10 valeurs, la règle de contamination AGPL, et pourquoi une licence ne protège rien techniquement.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/manifest-py-odoo-19-decrypte-170">2/3 — <code>__manifest__.py</code> décrypté</a></h5>
+                            <p class="small">Les 33 clés, la version qui rend un module invisible, les 3 formes d'<code>auto_install</code>.</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="s_card p-3 h-100">
+                            <h5><a href="/blog/developpement-odoo-2/architecture-technique-odoo-56">Architecture technique Odoo 19</a></h5>
+                            <p class="small">Le socle sur lequel tout module se greffe — utile avant de vendre quoi que ce soit.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>"""
+
 # Article 61 : code T dans un bloc de code (commentaire Python)
 PRE_61 = ('<pre class="language-python"><code class="language-python">'
           '    # ── Champs non-relationnels (T10) ─────────────────────────────────────────\n'
@@ -389,8 +441,45 @@ class TestMarkersSeriesBoxes(BaseCase):
                          [Edit('R3', SEE_ALSO_65, '', False)])
 
     def test_series_list_alone_removes_the_section(self):
-        self.assertEqual(markers.series_list_edits(BODY + SERIES_172),
-                         [Edit('R4', SERIES_172, '', False)])
+        # Article 172 sans sa phrase finale : titre + liste seulement
+        alone = SERIES_172.replace(SERIES_172[SERIES_172.index('                <p>'):SERIES_172.index('            </div>')], '')
+        self.assertNotIn('Chaque article', alone)
+        self.assertEqual(markers.series_list_edits(BODY + alone), [Edit('R4', alone, '', False)])
+
+    def test_series_list_keeps_the_explanatory_sentence(self):
+        # Article 172 : la phrase « Chaque article reprend… » n'est pas un repère
+        html = BODY + SERIES_172
+        edits = markers.series_list_edits(html)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual((edits[0].new, edits[0].review), ('', True))
+        self.assertTrue(edits[0].old.startswith('<h3>La série'))
+        self.assertTrue(edits[0].old.endswith('</ul>'))
+        new_html, statuses = markers.apply_edits(html, edits)
+        self.assertEqual([s for _e, s in statuses], ['applied'])
+        self.assertIn('Chaque article reprend la base du précédent', new_html)
+
+    def test_series_list_with_trailing_navigation_is_reviewed(self):
+        # Article 173 : « Article 2/5 — précédent : … Suivant : … » après la liste
+        html = BODY + SERIES_173
+        edits = markers.series_list_edits(html)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual((edits[0].new, edits[0].review), ('', True))
+        self.assertNotIn('Suivant', edits[0].old)
+        new_html, _statuses = markers.apply_edits(html, edits)
+        self.assertIn('Charger son stock initial dans Odoo 19 Community', new_html)
+
+    def test_series_card_grid_is_always_reviewed(self):
+        # Article 171 : la grille mêle une carte hors série (« Architecture technique Odoo 19 »)
+        edits = markers.series_list_edits(BODY + SERIES_171)
+        self.assertEqual(edits, [Edit('R4', SERIES_171, '', True)])
+        # Et si la section contient autre chose que la grille, seuls le titre et la grille partent
+        mixed = SERIES_171.replace('        </div>\n    </div>\n</section>',
+                                   '        </div>\n    <p>Voir aussi le <a href="/blog/developpement-odoo-2">blog</a>.</p></div>\n</section>')
+        edits = markers.series_list_edits(BODY + mixed)
+        self.assertEqual(len(edits), 1)
+        self.assertTrue(edits[0].review)
+        self.assertTrue(edits[0].old.startswith('<h3 class="text-center mb-4">La série'))
+        self.assertNotIn('Voir aussi le', edits[0].old)
 
     def test_series_list_with_other_content_removes_only_title_and_list(self):
         html = BODY + SERIES_165
@@ -460,6 +549,22 @@ class TestMarkersApply(BaseCase):
         self.assertEqual(new_html, self.HTML)
         self.assertEqual([s for _e, s in statuses], ['applied', 'missing'])
 
+    def test_absent_deletion_is_missing_not_already(self):
+        good = Edit('R1', self.OLD, self.NEW, False)
+        gone = Edit('R2', '<section class="s_text_block">jamais présente</section>', '', False)
+        new_html, statuses = markers.apply_edits(self.HTML, [good, gone])
+        self.assertEqual(new_html, self.HTML)
+        self.assertEqual([s for _e, s in statuses], ['applied', 'missing'])
+        # Même une suppression réellement déjà faite reste « missing » (non distinguable)
+        _html, statuses = markers.apply_edits('<p>Deux</p>', [Edit('R3', '<p>Un</p>', '', False)])
+        self.assertEqual([s for _e, s in statuses], ['missing'])
+
+    def test_replacement_already_done_is_already(self):
+        edit = Edit('R5', '<h2>Prochain article — T11</h2>', '<h2>Prochain article</h2>', False)
+        html = '<section><h2>Prochain article</h2><p>Résumé.</p></section>'
+        new_html, statuses = markers.apply_edits(html, [edit])
+        self.assertEqual((new_html, statuses), (html, [(edit, 'already')]))
+
     def test_ambiguous_leaves_html_unchanged(self):
         good = Edit('R1', self.OLD, self.NEW, False)
         twice = Edit('R5', '<p>', '<p class="y">', False)
@@ -497,3 +602,24 @@ class TestMarkersPropose(BaseCase):
         self.assertTrue(all(len(e.old) <= len(link) + 16 for e in edits))  # élargi d'un seul côté
         _new, statuses = markers.apply_edits(html, edits)
         self.assertEqual({s for _e, s in statuses}, {'applied'})
+
+    def test_widening_never_crosses_protected_code(self):
+        link = LINK_T09_61
+        # Unicité atteignable côté texte : l'élargissement s'arrête avant le <code>
+        html = ('<p>Voir %s<code>_order</code> ici.</p>\n<p>Relire %s<code>_order</code> ici.</p>' % (link, link))
+        edits = markers.propose(html, 'Parcours', True)
+        self.assertEqual(len(edits), 2)
+        for edit in edits:
+            self.assertEqual(html.count(edit.old), 1)
+            self.assertNotIn('<code>', edit.old)
+            self.assertFalse(edit.review)
+        new_html, statuses = markers.apply_edits(html, edits)
+        self.assertEqual({s for _e, s in statuses}, {'applied'})
+        self.assertEqual(new_html.count('<code>_order</code>'), 2)
+        # Unicité impossible sans franchir un <code> : `old` étroit, à relire, et l'application refuse
+        html = '<p><code>a</code>%s<code>b</code></p>\n<p><code>a</code>%s<code>b</code></p>' % (link, link)
+        edits = markers.propose(html, 'Parcours', True)
+        self.assertEqual([(e.old, e.review) for e in edits], [(link, True), (link, True)])
+        new_html, statuses = markers.apply_edits(html, edits)
+        self.assertEqual(new_html, html)
+        self.assertIn('ambiguous', {s for _e, s in statuses})
