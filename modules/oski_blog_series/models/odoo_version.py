@@ -57,9 +57,10 @@ class OskiBlogOdooVersion(models.Model):
         return self.search([]).filtered(lambda version: version.slug == slug)[:1]
 
     @api.model
-    def _oski_tab_versions(self):
-        """Onglets de /parcours : la version actuelle d'abord, puis chaque version
-        qui a au moins une série propre avec un article publié."""
+    def _oski_tab_versions(self, blog):
+        """Onglets de la page de parcours d'un blog : la version actuelle d'abord,
+        puis chaque version non actuelle ayant au moins une série de CE blog (non
+        transverse, active) avec un article publié."""
         current = self._oski_current()
         Series = self.env['oski.blog.series']
         tabs = self.browse()
@@ -67,6 +68,7 @@ class OskiBlogOdooVersion(models.Model):
             if version == current:
                 continue
             if any(series._oski_published_posts()
-                   for series in Series.search([('odoo_version_id', '=', version.id)])):
+                   for series in Series.search([
+                       ('odoo_version_id', '=', version.id), ('blog_id', '=', blog.id)])):
                 tabs |= version
         return current | tabs

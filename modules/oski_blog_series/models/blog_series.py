@@ -63,10 +63,11 @@ class OskiBlogSeries(models.Model):
         return Post.search_fetch(domain, fields_to_fetch, order=order)
 
     def _oski_parcours_url(self):
+        """Une série transverse ou de la version actuelle pointe vers la page du
+        blog sans suffixe de version."""
         self.ensure_one()
-        version = self.odoo_version_id or self.env['oski.blog.odoo.version']._oski_current()
-        base = '/parcours/%s' % version.slug if version else '/parcours'
-        return '%s#serie-%s' % (base, self.id)
+        return '%s#serie-%s' % (
+            self.blog_id._oski_parcours_url(self.odoo_version_id or None), self.id)
 
     @api.model
     def _oski_visible_entries(self, blog, version):
@@ -90,18 +91,56 @@ class OskiBlogSeries(models.Model):
         return entries
 
     @api.model
-    def _oski_parcours_sections(self, version, website):
-        """Une section par blog du site ayant au moins une série visible."""
-        sections = []
+    def _oski_profile_values(self, blog, version):
+        """Valeurs de la page de profil d'un blog pour une version donnée."""
         Post = self.env['blog.post']
-        for blog in self.env['blog.blog'].search(website.website_domain(), order='id'):
-            entries = self._oski_visible_entries(blog, version)
-            if not entries:
+        independents = Post.search_fetch([
+            ('blog_id', '=', blog.id),
+            ('series_id', '=', False),
+        ] + Post._oski_published_domain(), PARCOURS_POST_FIELDS,
+            order='post_date desc, id desc', limit=6)
+        return {
+            'entries': self._oski_visible_entries(blog, version),
+            'independents': independents,
+        }
+
+    @api.model
+    def _oski_chooser_cards(self, website):
+        """Une carte par blog du site ayant une adresse de parcours et au moins une
+        série visible pour la version actuelle.
+
+        Bornée à 3 requêtes quel que soit le nombre de blogs/séries : pas de
+        recherche de série puis d'articles série par série (voir `_oski_has_parcours`),
+        et aucun chargement du corps HTML des articles."""
+        version = self.env['oski.blog.odoo.version']._oski_current()
+        Blog = self.env['blog.blog']
+        Post = self.env['blog.post']
+        blogs = Blog.search(
+            website.website_domain() + [('parcours_slug', '!=', False)], order='id')
+        if not blogs:
+            return []
+        series = self.search_fetch([
+            ('blog_id', 'in', blogs.ids),
+            '|', ('odoo_version_id', '=', False), ('odoo_version_id', '=', version.id),
+        ], ['blog_id'])
+        if not series:
+            return []
+        post_counts = {
+            series_rec.id: count
+            for series_rec, count in Post._read_group(
+                [('series_id', 'in', series.ids)] + Post._oski_published_domain(),
+                groupby=['series_id'], aggregates=['__count'])
+        }
+        cards = []
+        for blog in blogs:
+            counts = [post_counts.get(s.id, 0) for s in series if s.blog_id == blog]
+            counts = [c for c in counts if c]
+            if not counts:
                 continue
-            independents = Post.search_fetch([
-                ('blog_id', '=', blog.id),
-                ('series_id', '=', False),
-            ] + Post._oski_published_domain(), PARCOURS_POST_FIELDS,
-                order='post_date desc, id desc', limit=6)
-            sections.append({'blog': blog, 'series': entries, 'independents': independents})
-        return sections
+            cards.append({
+                'blog': blog,
+                'url': blog._oski_parcours_url(),
+                'series_count': len(counts),
+                'post_count': sum(counts),
+            })
+        return cards

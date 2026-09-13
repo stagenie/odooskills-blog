@@ -68,33 +68,45 @@ class TestParcoursData(TransactionCase):
         rows = self.Series._oski_visible_entries(self.blog, self.v19)[0]['rows']
         self.assertEqual([r['block'] for r in rows], ['Bloc A', False, 'Bloc B'])
 
-    def test_sections_skip_blog_without_series_and_cap_independents(self):
+    def test_profile_values_cap_independents_at_six(self):
         for i in range(7):
             self._post('Indépendant %s' % i, date=PAST + timedelta(days=i))
         self._post('Indépendant brouillon', published=False, date=PAST + timedelta(days=30))
         self._post('Ailleurs', blog=self.blog_without_series)
-        sections = self.Series._oski_parcours_sections(self.v19, self.website)
-        self.assertEqual([s['blog'] for s in sections], [self.blog])
-        independents = sections[0]['independents']
-        self.assertEqual(independents.mapped('name'),
+        values = self.Series._oski_profile_values(self.blog, self.v19)
+        self.assertEqual([e['series'] for e in values['entries']], [self.s19, self.s_all])
+        self.assertEqual(values['independents'].mapped('name'),
                          ['Indépendant %s' % i for i in (6, 5, 4, 3, 2, 1)])
 
+    def test_profile_values_for_blog_without_series_has_no_entries(self):
+        values = self.Series._oski_profile_values(self.blog_without_series, self.v19)
+        self.assertFalse(values['entries'])
+
     def test_tab_versions(self):
-        self.assertEqual(self.Version._oski_tab_versions(), self.v19 | self.v20)
-        self.assertEqual(self.Version._oski_tab_versions()[0], self.v19)
+        self.assertEqual(self.Version._oski_tab_versions(self.blog), self.v19 | self.v20)
+        self.assertEqual(self.Version._oski_tab_versions(self.blog)[0], self.v19)
         self.p20.is_published = False
-        self.assertEqual(self.Version._oski_tab_versions(), self.v19)
+        self.assertEqual(self.Version._oski_tab_versions(self.blog), self.v19)
+
+    def test_tab_versions_only_sees_series_of_this_blog(self):
+        other_blog = self.env['blog.blog'].create({'name': 'Autre blog tab'})
+        other_s20 = self.Series.create({'name': 'S20 autre blog', 'blog_id': other_blog.id,
+                                        'odoo_version_id': self.v20.id})
+        self._post('Édition 20 autre blog', other_s20, 1, blog=other_blog)
+        self.assertEqual(self.Version._oski_tab_versions(other_blog), self.v19 | self.v20)
+        # Le blog sans série n'a pas d'onglet 20, même si un AUTRE blog en a un.
+        self.assertEqual(self.Version._oski_tab_versions(self.blog_without_series), self.v19)
 
     def test_badge_of_series_post(self):
         badge = self.p2._oski_series_badge()
         self.assertEqual(badge['series'], self.s19)
         self.assertEqual((badge['step'], badge['total']), (2, 3))
-        self.assertEqual(badge['url'], '/parcours/odoo-19#serie-%s' % self.s19.id)
+        self.assertEqual(badge['url'], '/parcours/%s#serie-%s' % (self.blog.parcours_slug, self.s19.id))
         self.assertFalse(badge['newer'])
 
     def test_badge_of_transverse_series_points_to_current_version(self):
         self.assertEqual(self.p_all._oski_series_badge()['url'],
-                         '/parcours/odoo-19#serie-%s' % self.s_all.id)
+                         '/parcours/%s#serie-%s' % (self.blog.parcours_slug, self.s_all.id))
 
     def test_no_badge_for_unpublished_or_standalone_post(self):
         self.assertEqual(self.p_draft._oski_series_badge(), {})
@@ -104,7 +116,8 @@ class TestParcoursData(TransactionCase):
         self.s19.replaced_by_id = self.s20
         badge = self.p1._oski_series_badge()
         self.assertEqual(badge['newer'], self.s20)
-        self.assertEqual(badge['newer_url'], '/parcours/odoo-20#serie-%s' % self.s20.id)
+        self.assertEqual(badge['newer_url'],
+                         '/parcours/%s/odoo-20#serie-%s' % (self.blog.parcours_slug, self.s20.id))
         self.p20.is_published = False
         self.assertFalse(self.p1._oski_series_badge()['newer'])
 
