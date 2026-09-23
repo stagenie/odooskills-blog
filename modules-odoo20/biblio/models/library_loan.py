@@ -135,6 +135,22 @@ class LibraryLoan(models.Model):
                 subtype_xmlid='mail.mt_note',
             )
 
+    def action_send_reminder(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': "Relancer l'adhérent",
+            'res_model': 'mail.compose.message',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_model': 'library.loan',
+                'default_res_ids': self.ids,
+                'default_composition_mode': 'comment',
+                'default_template_id': self.env.ref('biblio.mail_template_loan_reminder').id,
+            },
+        }
+
     @api.model
     def _cron_relancer_retards(self):
         aujourdhui = fields.Date.context_today(self)
@@ -145,11 +161,10 @@ class LibraryLoan(models.Model):
         for emprunt in a_relancer:
             emprunt.reminder_count += 1
             emprunt.reminder_date = aujourdhui
-            emprunt.message_post(
-                body=Markup("Relance n°%s : <b>%s jour(s)</b> de retard.")
-                % (emprunt.reminder_count, emprunt.days_late),
+            emprunt.message_post_with_source(
+                'biblio.mail_template_loan_reminder',
                 message_type='comment',
-                subtype_xmlid='mail.mt_note',
+                subtype_xmlid='mail.mt_comment',
             )
         _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
         return len(a_relancer)
