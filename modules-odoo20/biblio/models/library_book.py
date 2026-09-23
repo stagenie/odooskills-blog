@@ -14,6 +14,17 @@ class LibraryBook(models.Model):
     summary = fields.Text(string="Résumé")
     active = fields.Boolean(string="Actif", default=True)
 
+    copy_ids = fields.One2many(
+        'library.copy',
+        'book_id',
+        string="Exemplaires",
+    )
+    copy_count = fields.Integer(
+        string="Nombre d'exemplaires",
+        compute='_compute_copy_count',
+        store=True,
+    )
+
     _isbn_unique = models.Constraint(
         'UNIQUE(isbn)',
         "Un ISBN ne peut désigner qu'un seul livre.",
@@ -26,3 +37,8 @@ class LibraryBook(models.Model):
                 book.display_name = f"{book.title} — {book.author_id.name}"
             else:
                 book.display_name = book.title
+
+    @api.depends('copy_ids')
+    def _compute_copy_count(self):
+        for book in self:
+            book.copy_count = len(book.copy_ids)
