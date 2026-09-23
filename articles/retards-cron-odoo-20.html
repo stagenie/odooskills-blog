@@ -1,0 +1,765 @@
+<!--
+Article — Les retards en Odoo 20 : compteurs et action planifiée
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — sixième article
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-23
+Slug : retards-cron-odoo-20
+Meta : Rendre un champ calculé cherchable en Odoo 20 avec search=, poser un filtre de vue de recherche, afficher des compteurs et des boutons intelligents sur la fiche, et automatiser la relance avec un ir.cron.
+Mot-clé cible : ir.cron odoo 20
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~18 minutes
+Sources vérifiées le 2026-09-23 : module installé sur Odoo 20.0 (PostgreSQL 16), méthode de recherche espionnée à l'exécution, horloge avancée par sonde, cron déclenché, écrans relus
+Captures : content/blog/screenshots/retards-cron-odoo-20/ (01-04, Playwright)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Les retards en Odoo 20 : compteurs et action planifiée</h1>
+                <p class="lead mt-3 text-white">L'emprunt sait déjà dire s'il est en retard. Il ne sait ni se laisser
+                    <strong>filtrer</strong>, ni se faire <strong>compter</strong> sur la fiche de l'adhérent, ni se
+                    rappeler au bon souvenir de personne. Trois manques, trois mécanismes : <code>search=</code>,
+                    les boutons intelligents, et un <code>ir.cron</code>.</p>
+                <p class="small text-light mt-2">~18 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Chercher</h4>
+                        <p>Rendre un champ calculé non stocké filtrable avec <code>search=</code>, et poser le filtre dans la vue.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Compter</h4>
+                        <p>Deux compteurs sur la fiche de l'adhérent : l'un stocké, l'autre surtout pas.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Automatiser</h4>
+                        <p>Une action planifiée qui relance les retards toute seule, chaque nuit.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> des articles précédents, jusqu'aux emprunts
+                            (<code>library.loan</code>, son champ calculé <code>is_late</code>).</li>
+                        <li>Le serveur Odoo 20 joignable sur <code>http://localhost:8069</code>, base <code>biblio</code>.</li>
+                        <li>Au moins un emprunt dont l'échéance est dépassée — sinon rien à voir.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Un champ qui existe sans exister</h2>
+
+                <p>À la fin de l'article précédent, <code>is_late</code> colorait les lignes en rouge. Mais essaie de
+                    chercher dessus :</p>
+
+                <div class="out">&gt;&gt;&gt; env['library.loan'].search([('is_late', '=', True)])
+ValueError: Field has no SQL representation because it is not stored
+            in condition ('is_late', '=', True)</div>
+
+                <p>Normal : il n'y a pas de colonne <code>is_late</code> dans la table. Le champ est calculé à la volée,
+                    en Python, au moment où on le lit — le moteur de recherche, lui, ne parle que SQL.</p>
+
+                <p>Un champ non stocké est donc affichable mais pas cherchable… tant qu'on ne lui a pas appris à
+                    traduire une question en <strong>domaine SQL</strong>. C'est tout le rôle de l'attribut
+                    <code>search=</code>.</p>
+
+                <figure class="preview-figure">
+                    <svg viewBox="0 0 900 290" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Le filtre En retard passe par la méthode _search_is_late, qui le traduit en un domaine SQL sur l'état et la date d'échéance ; en parallèle la fiche de l'adhérent compte les emprunts et les retards, et le cron relance chaque nuit" style="max-width:100%; height:auto; font-family:sans-serif;">
+                        <rect x="20" y="30" width="215" height="70" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+                        <text x="38" y="60" font-size="14" font-weight="bold" fill="#0c4a6e">Filtre « En retard »</text>
+                        <text x="38" y="82" font-size="11" fill="#0c4a6e">[('is_late', '=', True)]</text>
+
+                        <path d="M 235 65 L 320 65" stroke="#0f172a" stroke-width="2" fill="none"/>
+                        <polygon points="320,65 306,59 306,71" fill="#0f172a"/>
+
+                        <rect x="320" y="25" width="250" height="80" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+                        <text x="340" y="53" font-size="14" font-weight="bold" fill="#78350f">_search_is_late</text>
+                        <text x="340" y="75" font-size="11" fill="#78350f">reçoit ('in', {True})</text>
+                        <text x="340" y="94" font-size="11" fill="#78350f">rend un Domain</text>
+
+                        <path d="M 570 65 L 655 65" stroke="#0f172a" stroke-width="2" fill="none"/>
+                        <polygon points="655,65 641,59 641,71" fill="#0f172a"/>
+
+                        <rect x="655" y="25" width="225" height="80" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+                        <text x="673" y="53" font-size="14" font-weight="bold" fill="#14532d">SQL</text>
+                        <text x="673" y="75" font-size="11" fill="#14532d">state = 'ongoing'</text>
+                        <text x="673" y="94" font-size="11" fill="#14532d">AND date_due &lt; aujourd'hui</text>
+
+                        <rect x="20" y="170" width="300" height="95" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+                        <text x="40" y="199" font-size="14" font-weight="bold" fill="#4c1d95">library.member</text>
+                        <text x="40" y="222" font-size="11" fill="#4c1d95">loan_count — stocké (colonne)</text>
+                        <text x="40" y="241" font-size="11" fill="#4c1d95">late_loan_count — jamais stocké</text>
+                        <text x="40" y="259" font-size="11" fill="#6d28d9">deux boutons intelligents</text>
+
+                        <rect x="420" y="170" width="300" height="95" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+                        <text x="440" y="199" font-size="14" font-weight="bold" fill="#7f1d1d">ir.cron — chaque jour</text>
+                        <text x="440" y="222" font-size="11" fill="#7f1d1d">cherche via _search_is_late</text>
+                        <text x="440" y="241" font-size="11" fill="#7f1d1d">incrémente le compteur de relances</text>
+                        <text x="440" y="259" font-size="11" fill="#7f1d1d">idempotent dans la journée</text>
+
+                        <path d="M 445 105 C 445 140 445 150 445 168" stroke="#dc2626" stroke-width="2" fill="none" stroke-dasharray="5,4"/>
+                        <polygon points="445,168 439,154 451,154" fill="#dc2626"/>
+                    </svg>
+                    <figcaption>Une seule méthode de recherche sert au filtre de l'écran comme au balayage du cron.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. SEARCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Rendre <code>is_late</code> cherchable</h2>
+
+                <p>Un champ devient cherchable de trois façons : il est stocké, il a une expression SQL, ou il nomme
+                    une méthode dans <code>search=</code>. C'est exactement ce que dit l'ORM :</p>
+
+<pre class="language-python"><code class="language-python">@property
+def _description_searchable(self) -> bool:
+    return bool(self.store or self.search or self.compute_sql)</code></pre>
+
+                <p class="small text-muted">— <code>odoo/orm/fields.py</code>, Odoo 20.0</p>
+
+                <p>Ouvre <code>models/library_loan.py</code>. On ajoute l'attribut, un compteur de jours au passage,
+                    et la méthode :</p>
+
+<pre class="language-python"><code class="language-python">from odoo.fields import Domain
+
+    is_late = fields.Boolean(
+        string="En retard",
+        compute='_compute_is_late',
+        search='_search_is_late',
+    )
+    days_late = fields.Integer(string="Jours de retard", compute='_compute_is_late')
+
+    @api.depends('date_due', 'date_return', 'state')
+    def _compute_is_late(self):
+        today = fields.Date.context_today(self)
+        for loan in self:
+            fin = loan.date_return or today
+            loan.is_late = bool(loan.date_due) and loan.state == 'ongoing' and fin &gt; loan.date_due
+            loan.days_late = (fin - loan.date_due).days if loan.is_late else 0
+
+    def _search_is_late(self, operator, value):
+        if operator != 'in':
+            return NotImplemented
+        en_retard = Domain('state', '=', 'ongoing') &amp; Domain(
+            'date_due', '&lt;', fields.Date.context_today(self)
+        )
+        return en_retard if True in value else ~en_retard</code></pre>
+
+                <p>Une méthode de calcul peut alimenter <strong>plusieurs champs</strong> : <code>days_late</code>
+                    profite du travail déjà fait par <code>_compute_is_late</code>, sans deuxième parcours.</p>
+
+                <h3>Ce que la méthode reçoit vraiment</h3>
+
+                <p>Voilà le point qui surprend. On écrit un filtre <code>[('is_late', '=', True)]</code>, mais la
+                    méthode ne voit <strong>jamais</strong> un <code>=</code>. Vérifions-le en espionnant la méthode
+                    depuis la console (<code>odoo-bin shell</code>) : on l'enveloppe, on lance trois recherches, on
+                    regarde ce qui est arrivé.</p>
+
+<pre class="language-python"><code class="language-python">recu = []
+original = type(Loan)._search_is_late
+
+def espion(self, operator, value):
+    recu.append((operator, repr(value)))
+    return original(self, operator, value)
+
+type(Loan)._search_is_late = espion
+Loan.search([('is_late', '=', True)])
+Loan.search([('is_late', '=', False)])
+Loan.search([('is_late', '!=', True)])
+type(Loan)._search_is_late = original
+print(recu)</code></pre>
+
+                <div class="out">[('in',     'OrderedSet([True])'),
+ ('not in', 'OrderedSet([True])'), ('in', 'OrderedSet([True])'),
+ ('not in', 'OrderedSet([True])'), ('in', 'OrderedSet([True])')]</div>
+
+                <p>Trois recherches, <strong>cinq</strong> appels. Deux enseignements :</p>
+
+                <ul>
+                    <li>l'ORM normalise avant d'appeler : tous les <code>=</code> deviennent des <code>in</code>, et la
+                        valeur devient une collection. Comparer <code>value</code> à <code>True</code> ne marcherait
+                        pas ; il faut <code>True in value</code> ;</li>
+                    <li>quand la méthode répond <code>NotImplemented</code> sur <code>not in</code>, Odoo <strong>rappelle
+                        avec l'opérateur inverse et nie le résultat</strong>. D'où le doublement des appels sur les deux
+                        recherches négatives. C'est aussi pourquoi notre méthode peut ne gérer qu'un seul opérateur.</li>
+                </ul>
+
+                <p>La méthode doit rendre un <strong>domaine</strong>, pas un jeu d'enregistrements : un
+                    <code>Domain</code> (ou une liste, acceptée telle quelle). Ce domaine <em>remplace</em> la condition
+                    d'origine dans la requête, et c'est ce qui rend la recherche aussi rapide qu'un filtre ordinaire :
+                    tout se passe en SQL, aucun enregistrement n'est chargé en Python.</p>
+
+                <div class="pitfall-box">
+                    <h4>Le piège du « oui, mais je l'ai déjà écrit en boucle »</h4>
+                    <p>La tentation est de rendre <code>[('id', 'in', ids)]</code> après avoir parcouru les
+                        enregistrements en Python. Ça fonctionne sur trois emprunts et s'écroule sur trente mille :
+                        toute la table est chargée à chaque filtre. Si la règle ne s'exprime pas en domaine, c'est
+                        souvent qu'il faut stocker le champ, pas contourner.</p>
+                </div>
+
+                <h3>Le calcul et la recherche doivent dire la même chose</h3>
+
+                <p>Danger classique : deux définitions du retard qui divergent — l'une en Python, l'autre en SQL. Un
+                    contrôle en deux lignes vaut mieux qu'une confiance :</p>
+
+<pre class="language-python"><code class="language-python">calcules = Loan.search([]).filtered('is_late')
+cherches = Loan.search([('is_late', '=', True)])
+print(set(calcules.ids) == set(cherches.ids))</code></pre>
+
+                <div class="out">True</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. VUE DE RECHERCHE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le filtre dans la vue de recherche</h2>
+
+                <p>Le champ est cherchable ; reste à l'offrir à l'utilisateur. Une vue de recherche se déclare comme
+                    les autres, dans <code>views/library_loan_views.xml</code> :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;record id="library_loan_view_search" model="ir.ui.view"&gt;
+    &lt;field name="name"&gt;library.loan.search&lt;/field&gt;
+    &lt;field name="model"&gt;library.loan&lt;/field&gt;
+    &lt;field name="arch" type="xml"&gt;
+        &lt;search string="Emprunts"&gt;
+            &lt;field name="member_id"/&gt;
+            &lt;field name="copy_id"/&gt;
+            &lt;filter name="filter_late" string="En retard" domain="[('is_late', '=', True)]"/&gt;
+            &lt;filter name="filter_ongoing" string="En cours" domain="[('state', '=', 'ongoing')]"/&gt;
+            &lt;separator/&gt;
+            &lt;filter name="filter_due" string="Échéance" date="date_due"/&gt;
+            &lt;group&gt;
+                &lt;filter name="group_member" string="Adhérent" context="{'group_by': 'member_id'}"/&gt;
+                &lt;filter name="group_state" string="État" context="{'group_by': 'state'}"/&gt;
+            &lt;/group&gt;
+        &lt;/search&gt;
+    &lt;/field&gt;
+&lt;/record&gt;</code></pre>
+
+                <p>Trois choses à lire dans ce bloc :</p>
+
+                <ul>
+                    <li>les <code>&lt;field&gt;</code> du haut alimentent la barre de recherche libre — taper trois
+                        lettres proposera « Adhérent contient… » ;</li>
+                    <li>un <code>&lt;filter&gt;</code> porte un <code>domain</code> : c'est notre méthode de recherche
+                        qui sera appelée derrière ;</li>
+                    <li>un <code>&lt;filter&gt;</code> muni de <code>date="…"</code> se déplie en périodes (ce mois-ci,
+                        ce trimestre, l'an dernier…) sans une ligne de plus.</li>
+                </ul>
+
+                <p>Les filtres rassemblés dans un <code>&lt;group&gt;</code> deviennent la colonne « Regrouper par ».
+                    Le titre, Odoo le pose lui-même.</p>
+
+                <div class="pitfall-box">
+                    <h4>Ne pas écrire <code>&lt;group expand="0" string="Regrouper par"&gt;</code></h4>
+                    <p>L'idiome traîne dans beaucoup de modules anciens. Dans une vue de recherche il rend la vue
+                        <strong>invalide</strong> et le module refuse de s'installer :</p>
+                    <div class="out">RELAXNG_ERR_INVALIDATTR: Invalid attribute expand for element group
+Définition de vue library.loan.search invalide dans biblio/views/library_loan_views.xml</div>
+                    <p class="mt-2 mb-0">Même sanction pour <code>string</code>. Le <code>&lt;group&gt;</code> nu est la
+                        forme correcte. Pourquoi ce réflexe faux survit-il ? Parce qu'une vue <em>formulaire</em> n'est
+                        pas validée par le schéma, contrairement aux vues liste et recherche : le même attribut y passe
+                        sans bruit.</p>
+                </div>
+
+                <p>La liste, elle, gagne deux colonnes — les jours de retard et, plus loin, les relances :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;list string="Emprunts" decoration-danger="is_late"&gt;
+    &lt;field name="copy_id"/&gt;
+    &lt;field name="member_id"/&gt;
+    &lt;field name="date_out"/&gt;
+    &lt;field name="date_due"/&gt;
+    &lt;field name="date_return"/&gt;
+    &lt;field name="days_late"/&gt;
+    &lt;field name="reminder_count"/&gt;
+    &lt;field name="state"/&gt;
+&lt;/list&gt;</code></pre>
+
+                <p>Mets à jour le module, recharge l'écran des emprunts et coche « En retard » :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des emprunts filtrée sur « En retard » : deux lignes en rouge, avec 8 et 20 jours de retard"/>
+                    <figcaption>Le filtre a traversé <code>_search_is_late</code> : deux emprunts sur quatre, 8 et 20 jours de retard.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES COMPTEURS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Remonter les retards sur la fiche de l'adhérent</h2>
+
+                <p>Un bibliothécaire ne travaille pas sur la liste des emprunts : il ouvre la fiche de l'adhérent au
+                    comptoir. Il faut donc que l'information remonte. Dans
+                    <code>models/library_member.py</code> :</p>
+
+<pre class="language-python"><code class="language-python">    loan_ids = fields.One2many('library.loan', 'member_id', string="Emprunts")
+    loan_count = fields.Integer(
+        string="Nombre d'emprunts",
+        compute='_compute_loan_count',
+        store=True,
+    )
+    late_loan_count = fields.Integer(
+        string="Nombre de retards",
+        compute='_compute_late_loan_count',
+    )
+
+    @api.depends('loan_ids')
+    def _compute_loan_count(self):
+        for member in self:
+            member.loan_count = len(member.loan_ids)
+
+    @api.depends('loan_ids.is_late')
+    def _compute_late_loan_count(self):
+        for member in self:
+            member.late_loan_count = len(member.loan_ids.filtered('is_late'))</code></pre>
+
+                <p>Deux compteurs presque jumeaux, une différence décisive : <code>store=True</code> sur le premier,
+                    rien sur le second. Ce n'est pas une inattention.</p>
+
+                <h3>Pourquoi un compteur de retards ne se stocke jamais</h3>
+
+                <p>Odoo ne recalcule un champ stocké que lorsqu'une de ses <strong>dépendances est écrite</strong> —
+                    c'est ce que fait <code>modified()</code> dans l'ORM : <em>« invalidates the cache where necessary,
+                    and prepares the recomputation of dependent stored fields »</em>. Or le nombre de retards ne change
+                    pas parce qu'on écrit quelque part : il change parce que <strong>la nuit est passée</strong>. Et
+                    minuit n'écrit rien en base.</p>
+
+                <p>On peut le voir, sans attendre un mois. Dans la console, on avance l'horloge de trente jours, on vide
+                    le cache, et on ne touche à <strong>aucun</strong> enregistrement :</p>
+
+<pre class="language-python"><code class="language-python">import datetime
+from odoo import fields
+
+avant = {m.card_number: (m.loan_count, m.late_loan_count) for m in Member.search([])}
+
+vrai = fields.Date.context_today
+fields.Date.context_today = staticmethod(
+    lambda record, timestamp=None: vrai(record, timestamp) + datetime.timedelta(days=30))
+env.invalidate_all()
+
+apres = {m.card_number: (m.loan_count, m.late_loan_count) for m in Member.search([])}
+env.cr.execute("SELECT card_number, loan_count FROM library_member ORDER BY card_number")
+print(avant, apres, dict(env.cr.fetchall()), sep="\n")</code></pre>
+
+                <div class="out">{'CARTE-001': (1, 1), 'CARTE-002': (1, 0), 'CARTE-003': (2, 1)}
+{'CARTE-001': (1, 1), 'CARTE-002': (1, 1), 'CARTE-003': (2, 1)}
+{'CARTE-001': 1, 'CARTE-002': 1, 'CARTE-003': 2}</div>
+
+                <p><code>CARTE-002</code> passe de 0 à 1 retard sans qu'une seule écriture ait eu lieu : son échéance
+                    est simplement tombée derrière l'horloge. La colonne SQL du compteur stocké, elle, n'a pas bougé —
+                    elle n'avait aucune raison de bouger, et c'est bien le problème. Un compteur de retards stocké
+                    afficherait la valeur du jour de la dernière modification de la fiche, indéfiniment.</p>
+
+                <p>La contrepartie est connue : un champ non stocké n'a pas de colonne. On le vérifie directement :</p>
+
+                <div class="out">colonnes library_member : ['card_number', 'create_date', 'create_uid', 'id',
+                           'join_date', 'loan_count', 'partner_id', 'write_date', 'write_uid']</div>
+
+                <p>Ni <code>late_loan_count</code>, ni <code>loan_ids</code> — un One2many n'est jamais une colonne, il
+                    se lit depuis la clé étrangère d'en face. Conséquence pratique : on ne peut ni trier, ni regrouper
+                    sur le nombre de retards. Le filtre de la section 2 reste le bon outil pour ça.</p>
+
+                <h3>Les boutons intelligents</h3>
+
+                <p>Reste à l'afficher. Un <em>bouton intelligent</em>, c'est un bouton placé dans un
+                    <code>&lt;div name="button_box"&gt;</code> en haut du formulaire, qui montre un chiffre et ouvre la
+                    liste correspondante. Deux méthodes d'action, dans le même fichier :</p>
+
+<pre class="language-python"><code class="language-python">    def action_view_loans(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': f"Emprunts de {self.name}",
+            'res_model': 'library.loan',
+            'view_mode': 'list,form',
+            'domain': [('member_id', '=', self.id)],
+            'context': {'default_member_id': self.id},
+        }
+
+    def action_view_late_loans(self):
+        self.ensure_one()
+        action = self.action_view_loans()
+        action['name'] = f"Retards de {self.name}"
+        action['domain'] = [('member_id', '=', self.id), ('is_late', '=', True)]
+        return action</code></pre>
+
+                <p>Une méthode d'action rend un <strong>dictionnaire</strong> : Odoo l'exécute côté navigateur comme si
+                    l'utilisateur avait cliqué dans un menu. Le <code>context</code> avec <code>default_</code> pré-remplit
+                    l'adhérent si l'utilisateur crée un emprunt depuis cette liste. Et la seconde méthode réutilise la
+                    première au lieu de la recopier : c'est du Python ordinaire.</p>
+
+                <p>Côté vue, dans <code>views/library_member_views.xml</code>, juste après <code>&lt;sheet&gt;</code> :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;div class="oe_button_box" name="button_box"&gt;
+    &lt;button name="action_view_loans" type="object"
+            class="oe_stat_button" icon="book_5"&gt;
+        &lt;field name="loan_count" widget="statinfo" string="Emprunts"/&gt;
+    &lt;/button&gt;
+    &lt;button name="action_view_late_loans" type="object"
+            class="oe_stat_button" icon="schedule"
+            invisible="late_loan_count == 0"&gt;
+        &lt;field name="late_loan_count" widget="statinfo" string="Retards"/&gt;
+    &lt;/button&gt;
+&lt;/div&gt;</code></pre>
+
+                <p>Le widget <code>statinfo</code> affiche la valeur et son libellé ; <code>invisible</code> masque le
+                    bouton des retards quand il n'y en a pas — un zéro rouge permanent n'apprend rien à personne.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Haut de la fiche d'un adhérent : deux boutons intelligents, Emprunts 2 et Retards 1, avec leurs icônes"/>
+                    <figcaption>Deux emprunts, dont un en retard : l'information est là où le bibliothécaire regarde.</figcaption>
+                </figure>
+
+                <div class="v19-box">
+                    <h4>Changement v19 → v20 : les icônes des boutons</h4>
+                    <p>En Odoo 19, l'attribut <code>icon</code> était trié par préfixe : <code>fa-…</code> produisait une
+                        icône FontAwesome, <code>oi-…</code> une icône maison, et tout le reste était traité comme le
+                        chemin d'une image. <strong>Odoo 20 a supprimé FontAwesome</strong> et, avec lui, ce tri : la
+                        chaîne devient directement <code>&lt;i class="o_button_icon oi" data-icon="…"&gt;</code>, rendue
+                        par ligature de la police d'icônes.</p>
+                    <p>Un <code>icon="fa-list"</code> hérité d'un module v19 <strong>ne lève aucune erreur</strong> : il
+                        affiche le texte « fa-list » à la place de l'icône. Les noms valides sont ceux des Material
+                        Symbols (<code>schedule</code>, <code>list</code>, <code>book_5</code>, <code>warning</code>,
+                        <code>group</code>…) et les icônes propres à Odoo, préfixées <code>oi_</code>. Le compte est sans
+                        appel : <code>icon="fa-</code> apparaît <strong>621 fois</strong> dans les vues XML des addons
+                        19.0, et <strong>zéro fois</strong> dans celles de la 20.0.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LE CRON ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Laisser Odoo chercher les retards tout seul</h2>
+
+                <p>Compter les retards suppose que quelqu'un ouvre l'écran. Pour qu'il se passe quelque chose sans
+                    personne devant l'écran, il faut une <strong>action planifiée</strong> — un enregistrement du modèle
+                    <code>ir.cron</code>, que le serveur déclenche à l'heure dite.</p>
+
+                <p>Donnons-lui un travail vérifiable : relancer chaque emprunt en retard, une fois par jour au plus.
+                    Deux champs de suivi sur l'emprunt, et la méthode :</p>
+
+<pre class="language-python"><code class="language-python">import logging
+
+_logger = logging.getLogger(__name__)
+
+    reminder_count = fields.Integer(string="Relances", default=0, readonly=True, copy=False)
+    reminder_date = fields.Date(string="Dernière relance", readonly=True, copy=False)
+
+    @api.model
+    def _cron_relancer_retards(self):
+        aujourdhui = fields.Date.context_today(self)
+        a_relancer = self.search(
+            Domain('is_late', '=', True)
+            &amp; (Domain('reminder_date', '=', False) | Domain('reminder_date', '&lt;', aujourdhui))
+        )
+        for emprunt in a_relancer:
+            emprunt.reminder_count += 1
+            emprunt.reminder_date = aujourdhui
+        _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
+        return len(a_relancer)</code></pre>
+
+                <p>Trois décisions valent d'être expliquées :</p>
+
+                <ul>
+                    <li><strong>Le domaine compose des <code>Domain</code></strong> avec <code>&amp;</code> et
+                        <code>|</code> plutôt qu'une liste en notation polonaise. C'est lisible, et c'est la forme
+                        recommandée en Odoo 20 — notre <code>_search_is_late</code> est appelée au passage, sans qu'on
+                        ait à redire ce qu'est un retard.</li>
+                    <li><strong>Le cron est idempotent</strong> : la condition sur <code>reminder_date</code> garantit
+                        qu'un deuxième passage dans la même journée ne relance personne. Un cron qui n'est pas
+                        idempotent finit toujours par s'exécuter deux fois.</li>
+                    <li><strong>Il journalise</strong>. Une tâche de fond sans trace dans le journal est une tâche dont
+                        on ne saura jamais si elle tourne.</li>
+                </ul>
+
+                <p>Déclare-le maintenant dans <code>data/library_cron.xml</code> :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo&gt;
+
+    &lt;record id="library_cron_reminder" model="ir.cron"&gt;
+        &lt;field name="name"&gt;Bibliothèque : relancer les emprunts en retard&lt;/field&gt;
+        &lt;field name="model_id" ref="model_library_loan"/&gt;
+        &lt;field name="state"&gt;code&lt;/field&gt;
+        &lt;field name="code"&gt;model._cron_relancer_retards()&lt;/field&gt;
+        &lt;field name="interval_number"&gt;1&lt;/field&gt;
+        &lt;field name="interval_type"&gt;days&lt;/field&gt;
+        &lt;field name="user_id" ref="base.user_root"/&gt;
+        &lt;field name="active" eval="True"/&gt;
+    &lt;/record&gt;
+
+&lt;/odoo&gt;</code></pre>
+
+                <p>… et ajoute le fichier au manifeste, <strong>avant</strong> les vues :</p>
+
+<pre class="language-python"><code class="language-python">    'data': [
+        'security/ir.access.csv',
+        'data/library_cron.xml',
+        'views/library_book_views.xml',
+        'views/library_copy_views.xml',
+        'views/library_member_views.xml',
+        'views/library_loan_views.xml',
+    ],</code></pre>
+
+                <p>Dans le <code>code</code>, <code>model</code> désigne le modèle pointé par <code>model_id</code> —
+                    d'où le <code>@api.model</code> sur la méthode : elle travaille sur le modèle, pas sur un
+                    enregistrement. La référence <code>model_library_loan</code> est l'identifiant que le cœur crée
+                    automatiquement pour chaque modèle ; il suffit de remplacer les points par des tirets bas.</p>
+
+                <p>Mise à jour du module, puis <em>Paramètres → Technique → Automatisation → Actions planifiées</em>
+                    (mode développeur activé) :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Formulaire de l'action planifiée : modèle Emprunt, exécution tous les 1 jours, code model._cron_relancer_retards()"/>
+                    <figcaption>L'action planifiée telle qu'Odoo l'a créée depuis le fichier de données.</figcaption>
+                </figure>
+
+                <p>Les champs <em>Nom</em>, <em>Modèle</em>, <em>Code</em> ne vivent pas dans la table
+                    <code>ir_cron</code> : ils appartiennent à l'action serveur. <code>ir.cron</code> est en effet un
+                    modèle <strong>délégué</strong>, exactement le mécanisme de l'article précédent :</p>
+
+<pre class="language-python"><code class="language-python">class IrCron(models.Model):
+    _name = 'ir.cron'
+    _inherits = {'ir.actions.server': 'ir_actions_server_id'}</code></pre>
+
+                <p>La table ne porte que ce qui relève de la planification — <code>interval_number</code>,
+                    <code>interval_type</code>, <code>nextcall</code>, <code>lastcall</code>, <code>priority</code>,
+                    <code>user_id</code>, <code>active</code> et deux compteurs d'échec. Tout le reste est emprunté au
+                    parent.</p>
+
+                <h3>Le déclencher sans attendre demain</h3>
+
+                <p>Le bouton <strong>Exécuter manuellement</strong> lance le travail immédiatement. Après un clic, la
+                    liste des emprunts porte ses relances :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des emprunts après exécution du cron : les deux lignes rouges affichent une relance, les autres zéro"/>
+                    <figcaption>Les deux emprunts en retard portent une relance ; les deux autres, aucune.</figcaption>
+                </figure>
+
+                <p>Un second clic dans la même journée ne change rien — c'est l'idempotence recherchée. Depuis la
+                    console, la démonstration tient en deux appels :</p>
+
+<pre class="language-python"><code class="language-python">print(Loan._cron_relancer_retards())   # 1er passage
+print(Loan._cron_relancer_retards())   # même jour</code></pre>
+
+                <div class="out">2
+0</div>
+
+                <div class="pitfall-box">
+                    <h4>« Exécuter manuellement » ouvre un nouveau curseur</h4>
+                    <p>La documentation de la méthode le dit sans détour : <em>« The job is still ran as it would be by
+                        the scheduler: a new cursor is used for the execution of the job. »</em> Deux conséquences dans
+                        <code>odoo-bin shell</code> :</p>
+                    <ul>
+                        <li>si la session a des écritures <strong>non validées</strong> sur les lignes que le cron va
+                            toucher, le déclenchement <strong>s'interbloque</strong> : le cron attend un verrou que
+                            seule votre transaction peut relâcher. <code>env.cr.commit()</code> d'abord ;</li>
+                        <li>le résultat du cron reste <strong>invisible</strong> de la session en cours, même après
+                            <code>env.invalidate_all()</code> : le curseur d'Odoo travaille en <em>repeatable read</em>,
+                            donc sur un instantané pris à l'ouverture de la transaction. Il faut une nouvelle
+                            transaction pour voir ce que le cron a écrit.</li>
+                    </ul>
+                </div>
+
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading">Le cron ne tourne pas ? Regarde d'abord le serveur</h4>
+                    <p class="mb-0">Un serveur lancé sans processus de travail (<code>workers = 0</code>, le mode
+                        développeur courant) exécute quand même ses crons, mais uniquement tant qu'il tourne : arrête-le
+                        le soir, rien ne se passera la nuit. Et la <em>Prochaine date d'exécution</em> fait foi — un cron
+                        créé aujourd'hui avec un intervalle d'un jour ne se déclenchera pas forcément dans la minute.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <tr><th>Besoin</th><th>Écrire</th></tr>
+                    <tr><td>Filtrer un champ calculé non stocké</td><td><code>search='_search_x'</code> + une méthode qui rend un <code>Domain</code></td></tr>
+                    <tr><td>Dans cette méthode</td><td>tester <code>operator != 'in'</code> → <code>NotImplemented</code>, puis <code>True in value</code></td></tr>
+                    <tr><td>Un filtre d'écran</td><td><code>&lt;filter name="…" string="…" domain="[…]"/&gt;</code> dans une vue <code>search</code></td></tr>
+                    <tr><td>Un regroupement</td><td>un <code>&lt;group&gt;</code> <strong>nu</strong> (ni <code>expand</code> ni <code>string</code>)</td></tr>
+                    <tr><td>Un compteur qui dépend d'une relation</td><td>calculé <strong>stocké</strong>, <code>@api.depends('loan_ids')</code></td></tr>
+                    <tr><td>Un compteur qui dépend du jour</td><td>calculé <strong>non stocké</strong>, jamais <code>store=True</code></td></tr>
+                    <tr><td>Un bouton chiffré en haut de fiche</td><td><code>class="oe_stat_button"</code> + <code>widget="statinfo"</code></td></tr>
+                    <tr><td>Son icône</td><td>un nom Material Symbols (<code>schedule</code>), <strong>jamais</strong> <code>fa-…</code></td></tr>
+                    <tr><td>Une tâche de fond</td><td>un <code>ir.cron</code> en XML, méthode <code>@api.model</code>, idempotente</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Un champ calculé non stocké devient cherchable dès qu'il nomme une méthode dans <code>search=</code>.</li>
+                    <li>Cette méthode ne reçoit jamais <code>=</code> : l'ORM normalise en <code>in</code> et lui passe une collection de valeurs.</li>
+                    <li>Elle rend un domaine, pas des enregistrements — la recherche reste en SQL.</li>
+                    <li>Le calcul et la recherche doivent donner le même résultat ; ça se vérifie en deux lignes.</li>
+                    <li>Un compteur se stocke s'il dépend de données, jamais s'il dépend de la date du jour.</li>
+                    <li>Un bouton intelligent est un bouton dans <code>button_box</code> : une méthode qui rend une action, un chiffre, une icône.</li>
+                    <li>En Odoo 20 les icônes n'ont plus de préfixe <code>fa-</code> : un nom de Material Symbol, sinon le nom s'affiche en toutes lettres.</li>
+                    <li>Une action planifiée est un <code>ir.cron</code> délégué à une action serveur ; la rendre idempotente n'est pas optionnel.</li>
+                </ul>
+                <p class="mb-0">La suite de la série s'attaquera à la numérotation : arrêter de saisir
+                    <code>BIB-0009</code> à la main et laisser Odoo distribuer les codes lui-même, avec
+                    <code>ir.sequence</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module écrit, installé et relu à l'écran le 23/09/2026 sur Odoo 20.0, base PostgreSQL 16 ;
+                    méthode de recherche espionnée à l'exécution, horloge avancée par sonde, cron déclenché deux fois :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields.py" target="_blank" rel="noopener"><code>odoo/orm/fields.py</code></a> : le paramètre <code>search</code> et <code>_description_searchable</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/domains.py" target="_blank" rel="noopener"><code>odoo/orm/domains.py</code></a> : l'appel de la méthode de recherche et la reprise avec l'opérateur inverse</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>modified()</code>, qui prépare le recalcul des champs stockés</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_cron.py" target="_blank" rel="noopener"><code>base/models/ir_cron.py</code></a> : la délégation vers <code>ir.actions.server</code> et <code>method_direct_trigger</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">Actions serveur, cron et automatisations</a></h5>
+                            <p class="small text-muted mb-0">Tout ce qu'une action serveur sait déclencher, au-delà du code planifié.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/vues-form-list-search-odoo-67">Vues Form, List et Search</a></h5>
+                            <p class="small text-muted mb-0">Filtres, regroupements et widgets : l'anatomie complète des trois vues.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/contraintes-champs-calcules-odoo-63">Contraintes et champs calculés</a></h5>
+                            <p class="small text-muted mb-0">Quand stocker un calcul, et ce que <code>@api.depends</code> surveille vraiment.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,7 +1,12 @@
+import logging
+
 from dateutil.relativedelta import relativedelta
 
 from odoo import api, fields, models
 from odoo.exceptions import ValidationError
+from odoo.fields import Domain
+
+_logger = logging.getLogger(__name__)
 
 
 class LibraryLoan(models.Model):
@@ -42,7 +47,14 @@ class LibraryLoan(models.Model):
         default='ongoing',
         required=True,
     )
-    is_late = fields.Boolean(string="En retard", compute='_compute_is_late')
+    is_late = fields.Boolean(
+        string="En retard",
+        compute='_compute_is_late',
+        search='_search_is_late',
+    )
+    days_late = fields.Integer(string="Jours de retard", compute='_compute_is_late')
+    reminder_count = fields.Integer(string="Relances", default=0, readonly=True, copy=False)
+    reminder_date = fields.Date(string="Dernière relance", readonly=True, copy=False)
 
     @api.depends('date_out', 'duration')
     def _compute_date_due(self):
@@ -58,6 +70,15 @@ class LibraryLoan(models.Model):
         for loan in self:
             fin = loan.date_return or today
             loan.is_late = bool(loan.date_due) and loan.state == 'ongoing' and fin > loan.date_due
+            loan.days_late = (fin - loan.date_due).days if loan.is_late else 0
+
+    def _search_is_late(self, operator, value):
+        if operator != 'in':
+            return NotImplemented
+        en_retard = Domain('state', '=', 'ongoing') & Domain(
+            'date_due', '<', fields.Date.context_today(self)
+        )
+        return en_retard if True in value else ~en_retard
 
     @api.constrains('copy_id', 'state')
     def _check_copy_available(self):
@@ -89,6 +110,19 @@ class LibraryLoan(models.Model):
                 'date_return': fields.Date.context_today(loan),
             })
             loan.copy_id.state = 'available'
+
+    @api.model
+    def _cron_relancer_retards(self):
+        aujourdhui = fields.Date.context_today(self)
+        a_relancer = self.search(
+            Domain('is_late', '=', True)
+            & (Domain('reminder_date', '=', False) | Domain('reminder_date', '<', aujourdhui))
+        )
+        for emprunt in a_relancer:
+            emprunt.reminder_count += 1
+            emprunt.reminder_date = aujourdhui
+        _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
+        return len(a_relancer)
 
     @api.depends('member_id.card_number', 'copy_id.name')
     def _compute_display_name(self):
