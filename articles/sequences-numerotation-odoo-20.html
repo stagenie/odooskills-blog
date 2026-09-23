@@ -1,0 +1,636 @@
+<!--
+Article — Numéroter automatiquement en Odoo 20 : ir.sequence
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — septième article
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-23
+Slug : sequences-numerotation-odoo-20
+Meta : Déclarer une ir.sequence en XML, tirer le numéro dans create plutôt qu'en default, comprendre les trous de numérotation, utiliser les sous-séquences par plage de dates et le drapeau noupdate.
+Mot-clé cible : ir.sequence odoo 20
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~18 minutes
+Sources vérifiées le 2026-09-23 : séquences installées sur Odoo 20.0 (PostgreSQL 16), tirage annulé par rollback, verrou no_gap observé entre deux transactions, drapeau noupdate testé dans les deux sens, écrans relus
+Captures : content/blog/screenshots/sequences-numerotation-odoo-20/ (01-04, Playwright)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Numéroter automatiquement en Odoo 20 : ir.sequence</h1>
+                <p class="lead mt-3 text-white">Depuis le troisième article, chaque code d'inventaire est tapé à la
+                    main — <code>BIB-0001</code>, <code>BIB-0002</code>… et une contrainte d'unicité pour rattraper les
+                    doublons. Odoo sait faire ça tout seul. Mais une séquence ne se pose pas n'importe où, et elle ne
+                    promet pas ce qu'on croit.</p>
+                <p class="small text-light mt-2">~18 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Déclarer</h4>
+                        <p>Une <code>ir.sequence</code> en XML, protégée par <code>noupdate</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Tirer</h4>
+                        <p>Le numéro dans <code>create</code>, jamais dans un <code>default</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Assumer</h4>
+                        <p>Les trous de numérotation : d'où ils viennent, et ce que coûte de les interdire.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> des articles précédents : les exemplaires et les emprunts.</li>
+                        <li>Le serveur Odoo 20 joignable sur <code>http://localhost:8069</code>, base <code>biblio</code>.</li>
+                        <li>Le mode développeur, pour voir le menu <em>Paramètres → Technique → Séquences</em>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qu'une séquence garantit — et ce qu'elle ne garantit pas</h2>
+
+                <p>Une séquence Odoo distribue des numéros <strong>uniques</strong> et <strong>croissants</strong>.
+                    Elle ne promet ni la continuité, ni la réversibilité : un numéro tiré est consommé, même si
+                    l'enregistrement qui devait le porter n'est jamais enregistré. C'est un choix, pas un défaut — et
+                    tout l'enjeu de cet article est de savoir où ce choix vous arrange et où il vous gêne.</p>
+
+                <figure class="preview-figure">
+                    <svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Le fichier XML déclare la séquence, la surcharge de create tire le numéro, l'implémentation standard s'appuie sur une séquence PostgreSQL hors transaction tandis que l'implémentation no gap verrouille la ligne" style="max-width:100%; height:auto; font-family:sans-serif;">
+                        <rect x="20" y="25" width="215" height="80" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+                        <text x="38" y="53" font-size="14" font-weight="bold" fill="#0c4a6e">data/…_sequence.xml</text>
+                        <text x="38" y="75" font-size="11" fill="#0c4a6e">code, préfixe, padding</text>
+                        <text x="38" y="94" font-size="11" fill="#0c4a6e">noupdate="1"</text>
+
+                        <path d="M 235 65 L 315 65" stroke="#0f172a" stroke-width="2" fill="none"/>
+                        <polygon points="315,65 301,59 301,71" fill="#0f172a"/>
+
+                        <rect x="315" y="25" width="250" height="80" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+                        <text x="335" y="53" font-size="14" font-weight="bold" fill="#78350f">create()</text>
+                        <text x="335" y="75" font-size="11" fill="#78350f">next_by_code('library.copy')</text>
+                        <text x="335" y="94" font-size="11" fill="#78350f">jamais dans un default=</text>
+
+                        <path d="M 565 65 L 645 65" stroke="#0f172a" stroke-width="2" fill="none"/>
+                        <polygon points="645,65 631,59 631,71" fill="#0f172a"/>
+
+                        <rect x="645" y="25" width="235" height="80" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+                        <text x="663" y="53" font-size="14" font-weight="bold" fill="#14532d">BIB-0009</text>
+                        <text x="663" y="75" font-size="11" fill="#14532d">unique, croissant</text>
+                        <text x="663" y="94" font-size="11" fill="#14532d">consommé même si annulé</text>
+
+                        <rect x="120" y="165" width="320" height="95" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+                        <text x="140" y="193" font-size="13" font-weight="bold" fill="#0f172a">implémentation « standard »</text>
+                        <text x="140" y="215" font-size="11" fill="#334155">séquence PostgreSQL : nextval()</text>
+                        <text x="140" y="233" font-size="11" fill="#334155">hors transaction → des trous</text>
+                        <text x="140" y="251" font-size="11" fill="#334155">rapide, aucun verrou</text>
+
+                        <rect x="470" y="165" width="320" height="95" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+                        <text x="490" y="193" font-size="13" font-weight="bold" fill="#7f1d1d">implémentation « no gap »</text>
+                        <text x="490" y="215" font-size="11" fill="#991b1b">compteur dans la table</text>
+                        <text x="490" y="233" font-size="11" fill="#991b1b">SELECT … FOR UPDATE NOWAIT</text>
+                        <text x="490" y="251" font-size="11" fill="#991b1b">la 2ᵉ transaction échoue aussitôt</text>
+
+                        <path d="M 762 105 C 762 130 700 140 640 150" stroke="#94a3b8" stroke-width="2" fill="none" stroke-dasharray="5,4"/>
+                        <path d="M 762 105 C 700 130 400 140 300 160" stroke="#94a3b8" stroke-width="2" fill="none" stroke-dasharray="5,4"/>
+                    </svg>
+                    <figcaption>Deux implémentations, deux compromis : la vitesse ou la continuité.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DÉCLARER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Déclarer la séquence</h2>
+
+                <p>Une séquence est un enregistrement comme un autre : elle se pose dans un fichier de données. Crée
+                    <code>data/library_sequence.xml</code> :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo noupdate="1"&gt;
+
+    &lt;record id="library_copy_sequence" model="ir.sequence"&gt;
+        &lt;field name="name"&gt;Bibliothèque : exemplaires&lt;/field&gt;
+        &lt;field name="code"&gt;library.copy&lt;/field&gt;
+        &lt;field name="prefix"&gt;BIB-&lt;/field&gt;
+        &lt;field name="padding"&gt;4&lt;/field&gt;
+        &lt;field name="number_next"&gt;9&lt;/field&gt;
+        &lt;field name="company_id" eval="False"/&gt;
+    &lt;/record&gt;
+
+&lt;/odoo&gt;</code></pre>
+
+                <p>Champ par champ :</p>
+
+                <ul>
+                    <li><code>code</code> est la <strong>clé d'appel</strong> depuis le Python. Il n'a pas à être un nom
+                        de modèle, mais le prendre égal au modèle évite d'inventer un vocabulaire de plus.</li>
+                    <li><code>prefix</code> et <code>padding</code> fabriquent la chaîne : <code>BIB-</code> + un
+                        entier sur 4 chiffres.</li>
+                    <li><code>number_next</code> à <strong>9</strong> parce que la bibliothèque a déjà huit exemplaires
+                        saisis à la main. Reprendre une numérotation existante, c'est exactement ça : dire à la séquence
+                        où le stock s'arrête.</li>
+                    <li><code>company_id</code> à <code>False</code> : une seule séquence pour toutes les sociétés. Avec
+                        une société renseignée, <code>next_by_code</code> choisit celle de la société courante, et se
+                        rabat sur la séquence sans société s'il n'y en a pas.</li>
+                </ul>
+
+                <p>Ajoute le fichier au manifeste, <strong>avant</strong> les vues :</p>
+
+<pre class="language-python"><code class="language-python">    'data': [
+        'security/ir.access.csv',
+        'data/library_sequence.xml',
+        'data/library_cron.xml',
+        'views/library_book_views.xml',
+        ...
+    ],</code></pre>
+
+                <p>Mets le module à jour, puis <em>Paramètres → Technique → Séquences</em> :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Formulaire de la séquence des exemplaires : code library.copy, préfixe BIB-, taille 4, numéro suivant 9, et la légende des variables de préfixe"/>
+                    <figcaption>La séquence telle que le module l'a posée. En bas, la légende des variables utilisables dans le préfixe.</figcaption>
+                </figure>
+
+                <div class="v19-box">
+                    <h4>v19 → v20 : rien à changer</h4>
+                    <p>Le modèle <code>ir.sequence</code> traverse la 20.0 <strong>sans un champ de différence</strong> :
+                        mêmes noms, mêmes types, même comportement. Un fichier de séquences écrit pour la 19 s'installe
+                        tel quel. C'est suffisamment rare dans cette migration pour être signalé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. TIRER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Tirer le numéro au bon moment</h2>
+
+                <p>Le champ devient un champ que l'utilisateur ne saisit plus. Dans
+                    <code>models/library_copy.py</code> :</p>
+
+<pre class="language-python"><code class="language-python">    name = fields.Char(
+        string="Code d'inventaire",
+        required=True,
+        copy=False,
+        readonly=True,
+        default="Nouveau",
+    )
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if vals.get('name', "Nouveau") == "Nouveau":
+                vals['name'] = self.env['ir.sequence'].next_by_code('library.copy') or "Nouveau"
+        return super().create(vals_list)</code></pre>
+
+                <p>Trois détails qui ne sont pas décoratifs :</p>
+
+                <ul>
+                    <li><code>readonly=True</code> et <code>default="Nouveau"</code> : le formulaire affiche un
+                        libellé d'attente, pas un champ vide qui inviterait à taper.</li>
+                    <li><code>copy=False</code> : dupliquer un exemplaire ne doit pas dupliquer son code.</li>
+                    <li>le test <code>vals.get('name', "Nouveau") == "Nouveau"</code> laisse passer un code fourni
+                        explicitement — utile pour une reprise de données, où les codes viennent du fichier source.</li>
+                </ul>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Formulaire d'un exemplaire enregistré : le code d'inventaire BIB-0009 a été attribué sans saisie"/>
+                    <figcaption>L'exemplaire a été créé sans qu'on touche au code : la séquence a fait le travail.</figcaption>
+                </figure>
+
+                <h3>Pourquoi pas un <code>default=</code> ?</h3>
+
+                <p>La tentation est grande d'écrire simplement :</p>
+
+<pre class="language-python"><code class="language-python">    # à ne pas faire
+    name = fields.Char(default=lambda self: self.env['ir.sequence'].next_by_code('library.copy'))</code></pre>
+
+                <p>Un <code>default</code> est évalué quand le formulaire <strong>s'ouvre</strong>, pas quand
+                    l'enregistrement est sauvé. Ouvrir un formulaire pour finalement l'abandonner consomme donc un
+                    numéro — et comme on va le voir, ce numéro ne revient jamais. Le même écran ouvert trois fois par
+                    hésitation, c'est trois trous dans la numérotation. Dans <code>create</code>, le numéro n'est tiré
+                    que lorsqu'un enregistrement est réellement créé.</p>
+
+                <div class="pitfall-box">
+                    <h4><code>next_by_code</code> échoue en silence</h4>
+                    <p>Si aucune séquence ne porte le code demandé, la méthode ne lève <strong>rien</strong> : elle
+                        écrit une ligne de journal en niveau <em>debug</em> — invisible en exploitation — et renvoie
+                        <code>False</code>.</p>
+                    <div class="out">&gt;&gt;&gt; env['ir.sequence'].next_by_code('library.inexistant')
+False</div>
+                    <p class="mt-2 mb-0">Sans garde-fou, ce <code>False</code> atterrit dans le champ. D'où le
+                        <code>or "Nouveau"</code> : un enregistrement mal nommé se repère d'un coup d'œil, un champ
+                        vide ou <code>False</code> se découvre trois mois plus tard.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES TROUS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les trous, et ce qu'ils coûtent à éviter</h2>
+
+                <p>Par défaut, l'implémentation est <em>standard</em> : Odoo crée une véritable
+                    <strong>séquence PostgreSQL</strong> et lui demande son <code>nextval()</code>. Or une séquence
+                    PostgreSQL vit <strong>en dehors</strong> de la transaction : elle n'est pas annulée par un
+                    <code>ROLLBACK</code>. Vérifions-le dans la console, en annulant explicitement le tirage :</p>
+
+<pre class="language-python"><code class="language-python">seq = env.ref('biblio.library_copy_sequence')
+env.invalidate_all()
+avant = seq.number_next_actual
+
+with env.cr.savepoint(flush=False) as sp:
+    tire = env['ir.sequence'].next_by_code('library.copy')
+    sp.close(rollback=True)          # on annule tout
+
+env.invalidate_all()
+print(avant, tire, seq.number_next_actual)</code></pre>
+
+                <div class="out">prochain avant : 12 | tiré puis annulé : BIB-0012 | prochain après : 13</div>
+
+                <p>Le numéro 12 est parti et ne reviendra pas. Ce n'est pas un bogue : c'est le prix de la vitesse.
+                    Deux utilisateurs qui créent un exemplaire en même temps n'attendent pas l'un l'autre.</p>
+
+                <div class="pitfall-box">
+                    <h4>Le compteur affiché n'est pas non plus synchronisé</h4>
+                    <p><code>number_next_actual</code> est un champ <strong>calculé</strong> qui va lire la séquence
+                        PostgreSQL. Comme le tirage se fait en SQL brut, le cache de l'ORM n'apprend jamais que le
+                        compteur a bougé :</p>
+                    <div class="out">lu 13 | après un tirage, sans invalidation : 13 | après invalidation : 14</div>
+                    <p class="mt-2 mb-0">Dans une sonde ou un test, <code>env.invalidate_all()</code> avant chaque
+                        lecture, sinon vous comparerez deux fois la même valeur périmée.</p>
+                </div>
+
+                <h3>L'implémentation « no gap »</h3>
+
+                <p>L'autre choix, <code>implementation = 'no_gap'</code>, abandonne la séquence PostgreSQL : le compteur
+                    est une colonne de la table <code>ir_sequence</code>, lue et incrémentée dans la transaction. Le
+                    numéro revient donc si la transaction est annulée. Le prix se lit dans le SQL du cœur :</p>
+
+<pre class="language-sql"><code class="language-sql">SELECT number_next FROM ir_sequence WHERE id=%s FOR UPDATE NOWAIT</code></pre>
+
+                <p><code>NOWAIT</code> : la seconde transaction n'attend pas son tour, elle <strong>échoue tout de
+                    suite</strong>. Deux transactions concurrentes sur la même séquence, et la deuxième reçoit :</p>
+
+<pre class="language-python"><code class="language-python">a = env['ir.sequence'].next_by_code('sonde.nogap')   # transaction 1, non validée
+# … dans une seconde connexion, sur la même séquence :
+b = env2['ir.sequence'].next_by_code('sonde.nogap')</code></pre>
+
+                <div class="out">transaction 1 tire : NG-001 (pas encore validée)
+transaction 2 : LockNotAvailable | could not obtain lock on row in relation "ir_sequence"</div>
+
+                <p>Sur une facturation légale, cette continuité vaut son coût et c'est ce que fait la comptabilité
+                    d'Odoo. Sur des codes d'inventaire, elle achète une file d'attente contre un problème qui n'existe
+                    pas. Le choix par défaut, <em>standard</em>, est le bon ici.</p>
+
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading">Un trou n'est pas seulement un tirage annulé</h4>
+                    <p class="mb-0">Même en <em>no gap</em>, supprimer un enregistrement laisse un trou : le numéro a
+                        bien été attribué, c'est la ligne qui a disparu. Aucune implémentation ne protège de ça. Si la
+                        continuité est une exigence réglementaire, la réponse est d'<strong>interdire la suppression</strong>,
+                        pas de choisir une séquence.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. PLAGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Une référence qui porte son année</h2>
+
+                <p>L'emprunt, lui, n'avait aucune référence — on le désignait par son exemplaire. Donnons-lui une
+                    référence datée, remise à zéro chaque année. Deux réglages suffisent :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;record id="library_loan_sequence" model="ir.sequence"&gt;
+    &lt;field name="name"&gt;Bibliothèque : emprunts&lt;/field&gt;
+    &lt;field name="code"&gt;library.loan&lt;/field&gt;
+    &lt;field name="prefix"&gt;EMP/%(range_year)s/&lt;/field&gt;
+    &lt;field name="padding"&gt;4&lt;/field&gt;
+    &lt;field name="use_date_range" eval="True"/&gt;
+    &lt;field name="company_id" eval="False"/&gt;
+&lt;/record&gt;</code></pre>
+
+                <p><code>use_date_range</code> demande à Odoo de tenir un compteur <strong>par plage de dates</strong>.
+                    La plage est créée toute seule, à l'année civile, au premier tirage qui en a besoin. Et dans le
+                    préfixe, <code>%(range_year)s</code> désigne l'année <strong>de la plage</strong> — à distinguer de
+                    <code>%(year)s</code>, qui est l'année de la date du tirage. La nuance compte dès qu'on enregistre
+                    un emprunt daté de l'an dernier.</p>
+
+                <p>Côté modèle, le numéro se tire comme le précédent, en passant la date :</p>
+
+<pre class="language-python"><code class="language-python">    reference = fields.Char(
+        string="Référence", required=True, copy=False, readonly=True, default="Nouveau",
+    )
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if vals.get('reference', "Nouveau") == "Nouveau":
+                vals['reference'] = self.env['ir.sequence'].next_by_code(
+                    'library.loan', sequence_date=vals.get('date_out'),
+                ) or "Nouveau"
+        emprunts = super().create(vals_list)
+        emprunts.filtered(lambda e: e.state == 'ongoing').copy_id.state = 'borrowed'
+        return emprunts</code></pre>
+
+                <p><code>sequence_date</code> décide de la plage. Sans ce paramètre, un emprunt saisi en retard
+                    porterait l'année du jour de la saisie. Le contrôle est immédiat :</p>
+
+<pre class="language-python"><code class="language-python">Seq = env['ir.sequence']
+print(Seq.next_by_code('library.loan', sequence_date='2025-03-04'))
+print(Seq.next_by_code('library.loan', sequence_date='2026-09-23'))</code></pre>
+
+                <div class="out">EMP/2025/0001
+EMP/2026/0001</div>
+
+                <p>Deux compteurs indépendants, deux plages créées sans rien demander :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Réglages de la séquence des emprunts : préfixe EMP/%(range_year)s/, sous-séquences par intervalle de date cochées, une plage du 1er janvier au 31 décembre"/>
+                    <figcaption>La sous-séquence de l'année a été créée par Odoo au premier tirage.</figcaption>
+                </figure>
+
+                <p>Les emprunts existants, eux, ont reçu leur référence lors de la reprise :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des emprunts avec la colonne Référence renseignée de EMP/2026/0001 à EMP/2026/0004"/>
+                    <figcaption>Les références suivent l'ordre des dates de sortie, pas l'ordre de création des lignes.</figcaption>
+                </figure>
+
+                <p>Ajouter un champ requis à un modèle qui a déjà des données mérite un mot : en créant la colonne,
+                    Odoo l'initialise sur les lignes existantes avec la valeur par défaut. Contrôle en SQL après la
+                    mise à jour :</p>
+
+                <div class="out">valeurs posées sur les lignes existantes : [('Nouveau',)]
+lignes restées NULL : 0</div>
+
+                <p>Toutes portent donc le même libellé d'attente. Une boucle de reprise leur donne ensuite leur vraie
+                    référence, dans l'ordre choisi :</p>
+
+<pre class="language-python"><code class="language-python">for loan in env['library.loan'].search([], order='date_out'):
+    if loan.reference in (False, "Nouveau"):
+        loan.reference = env['ir.sequence'].next_by_code(
+            'library.loan', sequence_date=loan.date_out)</code></pre>
+
+                <p>Dans un module distribué, ce genre de reprise a sa place dans un script de migration — pas dans un
+                    fichier de données, qui ne s'exécuterait qu'une fois et sans ordre garanti.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. DROITS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Faut-il un <code>sudo()</code> pour tirer un numéro ?</h2>
+
+                <p>Le réflexe est répandu : <code>self.env['ir.sequence'].sudo().next_by_code(...)</code>. Regardons
+                    ce que le cœur exige réellement. Côté droits, en Odoo 20, <code>ir.sequence</code> est décrite dans
+                    <code>ir.access</code> :</p>
+
+                <div class="out">[('Role / User', 'r'), ('Rôle / Administrateur', 'crud')]</div>
+
+                <p>Un utilisateur interne a donc la <strong>lecture seule</strong>. Et <code>next_by_code</code> ne
+                    vérifie rien de plus : <code>self.browse().check_access('read')</code>. Le reste — l'appel à
+                    <code>nextval()</code> comme l'incrément d'une séquence <em>no gap</em> — passe par du <strong>SQL
+                    brut</strong>, qui ne repasse pas par les contrôles de l'ORM. L'essai le confirme, avec un
+                    utilisateur qui n'a que le groupe « Utilisateur interne » :</p>
+
+                <div class="out">tirage par agent_seq → BIB-0011
+tirage no_gap par agent_seq → NG-002
+écriture sur la séquence : AccessError Vous n'êtes pas autorisé à modifier les enregistrements 'Séquence' (ir.sequence).</div>
+
+                <p>Conclusion : <strong>tirer un numéro ne demande pas de <code>sudo()</code></strong>, quelle que soit
+                    l'implémentation. En revanche, <em>modifier</em> une séquence — changer son préfixe, repositionner
+                    son compteur depuis du code métier — exige bien les droits d'administration, et c'est là, et
+                    seulement là, que le <code>sudo()</code> se justifie.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. NOUPDATE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>noupdate="1"</code> : la ligne qui sauve le compteur</h2>
+
+                <p>Le fichier de données porte <code>&lt;odoo noupdate="1"&gt;</code>. Sans lui, chaque mise à jour du
+                    module réécrit l'enregistrement avec les valeurs du XML — <code>number_next</code> compris. Le
+                    scénario n'est pas théorique : un administrateur repositionne le compteur à 100 depuis l'écran,
+                    quelqu'un déploie une correction du module, et la numérotation repart à 9.</p>
+
+                <p>L'essai, dans les deux sens, sur la même base :</p>
+
+                <div class="out">compteur posé à 100 depuis l'écran
+
+-u biblio  AVEC  noupdate="1"   → prochain = 100
+-u biblio  SANS  noupdate       → prochain = 9</div>
+
+                <p>Le second cas est exactement la panne : des codes déjà attribués, redistribués.</p>
+
+                <div class="pitfall-box">
+                    <h4>Le drapeau est posé à la création, et jamais remis</h4>
+                    <p><code>noupdate</code> n'est pas un attribut du fichier : c'est une <strong>colonne de
+                        <code>ir_model_data</code></strong>, écrite quand l'identifiant externe est créé. Le cœur
+                        insère ces lignes avec un <code>ON CONFLICT DO UPDATE</code> qui ne touche que
+                        <code>model</code>, <code>res_id</code> et <code>write_date</code> — <code>noupdate</code> n'y
+                        figure pas.</p>
+                    <p class="mb-0">Conséquence : un module publié <em>sans</em> <code>noupdate</code>, puis corrigé,
+                        laisse les bases déjà installées <strong>sans protection</strong> — ajouter l'attribut ne
+                        remet pas le drapeau à vrai sur l'existant. Il faut le corriger explicitement, par un script de
+                        migration ou depuis l'écran des identifiants externes. Vérifié dans les deux sens sur la même
+                        base.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <tr><th>Besoin</th><th>Écrire</th></tr>
+                    <tr><td>Déclarer une séquence</td><td>un <code>record model="ir.sequence"</code> dans <code>&lt;odoo noupdate="1"&gt;</code></td></tr>
+                    <tr><td>Reprendre une numérotation existante</td><td><code>number_next</code> au premier numéro libre</td></tr>
+                    <tr><td>Tirer le numéro</td><td>dans <code>create</code>, jamais dans un <code>default=</code></td></tr>
+                    <tr><td>Se protéger d'un code absent</td><td><code>next_by_code(...) or "Nouveau"</code> — la méthode rend <code>False</code> sans rien dire</td></tr>
+                    <tr><td>Un compteur par année</td><td><code>use_date_range</code> + préfixe <code>%(range_year)s</code></td></tr>
+                    <tr><td>Numéroter d'après une date métier</td><td><code>next_by_code(code, sequence_date=...)</code></td></tr>
+                    <tr><td>Interdire les trous</td><td><code>implementation = 'no_gap'</code> — et accepter les échecs de verrou</td></tr>
+                    <tr><td>Tirer depuis un utilisateur non admin</td><td>rien à faire : la lecture suffit, pas de <code>sudo()</code></td></tr>
+                    <tr><td>Lire le compteur dans une sonde</td><td><code>env.invalidate_all()</code> avant chaque lecture</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Une séquence promet l'unicité et la croissance, pas la continuité.</li>
+                    <li>L'implémentation par défaut s'appuie sur une séquence PostgreSQL : un <code>ROLLBACK</code> ne rend pas le numéro.</li>
+                    <li><code>no_gap</code> rend la continuité au prix d'un verrou qui fait échouer la transaction concurrente immédiatement.</li>
+                    <li>Aucune implémentation ne comble le trou laissé par une suppression.</li>
+                    <li>Le numéro se tire dans <code>create</code> : un <code>default=</code> consomme dès l'ouverture du formulaire.</li>
+                    <li><code>next_by_code</code> rend <code>False</code> en silence si le code n'existe pas — toujours prévoir la valeur de repli.</li>
+                    <li><code>use_date_range</code> + <code>%(range_year)s</code> donnent une numérotation annuelle sans une ligne de Python.</li>
+                    <li>Tirer un numéro ne demande pas <code>sudo()</code> ; modifier la séquence, si.</li>
+                    <li><code>noupdate="1"</code> protège le compteur des mises à jour — et le drapeau ne se pose qu'à la création de l'identifiant externe.</li>
+                </ul>
+                <p class="mb-0">La suite de la série sortira la bibliothèque du back-office : donner à l'adhérent une
+                    page où retrouver ses emprunts, sans lui ouvrir la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Séquences écrites, installées et relues à l'écran le 23/09/2026 sur Odoo 20.0, base
+                    PostgreSQL 16 ; tirage annulé par <code>ROLLBACK</code>, verrou <em>no gap</em> observé entre deux
+                    connexions, drapeau <code>noupdate</code> testé dans les deux sens :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_sequence.py" target="_blank" rel="noopener"><code>base/models/ir_sequence.py</code></a> : <code>next_by_code</code>, <code>_next_do</code>, <code>_update_nogap</code> et la table des variables de préfixe</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_model.py" target="_blank" rel="noopener"><code>base/models/ir_model.py</code></a> : l'insertion des identifiants externes, et le <code>noupdate</code> qu'elle ne met jamais à jour</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/security/ir.access.csv" target="_blank" rel="noopener"><code>base/security/ir.access.csv</code></a> : lecture pour l'utilisateur interne, écriture pour l'administrateur</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/methodes-modele-odoo-66">Méthodes de modèle</a></h5>
+                            <p class="small text-muted mb-0">Surcharger <code>create</code> proprement, sans casser les traitements par lots.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à toutes les vérifications de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0">Séquences, verrous et transactions vus depuis la base.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -14,6 +14,13 @@ class LibraryLoan(models.Model):
     _description = "Emprunt"
     _order = 'date_out desc, id desc'
 
+    reference = fields.Char(
+        string="Référence",
+        required=True,
+        copy=False,
+        readonly=True,
+        default="Nouveau",
+    )
     member_id = fields.Many2one(
         'library.member',
         string="Adhérent",
@@ -97,6 +104,11 @@ class LibraryLoan(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        for vals in vals_list:
+            if vals.get('reference', "Nouveau") == "Nouveau":
+                vals['reference'] = self.env['ir.sequence'].next_by_code(
+                    'library.loan', sequence_date=vals.get('date_out'),
+                ) or "Nouveau"
         emprunts = super().create(vals_list)
         emprunts.filtered(lambda e: e.state == 'ongoing').copy_id.state = 'borrowed'
         return emprunts
@@ -124,7 +136,7 @@ class LibraryLoan(models.Model):
         _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
         return len(a_relancer)
 
-    @api.depends('member_id.card_number', 'copy_id.name')
+    @api.depends('reference', 'copy_id.name')
     def _compute_display_name(self):
         for loan in self:
-            loan.display_name = f"{loan.copy_id.name} → {loan.member_id.card_number}"
+            loan.display_name = f"{loan.reference} ({loan.copy_id.name})"
