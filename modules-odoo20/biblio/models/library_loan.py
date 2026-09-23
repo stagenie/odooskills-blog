@@ -1,6 +1,7 @@
 import logging
 
 from dateutil.relativedelta import relativedelta
+from markupsafe import Markup
 
 from odoo import api, fields, models
 from odoo.exceptions import ValidationError
@@ -12,6 +13,8 @@ _logger = logging.getLogger(__name__)
 class LibraryLoan(models.Model):
     _name = 'library.loan'
     _description = "Emprunt"
+    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _mail_post_access = 'read'
     _order = 'date_out desc, id desc'
 
     reference = fields.Char(
@@ -26,23 +29,26 @@ class LibraryLoan(models.Model):
         string="Adhérent",
         required=True,
         ondelete='cascade',
+        tracking=True,
     )
     copy_id = fields.Many2one(
         'library.copy',
         string="Exemplaire",
         required=True,
         ondelete='restrict',
+        tracking=True,
     )
     date_out = fields.Date(
         string="Emprunté le",
         required=True,
         default=fields.Date.context_today,
     )
-    duration = fields.Integer(string="Durée (jours)", default=14, required=True)
+    duration = fields.Integer(string="Durée (jours)", default=14, required=True, tracking=True)
     date_due = fields.Date(
         string="À rendre le",
         compute='_compute_date_due',
         store=True,
+        tracking=True,
     )
     date_return = fields.Date(string="Rendu le", readonly=True, copy=False)
     state = fields.Selection(
@@ -53,6 +59,7 @@ class LibraryLoan(models.Model):
         string="État",
         default='ongoing',
         required=True,
+        tracking=True,
     )
     is_late = fields.Boolean(
         string="En retard",
@@ -122,6 +129,11 @@ class LibraryLoan(models.Model):
                 'date_return': fields.Date.context_today(loan),
             })
             loan.copy_id.state = 'available'
+            loan.message_post(
+                body=Markup("Exemplaire <b>%s</b> rendu et remis en rayon.") % loan.copy_id.name,
+                message_type='comment',
+                subtype_xmlid='mail.mt_note',
+            )
 
     @api.model
     def _cron_relancer_retards(self):
@@ -133,6 +145,12 @@ class LibraryLoan(models.Model):
         for emprunt in a_relancer:
             emprunt.reminder_count += 1
             emprunt.reminder_date = aujourdhui
+            emprunt.message_post(
+                body=Markup("Relance n°%s : <b>%s jour(s)</b> de retard.")
+                % (emprunt.reminder_count, emprunt.days_late),
+                message_type='comment',
+                subtype_xmlid='mail.mt_note',
+            )
         _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
         return len(a_relancer)
 

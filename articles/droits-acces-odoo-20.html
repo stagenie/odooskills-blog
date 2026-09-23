@@ -1,0 +1,627 @@
+<!--
+Article — Les droits d'accès en Odoo 20 : ir.access
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — neuvième article
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-23
+Slug : droits-acces-odoo-20
+Meta : Deux groupes et leur privilège, une matrice ir.access.csv, permissions et restrictions, droits exigés par une délégation, et le piège de la ligne sans groupe en Odoo 20.
+Mot-clé cible : ir.access odoo 20
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~20 minutes
+Sources vérifiées le 2026-09-23 : sécurité installée sur Odoo 20.0 (PostgreSQL 16), matrice mesurée par has_access pour quatre utilisateurs, chaque opération rejouée en transaction annulée, restriction essayée sur l'admin et le superutilisateur, ligne sans groupe essayée sur une base jetable, écrans relus
+Captures : content/blog/screenshots/droits-acces-odoo-20/ (01-04, Playwright)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Les droits d'accès en Odoo 20 : ir.access</h1>
+                <p class="lead mt-3 text-white">Jusqu'ici, tout utilisateur interne pouvait tout faire dans la
+                    bibliothèque — supprimer un genre, effacer un emprunt, déclarer un exemplaire perdu. Il est temps de
+                    distinguer l'accueil du bibliothécaire. Et en Odoo 20, la sécurité ne s'écrit plus comme avant :
+                    un seul modèle, deux sortes de lignes, et une ligne qui ne veut plus dire ce qu'elle disait.</p>
+                <p class="small text-light mt-2">~20 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Déclarer</h4>
+                        <p>Deux groupes et leur privilège, puis une matrice <code>ir.access.csv</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Distinguer</h4>
+                        <p>Une <em>permission</em> (avec groupe) d'une <em>restriction</em> (sans groupe).</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Déjouer</h4>
+                        <p>La ligne sans groupe qui coupe l'accès à tous, et les droits qu'exige une délégation.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> des articles précédents, genres compris.</li>
+                        <li>Le serveur Odoo 20 joignable sur <code>http://localhost:8069</code>, base <code>biblio</code>.</li>
+                        <li>Deux utilisateurs internes de test, créés depuis <em>Paramètres → Utilisateurs</em> :
+                            « Poste d'accueil » (identifiant <code>accueil</code>) et « Responsable de la bibliothèque »
+                            (<code>bibliothecaire</code>).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 0. ÉTAT DES LIEUX ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>État des lieux : cinq lignes trop généreuses</h2>
+
+                <p>Le fichier <code>security/ir.access.csv</code> du module donne tout à tout le monde :</p>
+
+<pre class="language-markup"><code class="language-markup">id,name,model_id,group_id/id,operation,domain
+access_library_book_user,library.book utilisateur,library.book,base.group_user,crud,
+access_library_copy_user,library.copy utilisateur,library.copy,base.group_user,crud,
+access_library_member_user,library.member utilisateur,library.member,base.group_user,crud,
+access_library_loan_user,library.loan utilisateur,library.loan,base.group_user,crud,
+access_library_genre_user,library.genre utilisateur,library.genre,base.group_user,crud,</code></pre>
+
+                <p>Essai avec l'utilisateur <code>accueil</code>, qui n'a que le groupe « Utilisateur interne » (chaque
+                    opération dans une transaction annulée aussitôt) :</p>
+
+                <div class="out">supprimer un genre                    OK
+supprimer un emprunt                  OK
+déclarer un exemplaire perdu          OK
+modifier un livre                     OK
+inscrire un adhérent                  AccessError
+modifier le numéro de carte           AccessError
+radier un adhérent                    AccessError</div>
+
+                <p>Les quatre premières lignes sont le problème annoncé. Les trois dernières sont une surprise : le
+                    fichier accorde pourtant <code>crud</code> sur <code>library.member</code>. On y reviendra à l'étape
+                    5 — c'est l'un des changements les plus importants de la version 20, et il n'a rien d'évident.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. IR.ACCESS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Un seul modèle : <code>ir.access</code></h2>
+
+                <p>Chaque ligne du fichier est un enregistrement du modèle <code>ir.access</code>. Six colonnes :</p>
+
+                <table class="tmc">
+                    <tr><th>Colonne</th><th>Contenu</th></tr>
+                    <tr><td><code>id</code></td><td>l'identifiant externe de la ligne</td></tr>
+                    <tr><td><code>name</code></td><td>un libellé, affiché dans l'interface technique</td></tr>
+                    <tr><td><code>model_id</code></td><td>le nom du modèle, tel quel : <code>library.loan</code></td></tr>
+                    <tr><td><code>group_id/id</code></td><td>l'identifiant externe d'<strong>un</strong> groupe — ou rien</td></tr>
+                    <tr><td><code>operation</code></td><td>les lettres de <code>crud</code> accordées : <strong>c</strong>réer, <strong>r</strong>ead (lire), <strong>u</strong>pdate (modifier), <strong>d</strong>elete (supprimer)</td></tr>
+                    <tr><td><code>domain</code></td><td>facultatif : les enregistrements concernés</td></tr>
+                </table>
+
+                <p>La colonne <code>group_id</code> décide de la nature de la ligne :</p>
+
+                <ul>
+                    <li><strong>avec un groupe</strong>, c'est une <strong>permission</strong> : elle ouvre un accès aux
+                        membres du groupe ;</li>
+                    <li><strong>sans groupe</strong>, c'est une <strong>restriction</strong> : elle n'ouvre rien, elle
+                        limite — et elle s'applique à <strong>tout le monde</strong>.</li>
+                </ul>
+
+                <p>Pour une opération donnée, Odoo combine ainsi les lignes applicables :</p>
+
+<pre class="language-python"><code class="language-python"># odoo/orm/models.py, fin de _access_domain()
+return Domain.OR(permissions) &amp; Domain.AND(restrictions)</code></pre>
+
+                <p>Les permissions s'additionnent (OU), les restrictions se cumulent (ET). Et sans aucune permission, le
+                    OU d'une liste vide est <strong>faux</strong> : l'accès est refusé, quelles que soient les
+                    restrictions. Une restriction seule ne donne jamais rien.</p>
+
+                <p>Dans un domaine, quatre noms seulement sont disponibles : <code>user</code>, <code>time</code>,
+                    <code>company_ids</code> et <code>company_id</code>. Pas de <code>ref()</code> ; pour désigner un
+                    enregistrement par son identifiant externe, le cœur écrit
+                    <code>user.env.ref('module.xmlid').id</code>.</p>
+
+                <div class="v19-box">
+                    <h4>v19 → v20 : deux modèles fondus en un</h4>
+                    <p><code>ir.model.access</code> (les droits par modèle, <code>ir.model.access.csv</code>) et
+                        <code>ir.rule</code> (les règles par enregistrement, en XML) <strong>n'existent plus</strong>. Un
+                        droit et sa règle deviennent une seule ligne <code>groupe, opérations, domaine</code> ; une règle
+                        globale devient une restriction. Un fichier de sécurité de la 19 recopié tel quel échoue au
+                        chargement sur le modèle absent. Le cœur fournit un script de conversion
+                        (<code>odoo-bin upgrade_code --script 19.4-00-ir-access</code>) — à relire ligne à ligne,
+                        pour la raison que montre l'étape 7.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LES GROUPES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Deux groupes et leur privilège</h2>
+
+                <p>Deux profils : l'<strong>Accueil</strong> consulte le catalogue et enregistre emprunts et retours ;
+                    le <strong>Bibliothécaire</strong> gère le catalogue, les adhérents et la configuration. Crée
+                    <code>security/library_security.xml</code> :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo&gt;
+
+    &lt;record id="res_groups_privilege_library" model="res.groups.privilege"&gt;
+        &lt;field name="name"&gt;Bibliothèque&lt;/field&gt;
+        &lt;field name="sequence"&gt;50&lt;/field&gt;
+        &lt;field name="category_id" ref="base.module_category_services"/&gt;
+    &lt;/record&gt;
+
+    &lt;record id="group_library_desk" model="res.groups"&gt;
+        &lt;field name="name"&gt;Accueil&lt;/field&gt;
+        &lt;field name="comment"&gt;Consulte le catalogue, enregistre les emprunts et les retours.&lt;/field&gt;
+        &lt;field name="sequence"&gt;10&lt;/field&gt;
+        &lt;field name="privilege_id" ref="res_groups_privilege_library"/&gt;
+        &lt;field name="implied_ids" eval="[(4, ref('base.group_user'))]"/&gt;
+    &lt;/record&gt;
+
+    &lt;record id="group_library_manager" model="res.groups"&gt;
+        &lt;field name="name"&gt;Bibliothécaire&lt;/field&gt;
+        &lt;field name="comment"&gt;Gère le catalogue, les adhérents et la configuration.&lt;/field&gt;
+        &lt;field name="sequence"&gt;20&lt;/field&gt;
+        &lt;field name="privilege_id" ref="res_groups_privilege_library"/&gt;
+        &lt;field name="implied_ids" eval="[(4, ref('group_library_desk')),
+                                        (4, ref('base.group_partner_manager'))]"/&gt;
+        &lt;field name="user_ids" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/&gt;
+    &lt;/record&gt;
+
+&lt;/odoo&gt;</code></pre>
+
+                <ul>
+                    <li>le <strong>privilège</strong> (<code>res.groups.privilege</code>) regroupe les deux groupes sous
+                        un seul libellé dans la fiche utilisateur, et le range dans la catégorie « Services » ;</li>
+                    <li><code>implied_ids</code> fait des groupes une <strong>échelle</strong> : le Bibliothécaire est
+                        aussi Accueil, l'Accueil est aussi utilisateur interne. Chaque ligne d'accès n'a donc à décrire
+                        que ce que le niveau <em>ajoute</em> ;</li>
+                    <li>le second groupe implique aussi <code>base.group_partner_manager</code> (« Contact / Création ») :
+                        l'étape 5 dira pourquoi il est indispensable ;</li>
+                    <li><code>user_ids</code> place l'administrateur dans le groupe le plus haut, pour qu'il ne perde pas
+                        l'accès au module à l'installation.</li>
+                </ul>
+
+                <p>Dans le manifeste, le fichier des groupes passe <strong>avant</strong> le CSV, qui y fait
+                    référence :</p>
+
+<pre class="language-python"><code class="language-python">    'version': '20.0.1.7.0',
+    'data': [
+        'security/library_security.xml',
+        'security/ir.access.csv',
+        ...
+    ],</code></pre>
+
+                <p>Après mise à jour, la fiche d'un utilisateur propose le privilège dans l'onglet « Droits
+                    d'accès » :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fiche de l'utilisateur Poste d'accueil, onglet Droits d'accès : sous Services, le champ Bibliothèque vaut Accueil et sa liste propose No, Accueil, Bibliothécaire"/>
+                    <figcaption>Un seul champ par privilège : on choisit un niveau, l'échelle des groupes fait le reste.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LA MATRICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La matrice</h2>
+
+                <p>Le fichier <code>security/ir.access.csv</code> est entièrement réécrit :</p>
+
+<pre class="language-markup"><code class="language-markup">id,name,model_id,group_id/id,operation,domain
+access_library_book_desk,Livres : consultation,library.book,group_library_desk,r,
+access_library_book_manager,Livres : gestion,library.book,group_library_manager,crud,
+access_library_genre_desk,Genres : consultation,library.genre,group_library_desk,r,
+access_library_genre_manager,Genres : gestion,library.genre,group_library_manager,crud,
+access_library_copy_desk,Exemplaires : consultation et état,library.copy,group_library_desk,ru,
+access_library_copy_manager,Exemplaires : gestion,library.copy,group_library_manager,crud,
+access_library_member_desk,Adhérents : consultation,library.member,group_library_desk,r,
+access_library_member_manager,Adhérents : gestion,library.member,group_library_manager,crud,
+access_library_loan_desk,Emprunts : saisie,library.loan,group_library_desk,cru,
+access_library_loan_manager,Emprunts : gestion,library.loan,group_library_manager,crud,
+restrict_library_loan_closed,Emprunts : un emprunt rendu est figé,library.loan,,ud,"[('state', '=', 'ongoing')]"</code></pre>
+
+                <p>Les cinq anciennes lignes <code>access_library_*_user</code> ont disparu du fichier : à la mise à
+                    jour, Odoo supprime les enregistrements dont l'identifiant externe n'est plus déclaré. Contrôle
+                    après <code>-u biblio</code> : il n'en reste aucune en base.</p>
+
+                <p>Ce que chacun peut désormais faire, mesuré par <code>has_access()</code> pour quatre utilisateurs :</p>
+
+                <div class="out">                livre  genre  exemplaire  adhérent  emprunt
+interne         -      -      -           -         -
+accueil         r      r      ru          r         cru
+bibliothecaire  crud   crud   crud        crud      crud
+admin           crud   crud   crud        crud      crud</div>
+
+                <p>L'utilisateur interne sans groupe de la bibliothèque n'a plus rien. S'il appelle quand même le
+                    modèle, le message dit qui a le droit :</p>
+
+                <div class="out">Vous n'êtes pas autorisé à accéder aux enregistrements 'Livre' (library.book).
+Cette opération est autorisée pour les groupes suivants :
+	- Bibliothèque / Accueil
+	- Bibliothèque / Bibliothécaire</div>
+
+                <p>Les lignes d'un modèle se relisent depuis <em>Paramètres → Technique → Modèles</em> (mode
+                    développeur), onglet des droits d'accès. Odoo y colore les restrictions :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Onglet des droits d'accès du modèle library.loan : deux lignes Permission (Accueil : créer, lire, mettre à jour ; Bibliothécaire : tout) et une ligne Restriction en orange, sans groupe, sur mettre à jour et supprimer, avec le domaine state = ongoing"/>
+                    <figcaption>Deux permissions, une restriction : la colonne « Kind » et la couleur les distinguent.</figcaption>
+                </figure>
+
+                <h3>Pourquoi <code>ru</code> sur les exemplaires ?</h3>
+
+                <p>L'accueil ne gère pas le stock. Mais créer un emprunt passe l'exemplaire à « Emprunté », et le rendre
+                    le repasse à « Disponible » : ces écritures se font <strong>avec les droits de l'utilisateur qui
+                    clique</strong>. Essai avec la ligne réduite à <code>r</code> :</p>
+
+                <div class="out">accueil marque un emprunt rendu → AccessError
+Vous n'êtes pas autorisé à modifier les enregistrements 'Exemplaire' (library.copy).
+Cette opération est autorisée pour les groupes suivants : - Bibliothèque / Bibliothécaire</div>
+
+                <p>Et avec <code>ru</code> :</p>
+
+                <div class="out">accueil crée un emprunt    → EMP/2026/0005, exemplaire 'borrowed'
+accueil marque rendu       → emprunt 'returned', exemplaire 'available'</div>
+
+                <p>Une matrice se construit en suivant les <strong>actions</strong> d'un profil, pas seulement les
+                    écrans qu'il ouvre. La tentation de glisser un <code>sudo()</code> dans <code>action_return</code>
+                    serait une erreur : ce serait donner à tout utilisateur qui peut cliquer le droit d'écrire sur les
+                    exemplaires, sans que la matrice le dise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. MENUS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que l'écran montre</h2>
+
+                <p>Le menu racine est réservé à l'Accueil (donc aussi au Bibliothécaire), la configuration au
+                    Bibliothécaire :</p>
+
+<pre class="language-markup"><code class="language-markup">&lt;menuitem id="library_menu_root" name="Bibliothèque" sequence="10"
+          groups="group_library_desk"/&gt;
+...
+&lt;menuitem id="library_menu_config" name="Configuration" parent="library_menu_root" sequence="90"
+          groups="group_library_manager"/&gt;</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Deux barres de menu superposées : en haut l'accueil, sans menu Configuration ni bouton Nouveau sur la liste des livres ; en bas le bibliothécaire, avec Configuration et le bouton Nouveau"/>
+                    <figcaption>En haut l'accueil, en bas le bibliothécaire. Le bouton « Nouveau » a disparu tout seul.</figcaption>
+                </figure>
+
+                <p>Le menu Configuration est masqué par l'attribut <code>groups</code>. Le bouton « Nouveau » de la liste
+                    des livres, lui, a disparu <strong>sans une ligne de vue</strong> : le client web lit les droits du
+                    modèle et n'affiche pas ce que l'utilisateur ne peut pas faire.</p>
+
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading">Masquer n'est pas protéger</h4>
+                    <p class="mb-0">L'attribut <code>groups</code> d'un menu ou d'un bouton ne règle que
+                        l'<em>affichage</em>. Un utilisateur qui appelle le modèle par une autre voie — une URL
+                        tapée à la main, l'API — n'est arrêté que par <code>ir.access</code>. La matrice est la sécurité ;
+                        les <code>groups=</code> sont du confort.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. DÉLÉGATION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. L'adhérent et les droits du partenaire</h2>
+
+                <p>Revenons à la surprise du début. Dans l'article sur l'héritage, l'adhérent est devenu un partenaire
+                    par délégation (<code>_inherits = {'res.partner': 'partner_id'}</code>). Créer un adhérent crée donc
+                    un <code>res.partner</code>. Or un utilisateur interne n'a que la lecture sur les partenaires — plus,
+                    en écriture, sa propre fiche. Et en Odoo 20, le modèle délégué ne se contente pas de ses propres
+                    lignes d'accès : il hérite du <strong>domaine d'accès complet du parent</strong>, sous forme de
+                    restriction. Le domaine d'écriture calculé pour l'utilisateur interne le montre :</p>
+
+                <div class="out">[('partner_id', 'any', ['&amp;', ('id', '=', 20), '|', '|', ('partner_share', '=', False),
+                   ('company_id', 'parent_of', [1]), ('company_id', '=', False)])]</div>
+
+                <p>Traduction : « les adhérents dont le partenaire est… le sien ». Autant dire aucun. D'où les
+                    trois refus, alors que le fichier accordait <code>crud</code> sur <code>library.member</code> — y
+                    compris pour modifier <code>card_number</code>, un champ qui appartient pourtant à l'adhérent seul.
+                    Le message de création le dit d'ailleurs :</p>
+
+                <div class="out">Vous n'êtes pas autorisé à créer des enregistrements 'Adhérent' (library.member).
+Cette opération est autorisée pour les groupes suivants :
+	- Contact / Création
+	- Droits d'accès
+	- Rôle / Administrateur</div>
+
+                <p>C'est la raison de <code>base.group_partner_manager</code> dans les groupes impliqués du
+                    Bibliothécaire. Avec lui :</p>
+
+                <div class="out">bibliothécaire crée un adhérent        → Service Documentation (CARTE-099)
+bibliothécaire modifie un numéro de carte → OK</div>
+
+                <div class="v19-box">
+                    <h4>v19 → v20 : le parent délégué compte en entier</h4>
+                    <p>En 19, seules les <em>règles</em> du modèle parent remontaient sur l'enfant. En 20, c'est tout
+                        son domaine d'accès, permissions comprises : un droit sur l'enfant ne vaut que si l'utilisateur
+                        a le même droit sur le parent. Tout module qui délègue à <code>res.partner</code>,
+                        <code>product.template</code> ou <code>hr.version</code> est concerné. L'échappatoire existe —
+                        <code>_check_inherits_access = False</code> sur le modèle enfant, comme le fait
+                        <code>mail.mail</code> — mais elle permet alors de modifier le partenaire <em>à travers</em>
+                        l'adhérent sans aucun droit sur les contacts. Ce n'est pas le choix fait ici.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. RESTRICTION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Une restriction : l'emprunt rendu est figé</h2>
+
+                <p>La dernière ligne de la matrice n'a pas de groupe :</p>
+
+<pre class="language-markup"><code class="language-markup">restrict_library_loan_closed,Emprunts : un emprunt rendu est figé,library.loan,,ud,"[('state', '=', 'ongoing')]"</code></pre>
+
+                <p>Pour la modification et la suppression (<code>ud</code>), seuls les emprunts en cours restent
+                    atteignables. C'est une règle métier — l'historique d'un prêt clos ne se retouche pas — et elle vaut
+                    pour <strong>tout le monde</strong>. Le domaine d'écriture de l'accueil est devenu
+                    <code>[('state', 'in', ['ongoing'])]</code>. Essais :</p>
+
+                <div class="out">accueil        modifie un emprunt rendu  → AccessError
+bibliothécaire modifie un emprunt rendu  → AccessError
+admin          modifie un emprunt rendu  → AccessError
+admin          supprime un emprunt rendu → AccessError
+superutilisateur (console)               → OK</div>
+
+                <p>Seul le superutilisateur y échappe : c'est l'utilisateur technique (identifiant 1) de la console
+                    <code>odoo-bin shell</code> et des actions planifiées qui tournent sous <code>base.user_root</code>,
+                    comme la relance de l'article sur les retards — pas le compte <code>admin</code>. Rendre un
+                    emprunt, lui, fonctionne toujours : le contrôle porte sur l'état <em>avant</em> l'écriture, et
+                    l'emprunt était en cours.</p>
+
+                <p>À l'écran, le formulaire reste modifiable — le client web ne connaît pas les domaines — et c'est à
+                    l'enregistrement que le refus arrive :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Boîte Erreur d'accès : Désolé, Poste d'accueil n'a pas d'accès écrire à Emprunt (library.loan)"/>
+                    <figcaption>L'accueil a changé la durée d'un emprunt rendu, puis enregistré.</figcaption>
+                </figure>
+
+                <p>Le message ne cite pas la restriction en cause. Un nom de ligne explicite
+                    (« un emprunt rendu est figé ») est donc précieux le jour où il faudra expliquer ce refus.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. PIÈGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le piège : la ligne « pour tout le monde »</h2>
+
+                <p>En 19, une ligne de <code>ir.model.access.csv</code> sans groupe voulait dire « tous les
+                    utilisateurs ». Le réflexe est tenace. Sur une base jetable, les lignes des genres sont remplacées
+                    par celle qu'on aurait écrite pour « tout le monde peut lire les genres » :</p>
+
+<pre class="language-markup"><code class="language-markup">access_library_genre_all,Genres : lecture pour tous,library.genre,,r,</code></pre>
+
+                <div class="out">-u biblio : code de sortie 0, aucun WARNING, aucune ERROR
+
+admin has_access('read') sur library.genre : False
+domaine calculé : [(0, '=', 1)]
+admin cherche les genres → AccessError | You are not allowed to access 'Genre' (library.genre) records.</div>
+
+                <p>Sans groupe, la ligne est une <strong>restriction</strong> ; il ne reste aucune permission sur le
+                    modèle ; le OU vide est faux. Plus personne ne lit les genres — administrateur compris. La suite est
+                    pire, parce qu'elle est muette. Sur le formulaire d'un livre qui a deux genres :</p>
+
+                <div class="out">genres du livre vus par l'admin : []                ← aucune erreur, les étiquettes ont disparu
+enregistrer les genres du livre  → AccessError | Failed to write field library.book.genre_ids</div>
+
+                <p>Le livre affiche un champ Genres vide, sans message ; les liens sont intacts en base, mais toute
+                    tentative de les modifier échoue. C'est le genre de panne qu'on met une journée à relier à une ligne
+                    de CSV.</p>
+
+                <div class="pitfall-box">
+                    <h4>« Tout le monde » s'écrit <code>base.group_everyone</code></h4>
+                    <p>La version 20 introduit un groupe « Role / Everyone », impliqué par les utilisateurs internes,
+                        portail et publics. C'est lui qu'on met dans la colonne pour dire « tous » :</p>
+                    <div class="out">access_library_genre_all,Genres : lecture pour tous,library.genre,base.group_everyone,r,
+
+admin lit les genres → ['Front-end', 'Python']</div>
+                    <p class="mt-2 mb-0">Règle simple à garder en tête en relisant un fichier de sécurité : une colonne
+                        de groupe vide n'ouvre <strong>jamais</strong> rien. Si l'intention était d'ouvrir, il manque un
+                        groupe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <tr><th>Besoin</th><th>Écrire</th></tr>
+                    <tr><td>Ouvrir un accès à un groupe</td><td>une ligne avec <code>group_id/id</code> (permission)</td></tr>
+                    <tr><td>Limiter un accès pour tous</td><td>une ligne sans groupe, avec domaine (restriction)</td></tr>
+                    <tr><td>Ouvrir un accès à tous</td><td><code>base.group_everyone</code> — jamais une colonne vide</td></tr>
+                    <tr><td>Limiter aux enregistrements de l'utilisateur</td><td>un domaine, ex. <code>[('create_uid', '=', user.id)]</code></td></tr>
+                    <tr><td>Échelle de profils</td><td><code>implied_ids</code> + un <code>res.groups.privilege</code></td></tr>
+                    <tr><td>Modèle délégué (<code>_inherits</code>)</td><td>le même droit sur le parent, ou <code>_check_inherits_access = False</code> en connaissance de cause</td></tr>
+                    <tr><td>Masquer un menu</td><td><code>groups=</code> — affichage seulement</td></tr>
+                    <tr><td>Tester un droit en Python</td><td><code>env['m'].with_user(u).has_access('write')</code>, <code>_access_domain('write')</code></td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>ir.model.access</code> et <code>ir.rule</code> sont fondus dans <code>ir.access</code>, un fichier <code>security/ir.access.csv</code>.</li>
+                    <li>Avec groupe : permission, les permissions s'additionnent. Sans groupe : restriction, les restrictions se cumulent et valent pour tous.</li>
+                    <li>Sans aucune permission, l'accès est refusé : une ligne sans groupe n'ouvre jamais rien.</li>
+                    <li>La matrice suit les actions du profil : rendre un emprunt écrit l'exemplaire, l'accueil a besoin de <code>u</code> dessus.</li>
+                    <li>Un modèle délégué exige le même droit sur son parent : sans « Contact / Création », pas d'adhérent.</li>
+                    <li>Une restriction s'applique à l'admin ; seul le superutilisateur technique y échappe.</li>
+                    <li><code>groups=</code> masque, <code>ir.access</code> protège.</li>
+                </ul>
+                <p class="mb-0">L'emprunt est maintenant protégé ; il n'a pas encore de mémoire. Qui l'a créé, quand
+                    a-t-il changé d'état, qui a relancé l'adhérent ? L'article suivant lui donne un chatter.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Sécurité écrite, installée et essayée le 23/09/2026 sur Odoo 20.0, base
+                    PostgreSQL 16, avec trois utilisateurs de test et chaque opération rejouée dans une transaction
+                    annulée ; ligne sans groupe essayée sur une base jetable ; écrans relus :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_access.py" target="_blank" rel="noopener"><code>base/models/ir_access.py</code></a> : le modèle, ses opérations, le contexte d'évaluation des domaines</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>_access_domain</code>, la combinaison permissions/restrictions et la remontée du parent délégué</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/security/ir.access.csv" target="_blank" rel="noopener"><code>base/security/ir.access.csv</code></a> : les droits de l'utilisateur interne sur <code>res.partner</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/security/base_groups.xml" target="_blank" rel="noopener"><code>base/security/base_groups.xml</code></a> : <code>base.group_everyone</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/heritage-modeles-odoo-20-181">Hériter d'un modèle Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La délégation de l'adhérent au partenaire, dont les droits ont tant compté ici.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/methodes-boutons-odoo-20-182">Méthodes, boutons et contraintes</a></h5>
+                            <p class="small text-muted mb-0"><code>action_return</code> et l'écriture sur l'exemplaire qui a imposé le <code>ru</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">Tester un droit avec <code>with_user()</code>, sans cliquer.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
