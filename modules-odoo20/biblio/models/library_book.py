@@ -13,6 +13,13 @@ class LibraryBook(models.Model):
     page_count = fields.Integer(string="Nombre de pages")
     summary = fields.Text(string="Résumé")
     active = fields.Boolean(string="Actif", default=True)
+    genre_ids = fields.Many2many(
+        'library.genre',
+        'library_book_genre_rel',
+        'book_id',
+        'genre_id',
+        string="Genres",
+    )
 
     copy_ids = fields.One2many(
         'library.copy',
