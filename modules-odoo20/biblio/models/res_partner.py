@@ -25,7 +25,7 @@ class ResPartner(models.Model):
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
-            'name': f"Emprunts de {self.name}",
+            'name': self.env._("Emprunts de %(nom)s", nom=self.name),
             'res_model': 'library.loan',
             'view_mode': 'list,form',
             'domain': [('partner_id', '=', self.id)],

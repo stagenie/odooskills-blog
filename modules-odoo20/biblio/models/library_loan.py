@@ -125,9 +125,10 @@ class LibraryLoan(models.Model):
                 ('id', '!=', loan.id),
             ])
             if autres:
-                raise ValidationError(
-                    f"L'exemplaire {loan.copy_id.name} est déjà emprunté."
-                )
+                raise ValidationError(self.env._(
+                    "L'exemplaire %(exemplaire)s est déjà emprunté.",
+                    exemplaire=loan.copy_id.name,
+                ))
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -143,7 +144,7 @@ class LibraryLoan(models.Model):
     def action_return(self):
         for loan in self:
             if loan.state == 'returned':
-                raise ValidationError("Cet emprunt est déjà clos.")
+                raise ValidationError(self.env._("Cet emprunt est déjà clos."))
             loan.write({
                 'state': 'returned',
                 'date_return': fields.Date.context_today(loan),
