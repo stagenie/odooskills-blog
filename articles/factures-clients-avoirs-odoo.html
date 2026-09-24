@@ -1,0 +1,424 @@
+<!--
+Article — Factures clients et avoirs dans Odoo 20
+Série « Facturation avec Odoo 20 » (blog Fonctionnel) — étape 1
+Date : 2026-09-24
+Slug : factures-clients-avoirs-odoo
+Meta : Créer, confirmer et envoyer une facture client dans Odoo 20 Community, puis corriger par un avoir partiel ou total lettré automatiquement.
+Mot-clé cible : facture client avoir odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : debutant, comptabilite, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration, Ventes + Facturation).
+  account/views/account_move_views.xml:766-834 (boutons Confirmer, Envoyer, Imprimer, Payer, Aperçu, Avoir,
+  Remettre en brouillon) ; account/models/account_move.py:641-650 + 2558-2564 (document_tax_mode, bascule Hors
+  taxes / Taxes Incl., défaut = réglage société account_price_include ; absent de la 19.0) ; :2050-2055 (Remettre
+  en brouillon tant que la pièce n'a pas de hachage) ; :6270-6345 (à la confirmation d'un avoir issu d'une facture
+  comptabilisée, lettrage automatique des deux pièces) ; account/wizard/account_move_reversal_view.xml:15-21
+  (Motif, Journal, Date d'extourne ; Extourner / Extourner et créer une facture) ; account/wizard/
+  account_move_reversal.py:133,156-163 (Extourner et créer une facture = avoir total confirmé + copie brouillon).
+  account/i18n/fr.po : corps du modèle de courriel de facture non traduit ; account_peppol/__manifest__.py (auto_install,
+  pays du réseau dont fr) : bandeau Peppol parce que la base compte FR Company.
+  Parcours joué : FAC/2026/00013 Wood Corner (position fiscale Domestic, 15 %), 4 Installation sur site 90 $ +
+  2 Chaise de conférence (Acier) 33 $ = 426 $ HT, 489,90 $ TTC, 30 jours ; avoir RFAC/2026/00005 « Chaise livrée
+  abîmée » ramené à 1 chaise = 37,95 $ → facture PARTIEL, montant dû 451,95 $, avoir PAYÉ. Exercice vérifié par
+  shell (rollback) sur FAC/2026/00011 : facture Extourné, avoir total payé, nouveau brouillon identique.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Factures clients et avoirs dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une facture se prépare en brouillon, se confirme, s'envoie ; une
+                    erreur ou un geste commercial se corrige par un avoir, jamais en retouchant la facture
+                    envoyée. Cet article ouvre la série Facturation sur ce cycle, dans l'application Facturation
+                    d'Odoo 20 Community.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau débutant · série <strong>Facturation avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026. Factures, avoirs, envoi et impression sont inclus dans l'application Facturation de
+                        la Community, installée avec Ventes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>L'application <strong>Facturation</strong> s'installe avec Ventes : la base de démonstration
+                    utilisée dans la série
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Gestion des ventes avec
+                    Odoo 20</a> l'a donc déjà. Les factures issues d'une commande y arrivent ; celles de cet
+                    article sont saisies directement, sans commande, comme pour une prestation ponctuelle.</p>
+                <p>Le menu <strong>Clients › Factures</strong> ouvre la liste. Le filtre par défaut « Factures
+                    ou Réceptions » masque les avoirs, qui ont leur propre menu, <strong>Clients ›
+                    Avoirs</strong>. La colonne Échéance passe en rouge quand la date est dépassée ; la colonne
+                    Statut distingue une facture Comptabilisé (émise, non réglée) d'une facture Payé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des factures clients d'Odoo 20 : filtre Factures ou Réceptions, colonnes Numéro, Client, Date de facturation, Échéance, Hors taxes, Total, Montant dû et Statut, échéances dépassées en rouge, statuts Payé et Comptabilisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste des factures clients de la démonstration.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Une démonstration en dollars</h4>
+                    <p>La société de démonstration, My Company (San Francisco), a un plan comptable générique
+                        en dollars, avec une taxe de 15 %. Les montants de cet article sont donc en $ ; le
+                        fonctionnement est le même avec un plan comptable français.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>saisir une facture client en brouillon et choisir l'affichage hors taxes ou taxes
+                        comprises ;</li>
+                    <li>la confirmer, puis l'envoyer ou l'imprimer ;</li>
+                    <li>émettre un avoir partiel et lire son effet sur la facture ;</li>
+                    <li>choisir entre Extourner, Extourner et créer une facture, et Remettre en brouillon.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Saisir la facture en brouillon</h2>
+                <p>Dans la liste, cliquez sur <strong>Nouveau</strong>. La facture s'ouvre au statut
+                    Brouillon, sans numéro. Renseignez :</p>
+                <ul>
+                    <li><strong>Client</strong> : ici Wood Corner. Son adresse s'affiche, et sa position
+                        fiscale choisit les taxes des lignes ;</li>
+                    <li><strong>Échéance</strong> : une date, <em>ou</em> des conditions de paiement (ici
+                        30 jours), qui calculent la date ; une fois les conditions choisies, le champ s'affiche
+                        sous le libellé Conditions de paiement ;</li>
+                    <li>les lignes, par <strong>Ajouter une ligne</strong> : 4 « Installation sur site » à
+                        90 $ et 2 « Chaise de conférence (Acier) » à 33 $.</li>
+                </ul>
+                <p>La date de facturation reste vide : Odoo pose la date du jour à la confirmation. Le pied de
+                    facture calcule 426 $ hors taxes, 63,90 $ de taxe, 489,90 $ au total.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Facture client brouillon d'Odoo 20 pour Wood Corner : conditions de paiement 30 jours, bascule Hors taxes et Taxes Incl. au-dessus des lignes, 4 Installation sur site à 90 dollars et 2 Chaise de conférence Acier à 33 dollars, taxe 15 %, total 489,90 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture en brouillon, avec la bascule Hors taxes / Taxes Incl.</figcaption>
+                </figure>
+                <div class="edition-box">
+                    <h4>Nouveau dans Odoo 20 : hors taxes ou taxes comprises, facture par facture</h4>
+                    <p>Au-dessus des lignes, la bascule <strong>Hors taxes / Taxes Incl.</strong> choisit si les
+                        prix se saisissent hors taxes ou toutes taxes comprises, pour cette facture seulement.
+                        Sa valeur par défaut vient du réglage de la société ; elle se fige à la confirmation.
+                        Le champ n'existe pas en Odoo 19.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Confirmer, puis envoyer ou imprimer</h2>
+                <p>Cliquez sur <strong>Confirmer</strong>. La facture passe au statut Comptabilisé et reçoit
+                    son numéro dans la séquence du journal Ventes : FAC/2026/00013. L'écriture comptable est
+                    passée ; le bouton <strong>Écritures comptables</strong> la montre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Facture FAC/2026/00013 d'Odoo 20 au statut Comptabilisé : boutons Envoyer, Imprimer, Payer, Aperçu, Avoir et Remettre en brouillon, client Wood Corner, total 489,90 dollars, montant dû 489,90 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture confirmée : numérotée et comptabilisée.</figcaption>
+                </figure>
+                <p>La barre d'actions change :</p>
+                <ul>
+                    <li><strong>Envoyer</strong> ouvre la fenêtre d'envoi par courriel, PDF joint ;</li>
+                    <li><strong>Imprimer</strong> produit le PDF de la facture ;</li>
+                    <li><strong>Aperçu</strong> montre la facture telle que le client la voit sur son portail ;</li>
+                    <li><strong>Payer</strong> enregistre un règlement, sujet du troisième article de la série ;</li>
+                    <li><strong>Avoir</strong> et <strong>Remettre en brouillon</strong> servent à corriger.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Envoyer d'Odoo 20 pour la facture FAC/2026/00013 : bandeau proposant l'envoi électronique via Peppol, case par e-mail cochée, destinataire Wood Corner, sujet en français, corps du message en anglais, pièce jointe FAC_2026_00013.pdf" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fenêtre d'envoi : courriel, PDF joint, et la proposition Peppol.</figcaption>
+                </figure>
+                <p>Le bandeau bleu propose l'envoi électronique par le réseau <strong>Peppol</strong> : le
+                    module correspondant s'installe d'office dès que la base compte une société d'un pays du
+                    réseau, dont la France. La case <strong>par e-mail</strong> reste cochée : la facture part
+                    en pièce jointe du courriel.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Corriger par un avoir partiel</h2>
+                <p>Le client signale une chaise livrée abîmée. La facture est envoyée : on ne la retouche pas,
+                    on émet un avoir d'une chaise. Sur la facture, cliquez sur <strong>Avoir</strong>. La
+                    fenêtre demande un <strong>Motif</strong> (affiché sur l'avoir) et une <strong>Date
+                    d'extourne</strong>, puis propose deux boutons.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Avoir d'Odoo 20 : motif Chaise livrée abîmée, date d'extourne 24 septembre, boutons Extourner, Extourner et créer une facture et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fenêtre Avoir : motif, date, et deux façons d'extourner.</figcaption>
+                </figure>
+                <p><strong>Extourner</strong> crée un avoir <em>brouillon</em> qui reprend toutes les lignes
+                    de la facture. Étant brouillon, il se modifie : supprimez la ligne d'installation et ramenez
+                    la chaise à 1. L'avoir vaut alors 33 $ hors taxes, 37,95 $ taxes comprises. Sous le total,
+                    Odoo liste la facture d'origine parmi les « débits en circulation », avec un bouton
+                    Ajouter : inutile d'y toucher, le lettrage se fait à la confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Avoir client brouillon d'Odoo 20 pour Wood Corner réduit à une ligne : 1 Chaise de conférence Acier à 33 dollars, taxe 15 %, total 37,95 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir brouillon, ramené à la seule chaise abîmée.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Confirmer</strong>. L'avoir reçoit son numéro dans la séquence des
+                    avoirs, RFAC/2026/00005, et son titre rappelle la facture d'origine et le motif. Odoo le
+                    lettre aussitôt avec la facture : le bandeau <strong>PAYÉ</strong> signifie que l'avoir est
+                    entièrement imputé. Le bouton qui ramène à la facture s'intitule « Invoice » : il n'est pas
+                    traduit en Odoo 20.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Avoir RFAC/2026/00005 d'Odoo 20 confirmé, titre Extourne de FAC/2026/00013, Chaise livrée abîmée, bandeau PAYÉ, total 37,95 dollars, ligne Payé le 24/09/2026, montant dû 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir confirmé, déjà imputé sur la facture.</figcaption>
+                </figure>
+                <p>Sur la facture, le bouton <strong>Avoirs</strong> apparaît, le bandeau passe à
+                    <strong>PARTIEL</strong>, et le pied indique « Extourné le 24/09/2026 : 37,95 $ ». Le
+                    montant dû tombe à 451,95 $ : c'est ce que le client doit encore.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Facture FAC/2026/00013 d'Odoo 20 après l'avoir : bouton Avoirs 1, bandeau PARTIEL, ligne Extourné le 24/09/2026 pour 37,95 dollars, montant dû 451,95 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture après l'avoir : partiellement réglée, 451,95 $ restent dus.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Choisir le bon geste de correction</h2>
+                <table class="tmc">
+                    <thead><tr><th>Situation</th><th>Geste</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Geste commercial, retour partiel</td><td>Avoir › <strong>Extourner</strong></td>
+                            <td>Avoir brouillon modifiable, lettré avec la facture à sa confirmation.</td></tr>
+                        <tr><td>Facture à refaire (mauvaise quantité, mauvais prix)</td><td>Avoir ›
+                            <strong>Extourner et créer une facture</strong></td>
+                            <td>Avoir total confirmé et lettré aussitôt ; nouvelle facture brouillon, copie de
+                            l'ancienne, à corriger puis confirmer.</td></tr>
+                        <tr><td>Erreur vue avant tout envoi</td><td><strong>Remettre en brouillon</strong></td>
+                            <td>La facture redevient modifiable et garde son numéro.</td></tr>
+                    </tbody>
+                </table>
+                <p>Remettre en brouillon reste possible tant que la pièce n'est pas sécurisée par hachage. Une
+                    facture déjà reçue par le client se corrige par un avoir : le client garde un document qui
+                    correspond à sa comptabilité, et la trace de la correction reste visible.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Saisie, confirmation, envoi, impression, portail client,
+                        avoirs partiels ou totaux et lettrage automatique de l'avoir sont inclus dans Odoo 20
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La position fiscale choisit la taxe</h4>
+                    <p>Un client étranger reçoit sa position fiscale et ses taxes : dans la démonstration,
+                        Gemini Furniture (Saint-Marin) passe en « Foreign Trade » et ses lignes à 0 %. Vérifiez
+                        la colonne Taxes avant de confirmer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un courriel en anglais pour un client français</h4>
+                    <p>Le sujet du courriel d'envoi est traduit, pas son corps : il reste en anglais même pour
+                        un client en français. Relisez-le avant d'envoyer, ou traduisez une fois pour toutes le
+                        modèle de courriel des factures.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Supprimer une ligne de l'avoir, pas de la facture</h4>
+                    <p>Un avoir créé par Extourner reprend <em>toutes</em> les lignes. Le confirmer sans le
+                        retoucher annule la facture entière ; ajustez-le d'abord.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> refaire une facture erronée.</p>
+                    <p><strong>Indication :</strong> sur une facture client au statut Comptabilisé, sans paiement
+                        ni avoir (par exemple FAC/2026/00011 si vous avez suivi la série Ventes), cliquez
+                        sur Avoir, saisissez le motif « Erreur de quantité », puis <strong>Extourner et créer une
+                        facture</strong>.</p>
+                    <p><strong>Critère de réussite :</strong> Odoo ouvre une nouvelle facture brouillon, sans
+                        numéro, avec les mêmes lignes. La facture d'origine porte le statut de paiement
+                        <strong>Extourné</strong> et un montant dû nul ; un avoir du même montant, confirmé,
+                        porte le bandeau PAYÉ.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une facture naît en brouillon, sans numéro ; Confirmer la numérote et la comptabilise.</li>
+                    <li>Odoo 20 permet de saisir une facture hors taxes ou taxes comprises, au choix, facture
+                        par facture.</li>
+                    <li>Un avoir créé depuis la facture se lettre avec elle à sa confirmation : le montant dû
+                        baisse d'autant.</li>
+                    <li>Extourner pour un avoir partiel, Extourner et créer une facture pour refaire, Remettre en
+                        brouillon seulement avant envoi.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/crm-devis-odoo-212">
+                            <div class="small text-muted mb-1">&larr; Série précédente</div>
+                            <div class="fw-bold">Du CRM au devis dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Factures fournisseurs (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">La facture créée depuis une commande de vente.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles : les données de départ</a></h5>
+                            <p class="small text-muted mb-0">Conditions de paiement et fiches clients.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Où se place Facturation parmi les applications.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
