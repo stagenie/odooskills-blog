@@ -1,0 +1,408 @@
+<!--
+Article — Du devis à la commande confirmée dans Odoo 20
+Série « Gestion des ventes avec Odoo 20 » (blog Fonctionnel) — étape 3
+Date : 2026-09-24
+Slug : devis-commande-ventes-odoo
+Meta : Créer un devis dans Odoo 20 Community, l'envoyer, le prévisualiser côté client, le confirmer en commande ou l'annuler.
+Mot-clé cible : devis odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration, réglages V1, données V2).
+  Parcours fait à l'écran (Playwright) : devis S00021 pour « Client particulier » (Installation sur site + 2 Chaise de bureau
+  à 10 %), envoi, aperçu portail, confirmation ; annulation du devis de démonstration S00019 ; fenêtre d'envoi ouverte puis
+  ignorée sur S00003. Premier « Envoyer » sur une base sans mise en page enregistrée : assistant « Configurer l'agencement ».
+  Source : sale/models/sale_order.py:85 (statuts), :551 (validité), :609 (position fiscale), :627 (conditions de paiement),
+  :1516 (remise en devis), :1619 (confirmation), :1791 (annulation) ;
+  account/data/template/account.fiscal.position-generic_coa.csv:3 (Foreign Trade),
+  account/data/template/account.tax-generic_coa.csv:2 (15 %), :10 (0% Exports) ; sale_order.py:1487 (suppression seulement en Devis ou Annulé), :1806 (Aperçu dans un nouvel onglet).
+Captures : content/blog/screenshots/devis-commande-ventes-odoo/ (01-07, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Du devis à la commande confirmée dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un devis passe par trois statuts avant de devenir une commande à
+                    livrer et à facturer. Chaque étape a son bouton, et chaque bouton laisse une trace dans
+                    l'historique du document.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau débutant · série <strong>Gestion des ventes avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre 2026.
+                        L'application Ventes existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Dans Odoo, le devis et la commande sont un seul et même document : la commande est un devis
+                    accepté. Le document change de statut, pas de nature, et garde son numéro de bout en bout.</p>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Statut</th><th>Signification</th></tr></thead>
+                    <tbody>
+                        <tr><td>Devis</td><td>Proposition en préparation, modifiable librement.</td></tr>
+                        <tr><td>Envoyé</td><td>Proposition transmise au client, en attente de sa réponse.</td></tr>
+                        <tr><td>Commande client</td><td>Proposition acceptée : elle peut être livrée et facturée.</td></tr>
+                        <tr><td>Annulé</td><td>Proposition abandonnée ; elle reste consultable.</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>Cet article part de la base des articles précédents : réglages de
+                    <a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler
+                    l'application Ventes</a>, client « Client particulier » et article « Installation sur site »
+                    créés dans <a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et
+                    articles : les données de départ</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un devis, y ajouter des lignes et une remise ;</li>
+                    <li>l'envoyer au client par e-mail ;</li>
+                    <li>voir le devis tel que le client le reçoit en ligne ;</li>
+                    <li>confirmer le devis en commande ;</li>
+                    <li>annuler un devis et le remettre en préparation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer le devis</h2>
+                <p>Ouvrez <strong>Ventes › Commandes › Devis</strong> et cliquez sur <strong>Nouveau</strong>. Le
+                    bouton ouvre un petit menu : <strong>Nouveau devis</strong> part d'un devis vide ; les entrées
+                    suivantes sont des modèles de devis, comme « Office Furniture » fourni par la démonstration.
+                    Choisissez <strong>Nouveau devis</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Menu du bouton Nouveau de la liste des devis d'Odoo 20 : Nouveau devis et le modèle Office Furniture" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le bouton Nouveau propose un devis vide ou un modèle de devis.</figcaption>
+                </figure>
+                <ol>
+                    <li>Dans <strong>Client</strong>, choisissez <strong>Client particulier</strong>. Son adresse
+                        s'affiche et les <strong>Conditions de paiement</strong> passent à « 30 jours », reprises de
+                        sa fiche. L'<strong>Expiration</strong> est calculée à 30 jours, selon la validité par défaut réglée dans l'article « Installer et régler l'application Ventes ».</li>
+                    <li>Cliquez sur <strong>Ajouter une ligne</strong>, tapez <code>Installation sur site</code> et
+                        choisissez l'article.</li>
+                    <li>Ajoutez une deuxième ligne : <strong>Chaise de bureau</strong>, quantité <code>2</code>,
+                        remise <code>10</code> dans la colonne <strong>Rem.%</strong>.</li>
+                    <li>Enregistrez avec l'icône de nuage. Le devis reçoit son numéro.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Devis S00021 dans Odoo 20 pour Client particulier : expiration 24 octobre, conditions 30 jours, lignes Installation sur site et deux Chaise de bureau à 10 % de remise, taxes 0% Exports, total 216 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis enregistré : conditions de paiement reprises du client, remise de 10 % sur les chaises.</figcaption>
+                </figure>
+                <p>Sous le total, deux lignes grises restées en anglais résument le devis : <strong>Total
+                    Advantage</strong>, le montant des remises accordées (14 $), et <strong>Margin</strong>, la
+                    marge calculée à partir du coût des articles, avec son pourcentage (49 % ici).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Envoyer le devis</h2>
+                <p>Cliquez sur <strong>Envoyer</strong>. Une fenêtre prépare le courriel : destinataire (le
+                    client), sujet et message. Le devis au format PDF est joint sous le message.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Envoyer d'un devis dans Odoo 20 : destinataire, sujet YourCompany Quotation, message en anglais Hello, Your quotation is ready for review" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fenêtre d'envoi, ici sur le devis de démonstration S00003 : le message proposé par défaut est en anglais.</figcaption>
+                </figure>
+                <p>Relisez le message, puis cliquez sur <strong>Envoyer</strong>. Le statut passe à
+                    <strong>Envoyé</strong> et le courriel, avec son PDF, s'inscrit dans l'historique en bas du
+                    devis.</p>
+                <div class="pitfall-box">
+                    <h4>Au premier envoi : l'assistant de mise en page</h4>
+                    <p>Si la mise en page des documents n'a jamais été enregistrée, le premier clic sur Envoyer
+                        ouvre d'abord l'assistant « Configurer l'agencement de votre document », présenté dans
+                        <a href="/blog/fonctionnel-odoo-1/creer-base-odoo-community-199">Créer sa base Odoo 20
+                        Community</a>. Cliquez sur <strong>Continuer</strong> : la fenêtre d'envoi s'ouvre
+                        ensuite.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Voir le devis comme le client</h2>
+                <p>Le bouton <strong>Aperçu</strong> ouvre, dans un nouvel onglet, la page en ligne que le client
+                    reçoit avec le courriel : le détail du devis, la remise mise en valeur, la date de validité et
+                    les conditions de paiement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Page en ligne du devis S00021 côté client dans Odoo 20 : total 216 dollars, bouton Signer et Payer, remise de 10 % sur la chaise, valable jusqu'au 24/10/2026, conditions de paiement 30 jours" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis en ligne : le client peut le signer et le payer, le télécharger ou le refuser.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Signer &amp; Payer</strong> découle des réglages de la démonstration, où
+                    signature et paiement en ligne sont tous deux actifs. Le client peut aussi refuser le devis
+                    (« Reject this quotation »). Plusieurs libellés de cette page restent en anglais (Tax Included, Your advantage, Valid until…). Signature et paiement en ligne sont traités dans un prochain
+                    article de la série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Confirmer la commande</h2>
+                <p>Quand le client donne son accord par un autre moyen (téléphone, courriel), le commercial
+                    confirme lui-même le devis : cliquez sur <strong>Confirmer</strong>. Le document change
+                    d'aspect :</p>
+                <ul>
+                    <li>le statut passe à <strong>Commande client</strong> ;</li>
+                    <li>la <strong>Date de la commande</strong> remplace la date d'expiration, et la <strong>Date de livraison</strong> devient <strong>Livraison promise</strong> ;</li>
+                    <li>les lignes gagnent deux colonnes, <strong>Délivré</strong> et <strong>Facturé</strong>, et un
+                        badge <strong>Non livré</strong> apparaît près de la livraison promise ;</li>
+                    <li>le bouton <strong>Créer une facture</strong> prend la première place.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Commande S00021 confirmée dans Odoo 20 : statut Commande client, bouton Créer une facture, date de la commande, badge Non livré, colonnes Délivré et Facturé" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande confirmée : colonnes Délivré et Facturé, bouton Créer une facture.</figcaption>
+                </figure>
+                <p>La livraison et la facturation de cette commande font l'objet d'un article ultérieur de la
+                    série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Annuler un devis</h2>
+                <p>Un devis déjà envoyé ne peut pas être supprimé : Odoo exige de l'annuler d'abord. Annulé, il reste consultable et peut être repris. Ouvrez le devis de
+                    démonstration <strong>S00019</strong>, au statut Envoyé, et cliquez sur
+                    <strong>Annuler</strong>. Odoo demande confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Annuler la commande d'Odoo 20 : l'annulation définira son statut sur Annulée, boutons Oui, annuler la commande et Non, revenir en arrière" style="max-width:70%; height:auto;"/>
+                    <figcaption>La confirmation d'annulation.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Oui, annuler la commande</strong>. Le statut devient
+                    <strong>Annulé</strong> et un bouton <strong>Mettre en devis</strong> apparaît : il remet le
+                    document au statut Devis, si le client revient sur sa décision.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Barre d'actions d'un devis annulé dans Odoo 20 : Télécharger, Envoyer une facture PRO FORMA, Aperçu, Mettre en devis, statut Annulé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un devis annulé : le bouton Mettre en devis permet de le reprendre.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Tout ce qui précède est inclus dans Odoo 20 Community :
+                        devis, envoi par courriel, page en ligne du client, confirmation et annulation.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Taxe « 0% Exports » sur la base de démonstration</h4>
+                    <p>Avec les données de démonstration, YourCompany utilise le plan comptable générique, dont le
+                        pays fiscal est les États-Unis. Un client situé en France est donc traité comme un client
+                        étranger : Odoo applique d'office la position fiscale « Foreign Trade » (onglet Autres
+                        informations du devis), qui remplace la taxe de 15 % par « 0% Exports ». Une base créée sans démonstration, pays France, reçoit le plan comptable français et ses taxes.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un courriel en anglais</h4>
+                    <p>Le message proposé à l'envoi (« Hello, Your quotation… ») n'est pas traduit. Modifiez-le
+                        dans la fenêtre d'envoi avant de cliquer sur Envoyer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un courriel qui ne part pas</h4>
+                    <p>Sur une installation locale sans serveur d'envoi de courriels configuré, le message est
+                        enregistré dans l'historique du devis, puis marqué en échec : il n'atteint pas le client. Le statut passe malgré tout à Envoyé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> reprendre un devis annulé.</p>
+                    <p><strong>Indication :</strong> ouvrez S00019, annulé à l'étape 5, cliquez sur
+                        <strong>Mettre en devis</strong>, changez la quantité d'une ligne, puis confirmez-le.</p>
+                    <p><strong>Critère de réussite :</strong> S00019 est au statut Commande client et affiche les
+                        colonnes Délivré et Facturé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Devis et commande sont un même document, qui passe de Devis à Envoyé puis à Commande
+                        client.</li>
+                    <li>Le client choisi apporte son adresse et ses conditions de paiement ; la date d'expiration
+                        suit le réglage de validité.</li>
+                    <li>Aperçu montre la page en ligne que reçoit le client.</li>
+                    <li>Confirmer ajoute les colonnes Délivré et Facturé et le bouton Créer une facture.</li>
+                    <li>Un devis s'annule sans disparaître, et revient au statut Devis avec Mettre en devis.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Clients et articles dans Odoo 20 : les données de départ</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Listes de prix et remises (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles</a></h5>
+                            <p class="small text-muted mb-0">La fiche client, ses conditions de paiement et la fiche article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler l'application Ventes</a></h5>
+                            <p class="small text-muted mb-0">Remises, validité des devis, pro forma et politique de facturation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les 34 applications gratuites</a></h5>
+                            <p class="small text-muted mb-0">Ce que contient Odoo 20 Community et comment reconnaître l'Enterprise.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

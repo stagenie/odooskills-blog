@@ -1,0 +1,399 @@
+<!--
+Article — Listes de prix et remises dans Odoo 20
+Série « Gestion des ventes avec Odoo 20 » (blog Fonctionnel) — étape 4
+Date : 2026-09-24
+Slug : listes-prix-remises-ventes-odoo
+Meta : Activer les listes de prix dans Odoo 20 Community, créer des règles de remise, attribuer une liste à un client et appliquer une remise à tout un devis.
+Mot-clé cible : liste de prix odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, ventes, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (V1 à V3 faits).
+  À l'écran (Playwright) : réglage Listes de prix activé ; liste « Par défaut » (USD) seule au départ ; liste « Grossiste »
+  créée (10 % sur tous les produits ; 20 % sur Chaise de bureau dès 5 unités) ; attribuée à Azure Interior ; devis S00022
+  (Installation sur site 10 %, 5 Chaise de bureau 20 %, taxe 15 %) ; bouton Remise : remise globale 5 % = ligne « Remise 5.00% » -18,05 $.
+  Source : product/views/res_partner_views.xml:10-13 (champ Liste de prix réservé au groupe listes de prix) ;
+  product/models/product_pricelist_item.py:12 (ordre : article, catégorie, global), :107-112 (Remise, Surcharge, Prix fixe) ;
+  sale/wizard/sale_order_discount.py:20-28 (trois modes), :66-73 (une ligne par taux) ; sale/models/sale_order_line.py:1007,1019-1022 (Rem.% seulement pour une remise simple), :169-172 (sur toutes les lignes = écrase Rem.% ; sinon lignes de remise).
+Captures : content/blog/screenshots/listes-prix-remises-ventes-odoo/ (01-08, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Listes de prix et remises dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un grossiste n'achète pas au prix d'un particulier. Les listes de prix
+                    calculent d'elles-mêmes le prix adapté selon le client et la quantité ; les remises manuelles couvrent le
+                    reste, ligne par ligne ou sur tout le devis.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Gestion des ventes avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre 2026.
+                        L'application Ventes existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Odoo distingue deux mécanismes :</p>
+                <ul>
+                    <li>la <strong>liste de prix</strong>, rattachée au client, calcule automatiquement le prix de
+                        chaque ligne selon des règles (remise, surcharge, prix fixe, quantité minimale, période) ;</li>
+                    <li>la <strong>remise manuelle</strong>, saisie par le commercial dans la colonne Rem.% ou avec
+                        le bouton Remise du devis.</li>
+                </ul>
+                <p>Cet article part de la base des articles précédents. La remise par ligne a été activée dans
+                    <a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler
+                    l'application Ventes</a> ; le devis est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande
+                    confirmée</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les listes de prix ;</li>
+                    <li>créer une liste de prix avec des règles de remise, dont une remise par quantité ;</li>
+                    <li>attribuer une liste de prix à un client ;</li>
+                    <li>lire le résultat sur un devis ;</li>
+                    <li>choisir le bon mode du bouton Remise.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les listes de prix</h2>
+                <p>Ouvrez <strong>Ventes › Configuration › Paramètres</strong>. Dans le bloc
+                    <strong>Tarif</strong>, cochez <strong>Listes de prix</strong>, puis cliquez sur
+                    <strong>Enregistrer</strong>. Un lien <strong>Listes de prix</strong> apparaît sous l'option.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Option Listes de prix cochée dans les paramètres Ventes d'Odoo 20, avec le lien Listes de prix" style="max-width:60%; height:auto;"/>
+                    <figcaption>L'option Listes de prix, activée et enregistrée.</figcaption>
+                </figure>
+                <p>Le menu <strong>Ventes › Produits</strong> gagne l'entrée <strong>Listes de prix</strong>.
+                    Ouvrez-la : la base ne contient qu'une liste, <strong>Par défaut</strong>, en dollars. Tout
+                    client sans liste particulière en dépend.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des listes de prix d'Odoo 20 : une seule liste, Par défaut, devise USD" style="max-width:100%; height:auto;"/>
+                    <figcaption>Au départ, une seule liste de prix : Par défaut.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer une liste de prix « Grossiste »</h2>
+                <p>Cliquez sur <strong>Nouveau</strong>, nommez la liste <code>Grossiste</code>, puis cliquez sur
+                    <strong>Ajouter une ligne</strong> dans l'onglet des règles. Une fenêtre s'ouvre ; son premier
+                    choix, <strong>Apply</strong> (non traduit), fixe la nature de la règle :</p>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Choix</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Remise</td><td>Un pourcentage retiré du prix de base.</td></tr>
+                        <tr><td>Surcharge</td><td>Un pourcentage ajouté au prix de base.</td></tr>
+                        <tr><td>Prix fixe</td><td>Un prix imposé, quel que soit le prix de l'article.</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>Première règle : choisissez <strong>Remise</strong>, saisissez <code>10</code> % sur le prix de
+                    vente, et laissez Catégorie et Produit vides pour viser tous les articles. En bas de la fenêtre,
+                    Odoo affiche un exemple du calcul. Cliquez sur <strong>Enregistrer &amp; Fermer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Créer Règles de liste de prix d'Odoo 20 : Apply Remise, 10 % sur prix de vente, toutes les catégories, tous les produits, exemple 100 × 0,9 = 90" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une règle de remise de 10 % sur tous les articles, avec l'exemple de calcul.</figcaption>
+                </figure>
+                <p>Seconde règle : <strong>Remise</strong> de <code>20</code> %, produit <strong>Chaise de
+                    bureau</strong>, <strong>Minimum Quantity</strong> <code>5</code>. Enregistrez la règle, puis la
+                    liste de prix.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste de prix Grossiste dans Odoo 20 : règle 10 % de remise sur tous les produits, règle 20 % de remise sur Chaise de bureau à partir de 5 unités" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste Grossiste et ses deux règles.</figcaption>
+                </figure>
+                <p>Quand plusieurs règles conviennent, Odoo examine d'abord celles qui visent un article précis, puis une catégorie, puis tous les articles. À partir de 5 chaises, c'est donc la règle à 20 % qui s'applique ; en dessous, la règle générale à 10 %.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Attribuer la liste à un client</h2>
+                <p>Ouvrez le client <strong>Azure Interior</strong>, onglet <strong>Ventes &amp; Achats</strong>.
+                    Un champ <strong>Liste de prix</strong> y est apparu avec l'activation de l'option. Choisissez
+                    <strong>Grossiste</strong> et enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Partie Ventes de l'onglet Ventes et Achats du client Azure Interior dans Odoo 20 : champ Liste de prix Grossiste" style="max-width:70%; height:auto;"/>
+                    <figcaption>La liste de prix Grossiste attribuée à Azure Interior.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lire le résultat sur un devis</h2>
+                <p>Créez un nouveau devis pour Azure Interior. Le champ <strong>Liste de prix</strong> du devis
+                    affiche « Grossiste (USD) ». Ajoutez une ligne <strong>Installation sur site</strong>, puis une
+                    ligne <strong>Chaise de bureau</strong> en quantité <code>5</code>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Devis S00022 pour Azure Interior dans Odoo 20 : liste de prix Grossiste, Installation sur site avec 10 % de remise, 5 Chaise de bureau avec 20 % de remise, taxe 15 %, total 415,15 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les remises de la liste Grossiste, reportées d'office dans la colonne Rem.%.</figcaption>
+                </figure>
+                <p>Le prix unitaire reste le prix de vente de l'article ; la réduction de la liste de prix
+                    s'inscrit dans la colonne <strong>Rem.%</strong> : 10 % pour l'installation, 20 % pour les cinq
+                    chaises. Le client voit ainsi la remise dont il bénéficie. Cet affichage vaut pour les règles de type Remise sans arrondi ni montant ajouté ; une règle Prix fixe ou Surcharge modifie directement le prix unitaire, et la colonne Rem.% reste vide. Azure Interior étant situé aux
+                    États-Unis, la taxe de 15 % s'applique normalement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Remiser tout un devis</h2>
+                <p>Sous les lignes, le bouton <strong>Remise</strong> ouvre une fenêtre à trois modes :</p>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Mode</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Sur toutes les lignes de commande</td><td>Écrit le même pourcentage dans la colonne Rem.% de chaque ligne, en remplaçant les remises déjà présentes.</td></tr>
+                        <tr><td>Remise globale</td><td>Ajoute une ligne de remise négative, égale à ce pourcentage du montant hors taxes des lignes (une ligne par taux de taxe si le devis en mélange plusieurs).</td></tr>
+                        <tr><td>Montant fixe</td><td>Ajoute une ligne de remise d'un montant fixe.</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>Sur le devis précédent, choisissez <strong>Remise globale</strong>, saisissez <code>5</code> %,
+                    puis cliquez sur <strong>Appliquer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Remise d'un devis dans Odoo 20 : 5 %, modes Sur toutes les lignes de commande, Remise globale sélectionnée, Montant fixe, boutons Appliquer et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>La fenêtre Remise, mode Remise globale.</figcaption>
+                </figure>
+                <p>Une ligne <strong>Remise</strong>, décrite « Remise 5.00% », s'ajoute pour -18,05 $ : 5 % des 361 $ hors taxes. Les remises de la
+                    liste de prix restent intactes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Lignes du devis S00022 dans Odoo 20 après remise globale : ligne Remise 5.00% de -18,05 dollars sous les lignes Installation sur site et Chaise de bureau" style="max-width:100%; height:auto;"/>
+                    <figcaption>La remise globale prend la forme d'une ligne négative.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Tout ce qui précède est inclus dans Odoo 20 Community : listes
+                        de prix, règles, remises par ligne et bouton Remise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Sur toutes les lignes » efface les remises de la liste de prix</h4>
+                    <p>Ce mode remplace la valeur de la colonne Rem.% de chaque ligne. Sur un devis Grossiste, une
+                        remise de 5 % « sur toutes les lignes » ramènerait les chaises de 20 % à 5 %. Pour ajouter une
+                        remise à celles de la liste, utilisez <strong>Remise globale</strong>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le champ Liste de prix n'apparaît qu'après activation</h4>
+                    <p>Tant que l'option Listes de prix est décochée, ni la fiche client ni le devis n'affichent
+                        de champ Liste de prix : tous les clients sont servis au prix de vente de l'article.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des libellés restés en anglais</h4>
+                    <p>Dans la fenêtre des règles, « Apply » et « Minimum Quantity » ne sont pas traduits, et la description de la ligne de remise, « Remise 5.00% », garde le point décimal anglais. Sous le total, « Tax 15% », « Total Advantage » et « Margin » restent aussi en anglais.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> vérifier le seuil de quantité d'une règle.</p>
+                    <p><strong>Indication :</strong> sur un nouveau devis pour Azure Interior, ajoutez une Chaise de
+                        bureau en quantité 4, lisez la colonne Rem.%, puis passez la quantité à 5.</p>
+                    <p><strong>Critère de réussite :</strong> la remise est de 10 % pour 4 chaises et passe à 20 %
+                        pour 5 chaises.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les listes de prix s'activent dans Ventes › Configuration › Paramètres, bloc Tarif.</li>
+                    <li>Une règle est une remise, une surcharge ou un prix fixe, limitée si besoin à une
+                        catégorie, un article, une quantité minimale ou une période.</li>
+                    <li>La liste de prix se choisit sur la fiche client et passe d'elle-même sur ses devis.</li>
+                    <li>Avec la remise par ligne activée, une règle de type Remise s'affiche dans la colonne Rem.% ; les autres règles modifient le prix unitaire.</li>
+                    <li>Pour cumuler une remise avec celles de la liste, préférez Remise globale à « Sur toutes les
+                        lignes ».</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Du devis à la commande confirmée dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Modèles de devis, signature et paiement en ligne (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Créer, envoyer, confirmer ou annuler un devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles</a></h5>
+                            <p class="small text-muted mb-0">La fiche client, ses conditions de paiement et la fiche article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler l'application Ventes</a></h5>
+                            <p class="small text-muted mb-0">Remises, validité des devis, pro forma et politique de facturation.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
