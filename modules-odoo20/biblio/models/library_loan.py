@@ -13,7 +13,7 @@ _logger = logging.getLogger(__name__)
 class LibraryLoan(models.Model):
     _name = 'library.loan'
     _description = "Emprunt"
-    _inherit = ['mail.thread', 'mail.activity.mixin']
+    _inherit = ['portal.mixin', 'mail.thread', 'mail.activity.mixin']
     _mail_post_access = 'read'
     _order = 'date_out desc, id desc'
 
@@ -192,6 +192,11 @@ class LibraryLoan(models.Model):
             )
         _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
         return len(a_relancer)
+
+    def _compute_access_url(self):
+        super()._compute_access_url()
+        for loan in self:
+            loan.access_url = f'/my/loans/{loan.id}'
 
     @api.depends('reference', 'copy_id.name')
     def _compute_display_name(self):
