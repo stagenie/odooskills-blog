@@ -31,6 +31,12 @@ class LibraryLoan(models.Model):
         ondelete='cascade',
         tracking=True,
     )
+    partner_id = fields.Many2one(
+        related='member_id.partner_id',
+        string="Contact",
+        store=True,
+        index=True,
+    )
     copy_id = fields.Many2one(
         'library.copy',
         string="Exemplaire",

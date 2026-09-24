@@ -8,7 +8,7 @@ Un modèle Livre, ses droits d'accès, sa liste, son formulaire et son menu.
     'author': "OdooSkills",
     'website': "https://odooskills.com",
     'category': 'Services',
-    'version': '20.0.1.12.0',
+    'version': '20.0.1.13.0',
     'license': 'LGPL-3',
     'depends': ['base', 'mail'],
     'data': [
@@ -25,6 +25,7 @@ Un modèle Livre, ses droits d'accès, sa liste, son formulaire et son menu.
         'views/library_member_views.xml',
         'views/library_loan_views.xml',
         'views/library_loan_extend_views.xml',
+        'views/res_partner_views.xml',
     ],
     'application': True,
 }
