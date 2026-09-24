@@ -1,0 +1,379 @@
+<!--
+Article — Factures fournisseurs dans Odoo 20
+Série « Facturation avec Odoo 20 » (blog Fonctionnel) — étape 2
+Date : 2026-09-24
+Slug : factures-fournisseurs-odoo
+Meta : Saisir, contrôler et confirmer une facture fournisseur dans Odoo 20 Community : référence, dates, doublons, import de factures électroniques et numérisation (Enterprise).
+Mot-clé cible : facture fournisseur odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : debutant, comptabilite, guide, community
+Temps de lecture : ~8 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration).
+  account/models/account_move.py:665-670 + 2792-2804 (Saisie automatique : recopie les lignes d'une facture
+  précédente) ; :897-916 + 7427-7464 (date comptable d'une facture fournisseur : date de facture, ramenée au jour
+  si elle est plus ancienne dans le mois en cours, au dernier jour du mois pour un mois passé) ; :2170-2186 + 2260-2290 +
+  account_move_views.xml:877-887 (doublon : même fournisseur et même référence → avertissement, pas de blocage) ;
+  account/models/account_document_import_mixin.py:150-173 (Uploader : pièce jointe, brouillon, décodeurs de
+  factures électroniques ; sans décodeur → message « …fichier XML reçu ») ; account/views/
+  res_config_settings_views.xml:282-284 (Numérisation de documents = module_account_extract, upgrade_boolean,
+  Enterprise).
+  Parcours joué : FACTURE/2026/09/0003 (LI-2026-0412) Lumber Inc, 10 Chaise de conférence (Acier) à 28 $,
+  taxe 15 % = 280 $ HT, 322 $ TTC, date 20/09, date comptable 24/09, 30 jours ; 2ᵉ brouillon même référence →
+  bandeau « Ce document pourrait être un doublon de LI-2026-0412 à $ 322,00 » (abandonné) ; PDF sans données
+  électroniques téléversé → brouillon vide + message (supprimé).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Factures fournisseurs dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une facture fournisseur se saisit à partir du document reçu :
+                    référence du fournisseur, date, lignes, échéance. Odoo 20 aide à la contrôler (doublons,
+                    date comptable) et lit les factures électroniques. Cet article fait le tour de la saisie
+                    dans la Community, et situe ce que l'Enterprise ajoute.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Facturation avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community, avec un complément Enterprise.</strong> Écrit et vérifié sur
+                        Odoo 20.0 Community, septembre 2026. Saisie, contrôle des doublons et import des factures
+                        électroniques sont inclus dans la Community ; la numérisation des PDF par OCR est réservée
+                        à l'Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le menu <strong>Fournisseurs › Factures fournisseurs</strong> ouvre la liste. Les montants y
+                    sont négatifs : ce sont des sommes dues <em>par</em> la société, à l'inverse des factures
+                    clients de
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                    avoirs dans Odoo 20</a>. La colonne <strong>Référence</strong> porte le numéro que le
+                    fournisseur a imprimé sur sa facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des factures fournisseurs d'Odoo 20 : FACTURE/2026/09/0002 Gemini Furniture référence INV/2026/0057 et FACTURE/2026/09/0001 Ready Mat, montants négatifs, statut Comptabilisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les factures fournisseurs de la démonstration, en montants négatifs.</figcaption>
+                </figure>
+                <p>L'application Facturation suffit pour saisir les factures reçues. Avec l'application Achats,
+                    une facture peut aussi partir d'une commande fournisseur ; cet article reste sur la saisie
+                    directe, la plus courante pour les frais généraux.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>saisir une facture fournisseur et distinguer sa date de facture de sa date comptable ;</li>
+                    <li>reconnaître l'avertissement de doublon ;</li>
+                    <li>recopier une facture précédente par la saisie automatique ;</li>
+                    <li>savoir ce que le bouton Uploader lit en Community, et ce que la numérisation Enterprise
+                        ajoute.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Saisir la facture reçue</h2>
+                <p>Cliquez sur <strong>Nouveau</strong>. En tête, le choix <strong>Facture / Ticket</strong>
+                    distingue une facture d'un simple ticket de caisse ; restez sur Facture. Renseignez, depuis
+                    le document du fournisseur :</p>
+                <ul>
+                    <li><strong>Fournisseur</strong> : ici Lumber Inc ;</li>
+                    <li><strong>Référence facture</strong> : le numéro du fournisseur, LI-2026-0412 ;</li>
+                    <li><strong>Date</strong> : la date imprimée sur la facture, le 20 septembre ;</li>
+                    <li><strong>Échéance</strong> : une date, ou des conditions de paiement, ici 30 jours (le
+                        champ s'affiche alors sous le libellé Conditions de paiement) ;</li>
+                    <li>les lignes : 10 « Chaise de conférence (Acier) » à 28 $.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Facture fournisseur brouillon d'Odoo 20 : choix Facture ou Ticket, fournisseur Lumber Inc, référence facture LI-2026-0412, date 20 septembre, date comptable 24 septembre, conditions de paiement 30 jours, 10 Chaise de conférence Acier à 28 dollars, taxe 15 %, total 322 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture de Lumber Inc en brouillon : date de facture et date comptable diffèrent.</figcaption>
+                </figure>
+                <p>Deux champs portent une date. <strong>Date</strong> est celle du fournisseur ; elle compte
+                    pour l'échéance. <strong>Date comptable</strong> est celle de l'écriture. Odoo la calcule :
+                    une facture datée d'un jour déjà passé du mois en cours est comptabilisée à la date du jour,
+                    ici le 24 septembre, pour que les numéros du journal restent dans l'ordre des dates ; avec
+                    une numérotation mensuelle comme ici, une facture d'un mois précédent l'est au dernier jour de
+                    ce mois. Une date de verrouillage fiscal peut aussi la déplacer.</p>
+                <p>Cliquez sur <strong>Confirmer</strong>. La facture reçoit son numéro dans le journal Achats,
+                    FACTURE/2026/09/0003 : la séquence des achats de la démonstration repart à 1 chaque mois,
+                    celle des ventes chaque année. La référence du fournisseur s'affiche entre parenthèses dans
+                    le fil d'Ariane.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Facture fournisseur FACTURE/2026/09/0003 d'Odoo 20 confirmée : fil d'Ariane FACTURE/2026/09/0003 (LI-2026-0412), boutons Payer, Avoir et Remettre en brouillon, total 322 dollars, montant dû 322 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture confirmée : numéro du journal Achats et référence du fournisseur.</figcaption>
+                </figure>
+                <p>Une réclamation auprès du fournisseur se règle comme côté client : bouton
+                    <strong>Avoir</strong>, et l'avoir obtenu se range dans <strong>Fournisseurs › Notes de
+                    crédit</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Repérer un doublon</h2>
+                <p>Une même facture reçue par courriel puis par courrier risque d'être saisie deux fois. Odoo
+                    compare le fournisseur et la référence, ou, à défaut, le fournisseur, le montant et la date de
+                    facture. Dès qu'une seconde facture reprend Lumber Inc et LI-2026-0412, un bandeau orange
+                    s'affiche, avec un lien vers la première. Si tout est identique (référence, montant et date),
+                    le bandeau passe au rouge et propose de supprimer le doublon.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Nouvelle facture fournisseur brouillon d'Odoo 20 pour Lumber Inc avec la référence LI-2026-0412 : bandeau orange Ce document pourrait être un doublon de LI-2026-0412 à 322 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avertissement de doublon, dès la saisie de la référence.</figcaption>
+                </figure>
+                <p>Le bandeau avertit, il ne bloque pas : la facture reste confirmable. Ouvrez le lien, comparez,
+                    puis abandonnez le brouillon s'il s'agit bien du même document.</p>
+                <p>À l'inverse, pour un fournisseur qui facture chaque mois les mêmes lignes, le champ
+                    <strong>Saisie automatique</strong> part d'une facture précédente : choisissez-la, Odoo en
+                    recopie les lignes dans le brouillon. Il reste à changer la référence, la date et les
+                    quantités.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Téléverser le document du fournisseur</h2>
+                <p>Le bouton <strong>Uploader</strong> de la liste crée une facture brouillon à partir d'un
+                    fichier, joint à la facture. Odoo cherche dans le fichier une facture électronique : XML UBL
+                    (réseau Peppol) ou PDF Factur-X, qui embarque ses données. S'il en trouve une, le fournisseur,
+                    la référence, les dates et les lignes sont remplis.</p>
+                <p>Un PDF ordinaire, simple image de la facture, ne contient pas ces données. Odoo crée alors un
+                    brouillon vide, avec le fichier en pièce jointe, et un message dans l'historique.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Facture fournisseur brouillon vide d'Odoo 20 créée par Uploader à partir d'un PDF sans données électroniques : champs vides, Date en rouge obligatoire, message Une erreur s'est produite lors de l'importation de la facture, vous trouverez ci-joint le fichier XML reçu" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un PDF sans données électroniques : brouillon vide et message d'erreur.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Un message qui parle de XML pour un PDF</h4>
+                    <p>Le message « Une erreur s'est produite lors de l'importation de la facture, vous trouverez
+                        ci-joint le fichier XML reçu » s'affiche même quand le fichier est un PDF. Il signifie
+                        seulement qu'Odoo n'a trouvé aucune donnée électronique : la saisie se fait à la main,
+                        le PDF sous les yeux.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY / EE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Saisie, dates, avoirs fournisseurs, contrôle des doublons,
+                        saisie automatique et import des factures électroniques (UBL, Factur-X) sont inclus dans
+                        Odoo 20 Community.</p>
+                </div>
+                <div class="ee-box">
+                    <h4>Complément Enterprise : la numérisation des PDF</h4>
+                    <p>Dans <strong>Configuration › Paramètres</strong>, l'option <strong>Numérisation de
+                        documents</strong> porte l'étiquette <strong>Entreprise</strong>. Elle lit les PDF et les
+                        documents scannés par OCR et intelligence artificielle, pour remplir le brouillon que la
+                        Community laisse vide. La cocher en Community renvoie à la souscription Enterprise.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_06" alt="Option Numérisation de documents des paramètres de Facturation d'Odoo 20 Community, étiquette Entreprise : Numériser vos PDF ou vos documents scannés grâce à l'OCR et à l'Intelligence Artificielle" style="max-width:100%; height:auto;"/>
+                        <figcaption>La numérisation par OCR, marquée Entreprise dans les paramètres.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Laisser la date comptable à Odoo</h4>
+                    <p>La date comptable diffère souvent de la date de facture : c'est voulu, elle garde les
+                        numéros du journal Achats dans l'ordre des dates. Contrôlez l'échéance, calculée sur la
+                        date de facture, plutôt que la date comptable.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Toujours saisir la référence du fournisseur</h4>
+                    <p>La référence rend le contrôle des doublons fiable : sans elle, Odoo ne repère que les
+                        factures de même montant et de même date. Elle facilite aussi le rapprochement avec le
+                        relevé du fournisseur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> saisir une nouvelle facture en recopiant la précédente.</p>
+                    <p><strong>Indication :</strong> créez une facture fournisseur pour Lumber Inc, référence
+                        LI-2026-0433, date du 22 septembre, et choisissez FACTURE/2026/09/0003 dans Saisie
+                        automatique. Passez la quantité à 12, puis confirmez.</p>
+                    <p><strong>Critère de réussite :</strong> aucun bandeau de doublon ne s'affiche (la référence
+                        diffère) ; la ligne recopiée « Chaise de conférence (Acier) » à 28 $ passe à 12, soit
+                        336 $ hors taxes et 386,40 $ taxes comprises ; la facture reçoit le numéro suivant de
+                        septembre dans le journal Achats (FACTURE/2026/09/…).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La référence du fournisseur est la clé de la facture : elle sert au contrôle des
+                        doublons.</li>
+                    <li>Date de facture et date comptable sont deux champs ; Odoo calcule la seconde.</li>
+                    <li>Uploader lit les factures électroniques en Community ; un PDF ordinaire se saisit à la
+                        main, ou se numérise en Enterprise.</li>
+                    <li>Saisie automatique recopie les lignes d'une facture précédente.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Factures clients et avoirs dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Paiements et relances (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le même cycle côté client, avec les avoirs.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles : les données de départ</a></h5>
+                            <p class="small text-muted mb-0">Fiches partenaires et conditions de paiement.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Facturation, Achats et les autres applications Community.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
