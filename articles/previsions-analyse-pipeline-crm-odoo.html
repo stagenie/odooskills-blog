@@ -1,0 +1,403 @@
+<!--
+Article — Prévisions et analyse du pipeline dans Odoo 20
+Série « Gestion de la relation client avec Odoo 20 » (blog Fonctionnel) — étape 4
+Date : 2026-09-24
+Slug : previsions-analyse-pipeline-crm-odoo
+Meta : Lire la prévision de chiffre d'affaires du CRM d'Odoo 20 par mois de clôture, analyser le pipeline par étape et comprendre pourquoi les affaires se perdent.
+Mot-clé cible : prévision crm odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, crm, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration, CRM installé).
+  crm/views/crm_lead_views.xml:1200-1213 (action Prévision : kanban,graph,pivot,list ; filtres par défaut
+  My Opportunities, Prochaines clôtures, regroupement Date de clôture prévue ; sélecteur d'équipe) ;
+  :1007 (filtre Upcoming Closings) ; crm/static/src/views/forecast_search_model.js:33-41 (date vide ou ≥ début de la
+  période en cours) ; crm/models/crm_lead.py:519-521 (revenu au prorata = revenu attendu × probabilité / 100) ;
+  kanban prévision sum_field prorated_revenue. Menu Analyse : Prévision, Pipeline (graphique, mesure Revenu au
+  prorata, filtre Opportunités), Pistes, Activités.
+  Parcours joué : carte « Mobilier pour un espace de coworking » glissée de « Aucun » vers « octobre 2026 » →
+  date_deadline = 2026-10-01 (lu en base) ; pivot Perdu × Motif de perte : 6 perdues, 1 « Trop cher » (25 000 $),
+  5 sans motif (démonstration).
+Captures : content/blog/screenshots/previsions-analyse-pipeline-crm-odoo/ (01-05, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Prévisions et analyse du pipeline dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Combien le portefeuille rapportera-t-il, et quand ? Où les affaires
+                    s'arrêtent-elles, et pourquoi se perdent-elles ? Le menu Analyse du CRM d'Odoo 20 répond à ces
+                    questions à partir des opportunités saisies. Cet article en donne la lecture.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Gestion de la relation client avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026. La prévision et les analyses du CRM présentées ici sont incluses dans la
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une prévision ne vaut que ce que valent les opportunités : un <strong>revenu attendu</strong>,
+                    une <strong>probabilité</strong> et une <strong>date de clôture prévue</strong> renseignés
+                    sur chaque affaire. Les analyses ne créent aucune donnée ; elles regroupent et additionnent
+                    ce que les commerciaux ont saisi.</p>
+                <p>Cet article poursuit sur la base de la série, après
+                    <a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances
+                    commerciales dans Odoo 20</a>. Les chiffres des captures viennent des opportunités de la
+                    démonstration et de celles créées dans les articles précédents.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire la prévision par mois de clôture et son revenu au prorata ;</li>
+                    <li>déplacer une affaire d'un mois à l'autre ;</li>
+                    <li>analyser le pipeline par étape, en graphique et en tableau croisé ;</li>
+                    <li>compter les affaires perdues par motif de perte.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire la prévision</h2>
+                <p>Ouvrez <strong>CRM › Analyse › Prévision</strong>. La vue ressemble au pipeline, mais ses
+                    colonnes sont des <strong>mois de clôture prévue</strong>, et non des étapes. La colonne
+                    <strong>Aucun</strong> rassemble les opportunités sans date de clôture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Prévision du CRM d'Odoo 20 : colonnes Aucun, septembre 2026, octobre 2026, novembre 2026 avec leurs totaux au prorata, cartes d'opportunités avec montant au prorata, filtres Prochaines clôtures, My Opportunities et Date de clôture prévue : Mois" style="max-width:100%; height:auto;"/>
+                    <figcaption>La prévision : une colonne par mois de clôture prévue.</figcaption>
+                </figure>
+                <p>Les montants affichés ne sont pas les revenus attendus mais les <strong>revenus au
+                    prorata</strong> : revenu attendu × probabilité. Une affaire de 4 500 $ à 60 % compte pour
+                    2 700 $. Le total d'une colonne est donc un chiffre d'affaires <em>pondéré</em>, plus prudent
+                    que la somme brute des affaires.</p>
+                <p>Deux filtres et un regroupement sont posés à l'ouverture :</p>
+                <ul>
+                    <li><strong>Prochaines clôtures</strong> : masque les mois passés ; seules restent les
+                        affaires sans date et celles dont la clôture tombe dans le mois en cours ou plus tard ;</li>
+                    <li><strong>My Opportunities</strong> : vos affaires seulement ;</li>
+                    <li><strong>Date de clôture prévue : Mois</strong> : le regroupement par mois.</li>
+                </ul>
+                <p>Les opportunités gagnées restent visibles, avec leur bandeau, dans la colonne de leur date de
+                    clôture <em>prévue</em> (ou dans Aucun si elle est vide) : le total d'un mois additionne
+                    ainsi l'acquis et le probable.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Dater une affaire en la déplaçant</h2>
+                <p>Une opportunité de la colonne Aucun n'entre dans aucun mois. Pour la dater, faites glisser sa
+                    carte vers le mois voulu. Ici, « Mobilier pour un espace de coworking » passe de Aucun à
+                    <strong>octobre 2026</strong> : Odoo fixe sa date de clôture prévue au
+                    <strong>1er octobre 2026</strong>, premier jour du mois de dépôt.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Prévision d'Odoo 20 après déplacement : l'opportunité Mobilier pour un espace de coworking apparaît en bas de la colonne octobre 2026, dont le total ne change pas (56 249 $)" style="max-width:100%; height:auto;"/>
+                    <figcaption>La carte déplacée vers octobre : sa date de clôture prévue devient le 1er octobre.</figcaption>
+                </figure>
+                <p>Pour une date précise, ouvrez la fiche et saisissez la <strong>date de clôture
+                    prévue</strong>. Une opportunité sans revenu attendu, comme celle-ci, ne pèse rien dans le
+                    total : complétez aussi son montant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Analyser le pipeline</h2>
+                <p>Ouvrez <strong>CRM › Analyse › Pipeline</strong>. Le graphique présente, par étape, le revenu
+                    au prorata des opportunités, empilé par mois de clôture prévue ; une ligne relie les totaux
+                    de chaque étape.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Analyse du pipeline d'Odoo 20 en graphique à barres empilées : revenu au prorata par étape Nouveau, Qualifié, Proposition, Gagné, couleurs par mois de clôture prévue, ligne des sommes" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'analyse du pipeline : le revenu au prorata par étape, empilé par mois de clôture.</figcaption>
+                </figure>
+                <p>Ce graphique se lit comme un entonnoir : un pipeline sain garde du volume à chaque étape. Une
+                    étape Proposition très chargée et peu de Gagné signalent des propositions qui ne se
+                    concluent pas ; une étape Nouveau vide annonce un creux dans quelques mois.</p>
+                <p>Le bouton de mesure, en haut à gauche, change la grandeur : <strong>Revenu attendu</strong>
+                    (montant brut), <strong>Nombre</strong> d'opportunités, ou délais moyens (<strong>Jours
+                    pour assigner</strong>, <strong>Jours pour clôturer</strong>). L'icône de tableau croisé,
+                    en haut à droite, présente le même revenu par étape, ventilé cette fois par mois de création :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Tableau croisé de l'analyse du pipeline d'Odoo 20 : revenu au prorata par étape en lignes et par mois de création en colonnes, avec totaux" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le tableau croisé : étapes en lignes, mois de création en colonnes.</figcaption>
+                </figure>
+                <p>Dans le tableau croisé, un clic sur un en-tête de ligne ou de colonne propose un nouveau
+                    regroupement : par vendeur, par équipe, par source… Un clic sur une cellule ouvre la liste
+                    des opportunités qu'elle totalise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Comprendre les pertes</h2>
+                <p>Les motifs saisis en marquant une affaire perdue prennent ici leur valeur. Dans l'analyse du
+                    pipeline, en tableau croisé :</p>
+                <ol>
+                    <li>retirez le filtre <strong>Opportunités</strong> et ajoutez le filtre
+                        <strong>Perdu</strong> ;</li>
+                    <li>regroupez par <strong>Motif de perte</strong> ;</li>
+                    <li>dans <strong>Mesures</strong>, cochez <strong>Nombre</strong> et <strong>Revenu
+                        attendu</strong>, décochez <strong>Revenu au prorata</strong> (nul pour une affaire
+                        perdue, dont la probabilité vaut 0 %).</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Tableau croisé d'Odoo 20 des opportunités perdues par motif de perte : total 6 affaires perdues (2 opportunités, 4 pistes) pour 32 500 dollars, Trop cher 1 pour 25 000 dollars, Aucun 5 pour 7 500 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les affaires perdues, comptées et chiffrées par motif.</figcaption>
+                </figure>
+                <p>Sur la démonstration, une seule perte porte un motif, « Trop cher », celle saisie dans le
+                    premier article de la série ; les cinq autres n'en ont pas : une opportunité et quatre pistes
+                    écartées sans motif (retirer le filtre Opportunités fait entrer les pistes dans le décompte). C'est la situation à éviter :
+                    une perte sans motif n'apprend rien. Rendre le motif systématique, avec une liste courte
+                    décidée en équipe, est la condition d'une analyse utile.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les autres analyses</h2>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Menu</th><th>Question traitée</th></tr></thead>
+                    <tbody>
+                        <tr><td>Analyse › Prévision</td><td>Combien, et quel mois ? Revenu au prorata par mois de clôture prévue.</td></tr>
+                        <tr><td>Analyse › Pipeline</td><td>Où en sont les affaires ? Revenu, nombre et délais par étape, vendeur, équipe ou motif de perte.</td></tr>
+                        <tr><td>Analyse › Pistes</td><td>Combien de demandes entrent ? Nombre de pistes et d'opportunités créées par mois et par équipe, archivées comprises.</td></tr>
+                        <tr><td>Analyse › Activités</td><td>Les relances sont-elles faites ? Activités terminées par type et par mois, sur les 12 derniers mois.</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>Chaque analyse se garde en favori (menu de la barre de recherche, <strong>Enregistrer la
+                    recherche actuelle</strong>), filtres et regroupements compris, comme pour les analyses de
+                    ventes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Prévision, analyses du pipeline, des pistes et des activités,
+                        tableaux croisés et favoris sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une prévision sans date ni montant est vide</h4>
+                    <p>Les opportunités sans date de clôture tombent dans la colonne Aucun, et celles sans revenu
+                        attendu comptent pour zéro. La qualité de la prévision dépend de la discipline de saisie.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le revenu au prorata dépend de la probabilité</h4>
+                    <p>Sur une base récente, la probabilité calculée par le score prédictif repose sur peu
+                        d'affaires closes. Tant que l'historique est mince, comparez le prorata avec le revenu
+                        attendu brut avant de l'annoncer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les filtres d'ouverture</h4>
+                    <p>La prévision s'ouvre sur vos seules affaires (« My Opportunities »), et l'analyse du
+                        pipeline sur les seules opportunités. Pour une vue d'équipe, retirez « My Opportunities »
+                        et vérifiez le sélecteur d'équipe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> connaître le chiffre pondéré de chaque vendeur.</p>
+                    <p><strong>Indication :</strong> dans l'analyse du pipeline, en tableau croisé, gardez le filtre
+                        Opportunités et la mesure Revenu au prorata, puis remplacez le regroupement des lignes par
+                        <strong>Vendeur</strong>.</p>
+                    <p><strong>Critère de réussite :</strong> une ligne par vendeur,
+                        et un total général égal à celui du tableau par étape.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La prévision range les opportunités par mois de clôture prévue ; la colonne Aucun signale
+                        celles qui n'ont pas de date.</li>
+                    <li>Les montants de la prévision sont au prorata : revenu attendu × probabilité.</li>
+                    <li>Glisser une carte vers un mois fixe la date de clôture au premier jour de ce mois.</li>
+                    <li>L'analyse du pipeline se lit comme un entonnoir, en graphique ou en tableau croisé.</li>
+                    <li>Les pertes s'analysent par motif, à condition que chaque perte en porte un.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Activités et relances commerciales dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Du CRM au devis dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités</a></h5>
+                            <p class="small text-muted mb-0">Probabilité, motifs de perte : les données que la prévision exploite.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/analyser-ventes-odoo-206">Analyser ses ventes dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le même outil d'analyse, côté commandes : marges et favoris.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances</a></h5>
+                            <p class="small text-muted mb-0">Les relances qui font avancer les affaires d'une colonne à l'autre.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
