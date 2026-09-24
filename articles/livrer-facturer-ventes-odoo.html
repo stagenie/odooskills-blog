@@ -1,0 +1,466 @@
+<!--
+Article — Livrer et facturer une commande dans Odoo 20
+Série « Gestion des ventes avec Odoo 20 » (blog Fonctionnel) — étape 6
+Date : 2026-09-24
+Slug : livrer-facturer-ventes-odoo
+Meta : Installer Inventaire, livrer une commande en une ou plusieurs fois et facturer les quantités livrées dans Odoo 20 Community.
+Mot-clé cible : livrer et facturer une commande odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, ventes, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (V1 à V5 faits), rejouée deux fois
+  depuis la sauvegarde d'avant V6 avec les mêmes résultats.
+  À l'écran (Playwright) : Applications › Inventory › Activer = 8 modules (barcodes, barcodes_gs1_nomenclature, sale_stock,
+  sale_stock_margin, spreadsheet_dashboard_stock_account, stock, stock_account, stock_sms ; 66 → 74 installés) ;
+  S00021 (confirmée en V3) reçoit WH/OUT/00027, S00024 reçoit WH/OUT/00026 ; Chaise de bureau : 0 disponible, 5 prévus,
+  politique « Quantités livrées » ; étoile sur WH/OUT/00027 puis quantité disponible 10 → livraison Prêt, 2 réservées ;
+  sans l'étoile (1er essai) les 10 vont à WH/OUT/00013 (démo, 62 chaises, prévue 26/07) ; 1 livrée → reliquat WH/OUT/00042,
+  commande « Partiellement livré » ; facture FAC/2026/00010 = 90 + 63 = 153 $ ; ensuite bouton gris « Créer une facture »
+  → « La valeur du montant de l'acompte doit être positive. » ; exercice joué : reliquat validé, « Entièrement livré »,
+  FAC/2026/00011 = 63 $.
+  Source : sale_stock/__init__.py:34-49 (post_init_hook : livraisons créées pour les commandes confirmées non livrées) ;
+  stock/models/stock_move.py:2746-2767 (réservation auto : priority desc, date asc) ; stock/models/product.py:276-298
+  (Quantité disponible modifiable = ajustement d'inventaire) ; sale/views/sale_order_views.xml:280-295 (bouton principal si
+  « à facturer », sinon bouton acompte en pourcentage) ; sale/data/product_demo.xml:5-21 (politiques de la démo) ;
+  account/views/account_move_views.xml:1348 (colonne remise optional="hide").
+Captures : content/blog/screenshots/livrer-facturer-ventes-odoo/ (01-13, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Livrer et facturer une commande dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une commande confirmée reste une promesse tant qu'elle n'est pas livrée et facturée. Avec l'application Inventaire, chaque commande produit son bon de livraison, et la
+                    facture suit ce qui a réellement quitté l'entrepôt.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Gestion des ventes avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre 2026.
+                        Les applications Ventes et Inventaire existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Sans Inventaire, Odoo ne sait pas ce qui a été livré : la quantité livrée se saisit à la main sur
+                    la commande. Une fois Inventaire installé, la confirmation d'une commande crée un
+                    <strong>bon de livraison</strong>. Sa validation met à jour la colonne <em>Délivré</em> de la
+                    commande. La facture reprend alors les quantités selon la <strong>politique de
+                    facturation</strong> de chaque article : quantités commandées ou quantités livrées.</p>
+                <p>Cet article reprend la commande <strong>S00021</strong> confirmée dans
+                    <a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande
+                    confirmée</a> : une Installation sur site et deux Chaises de bureau pour « Client particulier ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>installer Inventaire et retrouver le bon de livraison d'une commande ;</li>
+                    <li>choisir entre facturer les quantités commandées ou livrées ;</li>
+                    <li>rendre un article disponible et réserver sa livraison ;</li>
+                    <li>livrer une partie de la commande et garder le reste en reliquat ;</li>
+                    <li>créer et confirmer la facture de ce qui a été livré.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Installer Inventaire</h2>
+                <p>Ouvrez le menu <strong>Applications</strong> et cliquez sur <strong>Activer</strong> dans la
+                    carte « Inventory ». Le nom de l'application reste en anglais dans cet écran.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte de l'application Inventory dans l'écran Applications d'Odoo 20, avec les boutons Activer et En savoir plus" style="max-width:45%; height:auto;"/>
+                    <figcaption>La carte Inventory de l'écran Applications.</figcaption>
+                </figure>
+                <p>Sur la base de démonstration, l'installation ajoute huit modules, dont <code>stock</code>
+                    (Inventaire), <code>stock_account</code> (valorisation du stock) et <code>sale_stock</code>, le
+                    pont entre Ventes et Inventaire. Ce dernier fait un travail de rattrapage : chaque commande déjà
+                    confirmée et pas encore livrée reçoit aussitôt son bon de livraison. S00021 obtient ainsi
+                    <strong>WH/OUT/00027</strong>, sans aucune action de votre part.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Choisir la politique de facturation</h2>
+                <p>La politique de facturation décide de ce que la facture reprend. Elle se règle à deux endroits :</p>
+                <ul>
+                    <li>dans <strong>Ventes › Configuration › Paramètres</strong>, bloc <em>Facturation</em>, pour
+                        les articles <strong>à créer</strong> ;</li>
+                    <li>sur chaque article, champ <strong>Politique de facturation</strong> de l'onglet
+                        <em>Informations générales</em>, qui prime.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Réglage Politique de facturation dans les paramètres Ventes d'Odoo 20 : Quantités commandées ou Quantités livrées" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le réglage de la société : quantités commandées par défaut.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Politique</th><th>La facture reprend</th><th>Pour quels articles</th></tr></thead>
+                    <tbody>
+                        <tr><td>Quantités commandées</td><td>la quantité de la commande, dès sa confirmation</td><td>services forfaitaires, ventes payées d'avance</td></tr>
+                        <tr><td>Quantités livrées</td><td>la quantité réellement livrée</td><td>biens expédiés en une ou plusieurs fois</td></tr>
+                    </tbody>
+                </table>
+                <p>La démonstration mélange les deux : la société facture les quantités commandées, mais la Chaise de
+                    bureau est réglée sur <strong>Quantités livrées</strong>. L'Installation sur site, créée dans
+                    <a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles</a>, a
+                    reçu la valeur par défaut, Quantités commandées. S00021 réunit donc les deux cas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ouvrir le bon de livraison</h2>
+                <p>Ouvrez <strong>Ventes › Commandes › Commandes</strong>, puis S00021. Deux nouveautés sont apparues dans les lignes : la colonne <em>Délivré</em> (masquée ci-dessous par
+                    la fenêtre ouverte), et une petite icône de graphique
+                    <strong>rouge</strong> à côté de la quantité des chaises. Cliquez sur l'icône : il n'y a aucune
+                    chaise réservée pour cette commande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Ligne Chaise de bureau d'une commande Odoo 20 avec l'icône rouge et la fenêtre Disponibilité : Réservé 0, Voir les prévisions" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'icône rouge : la quantité commandée n'est pas disponible en stock.</figcaption>
+                </figure>
+                <p>En haut du formulaire, le bouton <strong>Livraison</strong> ouvre le bon de livraison de la
+                    commande. Ces boutons de raccourci s'affichent dans la barre du haut, à côté du nom du document.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Haut du formulaire de la commande S00021 dans Odoo 20 : bouton Livraison 1 et boutons Créer une facture, Envoyer une facture PRO FORMA, Envoyer, Aperçu, Annuler" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le bouton Livraison, avec le nombre de bons liés à la commande.</figcaption>
+                </figure>
+                <p>Le bon WH/OUT/00027 est <strong>En attente</strong> : la Chaise de bureau a 0 unité en stock. Le badge
+                    « Prévu » donne la date à laquelle Odoo attend du stock, d'après les réceptions de la
+                    démonstration ; il ne signifie pas que des chaises sont réservées.
+                    Avant d'en ajouter, cliquez sur l'<strong>étoile</strong> à gauche du nom du bon pour le rendre
+                    prioritaire. La raison est expliquée à l'étape suivante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Bon de livraison WH/OUT/00027 en attente dans Odoo 20, étoile de priorité activée, Chaise de bureau demande 2 quantité 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon de livraison, marqué prioritaire : 2 chaises demandées, aucune réservée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Mettre l'article en stock</h2>
+                <p>Ouvrez la fiche de l'article (<strong>Ventes › Produits › Produits</strong>, Chaise de bureau).
+                    Sur une base simple, sans emplacements multiples, colis ni propriétaires, le champ <strong>Quantité
+                    disponible</strong> se modifie directement (pour un administrateur de l'Inventaire). Saisissez <code>10</code> et enregistrez : Odoo passe
+                    un ajustement d'inventaire dans l'entrepôt de la société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fiche article Chaise de bureau dans Odoo 20 : type Biens, politique de facturation Quantités livrées, suivi Par quantité, quantité disponible 10" style="max-width:70%; height:auto;"/>
+                    <figcaption>La fiche de l'article : politique « Quantités livrées » et 10 unités disponibles.</figcaption>
+                </figure>
+                <p>Le nouveau stock est réservé tout de suite aux livraisons qui l'attendent, <strong>les
+                    prioritaires d'abord</strong>, puis par date prévue. Revenez au bon WH/OUT/00027 : il est
+                    <strong>Prêt</strong>, avec 2 chaises réservées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Bon de livraison WH/OUT/00027 au statut Prêt dans Odoo 20 : Chaise de bureau disponible, demande 2, quantité 2, bouton Valider" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon est prêt : les 2 chaises sont réservées pour la commande.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Livrer une partie et garder un reliquat</h2>
+                <p>Une seule chaise part aujourd'hui. Dans l'onglet <strong>Opérations</strong>, remplacez la
+                    Quantité 2 par <code>1</code>, puis cliquez sur <strong>Valider</strong>. Odoo demande ce qu'il
+                    faut faire de la chaise restante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Créer un reliquat ? dans Odoo 20 avec les boutons Créer un reliquat, Aucun reliquat et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Moins de produits que prévu : Odoo propose un reliquat.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Créer un reliquat</strong> : un second bon, WH/OUT/00042, reprend la chaise restante
+                        pour une livraison ultérieure ;</li>
+                    <li><strong>Aucun reliquat</strong> : la chaise restante ne sera pas livrée ;</li>
+                    <li><strong>Ignorer</strong> : retour au bon, sans validation.</li>
+                </ul>
+                <p>Choisissez <strong>Créer un reliquat</strong>. Le premier bon de livraison passe à <strong>Terminé</strong>.
+                    Sur la commande, le bouton Livraison compte désormais 2 bons, l'indicateur devient
+                    « Partiellement livré » et la colonne Délivré affiche 1 pour les chaises.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Lignes de la commande S00021 dans Odoo 20 après livraison partielle : Chaise de bureau quantité 2, délivré 1, facturé 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après la livraison partielle : 1 chaise délivrée sur 2, rien de facturé.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Facturer ce qui a été livré</h2>
+                <p>Sur la commande, cliquez sur <strong>Créer une facture</strong>. L'assistant propose trois
+                    choix : <strong>Facture normale</strong>, qui reprend ce qui est prêt à facturer, ou un acompte
+                    en pourcentage ou en montant fixe. Gardez Facture normale et cliquez sur <strong>Créer
+                    brouillon</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Assistant Créer facture(s) dans Odoo 20 : Facture normale, Acompte (pourcentage), Acompte (montant fixe), boutons Créer brouillon et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'assistant de facturation d'une commande.</figcaption>
+                </figure>
+                <p>Le brouillon contient exactement ce que les politiques prévoient :</p>
+                <ul>
+                    <li>l'Installation sur site (quantités commandées) : 1, soit 90 $ ;</li>
+                    <li>la Chaise de bureau (quantités livrées) : 1 et non 2, soit 63 $ après la remise de 10 % de
+                        la commande.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Facture client brouillon dans Odoo 20 pour Client particulier : Installation sur site 90 dollars, Chaise de bureau 1 unité 63 dollars, total 153 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture brouillon : 153 $, la chaise non livrée n'y figure pas.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Confirmer</strong>. La facture reçoit son numéro, FAC/2026/00010, et le bouton
+                    <strong>Payer</strong> apparaît : l'encaissement relève de l'application Facturation. Sur la
+                    commande, le bouton <strong>Factures clients</strong> rejoint Livraison et la colonne
+                    <em>Facturé</em> vaut 1 sur les deux lignes.</p>
+                <p>Pour retrouver toutes les commandes en attente de facture, la liste <strong>Ventes › Commandes ›
+                    Commandes</strong> propose les filtres <strong>À facturer</strong> et <strong>To Deliver</strong> (resté en
+                    anglais) :
+                    Odoo 20 n'a plus de menu « À facturer » dédié.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Commande S00021 dans Odoo 20 après facturation : boutons Livraison 2 et Factures clients 1, badge Partiellement livré, Chaise de bureau délivrée 1 et facturée 1, Installation facturée 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande après la première facture : une chaise reste à livrer, puis à facturer.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMPLÉMENT ENTERPRISE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="ee-box">
+                    <h4>Complément Enterprise — à venir</h4>
+                    <p>Le module <code>stock_barcode</code> n'est pas inclus dans la Community ; son fonctionnement sera
+                        présenté dans un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sans l'étoile, le stock part ailleurs</h4>
+                    <p>La démonstration contient des livraisons en retard qui attendent déjà des chaises, dont
+                        WH/OUT/00013 (62 chaises, prévue en juillet). Sans l'étoile, les 10 chaises ajoutées lui
+                        sont réservées et WH/OUT/00027 reste En attente. Le bouton <strong>Réserver</strong> ne
+                        reprend pas un stock déjà réservé à une autre livraison.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le bouton gris « Créer une facture » crée un acompte</h4>
+                    <p>Quand plus rien n'est à facturer, le bouton principal disparaît et un bouton gris du même nom
+                        prend sa place. Il ouvre l'assistant sur <strong>Acompte (pourcentage)</strong>, à 0 %. Valider
+                        tel quel produit ce message :</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_13" alt="Message Opération invalide dans Odoo 20 : La valeur du montant de l'acompte doit être positive" style="max-width:55%; height:auto;"/>
+                        <figcaption>Le message obtenu avec le bouton gris, alors que rien n'est à facturer.</figcaption>
+                    </figure>
+                    <p>Il ne signale pas une erreur de montant : il signale qu'il n'y a rien à facturer. Livrez
+                        d'abord le reliquat.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La remise n'apparaît pas sur la facture</h4>
+                    <p>La ligne de chaise affiche 70,00 en prix et 63,00 en montant. La colonne de remise existe,
+                        mais elle est masquée par défaut : le sélecteur de colonnes, en bout d'en-tête, l'affiche.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un service n'est jamais « livré » par Inventaire</h4>
+                    <p>L'Installation sur site reste à 0 dans la colonne Délivré, même facturée. Un bon de livraison
+                        ne concerne que les biens. Pour un service réglé sur « Quantités livrées », la quantité
+                        délivrée se saisit à la main sur la ligne de commande.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> terminer la commande S00021.</p>
+                    <p><strong>Indication :</strong> depuis le bouton Livraison de la commande, ouvrez le reliquat
+                        WH/OUT/00042 et validez-le, puis revenez à la commande et créez une facture normale.</p>
+                    <p><strong>Critère de réussite :</strong> la commande affiche « Entièrement livré », le bouton
+                        Factures clients compte 2 factures, et la seconde s'élève à 63 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Avec Inventaire, chaque commande confirmée qui contient des biens crée un bon de livraison, y compris les commandes
+                        confirmées avant son installation.</li>
+                    <li>La politique de facturation de l'article décide : quantités commandées ou livrées.</li>
+                    <li>Le stock ajouté se réserve aux livraisons prioritaires d'abord, puis par date prévue.</li>
+                    <li>Une livraison incomplète laisse un reliquat, qui se livre et se facture plus tard.</li>
+                    <li>La facture normale ne reprend que ce qui est prêt à facturer.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/modeles-devis-signature-ventes-odoo-204">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Modèles de devis, options et signature en ligne dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Analyser ses ventes (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Créer, envoyer, confirmer ou annuler un devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler l'application Ventes</a></h5>
+                            <p class="small text-muted mb-0">Le point de départ de la série : activer Ventes et ses réglages.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Où se placent Ventes, Inventaire et Facturation dans l'offre gratuite.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
