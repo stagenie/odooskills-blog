@@ -151,6 +151,9 @@ class LibraryLoan(models.Model):
             },
         }
 
+    def action_print_loan(self):
+        return self.env.ref('biblio.action_report_library_loan').report_action(self)
+
     @api.model
     def _cron_relancer_retards(self):
         aujourdhui = fields.Date.context_today(self)
