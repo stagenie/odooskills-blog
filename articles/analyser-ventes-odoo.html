@@ -1,0 +1,435 @@
+<!--
+Article — Analyser ses ventes dans Odoo 20
+Série « Gestion des ventes avec Odoo 20 » (blog Fonctionnel) — étape 7
+Date : 2026-09-24
+Slug : analyser-ventes-odoo
+Meta : Analyse des ventes dans Odoo 20 Community : graphique, tableau croisé, marge par client ou par produit, favoris, et les limites du tableau de bord Ventes.
+Mot-clé cible : analyse des ventes odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, ventes, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (V1 à V6 faits).
+  À l'écran (Playwright) : Ventes › Analyse = Ventes, Vendeurs, Produits, Clients ; « Analyse des ventes » s'ouvre en
+  graphique en courbe, facettes « Commandes clients » + « Date de la commande : 365 derniers jours », mesure
+  « Qté commandée » ; 19 mesures ; pivot Total hors taxes 28 039,69 $ / Marge −15 890,81 $ (Client particulier 379,19 /
+  214,19 ; Gemini Furniture 23 963,00 / −18 045,50) ; boutons Mesures, Inverser les axes, Tout déplier, Télécharger le
+  xlsx ; favori « Marge par client » enregistré. Tableaux de bord › Ventes : Devis 29, Commandes 44, Revenu −$234,
+  Commande moyenne $384, Ventes mensuelles vide.
+  Shell : 90 jours = 29 lignes / 6 devis brouillons, 44 lignes / 21 commandes, 28 039,69 $ HT ; démo : Grande table de
+  réunion coût 4 500 $ vendue 150 $ (S00004), S00007 Écrans anti-bruit coût 2 870 $ ; top marge 365 j = Design
+  d'intérieur virtuel 2 180 $.
+  Source : sale/views/sale_menus.xml:68-90 (menu Analyse, group_sale_manager) ; sale/report/sale_report_views.xml:140-177
+  (4 actions, facettes par défaut) ; web/static/src/views/view_components/report_view_measures.xml:7-8 (bouton = nom
+  de la mesure, nouveau en 20) ; sale_margin/report/sale_report.py:10-20 (Marge, Coût prévu) ;
+  spreadsheet_dashboard_sale/data/files/sales_dashboard.json (D7 = "-234" en dur, B2/B5/B6 = __count:sum, domaine
+  Monthly Sales sur product_tmpl_id.recurring_invoice → ValueError en Community ; en 19 : order_reference et
+  FORMAT.LARGE.NUMBER(B7)).
+Captures : content/blog/screenshots/analyser-ventes-odoo/ (01-07, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Analyser ses ventes dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Qu'est-ce qui se vend, à qui, et avec quelle marge ? Le menu Analyse
+                    de l'application Ventes répond sans export ni tableur, à condition de choisir la bonne mesure.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Gestion des ventes avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre 2026.
+                        L'application Ventes existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Toutes les analyses de Ventes lisent le même rapport : <strong>une entrée par ligne de commande</strong>, avec son client, son article, son vendeur, ses quantités (commandée, livrée,
+                    facturée) et ses montants. Chaque vue (graphique, tableau croisé, liste) regroupe ces lignes et en
+                    additionne une <strong>mesure</strong>.</p>
+                <p>La base de démonstration fournit une vingtaine de commandes, auxquelles s'ajoutent celles des
+                    articles précédents de la série, dont S00021, livrée et facturée dans
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande</a>. Le menu Analyse est réservé aux utilisateurs qui ont le droit
+                    <strong>Administrateur</strong> de l'application Ventes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>ouvrir l'analyse des ventes d'Odoo 20 et lire ses filtres par défaut ;</li>
+                    <li>changer de mesure, de type de graphique et de regroupement ;</li>
+                    <li>construire un tableau croisé du chiffre d'affaires et de la marge par client ;</li>
+                    <li>enregistrer une analyse en favori ;</li>
+                    <li>savoir quand ne pas se fier au tableau de bord Ventes de la version 20.0.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le menu Analyse</h2>
+                <p>Le menu <strong>Ventes › Analyse</strong> propose quatre entrées : Ventes, Vendeurs, Produits et
+                    Clients. Ce sont quatre portes vers le <strong>même rapport</strong>, avec des réglages de départ
+                    différents : Ventes s'ouvre en courbe sans regroupement, Produits en camembert par article,
+                    Vendeurs et Clients en barres par vendeur ou par client. Attention : Ventes et Produits ne gardent
+                    que les commandes confirmées, alors que Vendeurs et Clients comptent aussi les devis et les
+                    commandes annulées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Menu Analyse de l'application Ventes d'Odoo 20 ouvert : Ventes, Vendeurs, Produits, Clients" style="max-width:55%; height:auto;"/>
+                    <figcaption>Les quatre entrées du menu Analyse.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Lire le graphique de départ</h2>
+                <p>Choisissez <strong>Analyse › Ventes</strong>. L'écran « Analyse des ventes » s'ouvre en graphique
+                    en courbe, par mois, avec deux filtres déjà posés :</p>
+                <ul>
+                    <li><strong>Commandes clients</strong> : seules les commandes confirmées sont gardées (les annulées sont déjà
+                        exclues par le menu) ;</li>
+                    <li><strong>Date de la commande : 365 derniers jours</strong>.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Analyse des ventes dans Odoo 20 : graphique en courbe de la quantité commandée par mois, filtres Commandes clients et 365 derniers jours" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'analyse de départ : la quantité commandée, mois par mois.</figcaption>
+                </figure>
+                <p>La mesure affichée est la <strong>Qté commandée</strong> : la somme des quantités de toutes les
+                    lignes, chaises, unités de service et tables confondues. En graphique, le bouton violet en haut à gauche porte le nom de la mesure en cours : c'est une
+                    nouveauté d'Odoo 20, la version 19 affichait toujours « Mesures ». En tableau croisé, où plusieurs
+                    mesures se cochent, il reste « Mesures ». Cliquez dessus : dix-neuf mesures sont proposées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des mesures de l'analyse des ventes dans Odoo 20 : Coût prévu, Marge, Montant hors taxes à facturer, Qté livrée, Total hors taxes, etc." style="max-width:45%; height:auto;"/>
+                    <figcaption>Les mesures disponibles ; la mesure en cours est cochée.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Question</th><th>Mesure</th></tr></thead>
+                    <tbody>
+                        <tr><td>Quel chiffre d'affaires ?</td><td>Total hors taxes</td></tr>
+                        <tr><td>Quelle marge ?</td><td>Marge (prix de vente moins coût prévu)</td></tr>
+                        <tr><td>Quel reste à facturer ?</td><td>Montant hors taxes à facturer</td></tr>
+                        <tr><td>Quel reste à livrer ?</td><td>Qté à livrer</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Changer de mesure et de regroupement</h2>
+                <p>Choisissez la mesure <strong>Total hors taxes</strong>, puis le graphique à barres (première icône du groupe de droite, sous la barre de recherche). Ouvrez ensuite le menu de la barre de recherche (la flèche à droite du
+                    champ) et, dans la colonne <strong>Regrouper par</strong>, choisissez
+                    <strong>Produit</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Graphique à barres du total hors taxes par produit dans l'analyse des ventes d'Odoo 20, Écrans anti-bruit en tête" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le chiffre d'affaires hors taxes par article sur 365 jours.</figcaption>
+                </figure>
+                <p>Le regroupement s'ajoute aux facettes de la recherche. Il se retire par sa croix, comme un
+                    filtre. Les flèches à côté des types de graphique trient les barres par valeur croissante ou
+                    décroissante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Croiser chiffre d'affaires et marge par client</h2>
+                <p>Retirez la facette Produit et passez en <strong>tableau croisé dynamique</strong> (deuxième icône
+                    en haut à droite). Il s'ouvre par mois en lignes et par équipe commerciale en colonnes. Puis :</p>
+                <ol>
+                    <li>dans <strong>Mesures</strong>, décochez Qté commandée, cochez <strong>Total hors
+                        taxes</strong> et <strong>Marge</strong> ;</li>
+                    <li>cliquez sur l'en-tête <strong>Total</strong> des colonnes pour replier les équipes ;</li>
+                    <li>cliquez sur l'en-tête <strong>Total</strong> des lignes pour replier les mois, cliquez-y de
+                        nouveau et choisissez <strong>Client</strong>.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Tableau croisé dynamique de l'analyse des ventes dans Odoo 20 : total hors taxes et marge par client, marge négative pour Gemini Furniture" style="max-width:60%; height:auto;"/>
+                    <figcaption>Total hors taxes et marge par client : la marge de Gemini Furniture est négative.</figcaption>
+                </figure>
+                <p>Le tableau croisé offre aussi <strong>Inverser les axes</strong>, <strong>Tout déplier</strong> et
+                    <strong>Télécharger le xlsx</strong>, qui produit un fichier tableur de ce qui est affiché.</p>
+                <p>La marge négative de Gemini Furniture n'est pas une erreur de calcul. La marge vaut le prix de
+                    vente moins le <strong>coût</strong> de l'article, relevé sur la ligne de commande. La
+                    démonstration contient des coûts incohérents : la Grande table de réunion, vendue 150 $, a un coût
+                    de 4 500 $. Une marge ne vaut que ce que valent les coûts saisis sur les fiches articles.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Enregistrer l'analyse en favori</h2>
+                <p>Refaire ces réglages chaque lundi serait fastidieux. Ouvrez le menu de la barre de recherche ;
+                    dans la colonne <strong>Favoris</strong>, dépliez <strong>Enregistrer la recherche
+                    actuelle</strong>, nommez-la <code>Marge par client</code> et cliquez sur
+                    <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Menu de recherche de l'analyse des ventes dans Odoo 20 : Filtres, Regrouper par, et Favoris avec Enregistrer la recherche actuelle nommée Marge par client" style="max-width:80%; height:auto;"/>
+                    <figcaption>Filtres, regroupements et favoris dans un même menu.</figcaption>
+                </figure>
+                <p>Le favori retient les filtres (la période reste relative : toujours les 365 derniers jours), les mesures
+                    et les regroupements du tableau croisé. La case <strong>Filtre par
+                    défaut</strong> l'applique à chaque ouverture de l'analyse.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le tableau de bord Ventes, à lire avec prudence</h2>
+                <p>L'application <strong>Tableaux de bord</strong>, installée avec Ventes, propose un tableau
+                    « Ventes » : indicateurs en tête, ventes mensuelles, pays, meilleurs produits. Dans la version 20.0
+                    vérifiée pour cet article, plusieurs de ses chiffres sont faux.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Tableau de bord Ventes d'Odoo 20 : Devis 29, Commandes 44, Revenu -234 dollars, Commande moyenne 384 dollars, graphique Ventes mensuelles vide" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le tableau de bord Ventes sur la base de démonstration : revenu négatif, graphique vide.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Indicateur</th><th>Affiché</th><th>Réalité (90 derniers jours)</th><th>Cause</th></tr></thead>
+                    <tbody>
+                        <tr><td>Devis</td><td>29</td><td>6 devis</td><td>compte les lignes des devis brouillons ; les devis envoyés ne sont plus comptés</td></tr>
+                        <tr><td>Commandes</td><td>44</td><td>21 commandes</td><td>compte les lignes, pas les commandes</td></tr>
+                        <tr><td>Revenu</td><td>−$234</td><td>28 039,69 $ hors taxes</td><td>valeur écrite en dur dans le tableau livré</td></tr>
+                        <tr><td>Commande moyenne</td><td>$384</td><td>environ 1 335 $</td><td>revenu divisé par le nombre de lignes de devis et de commandes (73)</td></tr>
+                        <tr><td>Ventes mensuelles</td><td>vide</td><td>—</td><td>filtre sur un champ absent de la Community</td></tr>
+                    </tbody>
+                </table>
+                <p>Les montants des classements (pays, meilleurs produits…) lisent le même rapport que le menu Analyse et sont justes ; la colonne « Unité » de Meilleurs produits compte toutefois des lignes de commande, pas
+                    des quantités. Pour un chiffre à communiquer, le menu Analyse fait foi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMPLÉMENT ENTERPRISE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="ee-box">
+                    <h4>Complément Enterprise — à venir</h4>
+                    <p>Le module <code>spreadsheet_edition</code> n'est pas inclus dans la Community ; son
+                        fonctionnement sera présenté dans un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La mesure de départ additionne des choses différentes</h4>
+                    <p>Qté commandée additionne des unités, des heures et des pièces. Pour parler d'argent, changez
+                        de mesure avant toute lecture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les devis ne sont pas comptés</h4>
+                    <p>Le filtre Commandes clients exclut les devis en cours. Pour mesurer le carnet de devis,
+                        retirez-le et cochez le filtre <strong>Devis</strong>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des montants en dollars</h4>
+                    <p>La base de démonstration utilise un plan comptable générique en dollars américains, comme
+                        expliqué dans <a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer
+                        et régler l'application Ventes</a>. Sur une société française sans démonstration, les montants
+                        sont en euros.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Libellés restés en anglais</h4>
+                    <p>« Not Cancelled » dans les filtres, « Top Countries » dans le tableau de bord, « To Confirm »
+                        et « To Deliver » dans les compteurs de la liste des devis ne sont pas traduits.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> trouver l'article qui rapporte le plus.</p>
+                    <p><strong>Indication :</strong> ouvrez Analyse › Produits, prenez la mesure Marge, passez en
+                        graphique à barres et triez par ordre décroissant.</p>
+                    <p><strong>Critère de réussite :</strong> sur la base de démonstration, le service « Design
+                        d'intérieur virtuel » arrive en tête, avec 2 180 $ de marge, loin devant les meubles.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les quatre entrées du menu Analyse ouvrent le même rapport, ligne de commande par ligne de
+                        commande.</li>
+                    <li>Par défaut : commandes confirmées des 365 derniers jours, mesure Qté commandée.</li>
+                    <li>Total hors taxes, Marge et Montant hors taxes à facturer répondent aux questions d'argent.</li>
+                    <li>Le tableau croisé se télécharge en xlsx ; une analyse s'enregistre en favori.</li>
+                    <li>En 20.0, les indicateurs du tableau de bord Ventes sont faux : le menu Analyse fait foi.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Livrer et facturer une commande dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Bilan : le cycle de vente complet (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Bon de livraison, reliquat et facture des quantités livrées.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Ce qui fait bouger le total hors taxes et la marge.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/installer-application-ventes-odoo-200">Installer et régler l'application Ventes</a></h5>
+                            <p class="small text-muted mb-0">Le point de départ de la série.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
