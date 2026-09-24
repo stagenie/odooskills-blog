@@ -1,0 +1,390 @@
+<!--
+Article — Paiements et relances dans Odoo 20
+Série « Facturation avec Odoo 20 » (blog Fonctionnel) — étape 3
+Date : 2026-09-24
+Slug : paiements-relances-odoo
+Meta : Enregistrer un paiement client total, partiel ou groupé dans Odoo 20 Community, lire les états des paiements, puis relancer les factures en retard.
+Mot-clé cible : paiement facture odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : debutant, comptabilite, guide, community
+Temps de lecture : ~8 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration).
+  account/views/account_move_views.xml:795-818 (bouton Payer) + 652-654 (liste : Envoyer et Payer sur une
+  sélection) ; account/wizard/account_payment_register_views.xml:9,59-77,145-146 (fenêtre Payer, écart de
+  paiement) ; account/wizard/account_payment_register.py:25-27 (Regrouper les paiements : un paiement par
+  partenaire) ; :331-339 (écart de paiement proposé seulement si le mode de paiement a un compte de paiement ;
+  démo : « Manual Payment » sans compte) ; account/models/account_payment.py:37-44 (états Brouillon, Payé,
+  Rapproché, Annulé, Rejeté ; 19.0 : In Process → Paid, 20.0 : Paid → Reconciled) + 496-515 (Rapproché = ligne
+  de banque lettrée, ou toutes les factures réglées soldées) ; relances automatiques : aucun module
+  account_followup dans odoo/addons (Community).
+  Parcours joué : FAC/2026/00013 (Wood Corner, 451,95 $ dus après l'avoir) → paiement partiel 300 $
+  PBNK1/2026/00002 (état Payé) → montant dû 151,95 $ ; filtre En retard + regroupement Partenaire : Acme
+  Corporation 3 factures, OpenWood 1 ; sélection FAC/2026/00005 + 00006 (OpenWood) → Payer : 3 000 $, case
+  Regrouper les paiements (fenêtre ignorée). Libellés non traduits : « Recipient Account », « 3 records ».
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Paiements et relances dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une facture n'est terminée qu'une fois payée. Odoo 20 enregistre
+                    le règlement, total, partiel ou groupé, suit ce qui reste dû, et isole les factures en retard
+                    à relancer. Cet article couvre ce cycle dans la Community, et situe les relances automatiques
+                    de l'Enterprise.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Facturation avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community, avec un complément Enterprise.</strong> Écrit et vérifié sur
+                        Odoo 20.0 Community, septembre 2026. Paiements et suivi des retards sont inclus dans la
+                        Community ; les relances automatiques par niveaux sont un module de l'Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Cet article reprend la facture FAC/2026/00013 de Wood Corner, créée dans
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                    avoirs dans Odoo 20</a> : 489,90 $ facturés, un avoir de 37,95 $ déjà imputé, soit
+                    451,95 $ encore dus.</p>
+                <p>Enregistrer un paiement dans Odoo, c'est constater que l'argent est reçu (ou annoncé) :
+                    Odoo crée une écriture de paiement et la lettre avec la facture. Le rapprochement avec la
+                    ligne du relevé bancaire vient ensuite, sujet de l'article suivant, qui clôt la série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>enregistrer un paiement total ou partiel depuis une facture ;</li>
+                    <li>lire les états d'un paiement, Payé et Rapproché ;</li>
+                    <li>régler plusieurs factures en une fois ;</li>
+                    <li>isoler les factures en retard et relancer les clients.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Enregistrer un paiement depuis la facture</h2>
+                <p>Sur la facture, cliquez sur <strong>Payer</strong>. La fenêtre propose le journal (Banque),
+                    le compte bancaire de la société à indiquer au client, le montant restant dû (451,95 $), la
+                    date de règlement et un mémo, prérempli avec le numéro de facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Payer d'Odoo 20 pour la facture FAC/2026/00013 : journal Banque, champ Recipient Account BANK134567890, montant 451,95 dollars, date de règlement 24 septembre, mémo, boutons Créer un paiement et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fenêtre Payer : le montant proposé est le reste dû.</figcaption>
+                </figure>
+                <p>Le client n'a versé que 300 $. Remplacez le montant, puis cliquez sur <strong>Créer un
+                    paiement</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Payer d'Odoo 20 avec un montant ramené à 300 dollars pour la facture FAC/2026/00013, sans option d'écart de paiement" style="max-width:80%; height:auto;"/>
+                    <figcaption>Un paiement partiel de 300 $.</figcaption>
+                </figure>
+                <p>La facture garde le bandeau <strong>PARTIEL</strong> ; le pied liste l'avoir et le paiement,
+                    et le montant dû tombe à 151,95 $. Un bouton <strong>Paiements</strong> apparaît en haut de
+                    la facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Facture FAC/2026/00013 d'Odoo 20 après paiement partiel : boutons Paiements et Avoirs, bandeau PARTIEL, lignes Extourné le 24/09/2026 37,95 dollars et Payé le 24/09/2026 300 dollars, montant dû 151,95 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le paiement partiel : 151,95 $ restent dus.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Solder un écart, ou le laisser ouvert</h4>
+                    <p>Quand le mode de paiement du journal a un compte de paiement, un montant inférieur au dû
+                        fait apparaître l'<strong>écart de paiement</strong> : garder la facture ouverte, ou la
+                        marquer payée en passant l'écart sur un compte (escompte, frais bancaires). Le mode
+                        « Manual Payment » de la démonstration n'a pas de compte de paiement : l'option ne
+                        s'affiche pas, et la facture reste ouverte pour le solde.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Lire la liste des paiements</h2>
+                <p>Le menu <strong>Clients › Paiements</strong> liste les paiements reçus. « Lettrer », c'est
+                    associer en comptabilité un paiement à la facture qu'il règle ; un élément entièrement lettré
+                    n'a plus de reste. La colonne État distingue :</p>
+                <ul>
+                    <li><strong>Payé</strong> : le paiement est enregistré, mais pas encore lettré de bout en
+                        bout (ici, la facture de Wood Corner n'est pas soldée) ;</li>
+                    <li><strong>Rapproché</strong> : le paiement est entièrement lettré, soit avec la ligne du
+                        relevé bancaire, soit, avec la configuration par défaut (compte d'attente), parce que toutes
+                        les factures qu'il règle sont soldées.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des paiements clients d'Odoo 20 : PBNK1/2026/00002 Wood Corner 300 dollars état Payé, PBNK1/2026/00001 Client particulier 311 dollars état Rapproché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux paiements : l'un Payé, l'autre Rapproché.</figcaption>
+                </figure>
+                <div class="edition-box">
+                    <h4>Nouveau dans Odoo 20 : Payé n'est plus l'état final</h4>
+                    <p>En Odoo 19, un paiement passait de « En cours de traitement » à « Payé ». En Odoo 20, il
+                        passe de <strong>Payé</strong> à <strong>Rapproché</strong> : Payé désigne désormais l'étape
+                        intermédiaire. Un paiement « Payé » n'est donc plus un paiement terminé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Régler plusieurs factures en une fois</h2>
+                <p>Un client règle souvent plusieurs factures d'un seul virement. Dans la liste des factures,
+                    cochez-les, ici FAC/2026/00005 et FAC/2026/00006 d'OpenWood, puis cliquez sur
+                    <strong>Payer</strong> dans la barre qui apparaît. La fenêtre totalise 3 000 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Payer d'Odoo 20 pour deux factures OpenWood : journal Banque, case Regrouper les paiements non cochée, montant 3 000 dollars, date de règlement 24 septembre, bouton Créer des paiements" style="max-width:80%; height:auto;"/>
+                    <figcaption>Deux factures sélectionnées : un ou plusieurs paiements.</figcaption>
+                </figure>
+                <p>La case <strong>Regrouper les paiements</strong> décide de la forme : cochée, Odoo crée un seul
+                    paiement par partenaire, comme le virement reçu ; décochée, un paiement par facture. Cochez-la
+                    quand un seul virement couvre plusieurs factures : le rapprochement bancaire n'aura qu'une
+                    ligne à retrouver.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Isoler les factures en retard et relancer</h2>
+                <p>Dans <strong>Clients › Factures</strong>, ouvrez les filtres et choisissez <strong>En
+                    retard</strong>, puis regroupez par <strong>Partenaire</strong>. La liste montre, client par
+                    client, les factures échues et le montant dû : ici 106 662,50 $ chez Acme Corporation sur
+                    trois factures, 1 799 $ chez OpenWood.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Factures clients d'Odoo 20 filtrées En retard et regroupées par partenaire : Acme Corporation 3 factures pour 106 662,50 dollars dus, OpenWood 1 facture pour 1 799 dollars, échéances en rouge" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les factures en retard, regroupées par client.</figcaption>
+                </figure>
+                <p>Pour relancer, cochez les factures d'un client et cliquez sur <strong>Envoyer</strong> :
+                    Odoo programme l'envoi de chaque facture, selon le mode d'envoi de chaque client (courriel,
+                    PDF joint, par défaut). Ajoutez une activité sur la facture
+                    pour suivre l'appel ou la relance suivante. Enregistrez ce filtre en favori : il devient la
+                    liste de travail hebdomadaire des relances.</p>
+                <div class="pitfall-box">
+                    <h4>Vérifier les avoirs avant de relancer</h4>
+                    <p>Une facture dont le client dispose d'avoirs non imputés affiche le bandeau « Vous avez des
+                        crédits en circulation listés ci-dessous pour ce client », avec un bouton Ajouter par
+                        avoir. Imputez-les avant de relancer : le montant réclamé serait faux.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY / EE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Paiements totaux, partiels et groupés, écart de paiement,
+                        filtre En retard, renvoi des factures et activités de relance sont inclus dans Odoo 20
+                        Community.</p>
+                </div>
+                <div class="ee-box">
+                    <h4>Complément Enterprise : les relances automatiques</h4>
+                    <p>La Community ne contient pas de module de relances : la relance reste un geste manuel à
+                        partir de la liste filtrée. Selon la documentation d'Odoo, l'Enterprise propose des niveaux
+                        de relance selon le nombre de jours de retard, leur envoi automatique et le rapport de la
+                        balance âgée des clients.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Payer n'est pas encaisser</h4>
+                    <p>Un paiement enregistré sur la foi d'un avis de virement peut ne jamais arriver. Seul le
+                        rapprochement avec le relevé bancaire confirme l'encaissement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des libellés non traduits</h4>
+                    <p>La fenêtre Payer affiche « Recipient Account » (le compte bancaire à communiquer au
+                        client), et les groupes de liste « 3 records » : ces libellés ne sont pas traduits en
+                        français dans Odoo 20.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> solder la facture de Wood Corner.</p>
+                    <p><strong>Indication :</strong> sur FAC/2026/00013, cliquez sur Payer et gardez le montant
+                        proposé.</p>
+                    <p><strong>Critère de réussite :</strong> la fenêtre propose 151,95 $ ; après le paiement, la
+                        facture porte le bandeau PAYÉ avec un montant dû nul, le bouton Paiements compte 2
+                        paiements, et dans Clients › Paiements les deux paiements de Wood Corner sont passés à
+                        Rapproché.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Payer propose le reste dû ; un montant inférieur laisse la facture partiellement
+                        réglée.</li>
+                    <li>Un paiement passe de Payé à Rapproché quand il est entièrement lettré.</li>
+                    <li>Plusieurs factures se règlent en une fois ; Regrouper les paiements en fait un seul
+                        paiement par client.</li>
+                    <li>En Community, la relance part du filtre En retard ; l'automatisation est Enterprise.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Factures fournisseurs dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Relevés bancaires et rapprochement (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">La facture et l'avoir réglés ici.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances commerciales</a></h5>
+                            <p class="small text-muted mb-0">Planifier les activités qui servent aussi aux relances.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/vendre-odoo-community-bilan-207">Vendre avec Odoo 20 Community : le bilan</a></h5>
+                            <p class="small text-muted mb-0">Le cycle complet, du devis au paiement.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
