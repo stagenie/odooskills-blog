@@ -1,0 +1,364 @@
+<!--
+Article — Relevés bancaires et rapprochement dans Odoo 20 Community
+Série « Facturation avec Odoo 20 » (blog Fonctionnel) — étape 4 (dernière)
+Date : 2026-09-24
+Slug : releves-bancaires-rapprochement-odoo
+Meta : Ce que l'application Facturation d'Odoo 20 Community fait de la banque (journal, paiements à pointer) et ce qui relève de l'Enterprise : relevés et rapprochement bancaire.
+Mot-clé cible : rapprochement bancaire odoo 20 community
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, comptabilite, guide, community
+Temps de lecture : ~7 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration).
+  account/security/account_security.xml:4-30 (Facturation seule : group_account_invoice ⇨ group_account_manager ;
+  group_account_basic, « rapprochement bancaire de base », visible seulement par action serveur ; avec
+  account_accountant (Enterprise) : invoice ⇨ basic ⇨ manager) + :72-78 (Administrateur n'implique que
+  group_account_invoice) ; account/views/account_menuitem.xml:9 (Tableau de bord = group_account_basic) ;
+  account/models/account_journal_dashboard.py:185-186 (AccessError « You do not have access to the Accounting
+  Dashboard. ») ; account/views/res_config_settings_views.xml:377-383 (bloc Banque et liquidités, import QIF en
+  upgrade_boolean, réservé à group_account_user) ; account/models/account_payment.py:496-515 (Payé → Rapproché).
+  Base : admin = Comptabilité / Administrateur + Facturation, sans Basic ; 9 lignes de relevé de démonstration
+  sur My Company (San Francisco), toutes non rapprochées, invisibles dans les menus ; paiement PBNK1/2026/00002
+  (Wood Corner, 300 $) à l'état Payé. Voie non standard : base/views/base_menus.xml:42 (Groupes, mode dev) →
+  « Show Full Accounting Features » : tableau de bord + relevés visibles, pas d'écran de rapprochement
+  (account_journal_dashboard_view.xml:105-110 : Modèles seulement) ; account_security.xml:36 (« shallow access…
+  we want to remove that »). Testé en shell avec rollback.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Relevés bancaires et rapprochement dans Odoo 20 Community</h1>
+                <p class="lead mt-3 text-white">Rapprocher, c'est vérifier ligne à ligne que les paiements
+                    enregistrés figurent bien sur le relevé de la banque. Dans Odoo 20, cet écran n'est pas dans
+                    l'application Facturation de la Community. Cet article montre ce que la Community permet
+                    malgré tout, et où commence l'Enterprise.</p>
+                <p class="small text-light mt-2">~7 minutes de lecture · niveau intermédiaire · série <strong>Facturation avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community, avec un complément Enterprise.</strong> Écrit et vérifié sur
+                        Odoo 20.0 Community, septembre 2026. Le journal de banque et le suivi des paiements sont
+                        inclus dans la Community ; les relevés bancaires et leur rapprochement demandent
+                        l'Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>L'article précédent,
+                    <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                    Odoo 20</a>, a enregistré des paiements. Un paiement enregistré n'est qu'une déclaration :
+                    l'argent est réputé reçu. Le rapprochement bancaire confronte ces paiements aux lignes du
+                    relevé de la banque, et fait passer chaque paiement de Payé à Rapproché.</p>
+                <p>Dans l'application Facturation, les droits se répartissent en groupes. L'utilisateur
+                    administrateur de la Community reçoit « Facturation » et « Administrateur ». Le groupe qui
+                    ouvre le tableau de bord comptable et les relevés, lui, n'est attribué dans la configuration
+                    standard qu'avec le module de comptabilité de l'Enterprise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>paramétrer le journal de banque en Community ;</li>
+                    <li>comprendre pourquoi les relevés et le rapprochement n'apparaissent pas ;</li>
+                    <li>tenir en Community une liste des encaissements à pointer ;</li>
+                    <li>situer ce que l'Enterprise apporte à la banque.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le journal de banque</h2>
+                <p>Le menu <strong>Configuration › Comptabilité › Journaux</strong> liste les journaux ;
+                    ouvrez <strong>Banque</strong>. L'onglet <strong>Pièces comptables</strong> porte le
+                    <strong>Numéro de compte bancaire</strong> de la société : c'est lui que la fenêtre Payer
+                    propose au client et que le courriel de facture rappelle.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Journal Banque d'Odoo 20 Community : type Banque, préfixe de séquence BNK1, onglets Pièces comptables, Paiements entrants, Paiements sortants et Paramètres avancés, numéro de compte bancaire BANK134567890" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le journal Banque et le compte bancaire de la société.</figcaption>
+                </figure>
+                <p>Les onglets <strong>Paiements entrants</strong> et <strong>Paiements sortants</strong>
+                    listent les modes de paiement acceptés par ce journal. La démonstration n'en a qu'un, le
+                    paiement manuel (virement ou chèque saisi à la main).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Onglet Paiements entrants du journal Banque d'Odoo 20 : un seul mode, Paiement manuel, nommé Manual Payment" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un seul mode de paiement entrant : le paiement manuel.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que la Community ne montre pas</h2>
+                <p>Avec l'application Facturation seule, dans la configuration standard, trois éléments restent
+                    invisibles, même pour l'administrateur :</p>
+                <ul>
+                    <li>le <strong>tableau de bord comptable</strong>, avec une carte par journal : son menu
+                        est réservé au groupe de comptabilité de base ;</li>
+                    <li>les <strong>relevés bancaires</strong> : la démonstration en contient, avec neuf lignes
+                        pour la société San Francisco, mais aucun menu standard ne les affiche ;</li>
+                    <li>l'<strong>écran de rapprochement</strong>, qui associe chaque ligne de relevé à un
+                        paiement ou à une facture.</li>
+                </ul>
+                <p>Les paramètres suivent la même règle : le bloc « Banque et liquidités » n'apparaît pas dans
+                    <strong>Configuration › Paramètres</strong>. Ce n'est pas un défaut de configuration ; c'est
+                    le périmètre de l'application Facturation de la Community.</p>
+                <div class="pitfall-box">
+                    <h4>Un lien direct vers le tableau de bord échoue</h4>
+                    <p>Un signet ou un lien vers le tableau de bord comptable, copié depuis une base Enterprise,
+                        ouvre en Community la fenêtre « Erreur d'accès » : « You do not have access to the
+                        Accounting Dashboard. » Le message n'est pas traduit.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La voie des groupes : possible, mais non soutenue</h4>
+                    <p>En mode développeur, le menu Paramètres › Utilisateurs et sociétés › Groupes permet
+                        d'ajouter un utilisateur au groupe « Show Full Accounting Features ». Le tableau de bord,
+                        les pièces comptables et les relevés apparaissent alors ; l'écran qui associe une ligne de
+                        relevé à un paiement, lui, reste absent. Le source d'Odoo qualifie cet accès de
+                        « superficiel » et annonce vouloir le retirer : ne bâtissez pas une organisation dessus.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Pointer les encaissements en Community</h2>
+                <p>Sans écran de rapprochement, le contrôle se fait à partir des paiements. Dans
+                    <strong>Clients › Paiements</strong>, appliquez le filtre <strong>Payé</strong> : restent
+                    les paiements qui ne sont pas encore entièrement lettrés, ici les 300 $ de Wood Corner. Un
+                    paiement y reste tant que les factures qu'il règle ne sont pas toutes soldées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Paiements clients d'Odoo 20 filtrés sur l'état Payé : PBNK1/2026/00002, journal Banque, Wood Corner, 300 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les paiements à l'état Payé : la liste à confronter au relevé.</figcaption>
+                </figure>
+                <p>Confrontez cette liste au relevé reçu de la banque, en ligne ou en PDF. Un paiement absent du
+                    relevé n'est pas encore encaissé : vérifiez-le (un chèque peut être en transit), puis
+                    annulez-le ou relancez le client. En Community, un paiement passe
+                    à Rapproché quand toutes les factures qu'il règle sont soldées, pas quand il est retrouvé sur
+                    le relevé.</p>
+                <p>Enregistrez le filtre en favori, par exemple « Encaissements à pointer » : il devient la
+                    liste de contrôle de chaque fin de mois.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY / EE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Journal de banque, compte bancaire de la société, modes de
+                        paiement, liste des paiements et leur état sont inclus dans Odoo 20 Community. Relevés et
+                        rapprochement bancaires n'y sont pas accessibles dans la configuration standard.</p>
+                </div>
+                <div class="ee-box">
+                    <h4>Complément Enterprise : relevés et rapprochement</h4>
+                    <p>Le module de comptabilité de l'Enterprise attribue le groupe de comptabilité de base et
+                        ouvre le tableau de bord, les relevés et l'écran de rapprochement, absent de la Community.
+                        L'import de relevés au format QIF porte d'ailleurs, dans le source de la Community,
+                        l'étiquette de mise à niveau Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Payé ne veut pas dire encaissé</h4>
+                    <p>Sans rapprochement, l'état Payé repose sur la déclaration de la personne qui a saisi le
+                        paiement. Le pointage mensuel contre le relevé est le seul contrôle.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le comptable externe a besoin du relevé</h4>
+                    <p>Un cabinet qui tient la comptabilité hors d'Odoo rapproche de son côté. Exportez la liste
+                        des paiements du mois (cochez-les, puis Actions › Exporter) pour la lui transmettre avec les
+                        relevés.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> préparer la liste de pointage de fin de mois.</p>
+                    <p><strong>Indication :</strong> dans Clients › Paiements, appliquez le filtre Payé,
+                        regroupez par Journal, puis enregistrez la recherche en favori sous le nom « Encaissements à
+                        pointer ».</p>
+                    <p><strong>Critère de réussite :</strong> le favori apparaît dans le menu de recherche ; il
+                        ouvre les paiements à l'état Payé, groupés sous le journal Banque. Si vous avez soldé la
+                        facture de Wood Corner dans l'exercice de l'article précédent, la liste est vide : ses
+                        deux paiements sont passés à Rapproché.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Community, la banque se limite au journal, à ses modes de paiement et aux paiements
+                        saisis.</li>
+                    <li>Dans la configuration standard, relevés et tableau de bord comptable demandent
+                        l'Enterprise ; l'écran de rapprochement n'existe qu'en Enterprise.</li>
+                    <li>Le filtre Payé des paiements sert de liste de pointage contre le relevé.</li>
+                    <li>Avec cet article, la série Facturation est complète : factures, fournisseurs, paiements,
+                        banque.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Paiements et relances dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Fin de la série</div>
+                            <div class="fw-bold">Retour au pilier : <a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le début de la série Facturation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Les paiements à pointer contre le relevé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Le périmètre complet de la Community.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
