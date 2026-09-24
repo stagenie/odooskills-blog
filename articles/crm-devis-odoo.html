@@ -1,0 +1,406 @@
+<!--
+Article — Du CRM au devis dans Odoo 20
+Série « Gestion de la relation client avec Odoo 20 » (blog Fonctionnel) — étape 5 (dernière)
+Date : 2026-09-24
+Slug : crm-devis-odoo
+Meta : Passer d'une opportunité du CRM d'Odoo 20 à un devis puis à une commande, lire les montants remontés sur l'opportunité et la clore gagnée.
+Mot-clé cible : crm devis odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, crm, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration, CRM + Ventes).
+  sale_crm/models/crm_lead.py:10 (Somme des commandes = total TTC, amount_total ; v19 : amount_untaxed, « Untaxed
+  Total ») ; :72-75 (devis = brouillon/envoyé ; commandes = hors brouillon/envoyé/annulé) ; :104-111
+  (_update_revenues_from_so : revenu attendu relevé au HT de la commande s'il est inférieur, jamais baissé) ;
+  sale_crm/models/sale_order.py:14-17 (appel à la confirmation) ; sale_crm/wizard/crm_opportunity_to_quotation_views.xml
+  (assistant « À qui ce nouveau devis doit-il être associé ? », seulement si l'opportunité n'a pas de client).
+  Parcours joué : opportunité 48 « Mobilier pour un espace de coworking » (Atelier Coworking Rive Gauche), revenu
+  attendu 9 600 $ ; Nouveau devis → S00033 (12 Combinaison de bureau 450 $, 12 Chaise de bureau noire 120,50 $,
+  taxe 15 %) = 6 846 $ HT, 7 872,90 $ TTC ; avant confirmation : bouton « 1 Devis » ; après : « 0 Devis » +
+  « Commandes 7 872,90 $ », étape inchangée (Nouveau), revenu attendu inchangé (9 600 > 6 846) ; Gagné à la main.
+  Assistant vu sur « Need 20 Desks » (sans client), fermé sans rien créer. Exercice vérifié par shell (rollback) :
+  5 VP Chairs (id 22, 5 600 $) + 20 FURN_7800 à 405 $ (liste Grossiste) → 8 100 $ HT, revenu attendu 8 100, étape Proposition.
+Captures : content/blog/screenshots/crm-devis-odoo/ (01-07, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Du CRM au devis dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">L'opportunité mûrit, le client attend une proposition chiffrée.
+                    Odoo 20 crée le devis depuis l'opportunité, garde le lien entre les deux et remonte les
+                    montants commandés. Cet article fait le passage, du pipeline à la commande confirmée, et
+                    clôt la série CRM.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Gestion de la relation client avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026. Le lien entre CRM et Ventes est inclus dans la Community ; il s'installe seul dès que
+                        les deux applications sont présentes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le CRM suit l'affaire ; l'application Ventes produit le devis, puis la commande, la livraison
+                    et la facture. Le module de liaison <strong>CRM + Ventes</strong>, installé automatiquement
+                    quand les deux applications sont présentes, ajoute le bouton <strong>Nouveau devis</strong> à
+                    l'opportunité et relie chaque devis à l'affaire dont il provient.</p>
+                <p>Cet article reprend l'opportunité « Mobilier pour un espace de coworking » (client Atelier
+                    Coworking Rive Gauche) des articles précédents, dont
+                    <a href="/blog/fonctionnel-odoo-1/previsions-analyse-pipeline-crm-odoo-211">Prévisions et
+                    analyse du pipeline dans Odoo 20</a>. Son revenu attendu a été porté à 9 600 $. Les écrans
+                    du devis sont ceux de la série
+                    <a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Gestion des ventes avec
+                    Odoo 20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Opportunité Mobilier pour un espace de coworking dans Odoo 20 : revenu attendu 9 600 dollars, client Atelier Coworking Rive Gauche, bouton Nouveau devis dans la barre d'actions, bouton Devis à 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le point de départ : l'opportunité, avec son bouton Nouveau devis.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un devis depuis une opportunité, avec ou sans client ;</li>
+                    <li>retrouver l'opportunité d'origine sur le devis ;</li>
+                    <li>lire les boutons Devis et Commandes de l'opportunité ;</li>
+                    <li>comprendre ce que la confirmation change, ou non, sur l'opportunité ;</li>
+                    <li>clore l'opportunité gagnée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer le devis depuis l'opportunité</h2>
+                <p>Sur l'opportunité, cliquez sur <strong>Nouveau devis</strong>. Odoo ouvre un devis déjà
+                    rempli : client, vendeur, équipe commerciale et étiquettes de l'opportunité. Le fil d'Ariane montre qu'on
+                    reste « dans » l'opportunité : un clic sur son nom y ramène.</p>
+                <p>Ajoutez les lignes comme sur tout devis. Ici : 12 <strong>Combinaison de bureau</strong> à
+                    450 $ et 12 <strong>Chaise de bureau noire</strong> à 120,50 $, soit 6 846 $ hors taxes et
+                    7 872,90 $ toutes taxes comprises. Enregistrez : le devis reçoit son numéro, S00033.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Devis S00033 d'Odoo 20 créé depuis l'opportunité : client Atelier Coworking Rive Gauche, fil d'Ariane Mobilier pour un espace de coworking / S00033, lignes 12 Combinaison de bureau à 450 dollars et 12 Chaise de bureau noire à 120,50 dollars, taxe 15 %" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis créé depuis l'opportunité, avec le fil d'Ariane qui y ramène.</figcaption>
+                </figure>
+                <p>Le lien est enregistré sur le devis : onglet <strong>Autres informations</strong>, section
+                    <strong>Suivi</strong>, champs <strong>Document d'origine</strong> et
+                    <strong>Opportunité</strong>. Les champs Campagne, Médium et Source y reprennent ceux de
+                    l'opportunité quand elle en a.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Section Suivi de l'onglet Autres informations d'un devis Odoo 20 : Document d'origine et Opportunité Mobilier pour un espace de coworking, Campagne, Médium et Source vides" style="max-width:60%; height:auto;"/>
+                    <figcaption>Sur le devis, la section Suivi garde la trace de l'opportunité.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Une opportunité sans client</h4>
+                    <p>Si l'opportunité n'a pas de client, Nouveau devis ouvre d'abord une fenêtre : « À qui ce
+                        nouveau devis doit-il être associé ? ». Trois réponses : <strong>Créer un nouveau
+                        client</strong> (à partir des informations de l'opportunité), <strong>Ne pas lier à un
+                        client</strong>, ou <strong>Lier à un client existant</strong>. Puis
+                        <strong>Aller au devis</strong>.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre d'Odoo 20 À qui ce nouveau devis doit-il être associé : choix Créer un nouveau client, Ne pas lier à un client, Lier à un client existant, boutons Aller au devis et Ignorer" style="max-width:60%; height:auto;"/>
+                        <figcaption>La question posée quand l'opportunité n'a pas de client.</figcaption>
+                    </figure>
+                    <p>Comme pour la conversion d'une piste, vérifiez le contact et la société saisis sur l'opportunité avant de créer le client :
+                        il vient de l'opportunité.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Lire les montants sur l'opportunité</h2>
+                <p>Revenez à l'opportunité. Le bouton <strong>Devis</strong>, en haut, est passé de 0 à 1 : il compte les
+                    devis liés encore à l'état Devis ou Envoyé, et ouvre leur liste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="En-tête de l'opportunité Odoo 20 avant confirmation : boutons Aucune réunion et 1 Devis" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avant confirmation : un devis lié.</figcaption>
+                </figure>
+                <p>Confirmez ensuite le devis S00033 (bouton <strong>Confirmer</strong>) : il devient une commande
+                    client. Sur l'opportunité, le bouton Devis retombe à 0, et un bouton
+                    <strong>Commandes</strong> affiche le montant des commandes confirmées :
+                    <strong>7 872,90 $</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="En-tête de l'opportunité Odoo 20 après confirmation : Devis 0, Commandes 7 872,90 dollars, étape toujours Nouveau, boutons Gagné et Perdu encore présents" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après confirmation : le montant commandé, toutes taxes comprises.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Le montant des commandes est toutes taxes comprises</h4>
+                    <p>7 872,90 $ est le total TTC de la commande, alors que le revenu attendu de l'opportunité
+                        se raisonne hors taxes. C'est un changement d'Odoo 20 : en Odoo 19, ce bouton affichait le
+                        total hors taxes. Pour comparer, ouvrez la commande et lisez son montant hors taxes
+                        (6 846 $).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ce que la confirmation ne fait pas</h2>
+                <p>Confirmer la commande ne fait <strong>pas</strong> gagner l'opportunité : sur la capture
+                    ci-dessus, elle est toujours à l'étape Nouveau, avec ses boutons Gagné et Perdu. Le CRM laisse
+                    ce jugement au commercial, qui peut attendre d'autres commandes de la même affaire.</p>
+                <p>La confirmation ajuste en revanche le <strong>revenu attendu</strong>, dans un seul sens : si
+                    le montant hors taxes de la commande <em>dépasse</em> le revenu attendu, celui-ci est relevé
+                    à ce montant, et l'historique le signale. S'il est inférieur, rien ne change. Ici, 6 846 $ de
+                    commande n'atteignent pas les 9 600 $ attendus : le revenu attendu reste à 9 600 $.</p>
+                <p>Quand l'affaire est conclue, cliquez sur <strong>Gagné</strong> : l'opportunité reçoit le
+                    bandeau vert et passe à l'étape Gagné. Si le montant réel diffère du montant attendu,
+                    corrigez le revenu attendu avant ou après : c'est lui que lisent la prévision et les
+                    analyses du pipeline.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Opportunité Mobilier pour un espace de coworking gagnée dans Odoo 20 : bandeau vert GAGNÉ, étape Gagné, revenu attendu 9 600 dollars, bouton Commandes 7 872,90 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'opportunité gagnée, avec sa commande liée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== BILAN DE SÉRIE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le parcours complet</h2>
+                <p>La série a suivi une affaire de bout en bout :</p>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Où</th><th>Article</th></tr></thead>
+                    <tbody>
+                        <tr><td>Demande entrante, qualification</td><td>Pistes</td><td>Pistes et équipes commerciales</td></tr>
+                        <tr><td>Conversion, suivi par étape</td><td>Pipeline</td><td>Le pipeline d'opportunités</td></tr>
+                        <tr><td>Appels, e-mails, réunions</td><td>Activités, plans de relance</td><td>Activités et relances commerciales</td></tr>
+                        <tr><td>Chiffre attendu, pertes</td><td>Prévision, analyses</td><td>Prévisions et analyse du pipeline</td></tr>
+                        <tr><td>Proposition chiffrée, commande</td><td>Nouveau devis → Ventes</td><td>Cet article</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>La suite, livraison, facture et paiement, relève de l'application Ventes : elle est traitée
+                    dans la série <a href="/blog/fonctionnel-odoo-1/vendre-odoo-community-bilan-207">Gestion des
+                    ventes avec Odoo 20</a>, dont le dernier article rejoue ce cycle sur une seule commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Le bouton Nouveau devis, le lien devis-opportunité et les
+                        montants remontés sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un devis créé depuis Ventes n'est pas lié</h4>
+                    <p>Un devis créé directement dans l'application Ventes n'a pas d'opportunité : il n'apparaît
+                        pas dans ses boutons. Partez de l'opportunité, ou renseignez le champ Opportunité de
+                        l'onglet Autres informations.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Gagner reste un geste manuel</h4>
+                    <p>Une opportunité dont la commande est confirmée reste en cours tant que personne ne clique
+                        sur Gagné. Le pipeline et la prévision la comptent alors encore comme une affaire à
+                        conclure.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Taxes comprises d'un côté, hors taxes de l'autre</h4>
+                    <p>Le bouton Commandes est en TTC, le revenu attendu et son ajustement automatique en HT.
+                        Comparer les deux directement fausse la lecture.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> observer le relèvement automatique du revenu attendu.</p>
+                    <p><strong>Indication :</strong> sur l'opportunité de démonstration <strong>5 VP
+                        Chairs</strong> (Azure Interior, revenu attendu 5 600 $), cliquez sur Nouveau devis,
+                        ajoutez 20 « Combinaison de bureau », puis confirmez le devis.</p>
+                    <p><strong>Critère de réussite :</strong> le devis vaut 8 100 $ hors taxes (Azure Interior a la
+                        liste de prix Grossiste posée dans la série Ventes : 405 $ au lieu de 450 $). De retour sur
+                        l'opportunité, le revenu attendu est passé de 5 600 $ à 8 100 $, l'historique le signale,
+                        le bouton Commandes affiche le montant TTC (9 315 $), et l'opportunité est toujours à l'étape
+                        Proposition.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Nouveau devis crée un devis rempli et lié à l'opportunité ; sans client, Odoo demande
+                        d'abord à qui l'associer.</li>
+                    <li>L'opportunité compte ses devis en cours et affiche le montant de ses commandes, TTC dans
+                        Odoo 20.</li>
+                    <li>Confirmer une commande ne gagne pas l'opportunité ; il faut cliquer sur Gagné.</li>
+                    <li>La confirmation relève le revenu attendu au HT de la commande s'il était plus bas, jamais
+                        l'inverse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/previsions-analyse-pipeline-crm-odoo-211">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Prévisions et analyse du pipeline dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Série suivante &rarr;</div>
+                            <div class="fw-bold">Facturation avec Odoo 20 (à paraître)</div>
+                            <div class="small mt-2">Retour au pilier : <a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités</a></h5>
+                            <p class="small text-muted mb-0">Le début de la série CRM : étapes, gagné, perdu.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande confirmée</a></h5>
+                            <p class="small text-muted mb-0">Le devis en détail : lignes, envoi, confirmation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">La suite de la commande : livraison et facture.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
