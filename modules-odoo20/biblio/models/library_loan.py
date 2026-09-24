@@ -38,6 +38,20 @@ class LibraryLoan(models.Model):
         ondelete='restrict',
         tracking=True,
     )
+    book_id = fields.Many2one(
+        related='copy_id.book_id',
+        string="Livre",
+        store=True,
+    )
+    genre_ids = fields.Many2many(
+        'library.genre',
+        'library_loan_genre_rel',
+        'loan_id',
+        'genre_id',
+        related='book_id.genre_ids',
+        string="Genres",
+        store=True,
+    )
     date_out = fields.Date(
         string="Emprunté le",
         required=True,
