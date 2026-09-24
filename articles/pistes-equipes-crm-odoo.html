@@ -1,0 +1,493 @@
+<!--
+Article — Pistes et équipes commerciales dans le CRM d'Odoo 20
+Série « Gestion de la relation client avec Odoo 20 » (blog Fonctionnel) — étape 2
+Date : 2026-09-24
+Slug : pistes-equipes-crm-odoo
+Meta : Activer les pistes du CRM d'Odoo 20, les qualifier, les convertir en opportunités et les répartir entre équipes et vendeurs.
+Mot-clé cible : pistes crm odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, crm, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-09-24 : Odoo 20.0 Community (commit 3538ed82), base vs20_func (démonstration, CRM installé).
+  crm/views/res_config_settings_views.xml:21 (group_use_lead), :53-77 (assignation, Exécution Manuellement/Répété),
+  :86-99 (enrichissement, prospection, visites) ; crm/views/crm_menu_views.xml:51-55 (menu Pistes, groupe group_use_lead) ;
+  crm/models/crm_lead.py:1320-1326 (conversion en un clic : convert_opportunity + _handle_partner_assignment
+  create_missing) ; :1965-1986 (_create_customer : sans contact ni nom de contact, client créé au nom de la piste) ;
+  v19 crm/wizard/crm_lead_to_opportunity.py (assistant unitaire, supprimé en 20 ; l'assistant groupé reste) ;
+  crm/views/crm_lead_views.xml:323 (bouton Convert to Opportunities) ; crm/models/crm_team_member.py:14,24-28
+  (Toujours en rotation / En rotation avec une limite / Hors rotation, capacité par défaut 30000) ;
+  crm/models/crm_team.py:355-372 (assignation : pistes sans équipe ni vendeur, actives, domaine de l'équipe) ;
+  crm_iap_enrich/models/crm_lead.py:41-48 + __init__.py:7-11 (enrichissement automatique par défaut : tâche
+  planifiée déclenchée à chaque création), data/ir_cron.xml (toutes les 24 h) ; ir_config_parameter
+  crm.iap.lead.enrich.setting=auto sur vs20_func.
+  Parcours joué : pistes activées ; piste « Équipement d'une salle de formation » sans contact → convertie → client
+  créé à son nom (res.partner 51) ; piste « Mobilier pour un espace de coworking » avec contact créé « Atelier
+  Coworking Rive Gauche » → convertie, client 52 ; assignation manuelle sur l'équipe Ventes : 10 pistes sans équipe
+  (probabilité ≥ 20) rattachées à Ventes, 3 (< 20) restées sans équipe, 1 attribuée à Mitchell Admin
+  et convertie (Need a price: urgent, 90 %) ; 1er passage par la méthode action_assign_leads en shell (commit
+  par lots), 2e passage au bouton après confirmation (notification capturée). crm_team.py:721 (tri par probabilité).
+Captures : content/blog/screenshots/pistes-equipes-crm-odoo/ (01-11, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Pistes et équipes commerciales dans le CRM d'Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un contact entrant n'est pas encore une affaire. Les pistes ajoutent
+                    une étape de tri avant le pipeline, et l'assignation répartit ce qui reste entre équipes et
+                    vendeurs. Cet article active les pistes du CRM d'Odoo 20, les convertit en opportunités et règle la
+                    répartition.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Gestion de la relation client avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026. Pistes, conversion, équipes et assignation sont inclus dans la Community ;
+                        l'enrichissement et la prospection de pistes passent par un service en ligne payant
+                        d'Odoo, dans les deux éditions.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une <strong>piste</strong> est une demande qui n'a pas encore été qualifiée : un formulaire du
+                    site, un e-mail reçu, une ligne d'un fichier de prospects. Elle ne compte pas dans le pipeline
+                    et ne porte pas de revenu attendu. Une fois jugée sérieuse, elle est
+                    <strong>convertie</strong> en opportunité et entre dans le pipeline, à l'étape Nouveau.</p>
+                <p>Ce tri est facultatif : sans pistes, toute demande devient directement une opportunité, comme
+                    dans <a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline
+                    d'opportunités du CRM d'Odoo 20</a>, dont cet article reprend la base (démonstration, CRM
+                    installé, identifiant <code>admin</code>). Il devient utile dès que les demandes entrantes
+                    sont nombreuses, ou que la qualification et la vente relèvent de personnes différentes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les pistes et trouver leur menu ;</li>
+                    <li>créer une piste et la convertir en opportunité sans créer de client mal nommé ;</li>
+                    <li>convertir plusieurs pistes à la fois ;</li>
+                    <li>reconnaître les sources de pistes du bouton Générer et leur coût ;</li>
+                    <li>régler une équipe commerciale et l'assignation automatique des pistes.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les pistes</h2>
+                <p>Ouvrez <strong>CRM › Configuration › Paramètres</strong>, cochez <strong>Pistes</strong>
+                    (« Ajouter une étape de qualification avant de créer une opportunité ») et cliquez sur
+                    <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Bloc CRM des paramètres d'Odoo 20 : option Revenus récurrents décochée, option Pistes cochée avec la description Ajouter une étape de qualification avant de créer une opportunité" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'option Pistes, dans les paramètres du CRM.</figcaption>
+                </figure>
+                <p>Un menu <strong>Pistes</strong> apparaît dans la barre du CRM, entre Ventes et Analyse. Il
+                    ouvre la liste des pistes : nom, contact, e-mail, vendeur, équipe et source. La démonstration
+                    en contient 22.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des pistes du CRM d'Odoo 20 : colonnes Piste, Nom du contact, E-mail, Vendeur, Équipe commerciale, Source, avec les pistes de démonstration" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste des pistes, avec le nouveau menu Pistes dans la barre.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer une piste et la convertir</h2>
+                <p>Dans la liste des pistes, cliquez sur <strong>Nouveau</strong>. La fiche porte la pastille
+                    <strong>Piste</strong> ; elle n'a ni revenu attendu ni étapes, seulement une probabilité, le
+                    contact, l'e-mail, le téléphone, le vendeur, la priorité et les étiquettes. Sa barre d'actions
+                    propose <strong>Convertir en opportunité</strong>, <strong>Enrichir</strong> et
+                    <strong>Perdu</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Nouvelle piste dans Odoo 20 : pastille Piste, probabilité 39,85 % avec icône IA, contact vide, e-mail et téléphone saisis, boutons Convertir en opportunité, Enrichir et Perdu" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une piste saisie avec un e-mail et un téléphone, mais sans contact.</figcaption>
+                </figure>
+                <p>Dans Odoo 20, <strong>Convertir en opportunité</strong> agit en un clic : la piste devient une
+                    opportunité à l'étape Nouveau, et Odoo lui trouve un client ou en crée un. En Odoo 19, une
+                    fenêtre demandait d'abord que faire du client ; elle a disparu.</p>
+                <div class="pitfall-box">
+                    <h4>Sans contact, le client prend le nom de la piste</h4>
+                    <p>La piste ci-dessus n'avait pas de contact. À la conversion, Odoo a créé un client appelé
+                        « Équipement d'une salle de formation », c'est-à-dire le titre de la piste, visible dans
+                        l'historique :</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Opportunité convertie dans Odoo 20 dont le contact s'appelle Équipement d'une salle de formation, comme la piste ; historique None vers Équipement d'une salle de formation (Contact), Piste vers Opportunité (Type)" style="max-width:100%; height:auto;"/>
+                        <figcaption>Après conversion : un client porte le titre de la piste.</figcaption>
+                    </figure>
+                    <p>Les champs « Nom de la société » et « Nom du contact », qui servent à nommer ce client, ne
+                        sont visibles qu'en mode développeur. Avant de convertir, renseignez donc le champ
+                        <strong>Contact</strong>.</p>
+                </div>
+                <p>La bonne pratique : dans le champ <strong>Contact</strong> de la piste, tapez le nom de la
+                    société ou de la personne. S'il n'existe pas, choisissez <strong>Créer</strong> dans la liste
+                    proposée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Champ Contact d'une piste Odoo 20 avec la saisie Atelier Coworking Rive Gauche et les choix Créer Atelier Coworking Rive Gauche et Créer et modifier" style="max-width:70%; height:auto;"/>
+                    <figcaption>Créer le contact depuis la piste, avant la conversion.</figcaption>
+                </figure>
+                <p>Convertie ensuite, la piste « Mobilier pour un espace de coworking » devient une opportunité
+                    rattachée au client <strong>Atelier Coworking Rive Gauche</strong>, qui garde l'e-mail
+                    saisi sur la piste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Convertir plusieurs pistes à la fois</h2>
+                <p>Dans la liste des pistes, cochez les pistes à convertir. La barre du haut propose
+                    <strong>Convertir en opportunités</strong> et <strong>Marquer comme perdu</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste des pistes d'Odoo 20 avec deux pistes cochées et les boutons 2 sélectionné(s), Convertir en opportunités, Marquer comme perdu, Actions" style="max-width:100%; height:auto;"/>
+                    <figcaption>La sélection de pistes et les deux actions groupées.</figcaption>
+                </figure>
+                <p>La conversion groupée, elle, ouvre une fenêtre : elle demande à quels vendeurs et à quelle
+                    équipe confier les nouvelles opportunités, et s'il faut les lier aux clients
+                    correspondants (sans cette option, aucun client n'est créé).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Convertir en opportunités d'Odoo 20 : section Assigner ces opportunités à avec Vendeurs et Équipe commerciale, section Clients avec Lier aux clients correspondants, boutons Convertir et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>La fenêtre de conversion groupée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. D'où viennent les pistes</h2>
+                <p>Le bouton <strong>Générer</strong> du pipeline rassemble six sources de pistes :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Menu Générer du pipeline d'Odoo 20 : rechercher dans un répertoire de plus de 580 millions d'entités, transformer les visiteurs en pistes via un formulaire, envoyer un e-mail et générer des pistes à partir des réponses, qualifier les pistes avec un sondage, générer des pistes depuis Outlook et Gmail, importer des pistes depuis un fichier CSV ou Excel" style="max-width:85%; height:auto;"/>
+                    <figcaption>Les six sources proposées par le bouton Générer.</figcaption>
+                </figure>
+                <div class="table-responsive">
+                <table class="tmc">
+                    <thead><tr><th>Source</th><th>Ce qu'il faut</th><th>Coût</th></tr></thead>
+                    <tbody>
+                        <tr><td>Répertoire de plus de 580 millions d'entités</td><td>Module de prospection de pistes, installé avec le CRM</td><td>Service en ligne d'Odoo, payant en crédits</td></tr>
+                        <tr><td>Formulaire du site</td><td>Application Site Web</td><td>Inclus</td></tr>
+                        <tr><td>Réponses à un e-mail</td><td>Application Marketing par e-mail</td><td>Inclus</td></tr>
+                        <tr><td>Sondage</td><td>Application Sondages</td><td>Inclus</td></tr>
+                        <tr><td>Outlook et Gmail</td><td>Extension de messagerie, connecteurs installés avec le CRM</td><td>Inclus</td></tr>
+                        <tr><td>Fichier CSV ou Excel</td><td>Rien de plus : import standard</td><td>Inclus</td></tr>
+                    </tbody>
+                </table>
+                </div>
+                <p>Les quatre premières sources ne sont accessibles qu'à un administrateur. Toutes ces
+                    applications font partie de la Community. Une piste reçue par e-mail peut aussi
+                    naître de l'<strong>alias de messagerie</strong> d'une équipe commerciale (section suivante).</p>
+                <div class="pitfall-box">
+                    <h4>L'enrichissement automatique est activé par défaut</h4>
+                    <p>Le module d'enrichissement, installé avec le CRM, est réglé sur « Enrichir toutes les pistes
+                        automatiquement » : chaque création de piste déclenche une tâche planifiée qui transmet
+                        le domaine de son adresse e-mail au service en ligne d'Odoo, en consommant des crédits.
+                        Si ce n'est pas voulu, choisissez <strong>Enrichir les pistes sur demande seulement</strong>
+                        dans <strong>CRM › Configuration › Paramètres</strong>, bloc Génération de pistes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Régler une équipe commerciale</h2>
+                <p>Ouvrez <strong>CRM › Configuration › Équipes commerciales</strong>. La démonstration en compte
+                    deux dans le CRM, <strong>Ventes</strong> et <strong>Préventes</strong>. Ouvrez Ventes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fiche de l'équipe commerciale Ventes dans Odoo 20 : cases Pipeline et Pistes cochées, chef d'équipe Mitchell Admin, alias de messagerie info, règles d'assignation avec domaine Probabilité supérieur ou égal à 20, membre Mitchell Admin avec 20 pistes sur 30 jours, bouton Assigner des pistes" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'équipe Ventes : pipeline, pistes, alias, règles d'assignation et membres.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Pipeline</strong> et <strong>Pistes</strong> : l'équipe travaille des opportunités,
+                        des pistes, ou les deux ;</li>
+                    <li><strong>Chef d'équipe</strong> et <strong>Membres</strong> : les vendeurs de l'équipe,
+                        chacun avec le nombre de pistes reçues sur 30 jours ;</li>
+                    <li><strong>Alias de messagerie</strong> : chaque e-mail envoyé à cette adresse crée une piste
+                        (ou une opportunité) de l'équipe. Il suppose un domaine d'alias et un serveur de messagerie entrante configurés ;</li>
+                    <li><strong>Règles d'assignation</strong> : le <strong>domaine</strong> dit quelles pistes
+                        l'équipe accepte. Sur la démonstration : celles dont la probabilité atteint 20 %.</li>
+                </ul>
+                <p>Le bouton <strong>Opportunités</strong>, en haut, ouvre le pipeline de l'équipe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Répartir les pistes automatiquement</h2>
+                <p>L'assignation automatique procède en deux temps : elle rattache à une équipe les pistes sans équipe ni
+                    vendeur, puis répartit entre les membres les pistes de l'équipe encore sans vendeur, en les
+                    convertissant en opportunités. Elle s'active dans
+                    <strong>CRM › Configuration › Paramètres</strong>, option <strong>Assignation basée sur des
+                    règles</strong>. Le champ <strong>Exécution</strong> choisit entre
+                    <strong>Manuellement</strong> (un bouton, sur chaque équipe) et <strong>Répété</strong>
+                    (une tâche planifiée, à la fréquence choisie). En mode Répété, seules les pistes créées dans les 7
+                    derniers jours sont prises en compte ; le bouton manuel n'a pas cette limite.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Option Assignation basée sur des règles cochée dans les paramètres du CRM d'Odoo 20, Exécution Manuellement" style="max-width:60%; height:auto;"/>
+                    <figcaption>L'assignation basée sur des règles, exécutée manuellement.</figcaption>
+                </figure>
+                <p>Chaque membre d'équipe a ses propres règles. Cliquez sur un membre dans l'onglet Membres de
+                    l'équipe :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fiche membre d'équipe Mitchell Admin dans Odoo 20 : Règles d'attribution automatique En rotation, avec une limite de 30 pistes par 30 jours (20 attribuées), Donner la priorité si, Attribuer uniquement si Probabilité supérieur ou égal à 20" style="max-width:85%; height:auto;"/>
+                    <figcaption>Les règles d'attribution d'un vendeur.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Règles d'attribution automatique</strong> : <em>Toujours en rotation</em> (sans
+                        limite), <em>En rotation, avec une limite</em> (un nombre de pistes par 30 jours, soit environ une piste par jour pour une limite de 30) ou
+                        <em>Hors rotation</em> (le vendeur ne reçoit plus rien, par exemple pendant ses
+                        congés) ;</li>
+                    <li><strong>Donner la priorité si</strong> : les pistes qu'il reçoit en premier, par exemple
+                        celles de sa région ;</li>
+                    <li><strong>Attribuer uniquement si</strong> : les seules pistes qu'il peut recevoir.</li>
+                </ul>
+                <p>Ces trois libellés sont nouveaux dans Odoo 20 : ils remplacent la case « Mettre
+                    l'attribution en pause » d'Odoo 19, et un nouveau membre est désormais sans limite par défaut.</p>
+                <p>Sur la fiche de l'équipe, le bouton <strong>Assigner des pistes</strong> lance la répartition,
+                    après une fenêtre de confirmation. Sur la démonstration, les pistes sans équipe ont été
+                    triées selon le domaine de l'équipe : celles dont la probabilité atteint 20 % ont rejoint
+                    l'équipe Ventes, les 3 autres sont restées sans équipe. Côté vendeurs, la limite de 30 pistes
+                    par 30 jours de Mitchell Admin donne une piste par passage : la piste la plus probable lui a
+                    été attribuée et convertie en opportunité. Une notification résume chaque passage :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Notification Pistes assignées d'Odoo 20 : 1 piste assignée à l'équipe Ventes, 1 piste assignée parmi 1 vendeur" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le résumé d'un passage de l'assignation.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Pistes, conversion, équipes commerciales, alias de
+                        messagerie et assignation automatique sont inclus dans Odoo 20 Community. Seules la
+                        prospection dans le répertoire d'entreprises et l'enrichissement consomment des crédits
+                        du service en ligne d'Odoo, quelle que soit l'édition.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le contact avant la conversion</h4>
+                    <p>Une piste convertie sans contact, dont l'e-mail ne correspond à aucun client existant, crée un
+                        client au nom de la piste. Ces fiches se
+                        retrouvent ensuite dans les devis et les factures : il faut les renommer ou les fusionner
+                        à la main.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'assignation ne touche que les pistes sans vendeur</h4>
+                    <p>Une piste créée à l'écran reçoit d'office le vendeur connecté et son équipe : elle n'entre
+                        pas dans la répartition. Celle-ci vise les pistes arrivées sans propriétaire : formulaire du
+                        site, alias de messagerie, import.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Membres d'équipe : un menu caché</h4>
+                    <p>Le menu <strong>Configuration › Membres des équipes</strong> n'apparaît qu'en mode
+                        développeur. Sans lui, les règles d'un vendeur se modifient depuis l'onglet Membres de
+                        chaque équipe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> qualifier une piste proprement.</p>
+                    <p><strong>Indication :</strong> créez une piste « Aménagement d'un showroom », renseignez comme
+                        contact <strong>Azure Interior</strong> (client existant), puis cliquez sur Convertir en
+                        opportunité.</p>
+                    <p><strong>Critère de réussite :</strong> l'opportunité apparaît dans le pipeline, colonne
+                        Nouveau, rattachée à Azure Interior, et aucun nouveau client n'a été créé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les pistes sont une option : elles ajoutent un tri avant le pipeline et un menu Pistes.</li>
+                    <li>Dans Odoo 20, la conversion d'une piste se fait en un clic ; renseignez le contact avant,
+                        sinon le client prend le nom de la piste.</li>
+                    <li>La conversion groupée demande vendeurs, équipe et rattachement aux clients.</li>
+                    <li>L'enrichissement automatique, actif par défaut, consomme des crédits d'un service en
+                        ligne.</li>
+                    <li>L'assignation rattache les pistes sans propriétaire à une équipe selon son domaine, puis
+                        les attribue aux vendeurs selon leurs règles, ce qui les convertit en opportunités.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Le pipeline d'opportunités du CRM d'Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Activités et relances commerciales dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités</a></h5>
+                            <p class="small text-muted mb-0">Étapes, création, opportunités gagnées et perdues.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Créer une fiche client propre, société et contacts liés.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les 34 applications gratuites</a></h5>
+                            <p class="small text-muted mb-0">Site Web, Marketing par e-mail, Sondages : les sources de pistes incluses.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
