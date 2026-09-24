@@ -27,12 +27,13 @@ class LibraryLoanExtend(models.TransientModel):
     def action_extend(self):
         self.ensure_one()
         if self.days <= 0:
-            raise UserError("Le nombre de jours doit être positif.")
+            raise UserError(self.env._("Le nombre de jours doit être positif."))
         rendus = self.loan_ids.filtered(lambda e: e.state == 'returned')
         if rendus:
-            raise UserError(
-                "Ces emprunts sont déjà rendus : %s" % ", ".join(rendus.mapped('reference'))
-            )
+            raise UserError(self.env._(
+                "Ces emprunts sont déjà rendus : %(references)s",
+                references=", ".join(rendus.mapped('reference')),
+            ))
         for emprunt in self.loan_ids:
             emprunt.duration += self.days
             corps = Markup("Prolongé de <b>%s</b> jour(s).") % self.days

@@ -5,7 +5,7 @@ class LibraryGenre(models.Model):
     _description = "Genre"
     _order = 'name'
 
-    name = fields.Char(string="Nom", required=True)
+    name = fields.Char(string="Nom", required=True, translate=True)
     color = fields.Integer(string="Couleur")
     book_ids = fields.Many2many(
         'library.book',
@@ -16,8 +16,8 @@ class LibraryGenre(models.Model):
     )
     book_count = fields.Integer(string="Nombre de livres", compute='_compute_book_count')
 
-    _name_unique = models.Constraint(
-        'UNIQUE(name)',
+    _name_uniq_index = models.UniqueIndex(
+        "((name->>'en_US'))",
         "Ce genre existe déjà.",
     )
 

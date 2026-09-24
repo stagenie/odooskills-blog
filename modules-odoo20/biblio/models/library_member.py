@@ -49,7 +49,7 @@ class LibraryMember(models.Model):
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
-            'name': f"Emprunts de {self.name}",
+            'name': self.env._("Emprunts de %(nom)s", nom=self.name),
             'res_model': 'library.loan',
             'view_mode': 'list,form',
             'domain': [('member_id', '=', self.id)],
@@ -59,7 +59,7 @@ class LibraryMember(models.Model):
     def action_view_late_loans(self):
         self.ensure_one()
         action = self.action_view_loans()
-        action['name'] = f"Retards de {self.name}"
+        action['name'] = self.env._("Retards de %(nom)s", nom=self.name)
         action['domain'] = [('member_id', '=', self.id), ('is_late', '=', True)]
         return action
 
