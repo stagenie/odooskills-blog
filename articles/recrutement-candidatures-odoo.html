@@ -1,0 +1,406 @@
+<!--
+Article — Recrutement dans Odoo 20
+Série « Ressources humaines avec Odoo 20 » (blog Fonctionnel) — étape 5 (fin de série)
+Date : 2026-09-27
+Slug : recrutement-candidatures-odoo
+Tags : debutant, rh, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community (révision 3538ed82), base vs20_func (hr_recruitment installé depuis Applications, carte « Recruitment », LGPL-3 ; hr_recruitment_skills et hr_recruitment_sms installés avec).
+  hr/models/hr_job.py:13-17 + :31-40 recruiter_id = hr.employee avec utilisateur interne (v19 : user_id res.users, odoo19 hr/models/hr_job.py:26) ;
+  hr_recruitment/models/hr_job_tag.py (NOUVEAU modèle hr.job.tag) + models/hr_job.py:96 tag_ids ; :97-108 salary_min / salary_max / payment_interval (défaut monthly) ;
+  models/hr_job.py:323-326 onchange : min > max → permutation (joué : min 4000 saisi avant max → min 0 / max 4000) ;
+  models/hr_applicant.py:107-112 salary_expected / salary_proposed en Monetary + schedule_pay (v19 : Float) ;
+  models/hr_applicant.py:685-689 étape hired_stage → no_of_recruitment −1 (capture 03 prise après l'embauche : Cible 0) ; :615-620 date_closed posée à l'étape hired_stage ; views/hr_applicant_views.xml:94-95 bouton Create Employee visible si date_closed et pas d'employé ;
+  models/hr_applicant.py:1011-1037 + :1040-1062 create_employee_from_applicant : nom, poste, département, adresse, téléphone ; AUCUN salaire recopié ;
+  wizard/applicant_refuse_reason.py:189 applicant.refuse.single (NOUVEAU, refus d'une candidature) ; :47-50 send_mail calculé = modèle actif et e-mail présent (v19 default=False) ;
+  :119-146 action_refuse_reason_apply archive AVANT _prepare_send_refusal_mails ; :246-257 message_post sur applicant_id devenu vide → ValueError Expected singleton, tout est annulé ;
+  reproduit à l'écran (fenêtre « Oups ! ») et au shell ; avec send_mail=False le refus passe.
+  Piège local non retenu : sur une base en collation fr_FR, la vue kanban du vivier (hr_kanban_view_applicant_talent_pool, même priorité, nom trié avant) sert par défaut et le pipeline s'ouvre à plat ; une base créée par Odoo est en collation C (odoo/modules/db.py:356), captures faites avec Regrouper par › Étape.
+  Parcours joué : poste Consultant (id 2) fourchette 4 000–5 500 $ / Mois ; Hunter Reynolds (33) Proposé 5 000 $ / Mois → Contrat signé → ENGAGÉ → Créer un employé (employé 26, salaire 0) ;
+  Abigail Carter (32) refusée « Ne répond pas aux prérequis du poste. », e-mail désactivé. Exercice testé (rollback) : Dakota Lane (31) → Contrat signé → employé Consultant, Gestion / Services professionnels.
+-->
+
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Recrutement dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Publier un poste, suivre chaque candidature d'étape en étape,
+                    embaucher ou refuser. Odoo 20 donne au poste une fourchette salariale et fait du recruteur
+                    un employé.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Ressources humaines avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, sur la base de démonstration. L'application Recrutement est incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>L'application s'installe depuis <strong>Applications</strong>, où sa carte porte le nom anglais
+                    <strong>Recruitment</strong> ; une fois installée, elle s'appelle <strong>Recrutement</strong>
+                    dans le menu principal.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Recruitment dans la liste des applications d'Odoo 20, avec la mention Track your recruitment pipeline et le bouton Activer" style="max-width:60%; height:auto;"/>
+                    <figcaption>La carte de l'application dans Applications.</figcaption>
+                </figure>
+                <p>Les exemples suivent le poste de <strong>Consultant</strong> de la démonstration et
+                    <strong>Mitchell Admin</strong>, qui en est le recruteur. Deux candidatures servent de fil
+                    rouge : celle de <strong>Hunter Reynolds</strong>, qui sera embauché, et celle
+                    d'<strong>Abigail Carter</strong>, qui sera refusée. La société de démonstration est
+                    américaine : les montants sont en dollars.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire le tableau des postes ouverts et régler un poste ;</li>
+                    <li>faire avancer une candidature dans le pipeline ;</li>
+                    <li>embaucher un candidat et créer sa fiche employé ;</li>
+                    <li>refuser une candidature avec sa raison.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire le tableau des postes</h2>
+                <p>L'application s'ouvre sur les <strong>Postes</strong>, une ligne par poste. Trois compteurs
+                    y résument le recrutement : les <strong>nouvelles candidatures</strong>, celles
+                    <strong>en cours</strong>, et le nombre de personnes <strong>à recruter</strong>. Le panneau de
+                    gauche filtre par société et par département.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Tableau des postes dans l'application Recrutement d'Odoo 20 : Architecte d'intérieur, Chief Technical Officer, Consultant, Développeur expérimenté et autres, avec les étiquettes Cross-Departmental, Multi-Site, Recruiter Sourced et les compteurs nouvelles candidatures, en cours, à recruter" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les postes ouverts, leurs étiquettes et leurs compteurs.</figcaption>
+                </figure>
+                <p>Les pastilles colorées sont des <strong>étiquettes de poste</strong>, nouvelles dans Odoo 20 :
+                    elles classent les postes, ici <strong>Cross-Departmental</strong>, <strong>Multi-Site</strong>
+                    ou <strong>Recruiter Sourced</strong> dans les données de démonstration. Elles se gèrent sous
+                    <strong>Configuration › Étiquettes de poste</strong>. Cliquer sur le nom d'un poste ouvre ses
+                    candidatures ; le lien <strong>Configurer</strong> ouvre sa fiche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Régler le poste</h2>
+                <p>La fiche du poste regroupe le processus d'embauche à gauche et la description du poste à
+                    droite. Le <strong>Recruteur</strong> est désormais un employé, et non plus un utilisateur :
+                    la liste ne propose que les employés liés à un utilisateur interne. Il devient le recruteur
+                    par défaut de chaque candidature du poste. La <strong>Cible</strong> fixe le nombre de
+                    personnes à recruter ; chaque embauche la diminue d'une unité, d'où le 0 affiché ici, capturé
+                    après l'embauche de l'étape 4.</p>
+                <p>Nouveauté d'Odoo 20, la <strong>Fourchette salariale</strong> indique un minimum, un maximum
+                    et une périodicité (<strong>Mois</strong> par défaut). Pour le poste de Consultant, saisissez
+                    5 500 $ en maximum, puis 4 000 $ en minimum, et enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche du poste Consultant dans Odoo 20 : recruteur Mitchell Admin, cible 0 employé après l'embauche, étiquette Multi-Site, département Gestion / Services professionnels, compétences attendues, fourchette salariale de 4 000 $ à 5 500 $ par mois" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le poste de Consultant, avec sa fourchette salariale de 4 000 $ à 5 500 $ par mois.</figcaption>
+                </figure>
+                <p>Le champ <strong>Compétences attendues</strong> vient du module de compétences, installé avec le
+                    recrutement dans la base de démonstration. Il alimente le bouton <strong>Talents
+                    correspondants</strong>, qui cherche, parmi les talents et les candidats d'autres postes, ceux qui ont
+                    ces compétences.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Suivre les candidatures dans le pipeline</h2>
+                <p>Depuis le tableau des postes, cliquez sur <strong>Consultant</strong>. Les candidatures se
+                    rangent en colonnes, une par étape : <strong>Nouveau</strong>, <strong>Qualification</strong>,
+                    <strong>Premier entretien</strong>, <strong>Second entretien</strong>, <strong>Proposition de
+                    contrat</strong>, puis <strong>Contrat signé</strong>, repliée sur le bord droit. Une
+                    candidature avance par glisser-déposer d'une colonne à l'autre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Pipeline des candidatures au poste de Consultant dans Odoo 20 : Abigail Carter en Qualification, Dakota Lane et David Billy en Premier entretien, Hunter Reynolds en Proposition de contrat, colonne Contrat signé repliée à droite" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le pipeline du poste de Consultant, une colonne par étape.</figcaption>
+                </figure>
+                <p>Chaque carte montre l'évaluation en étoiles, la prochaine activité, le nombre de pièces jointes
+                    et le recruteur. Ouvrez la carte de Hunter Reynolds, en <strong>Proposition de contrat</strong>.
+                    L'onglet <strong>Détails</strong> contient le <strong>Package salarial</strong> : le salaire
+                    <strong>Prévu</strong> par le candidat et le salaire <strong>Proposé</strong> par la société,
+                    chacun avec sa périodicité. Saisissez 5 000 $ par mois en salaire proposé. La périodicité se choisit dans la liste à droite
+                    de chaque montant : vérifiez-la, car le salaire prévu de la démonstration, 71 000 $, s'affiche
+                    par mois.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Embaucher le candidat</h2>
+                <p>Le contrat est signé : cliquez sur l'étape <strong>Contrat signé</strong> dans la barre d'étapes
+                    de la fiche. Cette étape est marquée comme étape d'embauche : Odoo renseigne la <strong>Date
+                    d'embauche</strong>, pose le bandeau vert <strong>ENGAGÉ</strong> et ajoute le bouton
+                    <strong>Créer un employé</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Candidature de Hunter Reynolds dans Odoo 20 à l'étape Contrat signé : bandeau ENGAGÉ, bouton Créer un employé, date d'embauche 27 sept., package salarial Prévu 71 000 $ et Proposé 5 000 $ par mois" style="max-width:100%; height:auto;"/>
+                    <figcaption>La candidature à l'étape Contrat signé : le bouton Créer un employé apparaît.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un employé</strong>. Odoo ouvre la nouvelle fiche employé, déjà
+                    remplie avec le nom, le poste et le département de la candidature. Le bouton
+                    <strong>Applicant</strong>, en haut de la fiche, ramène à la candidature d'origine.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fiche employé de Hunter Reynolds créée depuis la candidature dans Odoo 20 : onglet Paie ouvert, aperçu du contrat avec un salaire de 0 $, bouton Applicant Hunter Reynolds en haut de la fiche" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche employé créée : le salaire du contrat reste à 0 $.</figcaption>
+                </figure>
+                <p>Le salaire proposé ne suit pas : l'<strong>Aperçu du contrat</strong> affiche 0 $. L'embauche a aussi fait baisser d'une unité la <strong>Cible</strong> du poste. Reportez le
+                    montant à la main dans le champ <strong>Salaire</strong>. La fiche employé et ses onglets sont
+                    présentés dans le premier article de la série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Refuser une candidature</h2>
+                <p>Ouvrez la candidature d'Abigail Carter, en <strong>Qualification</strong>, et cliquez sur
+                    <strong>Refuser</strong>. La fenêtre <strong>Raison de refus</strong> propose les raisons sous
+                    forme de boutons ; choisissez <strong>Ne répond pas aux prérequis du poste.</strong></p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Raison de refus dans Odoo 20 pour Abigail Carter : boutons de raisons, interrupteur Envoyer un e-mail activé, sujet Votre candidature : Consultant et texte du courriel de refus" style="max-width:60%; height:auto;"/>
+                    <figcaption>La fenêtre de refus : la raison choisie prépare le courriel au candidat.</figcaption>
+                </figure>
+                <p>Chaque raison porte un modèle de courriel. Dans Odoo 20, l'interrupteur <strong>Envoyer un
+                    e-mail</strong> s'active de lui-même dès que la raison a un modèle et que le candidat a une
+                    adresse ; le sujet et le texte s'affichent, modifiables. Désactivez l'interrupteur (voir le
+                    premier point de vigilance), puis cliquez sur <strong>Refuser</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Candidature d'Abigail Carter refusée dans Odoo 20 : bandeau rouge REFUSÉE, raison de refus Ne répond pas aux prérequis du poste., boutons Restaurer et Ajouter au vivier" style="max-width:100%; height:auto;"/>
+                    <figcaption>La candidature refusée, avec sa raison.</figcaption>
+                </figure>
+                <p>La candidature quitte le pipeline, avec le bandeau rouge <strong>REFUSÉE</strong> et sa raison.
+                    Le bouton <strong>Restaurer</strong> la remet en course ; <strong>Ajouter au vivier</strong> la
+                    garde dans un vivier de talents, pour un prochain poste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Community.</strong> Tout le parcours de cet article, de la fiche de poste à la
+                        création de l'employé, tient dans l'édition Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Refuser avec l'e-mail activé échoue</h4>
+                    <p>Au moment de nos essais, sur Odoo 20.0, cliquer sur <strong>Refuser</strong> avec
+                        l'interrupteur <strong>Envoyer un e-mail</strong> activé affiche une fenêtre d'erreur
+                        <strong>Oups !</strong>, et rien n'est enregistré : la candidature n'est pas refusée. Odoo
+                        range la candidature avant d'envoyer le courriel, puis ne la retrouve plus pour l'envoyer.
+                        Désactivez l'interrupteur, refusez, puis écrivez au candidat depuis <strong>Envoyer
+                        message</strong>, sous la fiche.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le salaire proposé ne passe pas sur l'employé</h4>
+                    <p><strong>Créer un employé</strong> reprend le nom, le poste, le département et les
+                        coordonnées, mais ni le salaire proposé ni le salaire prévu. Reportez-le vous-même sur la
+                        fiche employé.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La fourchette se saisit par le maximum</h4>
+                    <p>Si le minimum saisi dépasse le maximum, Odoo inverse les deux valeurs. Tant que le maximum
+                        vaut 0 $, saisir d'abord 4 000 $ en minimum donne une fourchette de 0 $ à 4 000 $.
+                        Saisissez le maximum en premier.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> embaucher un second consultant.</p>
+                    <p><strong>Indication :</strong> dans le pipeline du poste de Consultant, amenez Dakota Lane,
+                        en Premier entretien, jusqu'à Contrat signé, puis créez son employé.</p>
+                    <p><strong>Critère de réussite :</strong> la fiche employé de Dakota Lane s'ouvre, au poste
+                        de Consultant et au département Gestion / Services professionnels.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le poste porte le recruteur, désormais un employé, la cible et une fourchette salariale.</li>
+                    <li>Une candidature avance d'étape en étape ; l'étape Contrat signé marque l'embauche et diminue la cible du poste.</li>
+                    <li>Créer un employé reprend l'identité et le poste, pas le salaire.</li>
+                    <li>Refuser demande une raison ; désactivez l'e-mail automatique, puis écrivez au candidat
+                        depuis la fiche.</li>
+                </ul>
+                <p class="mb-0">Fin de la série. Ses cinq articles couvrent la vie de l'employé dans Odoo 20 :
+                    sa fiche, ses congés, ses présences, ses notes de frais et son recrutement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Notes de frais dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Fin de la série</div>
+                            <div class="fw-bold">Retour au pilier : <a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme</a></h5>
+                            <p class="small text-muted mb-0">La fiche employé que crée l'embauche.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences</a></h5>
+                            <p class="small text-muted mb-0">Les premiers congés du nouvel employé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances</a></h5>
+                            <p class="small text-muted mb-0">Planifier les entretiens avec les activités.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
