@@ -1,0 +1,570 @@
+<!--
+Article — Point de vente et commande en libre-service dans Odoo 20
+Série « Vendre en ligne et en boutique avec Odoo 20 » (blog Fonctionnel, série 32) — étape 3
+Date : 2026-09-27
+Slug : point-de-vente-libre-service-odoo
+Tags : debutant, pos, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community (révision 3538ed82), base vs20_func.
+  Installation jouée à l'écran : carte « Point of Sale » (summary point_of_sale/__manifest__.py) → Activer : 193 → 210 modules (point_of_sale, pos_stock,
+  pos_sale, pos_sale_stock, pos_sale_delivery, pos_sale_margin, pos_hr, pos_mrp, pos_repair, pos_online_payment, pos_partner_autocomplete,
+  l10n_fr_pos_cert, l10n_fr_pdp_pos, iot_webserial, spreadsheet_dashboard_pos_hr…). Société 1 : pays France (res_partner.country_id 75) d'où l10n_fr_pos_cert.
+  point_of_sale ne dépend plus de stock_account (odoo19 __manifest__ depends 'stock_account' ; odoo20 depends resource, product, account…) ;
+  pont pos_stock (depends point_of_sale, stock_account ; auto_install True). pos.config : picking_type_id / warehouse_id retirés (diff des champs 19→20).
+  Démo : pos.config 1 Magasin de meubles, 2 Magasin de vêtements, 3 Boulangerie ; tableau de bord kanban_dashboard_graph (nouveau champ).
+  Session Magasin de meubles/00001 : ouverture 51,49 ; vente 1 = 2 Chaise de bureau 161,00 + Lampe de bureau 46,00, taxes 27,00, total 207,00, espèces 250,00,
+  monnaie 43,00 (pos_order 8, amount_return 43.00) ; vente 2 = Tiroir noir 28,75 + Sous-main 2,28 = 31,03 par Carte.
+  Écran après paiement : feedback_screen (odoo20 static/src/app/screens/feedback_screen) ; odoo19 receipt_screen avec aperçu (order_receipt.xml).
+  Ticket rendu côté serveur : point_of_sale/receipt/pos_order_receipt.py (modèle pos.order.receipt), route /pos/receipt/<id> (controllers/main.py:19-29).
+  Choix d'impression : print_popup.js:40-62 (Full Receipt, Simplified Receipt, Gift Receipt si basic_receipt). Empreinte : l10n_fr_pos_cert/receipt/pos_order_receipt.xml:6-7.
+  Brouillons bloquants : pos_session.py close_session_from_ui « You cannot close the POS while there are still draft orders for the day. »
+  Clôture : _prepare_session_move_vals (pos_session.py) move_type out_invoice, journal closing_journal_id, partner default_partner_id ;
+  journal « Point of Sale Closing » code POSC (account_journal.py:51-52) ; client par défaut « Odoo POS » (pos_config.py:94-100 « Default Customer ») ;
+  odoo19 : _create_account_move → pièce dans config.journal_id (odoo19 pos_session.py:801-809). Résultat joué : POSC/2026/00005, 238,03, payé (CSH1/2026/00005 207,00 ;
+  PBNK1/2026/00005 31,03). Mode de clôture : session_closing_mode 'daily' par défaut, session_closing_daily_hour 4.0 (pos_config.py:101-110),
+  cron « POS: Auto Order Invoicing » toutes les 10 min (data/ir_cron_data.xml) → _cron_generate_invoice_period (pos_session.py:447-475).
+  Restaurant : carte « Restaurant » → 210 → 218 modules, dont pos_restaurant, pos_self_order (auto_install ['pos_restaurant'], depends pos_restaurant),
+  pos_online_payment_self_order ; démo : pos.config Restaurant, Bar, Kiosque (pos_self_order/data/kiosk_demo_data.xml:4 load_onboarding_kiosk_scenario).
+  Modes : self_ordering_mode nothing | consultation (Menu QR) | mobile (Menu QR + Commande) | kiosk (Kiosque) ; service_mode counter (Zone d'enlèvement) |
+  table | dynamic_qr (NOUVEAU : absent de odoo19, pos_self_order/models/pos_config.py:42-45, get_dynamic_qr_url :298-313).
+  Libellé « Chaque commande (nécessite Odoo Enterprise) » : pos_self_order/models/pos_config.py:220-224 (release.version_info).
+  Suggestion de combo au kiosque : pos_self_order/static/src/app/components/choose_combo_popup/ (NOUVEAU, absent de odoo19).
+  Kiosque joué : commande 20 (260-6-000002) Combo menu burger 11,50 au lieu de 17,48, payée en ligne (fournisseur Démo installé à l'article W2),
+  /pos/pay/20 → /pos/pay/confirmation/20, écran « Nous préparons votre commande ! », numéro K6-2, pos_order.state = paid.
+  Enterprise : réglage « Réservation » badge Entreprise (res_config_settings_views.xml:194-195 widget upgrade_boolean), module pos_appointment absent de odoo/addons.
+-->
+
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Point de vente et commande en libre-service dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Ouvrir une caisse, encaisser en espèces et par carte, imprimer le ticket, clôturer
+                    la session et retrouver l'écriture comptable, puis laisser le client commander seul sur une borne : le
+                    point de vente d'Odoo 20, joué de bout en bout sur la base de démonstration.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau débutant · série <strong>Vendre en ligne et en boutique avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community + complément Enterprise.</strong> Écrit et vérifié sur Odoo 20.0
+                        Community, septembre 2026, sur la base de démonstration. Le Point de Vente, son extension Restaurant et
+                        la commande en libre-service sont inclus dans la Community ; ils existent aussi dans l'édition
+                        Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le site web et la boutique en ligne vendent à distance ; le <strong>Point de Vente</strong> vend au
+                    comptoir. Il reprend les mêmes articles, les mêmes prix et les mêmes taxes que les Ventes, mais dans une
+                    interface de caisse pensée pour l'écran tactile : un toucher ajoute le produit, le caissier encaisse
+                    et imprime le ticket. En fin de journée, la <strong>session</strong> se clôture et Odoo passe les ventes en
+                    comptabilité. Le même moteur sert à la <strong>commande en libre-service</strong> : un menu consulté sur
+                    téléphone ou une borne où le client commande et paie seul.</p>
+                <p>L'application s'installe depuis <strong>Applications</strong>, où sa carte porte le nom
+                    <strong>Point of Sale</strong>. Cliquez sur <strong>Activer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Point of Sale dans la liste des applications d'Odoo 20, avec la mention Handle checkouts and payments for shops and restaurants et les boutons Activer et En savoir plus" style="max-width:55%; height:auto;"/>
+                    <figcaption>La carte de l'application dans Applications.</figcaption>
+                </figure>
+                <p>Sur la base de démonstration, l'installation ajoute dix-sept modules : le point de vente lui-même et ses
+                    liaisons avec les applications déjà présentes (Ventes, Inventaire, Fabrication, Réparations, Employés,
+                    paiement en ligne). La société de démonstration étant située en France, Odoo installe aussi le module de
+                    <strong>certification française des caisses</strong>, qui rend les ventes inaltérables. Dans Odoo 20, le
+                    point de vente ne dépend plus de l'Inventaire : le lien avec le stock passe par un module de liaison,
+                    installé automatiquement quand les deux applications sont présentes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>ouvrir une session de caisse et déclarer le fond de caisse ;</li>
+                    <li>enregistrer une vente et l'encaisser en espèces ou par carte ;</li>
+                    <li>imprimer ou envoyer le ticket du client ;</li>
+                    <li>clôturer la session et retrouver sa trace comptable, qui change de forme dans Odoo 20 ;</li>
+                    <li>faire commander et payer un client sur une borne en libre-service.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir une session de caisse</h2>
+                <p>Le menu <strong>Point de Vente › Tableau de bord</strong> affiche une carte par point de vente. La base
+                    de démonstration en prépare trois : <strong>Magasin de meubles</strong>, <strong>Magasin de
+                    vêtements</strong> et <strong>Boulangerie</strong>. La carte du magasin de meubles rappelle la date de
+                    la dernière fermeture, le solde de caisse laissé ce jour-là, et trace la courbe des ventes récentes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Tableau de bord du Point de Vente d'Odoo 20 : cartes Magasin de meubles avec le bouton Ouvrir la caisse, Fermeture 27 sept., Solde 51,49 $ et une courbe des ventes, Magasin de vêtements et Boulangerie avec leur bouton Ouvrir la caisse" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le tableau de bord : une carte par point de vente.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Ouvrir la caisse</strong>. L'interface de caisse s'ouvre en plein écran et demande
+                    le <strong>contrôle à l'ouverture</strong> : le montant des <strong>espèces à l'ouverture</strong>,
+                    prérempli avec le solde de la dernière fermeture, et une note facultative. Le bouton à droite du montant
+                    ouvre le détail par pièces et billets.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Contrôle à l'ouverture de la caisse Odoo 20 : champ Espèces à l'ouverture 51,49 avec un bouton de comptage des billets, champ Note d'ouverture, boutons Ouvrir la caisse et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le contrôle à l'ouverture : le fond de caisse.</figcaption>
+                </figure>
+                <p>Le caissier compte le tiroir, corrige le montant s'il le faut et clique sur <strong>Ouvrir la
+                    caisse</strong>. La session est ouverte : chaque vente jusqu'à la clôture lui sera rattachée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Enregistrer une vente</h2>
+                <p>L'écran de caisse se partage en deux. À droite, les produits, regroupés par catégories en haut
+                    (<strong>Divers</strong>, <strong>Bureaux</strong>, <strong>Chaises</strong>) et un champ de recherche.
+                    À gauche, la commande en cours, le pavé numérique et le bouton <strong>Paiement</strong>.</p>
+                <p>Touchez deux fois <strong>Chaise de bureau</strong> et une fois <strong>Lampe de bureau</strong>. Chaque
+                    toucher ajoute une unité ; la quantité s'affiche aussi en pastille sur la vignette du produit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écran de caisse du Point de Vente Odoo 20 : à gauche la commande avec 2 Chaise de bureau 161,00 $ et 1 Lampe de bureau 46,00 $, Taxes 27,00 $, Total 207,00 $, boutons Client et Note, pavé numérique avec Qté, % et Prix, bouton Paiement ; à droite les catégories Divers, Bureaux, Chaises et les vignettes des produits" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une commande de trois articles : 207 $ taxes comprises.</figcaption>
+                </figure>
+                <p>Le pavé numérique agit sur la ligne sélectionnée : <strong>Qté</strong> change la quantité,
+                    <strong>%</strong> applique une remise, <strong>Prix</strong> modifie le prix unitaire. Le bouton
+                    <strong>Client</strong> rattache la vente à un contact, utile pour facturer ou vendre à crédit ; sans
+                    client, la vente reste anonyme. Cliquez sur <strong>Paiement</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Encaisser en espèces ou par carte</h2>
+                <p>L'écran de paiement liste les modes de paiement du point de vente : <strong>Espèces</strong>,
+                    <strong>Carte</strong> et <strong>Compte client</strong> (vente à crédit, qui exige un client). Le client
+                    règle en espèces avec un billet de 250 $ : touchez <strong>Espèces</strong>, puis tapez
+                    <strong>250</strong> au pavé. Les touches <strong>+10</strong>, <strong>+20</strong> et
+                    <strong>+50</strong> ajoutent un billet d'un seul geste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Écran de paiement du Point de Vente Odoo 20 : modes Espèces, Carte et Compte client à gauche, boutons Client et Facture, pavé numérique avec +10, +20, +50, montant dû 207,00 $, ligne Espèces 250,00 $, Monnaie 43,00 $ affichée avec un signe moins, boutons Retour et Valider" style="max-width:100%; height:auto;"/>
+                    <figcaption>Paiement en espèces : 250 $ reçus, 43 $ de monnaie.</figcaption>
+                </figure>
+                <p>Odoo calcule la <strong>monnaie</strong> à rendre : 43 $. Un paiement peut aussi se répartir entre
+                    plusieurs modes, par exemple une partie en espèces et le reste par carte. Le bouton
+                    <strong>Facture</strong> demande une facture nominative, à condition d'avoir choisi un client. Cliquez
+                    sur <strong>Valider</strong>.</p>
+                <p>Une deuxième vente, un <strong>Tiroir noir</strong> et un <strong>Sous-main</strong> pour 31,03 $, se
+                    règle de la même façon avec le mode <strong>Carte</strong>. Sans terminal de paiement connecté, ce mode
+                    se contente d'enregistrer le montant : le caissier encaisse sur le terminal de la banque, à côté.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le ticket du client</h2>
+                <p>Après validation, Odoo 20 affiche un écran <strong>Montant payé</strong>, avec trois boutons :
+                    <strong>Imprimer</strong>, <strong>Envoyer le reçu</strong> (par e-mail) et <strong>Continuer</strong>,
+                    qui ouvre une nouvelle commande. L'aperçu du ticket qu'affichaient les versions précédentes a disparu de
+                    cet écran : dans Odoo 20, le ticket est généré par le serveur, au moment de l'imprimer ou de l'envoyer.
+                    Le bouton <strong>Imprimer</strong> propose un ticket complet (<em>Full Receipt</em>) ou simplifié
+                    (<em>Simplified Receipt</em>), ainsi qu'un ticket cadeau sans prix si l'option est activée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Ticket de caisse Odoo 20 : emplacement du logo, Ticket TVA 2610-1-000001, date, Servi par Mitchell, 2 Chaise de bureau 161,00 $, 1 Lampe de bureau 46,00 $, sous-total 180,00 $, Tax 15% 27,00 $, Total 207,00 $, lignes Espèces -43,00 $ et 250,00 $, Monnaie 43.0, Total Items 3, QR code Besoin d'une facture ? avec un code, empreinte hexadécimale, coordonnées du magasin" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le ticket de la première vente.</figcaption>
+                </figure>
+                <p>Le ticket reprend les lignes, les taxes, les paiements et la monnaie rendue. Le QR code
+                    <strong>Besoin d'une facture ?</strong> permet au client de demander lui-même sa facture sur le portail,
+                    avec le code imprimé dessous. La longue suite hexadécimale est l'<strong>empreinte
+                    d'inaltérabilité</strong> ajoutée par la certification française : chaque vente est chaînée à la
+                    précédente, et toute modification ultérieure se détecterait.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Clôturer la session</h2>
+                <p>En fin de journée, ouvrez le menu ☰ en haut à droite de la caisse et choisissez <strong>Fermer la
+                    caisse</strong>. La fenêtre <strong>Fermeture de la caisse</strong> récapitule la session : deux
+                    commandes pour 238,03 $, et pour chaque mode de paiement le montant attendu, le montant compté et la
+                    différence.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Fermeture de la caisse d'Odoo 20 : 2 commandes 238,03 $, Espèces 258,49 $ détaillées en Ouverture 51,49 $, Paiement en Espèces 207,00 $, Cash entrant/sortant +0,00 $, Compté 258,49 $, Différence 0,00 $ ; Carte 31,03 $ ; Compte client 0,00 $ ; champs Comptage de caisse 258,49 et Carte Nombre 31,03, Note de clôture, boutons Fermer la caisse, Ignorer, Cash entrant/sortant et Ventes du jour" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fermeture : espèces attendues, comptées, écart.</figcaption>
+                </figure>
+                <p>Les espèces attendues valent le fond de caisse plus les encaissements en espèces : 51,49 + 207,00 =
+                    258,49 $. Le caissier compte le tiroir et saisit le résultat dans <strong>Comptage de caisse</strong> ;
+                    un écart s'affiche aussitôt en <strong>Différence</strong>. Le bouton
+                    <strong>Cash entrant/sortant</strong> enregistre un apport ou un retrait d'espèces en cours de journée,
+                    <strong>Ventes du jour</strong> télécharge le rapport des ventes de la session. Cliquez sur
+                    <strong>Fermer la caisse</strong> : la session passe à l'état <strong>Fermée &amp;
+                    Comptabilisée</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La trace comptable : une facture de clôture</h2>
+                <p>Pour le comptable, c'est un changement de forme notable dans Odoo 20. Jusqu'à la version 19, la clôture
+                    produisait une écriture de journal dans le journal du point de vente. Odoo 20 produit une
+                    <strong>facture client</strong>, dans un journal dédié nommé <strong>Point of Sale Closing</strong>, au
+                    nom d'un client par défaut du point de vente, <strong>Odoo POS</strong>. Ouvrez <strong>Facturation ›
+                    Clients › Factures</strong> : la clôture de la session y figure sous le numéro
+                    <strong>POSC/2026/00005</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Facture client POSC/2026/00005 dans Odoo 20 : ruban PAYÉ, client Odoo POS, date de facturation et échéance 27 sept., journal Point of Sale Closing en USD, ligne Product Sales quantité 1 prix 206,98 taxe 15 %, Montant hors taxes 206,98 $, Tax 15% 31,05 $, Total 238,03 $, deux paiements du 27/09/2026 de 31,03 $ et 207,00 $, Montant dû 0,00 $, boutons intelligents Paiements, Écritures comptables et Commandes du PdV" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture de clôture de la session, déjà payée.</figcaption>
+                </figure>
+                <p>La facture regroupe toutes les ventes non facturées de la session sur une ligne <strong>Product
+                    Sales</strong>, pour 238,03 $ toutes taxes comprises. Elle est déjà <strong>payée</strong> : les deux encaissements,
+                    207 $ en espèces et 31,03 $ par carte, y sont lettrés, chacun passé dans le journal de son mode de
+                    paiement. Le bouton <strong>Commandes du PdV</strong> ramène aux deux ventes, <strong>Écritures
+                    comptables</strong> au détail des pièces. Les ventes facturées nominativement à la caisse gardent leur
+                    propre facture et n'entrent pas dans celle-ci.</p>
+                <p>Autre nouveauté : la comptabilisation n'attend plus forcément la clôture. Le réglage
+                    <strong>Closing entries</strong>, dans <strong>Point de Vente › Configuration › Paramètres</strong>
+                    section Comptabilité, affiche le mode <em>Daily</em> et une heure (4 h par défaut) à laquelle Odoo comptabilise chaque jour les ventes
+                    des sessions restées ouvertes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Activer la commande en libre-service</h2>
+                <p>La commande en libre-service est fournie par le module <strong>POS Self Order</strong>, qui s'installe
+                    automatiquement avec l'extension <strong>Restaurant</strong> du point de vente. Dans
+                    <strong>Applications</strong>, activez la carte <strong>Restaurant</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Carte Restaurant dans la liste des applications d'Odoo 20, avec la mention Restaurant extensions for the Point of Sale et les boutons Activer et En savoir plus" style="max-width:55%; height:auto;"/>
+                    <figcaption>L'extension Restaurant, qui apporte le libre-service.</figcaption>
+                </figure>
+                <p>Sur la base de démonstration, huit modules arrivent, dont le libre-service et son paiement en ligne, et le
+                    tableau de bord gagne trois points de vente : <strong>Restaurant</strong>, <strong>Bar</strong> et
+                    <strong>Kiosque</strong>. Les réglages se trouvent dans <strong>Point de Vente › Configuration ›
+                    Paramètres</strong>, point de vente Kiosque, section <strong>Commande mobile en libre-service &amp;
+                    kiosque</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Réglages Commande mobile en libre-service et kiosque d'Odoo 20 : Activation du menu QR et Kiosque, En libre-service Kiosque, liens Aperçu de l'interface web et Boutons de la page d'accueil, Service à Zone d'enlèvement, Payer après Chaque commande (nécessite Odoo Enterprise), lien Modes de paiement ; à droite Splash screens avec trois images landing_01 à landing_03 et le bouton Ajouter un média" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les réglages du libre-service, sur le point de vente Kiosque.</figcaption>
+                </figure>
+                <p>Le champ <strong>En libre-service</strong> choisit le mode :</p>
+                <table class="tmc">
+                    <thead><tr><th>Mode</th><th>Ce que fait le client</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Menu QR</strong></td><td>consulte la carte sur son téléphone en scannant un QR code, sans commander</td></tr>
+                        <tr><td><strong>Menu QR + Commande</strong></td><td>commande depuis son téléphone, à table ou pour retrait</td></tr>
+                        <tr><td><strong>Kiosque</strong></td><td>commande et paie seul sur une borne installée dans le magasin</td></tr>
+                    </tbody>
+                </table>
+                <p>Le champ <strong>Service à</strong> précise où la commande est servie : <strong>Zone d'enlèvement</strong>
+                    (le client vient la chercher), <strong>Table</strong>, ou <strong>Dynamic QR</strong>, nouveau dans
+                    Odoo 20, où le QR code est propre à la commande en cours d'une table. Les <strong>Splash
+                    screens</strong> sont les images qui défilent sur l'écran d'accueil de la borne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Commander et payer sur la borne</h2>
+                <p>Sur le tableau de bord, la carte <strong>Kiosque</strong> porte le bouton <strong>Lancer le
+                    kiosque</strong> : il ouvre la session et affiche l'interface de la borne dans un nouvel onglet, en plein
+                    écran. Cette page reste ouverte sur la tablette du magasin. Le client touche
+                    <strong>Commander maintenant</strong> et parcourt la carte, rangée en <strong>Alimentation</strong> et
+                    <strong>Boissons</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Borne de commande en libre-service Odoo 20 : onglets Alimentation et Boissons, vignettes Burger au bacon 17,83 $, Cheeseburger 14,95 $, Pizza Margherita 13,23 $, Pizza végétarienne 18,40 $, Pâtes 4 fromages, Champignons, Pâtes bolognaise, Sandwich au poulet curry, barre du bas avec Retour, Total 0 et 0,00 $, bouton Payer" style="max-width:100%; height:auto;"/>
+                    <figcaption>La carte du kiosque, vue par le client.</figcaption>
+                </figure>
+                <p>Le client choisit un <strong>Cheeseburger</strong>. Le produit a un accompagnement obligatoire : la borne
+                    le fait choisir (<strong>Frites belges maison</strong>) avant <strong>Ajouter au panier</strong>. Il
+                    ajoute un <strong>Coca-Cola</strong>, puis touche <strong>Payer</strong> et vérifie sa commande :
+                    17,48 $. Au second <strong>Payer</strong>, Odoo 20 repère que ces articles forment un menu et
+                    propose de les remplacer par le <strong>Combo menu burger</strong> : c'est une nouveauté du
+                    libre-service.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Proposition de combo sur la borne Odoo 20 : titre Do you want to make a combo instead ?, Combo menu burger 11,50 $ composé de 1 Cheeseburger (Frites belges maison) et 1 Coca-Cola, bouton Appliquer, mention Enregistrer 5,98 $, bouton No Thanks" style="max-width:100%; height:auto;"/>
+                    <figcaption>La borne propose le menu : 5,98 $ d'économie.</figcaption>
+                </figure>
+                <p>La mention <strong>Enregistrer 5,98 $</strong> désigne l'économie réalisée. Le client touche <strong>Appliquer</strong> : la commande passe à 11,50 $. Il touche
+                    <strong>Payer</strong> une dernière fois, et la borne affiche un QR code.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Écran de la borne Odoo 20 : titre Scannez le QR code pour payer, grand QR code" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le paiement se fait sur le téléphone du client.</figcaption>
+                </figure>
+                <p>Le QR code ouvre, sur le téléphone du client, la page de <strong>paiement en ligne</strong> de la
+                    commande. Elle propose les fournisseurs de paiement publiés du site ; sur la base de démonstration, c'est
+                    le fournisseur <strong>Démo</strong> installé dans l'article précédent de la série.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Page de paiement en ligne sur téléphone dans Odoo 20 : commande 260-6-000002, ID de la commande 20, À PAYER 11,50 $, Mode de paiement Démo avec un triangle d'avertissement, Données de paiement (données test) 4111 1111 1111 1111, Statut du paiement Succès, Sécurisé par Démo, bouton Payer" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le paiement sur le téléphone, avec le fournisseur Démo.</figcaption>
+                </figure>
+                <p>Dès que le paiement est accepté (« Votre paiement a été traité » sur le téléphone), la borne passe d'elle-même à
+                    l'écran de confirmation, avec le <strong>numéro de commande</strong> que le client guettera au comptoir.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Écran de confirmation de la borne Odoo 20 : coche, Nous préparons votre commande !, Votre numéro de commande K6-2" style="max-width:55%; height:auto;"/>
+                    <figcaption>Commande payée : le client reçoit son numéro, K6-2.</figcaption>
+                </figure>
+                <p>Côté back-office, <strong>Point de Vente › Commandes › Commandes</strong> liste la commande du kiosque,
+                    à l'état <strong>Payé</strong>, à côté des ventes du magasin de meubles, déjà
+                    <strong>Comptabilisées</strong> par la clôture. Elle sera comptabilisée à son tour à la clôture de la
+                    session du kiosque.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_16" alt="Liste des commandes du Point de Vente Odoo 20 : Kiosque - 000002 de la session Kiosque/00002, 11,50 $, Payé ; Kiosque - 000001, 14,95 $, Payé ; quatre commandes Restaurant de John Doe à l'état Nouveau ; deux commandes Magasin de meubles de 31,03 $ et 207,00 $ à l'état Comptabilisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les commandes de la caisse et du kiosque, réunies.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Community.</strong> Tout le parcours de cet article, de l'ouverture de la caisse à la facture de
+                        clôture, puis de la commande au kiosque à son paiement en ligne, a été joué sur Odoo 20 Community.</p>
+                </div>
+                <div class="ee-box">
+                    <h4>Complément Enterprise — à venir</h4>
+                    <p>Dans les paramètres du point de vente Restaurant, le réglage <strong>Réservation</strong> (réservation
+                        en ligne pour le point de vente) porte le badge <strong>Entreprise</strong> : le module
+                        <code>pos_appointment</code> n'est pas inclus dans la Community. Son fonctionnement sera présenté dans
+                        un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une commande en attente bloque la clôture</h4>
+                    <p>Odoo refuse de fermer une session qui contient encore des commandes en brouillon du jour. Avant de
+                        clôturer, encaissez ou supprimez les commandes laissées en attente (bouton <strong>Commandes</strong>
+                        de la caisse).</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La monnaie s'affiche avec un signe moins</h4>
+                    <p>À l'écran de paiement, la monnaie à rendre apparaît sous la forme « − 43,00 $ », et le ticket porte une
+                        ligne Espèces négative du même montant. C'est la sortie d'espèces rendue au client, pas une erreur de
+                        saisie : le total encaissé reste 207 $.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La facture de clôture n'est pas une vente à un vrai client</h4>
+                    <p>Le client « Odoo POS » des factures POSC regroupe les ventes anonymes. Dans les analyses par client, les ventes
+                        anonymes apparaissent sous ce seul nom ; pour suivre un client réel, rattachez-le à la vente avec le bouton
+                        <strong>Client</strong>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un libellé « Enterprise » sur la borne</h4>
+                    <p>Sur le point de vente Kiosque, le champ Payer après affiche « Chaque commande (nécessite Odoo
+                        Enterprise) ». Sur la présente base Community, la commande au kiosque a pourtant été payée en ligne de
+                        bout en bout : testez le parcours complet avant de conclure.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Pas de fournisseur publié, pas de paiement au kiosque</h4>
+                    <p>Le QR code de la borne mène au paiement en ligne. Sans fournisseur de paiement publié (Démo pour les
+                        essais, Stripe, PayPal ou Mollie en production), le client ne peut pas payer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> tenir une journée de caisse complète dans la Boulangerie.</p>
+                    <p><strong>Indication :</strong> ouvrez la caisse du point de vente <strong>Boulangerie</strong>, enregistrez
+                        deux ventes, l'une en espèces avec un billet de 20 $, l'autre par carte, puis clôturez la session en
+                        comptant exactement les espèces attendues.</p>
+                    <p><strong>Critère de réussite :</strong> la session est à l'état Fermée &amp; Comptabilisée, avec une
+                        différence nulle, et une nouvelle facture POSC au nom d'Odoo POS, à l'état Payé, figure dans
+                        Facturation › Clients › Factures.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une journée de caisse est une session : ouverture avec fond de caisse, ventes, clôture avec comptage.</li>
+                    <li>L'écran de paiement gère espèces, carte et compte client, et calcule la monnaie à rendre.</li>
+                    <li>Dans Odoo 20, le ticket est généré par le serveur ; imprimé ou envoyé par e-mail, il porte un QR code
+                        de facturation en libre-service.</li>
+                    <li>La clôture produit désormais une facture client payée, dans le journal Point of Sale Closing, au nom
+                        d'Odoo POS ; une comptabilisation quotidienne couvre les sessions laissées ouvertes.</li>
+                    <li>L'extension Restaurant apporte le libre-service : menu QR, commande sur téléphone ou borne.</li>
+                    <li>Au kiosque, Odoo 20 propose les combos au client, qui paie en ligne en scannant un QR code.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">La boutique en ligne dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Emailing et SMS dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Le pilier : où se place le point de vente.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">La facture client, forme que prend désormais la clôture de caisse.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et rapprochement</a></h5>
+                            <p class="small text-muted mb-0">Rapprocher les encaissements par carte de la caisse.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
