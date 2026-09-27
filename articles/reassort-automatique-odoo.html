@@ -1,0 +1,374 @@
+<!--
+Article — Réassort automatique dans Odoo 20
+Série « Achats, stock et fabrication avec Odoo 20 » (blog Fonctionnel) — étape 3
+Date : 2026-09-27
+Slug : reassort-automatique-odoo
+Meta : Règles min/max et écran Réassort d'Odoo 20 Community : commandes fournisseurs créées dès qu'une vente fait passer le stock prévu sous le minimum.
+Mot-clé cible : réassort automatique odoo 20
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~8 minutes
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func (démonstration, Inventaire + Achats).
+  stock/views/stock_orderpoint_views.xml:28-62 (liste : Disponible, Prévision, Déclencheur, Min, Max, À commander,
+  Commander, Automatiser, Reporter), :194-221 (Réassort = action serveur, filtres À réapprovisionner + Non reporté,
+  panneau Déclencheur sur Manuel ; Règles de réapprovisionnement filtrées sur Automatique) ;
+  stock/models/stock_orderpoint.py:32-33 (déclencheur Automatique par défaut), :379-402 (Commander : quantité
+  saisie ou quantité qui ramène la prévision au Max — v19 : seulement avec force_to_max, odoo19
+  stock_orderpoint.py:341-345 ; suppression des règles manuelles créées par le système une fois servies),
+  :404-406 (Automatiser = déclencheur Automatique + Commander), :469-471 (quantité jusqu'au Max) ;
+  stock/wizard/stock_orderpoint_snooze.py:13-17 (Reporter : 1 jour, 1 semaine, 1 mois, date choisie) ;
+  stock/models/stock_picking.py:779-780 + stock_move.py:2722-2744 (règles automatiques déclenchées à la
+  confirmation manuelle d'un transfert ; déclenchement à la confirmation d'une vente observé, S00036 → P00024) ;
+  purchase_stock/models/res_partner.py:21-24 + stock_rule.py:325-350 (regroupement, Grouper les demandes de prix) ; stock/data/stock_sequence_data.xml:55-65 (planificateur quotidien
+  « Procurement: run scheduler ») ; stock/views/product_views.xml:365-383 (bouton Min/Max ou Règles de
+  réapprovisionnement de la fiche article) ; product/models/product_product.py:1276-1294 (_select_seller :
+  fournisseur éligible le moins cher, puis séquence).
+  Parcours joué : règle OP/00006 Boîte de rangement Min 50 Max 100 (disponible 38) ; S00036 Acme Corporation
+  20 boîtes confirmée → P00024 Wood Corner créée par OdooBot, 82 × 13 $, origine OP/00006 ; Réassort :
+  Écrans anti-bruit (Noir) prévision -9, Min 0 Max 0 → Commander → 9 écrans à 287 $ ajoutés à P00024 (règle
+  manuelle de démo OP/00004 supprimée après la première commande). Exercice vérifié par shell (annulé) :
+  Automatiser sur Rangement de bureau → P00025 Ready Mat 225 × 24,99 $.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Réassort automatique dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une règle de réapprovisionnement dit à Odoo : « ne descends pas
+                    sous tant, remonte jusqu'à tant ». Dès qu'une vente fait passer le stock prévu sous le
+                    minimum, la demande de prix part chez le fournisseur, sans intervention. L'écran Réassort
+                    montre le reste : les manques que personne n'a encore couverts.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau intermédiaire · série <strong>Achats, stock et fabrication avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, avec Inventaire et Achats installés. Règles de réapprovisionnement et écran Réassort
+                        sont inclus dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le réassort s'appuie sur la <strong>prévision</strong> : le stock disponible, plus ce qui est
+                    attendu (réceptions), moins ce qui est promis (livraisons). C'est elle, et non le stock
+                    physique, qu'Odoo compare au minimum. Un article se réapprovisionne par achat s'il a au moins
+                    un fournisseur dans sa liste de prix, onglet Achats de la fiche. Parmi les fournisseurs
+                    possibles pour la quantité et la date, Odoo retient le moins cher ; à prix égal, l'ordre de la
+                    liste départage.</p>
+                <p>L'exemple suit la « Boîte de rangement » de la démonstration : 38 en stock, fournie par Wood
+                    Corner à 13 $ (et par Ready Mat à 14,40 $). Les commandes créées rejoignent le cycle décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la
+                    demande de prix à la facture dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une règle de réapprovisionnement minimum / maximum ;</li>
+                    <li>prévoir la quantité qu'Odoo commandera ;</li>
+                    <li>traiter les manques proposés par l'écran Réassort ;</li>
+                    <li>choisir entre déclenchement automatique et manuel.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer une règle minimum / maximum</h2>
+                <p>Sur la fiche de l'article, le bouton intelligent <strong>Règles de réapprovisionnement</strong>
+                    (ou <strong>Min / Max</strong> quand une règle existe déjà) ouvre la liste des règles.
+                    <strong>Nouveau</strong>, puis sur la ligne : Boîte de rangement, <strong>Min</strong> 50,
+                    <strong>Max</strong> 100.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des règles de réapprovisionnement d'Odoo 20 dans Inventaire : Lampe de bureau, Flipover, Chaise de bureau en déclencheur automatique, Rangement de bureau et Combinaison de bureau en manuel avec boutons Commander, Automatiser, Reporter, Boîte de rangement disponible 38 prévision 100 automatique Min 50 Max 100" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste des règles, tous articles confondus, vue après le réassort de l'étape 2 : la prévision de la boîte est remontée à 100.</figcaption>
+                </figure>
+                <p>La colonne <strong>Déclencheur</strong> vaut <strong>Automatique</strong> par défaut dans
+                    cette liste (une ligne créée depuis l'écran Réassort, elle, est Manuelle) : Odoo commande
+                    seul. En <strong>Manuel</strong>, il se contente de proposer la commande, que
+                    l'acheteur valide par le bouton <strong>Commander</strong>.</p>
+                <p>La quantité commandée ramène la prévision au <strong>Max</strong>, arrondie au conditionnement d'achat s'il y en a un : quand la prévision
+                    descend à 18, Odoo commande 100 − 18 = 82. Le Min est le seuil qui déclenche, le Max la
+                    cible. Un Min égal au Max donne des commandes fréquentes et petites ; un écart large, des
+                    commandes rares et grosses.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Laisser une vente déclencher l'achat</h2>
+                <p>Un devis pour Acme Corporation porte sur 20 boîtes. À sa confirmation (S00036), la livraison
+                    prévoit la sortie de 20 boîtes : la prévision tombe à 38 − 20 = 18, sous le minimum de 50. Odoo applique
+                    aussitôt la règle automatique et crée la demande de prix P00024 chez Wood Corner.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Demande de prix P00024 d'Odoo 20 créée automatiquement pour Wood Corner : 82 Boîte de rangement à 13 dollars, total 1 225,90 dollars, bouton intelligent Comparaison des prix" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande de prix créée par la règle : 82 boîtes, pour remonter à 100.</figcaption>
+                </figure>
+                <p>L'historique l'attribue à OdooBot, et le champ <strong>Source</strong> (onglet Autres
+                    informations) indique la règle, OP/00006. La demande reste une demande de prix : l'acheteur
+                    l'envoie et la confirme comme une autre. Le bouton <strong>Comparaison des prix</strong>
+                    apparaît parce que la boîte a plusieurs fournisseurs.</p>
+                <p>Les règles automatiques sont aussi passées en revue chaque jour par le planificateur
+                    d'Odoo, une tâche planifiée : un manque qui ne vient pas d'un transfert confirmé (une
+                    réception annulée, une règle modifiée) est donc couvert au plus tard le lendemain.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Traiter les manques dans l'écran Réassort</h2>
+                <p><strong>Opérations › Approvisionnement › Réassort</strong> liste les articles à commander (menu
+                    réservé aux administrateurs d'Inventaire). Il s'ouvre sur les règles <strong>manuelles</strong> (panneau de gauche) et sur deux filtres,
+                    À réapprovisionner et Non reporté. On y trouve les règles manuelles de l'entreprise, et des
+                    lignes qu'Odoo crée lui-même pour tout article dont la prévision devient négative, avec un
+                    Min et un Max à 0 : il propose alors de couvrir le seul manque.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran Réassort d'Odoo 20, filtres À réapprovisionner et Non reporté, panneau Déclencheur sur Manuel : Rangement de bureau Min 75 Max 225 à commander 225, Combinaison de bureau prévision -12 à commander 12, Support d'écran prévision -1 à commander 1, Écrans anti-bruit Noir disponible 16 prévision -9 à commander 9, boutons Commander, Automatiser, Reporter" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'écran Réassort : règles manuelles et manques proposés par Odoo.</figcaption>
+                </figure>
+                <p>Chaque ligne offre trois boutons :</p>
+                <ul>
+                    <li><strong>Commander</strong> crée la demande de prix ;</li>
+                    <li><strong>Automatiser</strong> passe la règle en déclenchement automatique, puis commande ;</li>
+                    <li><strong>Reporter</strong> masque la ligne pour un jour, une semaine, un mois ou jusqu'à une
+                        date choisie.</li>
+                </ul>
+                <p>Sur « Écrans anti-bruit (Noir) », 16 en stock mais une prévision à −9, cliquez sur
+                    <strong>Commander</strong>. Une notification donne la commande concernée :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Notification d'Odoo 20 : L'ordre de réassort suivant a été généré. P00024" style="max-width:100%; height:auto;"/>
+                    <figcaption>Commander : Odoo indique la demande de prix alimentée.</figcaption>
+                </figure>
+                <p>Ce n'est pas une nouvelle demande : Wood Corner est aussi le fournisseur retenu pour les
+                    écrans, et Odoo a ajouté les 9 écrans à la demande de prix encore ouverte chez lui, P00024. Une demande
+                    en brouillon regroupe ainsi les besoins d'un même fournisseur (même société, même devise, même
+                    type de réception), tant que le champ <strong>Grouper les demandes de prix</strong> de sa fiche
+                    reste sur Sur commande, valeur par défaut. Les autres valeurs regroupent par date d'arrivée prévue
+                    (Quotidien, Hebdomadaire) ou systématiquement (Toujours).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Demande de prix P00024 d'Odoo 20 pour Wood Corner avec deux lignes : 82 Boîte de rangement à 13 dollars et 9 Écrans anti-bruit Noir à 287 dollars, total 4 196,35 dollars, échéance de commande 22 septembre en rouge" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux réassorts, une seule demande de prix au même fournisseur.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Règles minimum / maximum, déclenchement automatique ou
+                        manuel, écran Réassort, report et regroupement par fournisseur sont inclus dans Odoo 20
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Les propositions d'Odoo sont temporaires</h4>
+                    <p>Une ligne qu'Odoo a créée lui-même dans l'écran Réassort est supprimée une fois servie. Pour
+                        un article à surveiller en permanence, créez une vraie règle avec votre Min et votre Max,
+                        ou cliquez sur Automatiser.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une échéance en rouge</h4>
+                    <p>Sur P00024, l'<strong>Échéance de commande</strong> est passée au rouge à l'ajout des
+                        écrans, que Wood Corner livre en 8 jours : la date à laquelle il fallait commander pour
+                        recevoir à temps est déjà passée. Envoyez la demande sans
+                        attendre, ou revoyez la date d'arrivée avec le fournisseur.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le prix désigne le fournisseur</h4>
+                    <p>Odoo retient le fournisseur le moins cher, sans regarder son délai ni sa fiabilité. Si un
+                        fournisseur plus cher livre plus vite, tenez la liste de prix à jour (quantités minimales,
+                        dates de validité), et contrôlez le bouton Comparaison des prix avant de confirmer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> automatiser une règle manuelle.</p>
+                    <p><strong>Indication :</strong> dans l'écran Réassort, sur la ligne « Rangement de bureau »
+                        (Min 75, Max 225, rien en stock), cliquez sur Automatiser.</p>
+                    <p><strong>Critère de réussite :</strong> une demande de prix chez Ready Mat porte 225
+                        « Rangement de bureau » à 24,99 $ ; la ligne quitte l'écran Réassort et apparaît en
+                        Automatique dans le panneau Déclencheur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo compare la prévision, pas le stock physique, au minimum de la règle.</li>
+                    <li>Il commande de quoi remonter la prévision au maximum.</li>
+                    <li>Une règle automatique réagit dès la confirmation d'une vente ; le planificateur repasse
+                        chaque jour.</li>
+                    <li>L'écran Réassort liste les règles manuelles et les manques ; une demande en brouillon
+                        regroupe les besoins d'un même fournisseur.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/conventions-achat-appels-offres-odoo-218">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Conventions d'achat et appels d'offres dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Réceptions et livraisons en plusieurs étapes dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La suite de la demande créée par la règle.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Réservation du stock et livraisons côté ventes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/conventions-achat-appels-offres-odoo-218">Conventions d'achat</a></h5>
+                            <p class="small text-muted mb-0">Un prix négocié, repris par les demandes du réassort.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
