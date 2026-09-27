@@ -1,0 +1,404 @@
+<!--
+Article — Lots, numéros de série et dates de péremption dans Odoo 20
+Série « Achats, stock et fabrication avec Odoo 20 » (blog Fonctionnel) — étape 5
+Date : 2026-09-27
+Slug : lots-series-peremption-odoo
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func.
+  stock/views/res_config_settings_views.xml:129-160 (Traçabilité, Dates d'expiration = module_product_expiry) ;
+  stock/models/product.py:835-850, 1049-1060 (store_by NOUVEAU en 20 : Aucun / Par quantité / Par lots / Par n° de série
+  unique, pilote is_storable + tracking) ; product_expiry/views/product_template_views.xml:8-35 ;
+  stock/static/src/widgets/lots_dialog.xml (Generate Serials, import : un nom par ligne + quantité) ;
+  product_expiry/models/production_lot.py:42-47, 82-104 (alerte = activité au responsable de l'article) ;
+  product_expiry/models/stock_picking.py:11-26 (confirmation si lot périmé / date d'enlèvement passée) ;
+  stock/report/stock_traceability.py:32 (mouvements terminés seulement) ; product_expiry/models/stock_quant.py:26 (FEFO).
+  Parcours joué : articles 40 (lot, 730 j, alerte 60 j) et 41 (série) ; P00026 Wood Corner → WH/IN/00022 (lot VM-2609-A,
+  PV-0001..0003 générés) → WH/STOR/00002 ; S00038 Gemini Furniture 5 vernis → WH/PICK/00002 réserve VM-2609-A.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Lots, numéros de série et dates de péremption dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un pot de vernis appartient à un lot de fabrication qui périme ;
+                    une perceuse porte un numéro de série unique. Odoo suit l'un et l'autre, du fournisseur au
+                    client, pour peu que l'article le demande. Ce suivi se décide sur la fiche de l'article et se
+                    saisit à la réception.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau intermédiaire · série <strong>Achats, stock et fabrication avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, avec Inventaire, Achats et Ventes installés. Lots, numéros de série et dates
+                        d'expiration sont inclus dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Un <strong>lot</strong> regroupe des unités identiques, produites ensemble : 40 pots de vernis
+                    du même lot partagent un numéro et une date d'expiration. Un <strong>numéro de série</strong>
+                    identifie une seule unité : trois perceuses, trois numéros. Le lot sert au rappel de produits et à
+                    la péremption, le numéro de série au suivi individuel (garantie, réparation, retour).</p>
+                <p>L'exemple crée deux articles, « Vernis mat pour mobilier » (suivi par lots, avec péremption) et
+                    « Perceuse-visseuse d'atelier » (suivi par numéro de série), achetés chez Wood Corner. L'entrepôt
+                    reçoit en deux étapes, comme le décrit
+                    <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                    et livraisons en plusieurs étapes dans Odoo 20</a> ; en une étape, le principe est le même.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les lots, les numéros de série et les dates d'expiration ;</li>
+                    <li>paramétrer le suivi et les délais de péremption d'un article ;</li>
+                    <li>saisir un lot et générer des numéros de série à la réception ;</li>
+                    <li>retrouver un lot, ses dates et son parcours dans l'entrepôt.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer la traçabilité</h2>
+                <p><strong>Inventaire › Configuration › Paramètres</strong>, section Traçabilité : cochez
+                    <strong>Lots &amp; Numéros de série</strong>. L'option <strong>Dates d'expiration</strong>
+                    apparaît alors ; cochez-la aussi, puis enregistrez. Elle installe un module complémentaire : la
+                    page se recharge après quelques secondes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20, section Traçabilité : Lots et Numéros de série coché, Dates d'expiration coché, options Imprimer des codes-barres GS1, Afficher des lots et des numéros de série sur les bons de livraison et Consignation non cochées" style="max-width:100%; height:auto;"/>
+                    <figcaption>Lots et numéros de série, puis dates d'expiration.</figcaption>
+                </figure>
+                <p>L'option <strong>Afficher des lots et des numéros de série sur les bons de livraison</strong>
+                    imprime les numéros sur le document remis au client : utile pour un rappel de produits.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Choisir le suivi de l'article</h2>
+                <p>Sur la fiche de l'article, onglet Informations générales, le champ <strong>Suivi</strong>
+                    propose quatre valeurs : <strong>Aucun</strong> (le stock n'est pas suivi),
+                    <strong>Par quantité</strong>, <strong>Par lots</strong> et <strong>Par numéro de série
+                    unique</strong>. Choisissez Par lots pour le vernis, Par numéro de série unique pour la
+                    perceuse.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche article Vernis mat pour mobilier d'Odoo 20, onglet Informations générales : type de produit Biens, politique de facturation Quantités commandées, Suivi Par lots, quantité disponible 0, prix de vente 24 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le champ Suivi, qui décide aussi si le stock de l'article est suivi.</figcaption>
+                </figure>
+                <p>Enregistrez avant d'aller plus loin : la section Traçabilité de l'onglet
+                    <strong>Inventaire</strong>, et avec elle la case <strong>Date d'expiration</strong>, n'apparaît
+                    qu'une fois le suivi enregistré. Cochez la case : la section <strong>Dates</strong> s'affiche.
+                    Chaque délai s'y compte en jours.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Onglet Inventaire de la fiche article Vernis mat pour mobilier dans Odoo 20 : section Traçabilité avec Date d'expiration cochée, section Dates avec Date d'expiration 730 jours après la réception, Date limite d'utilisation optimale 0, Date d'enlèvement 0, Date d'alerte 60 jours avant la date d'expiration" style="max-width:100%; height:auto;"/>
+                    <figcaption>Péremption à 730 jours après réception, alerte 60 jours avant.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Calcul</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Date d'expiration</td><td>jours après la réception</td><td>date de péremption du lot</td></tr>
+                        <tr><td>Date limite d'utilisation optimale</td><td>jours avant l'expiration</td><td>indicative
+                            (« à consommer de préférence avant »)</td></tr>
+                        <tr><td>Date d'enlèvement</td><td>jours avant l'expiration</td><td>à partir de cette date, le lot
+                            n'est plus réservé automatiquement ni compté comme disponible</td></tr>
+                        <tr><td>Date d'alerte</td><td>jours avant l'expiration</td><td>une tâche planifiée crée une activité
+                            pour le responsable de l'article, si le lot est encore en stock</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Saisir le lot à la réception</h2>
+                <p>Le bon de commande P00026 (40 vernis, 3 perceuses) est confirmé ; sa réception WH/IN/00022 ne
+                    montre pas de colonne pour les lots. Le lien <strong>Détails</strong> de chaque ligne ouvre la
+                    fenêtre Opérations détaillées. Pour le vernis, saisissez le numéro du lot fourni par le
+                    fabricant, VM-2609-A, dans la colonne Lot/numéro de série.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Opérations détaillées d'Odoo 20 pour Vernis mat pour mobilier, demande 40 : ligne VM-2609-A, date d'expiration et date d'enlèvement 27 septembre 2028, stocker dans WH/Entrée, quantité 40, boutons Generate Lots et Importer des lots" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lot VM-2609-A : les dates sont calculées d'après la fiche de l'article.</figcaption>
+                </figure>
+                <p>Odoo remplit les dates : expiration 730 jours après la réception, soit deux ans plus tard, le
+                    27 septembre 2028. Elles restent modifiables, si l'étiquette du fabricant indique une autre date.
+                    Un lot livré en plusieurs numéros se découpe en plusieurs lignes, avec
+                    <strong>Ajouter une ligne</strong>. Enregistrez.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Générer les numéros de série</h2>
+                <p>Pour la perceuse, la fenêtre prévoit une ligne par unité, trois lignes de quantité 1. Plutôt que
+                    de saisir chaque numéro, cliquez sur <strong>Generate Serials</strong> (libellé non traduit dans
+                    cette version), puis indiquez le premier numéro et le nombre de numéros.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Générer des numéros de séries d'Odoo 20 : premier numéro de série PV-0001, nombre de numéros de série 3, case Conserver les lignes actuelles, boutons Valider et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>À partir de PV-0001, trois numéros.</figcaption>
+                </figure>
+                <p><strong>Valider</strong> produit PV-0001, PV-0002 et PV-0003, en incrémentant la partie
+                    numérique. <strong>Importer des numéros de série</strong> accepte à la place une liste collée, un
+                    numéro par ligne (suivi de la quantité pour un lot), pratique quand le fournisseur transmet ses numéros.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Opérations détaillées d'Odoo 20 pour Perceuse-visseuse d'atelier, demande 3 : lignes PV-0001, PV-0002 et PV-0003, chacune de quantité 1, stocker dans WH/Entrée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un numéro par perceuse.</figcaption>
+                </figure>
+                <p>Enregistrez, puis validez la réception et le rangement qui la suit. Les lots et les numéros
+                    suivent la marchandise d'une étape à l'autre, sans nouvelle saisie.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Retrouver un lot</h2>
+                <p><strong>Inventaire › Produits › Lots/Numéros de série</strong> liste les lots et les numéros,
+                    regroupés par emplacement. La fiche du lot VM-2609-A donne l'article, la quantité en stock et
+                    l'emplacement, puis les quatre dates.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fiche du lot VM-2609-A d'Odoo 20 : produit Vernis mat pour mobilier, quantité en stock 40, emplacement WH/Stock, expiration 27 septembre 2028, alerte à partir du 29 juillet 2028, à consommer de préférence avant et date d'enlèvement 27 septembre 2028, boutons intelligents Achats 1, Emplacement, Traçabilité" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche du lot : l'alerte tombe 60 jours avant l'expiration.</figcaption>
+                </figure>
+                <p>Le bouton intelligent <strong>Traçabilité</strong> ouvre le rapport du même nom : chaque
+                    mouvement terminé du lot, avec sa référence, son origine et sa destination.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Rapport de traçabilité d'Odoo 20 pour le lot VM-2609-A : WH/IN/00022 de Wood Corner vers WH/Entrée puis WH/STOR/00002 de WH/Entrée vers WH/Stock, 40 unités, date d'expiration 27/09/2028" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le parcours du lot, du fournisseur au stock.</figcaption>
+                </figure>
+                <p>À la vente, Odoo choisit lui-même le lot. Le devis S00038 de 5 vernis pour Gemini Furniture,
+                    une fois confirmé, réserve 5 pots du lot VM-2609-A dans le transfert de prélèvement : sa
+                    fenêtre Détails indique le lot prélevé et sa date d'expiration.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Opérations détaillées d'Odoo 20 pour le prélèvement de 5 Vernis mat pour mobilier : colonne Enlever parmi WH/Stock - VM-2609-A, date d'expiration 27 septembre 2028, vers WH/Zone de colisage, quantité 5" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lot réservé pour la vente, avec sa date d'expiration.</figcaption>
+                </figure>
+                <p>Quand plusieurs lots sont en stock, l'ordre de prélèvement suit la stratégie d'enlèvement :
+                    pour sortir d'abord les lots dont la date d'enlèvement est la plus proche, choisissez <strong>First Expiry First
+                    Out (FEFO)</strong> dans le champ <strong>Forcer la stratégie d'enlèvement</strong> de la
+                    catégorie d'articles.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Suivi par lots ou par numéros de série, dates d'expiration et
+                        d'alerte, génération et import des numéros, rapport de traçabilité et stratégie FEFO sont
+                        inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La case Date d'expiration n'apparaît qu'après enregistrement</h4>
+                    <p>Sur un article neuf, choisir Par lots ne fait pas encore apparaître la section Traçabilité de
+                        l'onglet Inventaire. Enregistrez la fiche, puis revenez sur l'onglet.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un lot périmé n'est plus réservé, mais peut encore sortir</h4>
+                    <p>Valider un transfert qui contient un lot dont l'expiration est atteinte, ou dont la date
+                        d'enlèvement est passée, ouvre une fenêtre de confirmation. Passé sa date d'enlèvement, Odoo ne réserve plus ce lot de lui-même ;
+                        choisi à la main, il fait demander une confirmation, et l'utilisateur peut passer outre.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le rapport de traçabilité ne montre que le terminé</h4>
+                    <p>Le prélèvement des 5 pots, réservé mais pas encore validé, n'apparaît pas dans le rapport, et
+                        la fiche du lot affiche toujours 40 en stock. Un rappel de produits se fonde donc sur les
+                        livraisons validées.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> suivre la sortie d'un lot jusqu'au client.</p>
+                    <p><strong>Indication :</strong> validez les trois transferts de la livraison de S00038
+                        (prélèvement, colisage, livraison ; les suivants apparaissent au fil des validations), puis rouvrez le rapport de traçabilité du lot VM-2609-A.</p>
+                    <p><strong>Critère de réussite :</strong> le rapport compte trois lignes de plus, la plus récente vers
+                        le client (WH/OUT), et la fiche du lot affiche 35 en stock.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le champ Suivi de l'article choisit entre quantité, lots et numéros de série.</li>
+                    <li>Les dates de péremption se calculent depuis la réception, en jours paramétrés sur l'article.</li>
+                    <li>Lots et numéros se saisissent à la réception, par le lien Détails ; Odoo les propage ensuite.</li>
+                    <li>La fiche du lot et le rapport de traçabilité retracent son parcours terminé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Réceptions et livraisons en plusieurs étapes dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Livraison directe et coûts logistiques dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Le circuit que suivent ici les lots.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La commande fournisseur et sa réception.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">La livraison côté ventes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
