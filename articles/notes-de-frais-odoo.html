@@ -1,0 +1,410 @@
+<!--
+Article — Notes de frais dans Odoo 20
+Série « Ressources humaines avec Odoo 20 » (blog Fonctionnel) — étape 4
+Date : 2026-09-27
+Slug : notes-de-frais-odoo
+Tags : debutant, rh, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func (hr_expense installé depuis Applications, carte « Expenses », LGPL-3).
+  hr_expense/models/hr_expense_product_job_position_limit.py (NOUVEAU modèle : produit, postes, plafond ; une seule ligne sans poste par produit) ;
+  models/hr_expense.py:637-642 ligne du poste de l'employé, sinon ligne sans poste ; :650-655 plafond seulement si payment_mode own_account ;
+  views/hr_expense_views.xml:144-176 bandeau employé (« Your job position has a limit… ») / bandeau responsable + lien Cap Reimbursement to Policy (state submitted) ;
+  models/hr_expense.py:1443-1483 action_cap_reimbursement_to_policy : scission, part plafond approuvée, excédent refusé « Exceeds company limit » ;
+  :1707-1716 _do_approve appelle _create_move (v19 : bouton « Post Journal Entries », odoo19 views/hr_expense_views.xml:110, supprimé en v20) ;
+  :1395-1405 + :1841-1858 approbateur = expense_manager_id, sinon chef de département du groupe approbateur, sinon user du manager ; aucun → auto-approuvé ;
+  :1429-1441 action_reset : ticket brouillon supprimé, ticket comptabilisé extourné ;
+  models/product_product.py:14-31 + static/src/components/hr_expense_product_form_view.js : fenêtre coût dès que les brouillons ont
+  plusieurs prix unitaires, même coût inchangé ; « Ignorer » = cancel vide, pas d'enregistrement ;
+  models/account_journal.py + views/account_journal_dashboard_view.xml : compteur des pièces de dépenses en brouillon sur la carte Achats.
+  Parcours joué : plafonds Repas 50 $ (Développeur expérimenté) + 30 $ (sans poste), confirmés par « Mettre à jour le coût »
+  (coût resté 0, 5 brouillons Repas inchangés) ; dépense 19 « Déjeuner client » Marc Demo 85 $ → bandeau ; Soumettre ; Approuver
+  (1er passage) → ticket brouillon 85 $ in_receipt journal Achats ; Réinitialiser (ticket supprimé) ; Soumettre ; Cap → 19 = 50 $
+  Approuvé, 20 = 35 $ Refusée ; ticket FACTURE/2026/09/0007 confirmé → Comptabilisé ; Payer → Créer un paiement → Payé
+  (« Amount reimbursed: $ 50,00 »). Exercice testé (rollback) : Barty McBly, Consultant, 45 $ → plafond 30, scission 30 approuvé / 15 refusé ;
+  Abigail Peterson (manager sans utilisateur) : auto-approuvée à la soumission.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Notes de frais dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">L'employé déclare sa dépense, le responsable l'approuve, la
+                    comptabilité rembourse. Odoo 20 ajoute un plafond par poste et raccourcit le circuit :
+                    l'approbation crée elle-même la pièce comptable.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Ressources humaines avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, sur la base de démonstration. L'application Dépenses est incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>L'application s'installe depuis <strong>Applications</strong>, où sa carte porte le nom anglais
+                    <strong>Expenses</strong> ; une fois installée, elle s'appelle <strong>Dépenses</strong> dans le
+                    menu principal.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Expenses dans la liste des applications d'Odoo 20, avec la mention Submit, validate and reinvoice employee expenses" style="max-width:60%; height:auto;"/>
+                    <figcaption>La carte de l'application dans Applications.</figcaption>
+                </figure>
+                <p>Les exemples suivent <strong>Marc Demo</strong>, employé au poste de
+                    <strong>Développeur expérimenté</strong>, et <strong>Mitchell Admin</strong>, son responsable,
+                    qui approuve ses dépenses et les rembourse. Le poste se règle sur la fiche employé, présentée
+                    dans le premier article de la série. La société de démonstration est américaine : les montants
+                    sont en dollars.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>fixer un plafond de remboursement par poste sur une catégorie de dépense ;</li>
+                    <li>saisir une dépense et repérer un dépassement de plafond ;</li>
+                    <li>ramener une dépense au plafond en un clic ;</li>
+                    <li>confirmer la pièce créée à l'approbation, puis rembourser l'employé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire la liste Mes dépenses</h2>
+                <p>L'application s'ouvre sur <strong>Mes dépenses</strong>. Trois totaux résument le circuit :
+                    <strong>À soumettre</strong>, <strong>En attente de validation</strong> et <strong>En attente
+                    de remboursement</strong>. Le bouton <strong>Nouveau</strong> ouvre une dépense vierge ; le
+                    bouton <strong>Charger</strong> part d'un justificatif, photo ou PDF, que l'on dépose.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste Mes dépenses dans Odoo 20, filtres Mes dépenses et Action Required : bandeau des totaux À soumettre, En attente de validation et En attente de remboursement, puis dépenses de Mitchell Admin aux statuts Brouillon et Soumis" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les totaux du circuit, au-dessus des dépenses de l'utilisateur connecté.</figcaption>
+                </figure>
+                <p>Le responsable retrouve les dépenses de son équipe sous <strong>Mes dépenses › Dépenses à
+                    traiter</strong>. La colonne <strong>Remboursement</strong> distingue deux cas : la dépense
+                    avancée par l'employé, à lui rembourser, et la dépense payée par la société, déjà réglée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Fixer un plafond par poste</h2>
+                <p>Chaque dépense est rattachée à un produit de dépense : Repas, Kilométrage, Voyage &amp;
+                    Hébergement… Ouvrez <strong>Configuration › Produits notes de frais</strong>, puis le produit
+                    <strong>Repas</strong>. Odoo 20 y ajoute une section <strong>Limits</strong> : chaque ligne
+                    associe des postes à un plafond. Ici, 50 $ pour le poste Développeur expérimenté, et une ligne
+                    sans poste à 30 $, qui vaut pour tous les autres.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Produit Repas dans Odoo 20 : section Limits avec une ligne Développeur expérimenté à 50 dollars et une ligne sans poste à 30 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux plafonds sur le produit Repas : l'un pour un poste, l'autre pour tous les autres.</figcaption>
+                </figure>
+                <p>Odoo cherche d'abord la ligne qui cite le poste de l'employé ; à défaut, il retient la ligne
+                    sans poste. Une seule ligne sans poste est permise par produit. Le plafond ne concerne que les
+                    dépenses avancées par l'employé, pas celles payées par la société.</p>
+                <p>À l'enregistrement, une fenêtre s'ouvre dès que les dépenses en brouillon de ce produit portent des montants différents, même si vous n'avez pas touché au coût : elle
+                    prévient que modifier le coût changerait le montant des dépenses en brouillon.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Confirmation d'Odoo 20 : Il existe des notes de frais en brouillon liées à ce produit, avec les boutons Mettre à jour le coût et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>L'avertissement sur le coût, affiché même quand seul le plafond a changé.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Mettre à jour le coût</strong> : seules vos modifications sont
+                    enregistrées. Le coût n'ayant pas changé, les dépenses en brouillon gardent leur montant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Saisir une dépense qui dépasse le plafond</h2>
+                <p>Depuis <strong>Mes dépenses</strong>, cliquez sur <strong>Nouveau</strong>. Renseignez la
+                    description, ici <em>Déjeuner client</em>, le produit <strong>Repas</strong>, le total de
+                    85 $ et l'employé Marc Demo. Laissez le remboursement sur <strong>Employee (Through a Purchase
+                    Receipt)</strong> : Marc a avancé la somme. Enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Dépense Déjeuner client de Marc Demo dans Odoo 20, 85 dollars sur le produit Repas, au statut Brouillon, avec le bandeau jaune This expense exceeds the limit of 50 dollars defined for this job position" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bandeau de dépassement, tel que le responsable le voit.</figcaption>
+                </figure>
+                <p>Un bandeau jaune signale que la dépense dépasse le plafond de 50 $ du poste. L'employé, sur
+                    sa propre dépense, voit un autre message : son poste est plafonné et il risque de ne pas être
+                    remboursé en entier. Le bandeau ne bloque rien : le bouton <strong>Soumettre</strong> reste
+                    disponible. Cliquez dessus ; la dépense passe au statut <strong>Soumis</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ramener la dépense au plafond</h2>
+                <p>Sur une dépense soumise, le bandeau du responsable gagne un lien : <strong>Cap Reimbursement
+                    to Policy</strong>, c'est-à-dire plafonner le remboursement selon la règle.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Dépense soumise dans Odoo 20 : boutons Approuver, Refuser, Réinitialiser et Diviser, bandeau de dépassement avec le lien Cap Reimbursement to Policy" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lien de plafonnement apparaît une fois la dépense soumise.</figcaption>
+                </figure>
+                <p>Un clic scinde la dépense en deux. La part égale au plafond, 50 $, est approuvée ; l'excédent,
+                    35 $, devient une dépense séparée, refusée avec le motif <em>Exceeds company limit</em>. Le
+                    responsable n'a rien à calculer.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste Fractionner les dépenses dans Odoo 20 : Déjeuner client de Marc Demo à 35 dollars au statut Refusée et à 50 dollars au statut Approuvé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après plafonnement : 50 $ approuvés, 35 $ refusés.</figcaption>
+                </figure>
+                <p>Le responsable peut aussi passer outre le plafond : le bouton <strong>Approuver</strong> valide
+                    alors les 85 $.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Confirmer la pièce créée à l'approbation</h2>
+                <p>Dans Odoo 20, la dépense n'a plus de bouton pour passer les écritures : l'approbation crée
+                    elle-même la pièce comptable, en brouillon. Le bouton <strong>Pièce comptable</strong>, en haut
+                    de la dépense, l'ouvre : c'est un <strong>Ticket</strong> du journal <strong>Achats</strong>,
+                    dont le fournisseur est l'employé. Cliquez sur <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Ticket FACTURE/2026/09/0007 dans Odoo 20 au statut Comptabilisé : fournisseur Marc Demo, journal Achats, ligne Repas de 50 dollars taxes comprises, montant dû 50 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le ticket confirmé : 50 $ dus à Marc Demo.</figcaption>
+                </figure>
+                <p>La dépense passe du statut Approuvé au statut <strong>Comptabilisé</strong>. Côté comptabilité, la carte du journal
+                    Achats du tableau de bord compte les pièces de dépenses encore en brouillon.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Rembourser l'employé</h2>
+                <p>Sur le ticket confirmé, cliquez sur <strong>Payer</strong>. La fenêtre <strong>Payer</strong> propose le
+                    journal, le montant de 50 $ et la date ; validez par <strong>Créer un paiement</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Dépense Déjeuner client au statut Payé dans Odoo 20, avec dans l'historique Dépense payée, Amount reimbursed 50 dollars, puis Approuvé vers Comptabilisé et le total passé de 85 à 50 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La dépense payée et son historique, du plafonnement au remboursement.</figcaption>
+                </figure>
+                <p>La dépense passe au statut <strong>Payé</strong>. Son historique retrace le circuit : total
+                    ramené de 85 $ à 50 $ à l'approbation, puis comptabilisation, puis remboursement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Community.</strong> Tout le parcours de cet article, plafonds et remboursement
+                        compris, tient dans l'édition Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Ignorer » n'enregistre pas le produit</h4>
+                    <p>Dans la fenêtre d'avertissement sur le coût, le bouton <strong>Ignorer</strong> ferme la
+                        fenêtre sans rien enregistrer : la fiche reste modifiée, mais les plafonds saisis ne sont pas
+                        enregistrés ; la fenêtre reviendra au prochain enregistrement. Pour les garder, cliquez sur <strong>Mettre à jour le coût</strong>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Sans approbateur, la dépense est approuvée d'office</h4>
+                    <p>À la soumission, Odoo cherche qui doit approuver : l'approbateur des dépenses indiqué sur la
+                        fiche employé, sinon le responsable du département s'il a les droits d'approbation, sinon
+                        le manager de l'employé, s'il a un utilisateur. S'il ne trouve personne, ou si l'approbateur est l'employé lui-même, la dépense passe
+                        directement au statut Approuvé, et le lien de plafonnement n'apparaît jamais.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le plafond avertit, il ne bloque pas</h4>
+                    <p>Une dépense au-dessus du plafond peut être soumise et approuvée telle quelle. Le plafond
+                        n'agit que si le responsable clique sur <strong>Cap Reimbursement to Policy</strong>, et
+                        seulement pour les dépenses avancées par l'employé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> vérifier le plafond générique.</p>
+                    <p><strong>Indication :</strong> saisissez une dépense Repas de 45 $ pour Barty McBly, consultant
+                        de la démonstration, puis soumettez-la.</p>
+                    <p><strong>Critère de réussite :</strong> le bandeau annonce un plafond de 30 $, et
+                        Cap Reimbursement to Policy crée une dépense refusée de 15 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le plafond se fixe par poste sur le produit de dépense, avec une ligne sans poste pour les
+                        autres.</li>
+                    <li>Un dépassement est signalé sans être bloqué ; le responsable peut plafonner en un clic.</li>
+                    <li>Dans Odoo 20, l'approbation crée le ticket en brouillon ; on le confirme, puis on paie.</li>
+                    <li>Le statut de la dépense suit sa pièce : Approuvé, Comptabilisé, Payé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/presences-pointage-odoo-230">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Présences dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Recrutement dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme</a></h5>
+                            <p class="small text-muted mb-0">Le poste de la fiche employé, qui fixe le plafond.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs</a></h5>
+                            <p class="small text-muted mb-0">Le journal Achats, où arrivent les tickets de dépenses.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Enregistrer et suivre les paiements.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
