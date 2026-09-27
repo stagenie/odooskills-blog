@@ -1,0 +1,391 @@
+<!--
+Article — Congés et absences dans Odoo 20
+Série « Ressources humaines avec Odoo 20 » (blog Fonctionnel) — étape 2
+Date : 2026-09-27
+Slug : conges-absences-odoo
+Tags : debutant, rh, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func (hr_holidays installé depuis Applications, carte « Time Off »).
+  hr_holidays/__manifest__.py:26 depends hr_work_entry, hr_calendar, resource (odoo19 : hr, calendar, resource) ;
+  models/hr_work_entry_type.py (les types de congés SONT des hr.work.entry.type : requires_allocation, leave_validation_type,
+  allocation_validation_type, request_unit ; odoo19 models/hr_leave_type.py _name 'hr.leave.type' « Time Off Type » supprimé) ;
+  models/hr_leave.py:322 _compute_allowed_work_entry_type_ids (types du pays de la société, sinon types sans pays) ;
+  models/hr_time_rule.py (NOUVEAU : règles automatiques qui créditent des allocations) ;
+  static/src/dashboard/time_off_dashboard.xml:30-37 tuile « New Request » = openNewAllocation (demande d'ALLOCATION) ;
+  static/src/views/calendar/calendar_controller.xml:9-15 Nouveau ▾ › New Time Off / New Allocation Request ;
+  états hr.leave : confirm, refuse, validate1, validate, cancel ; bouton de validation « Valider ».
+  Parcours joué : allocation de 5 jours de Congé compensatoire à Marc Demo (validée par Mitchell Admin), demande de Marc Demo
+  du 12 au 13 oct. 2026 (2 jours, « Pont après le salon professionnel »), validée par Mitchell Admin, solde 5 → 3.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Congés et absences dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un congé se gère en trois temps : l'entreprise attribue des jours,
+                    l'employé les demande, son responsable valide. L'application Congés d'Odoo 20 relie ces trois
+                    gestes et tient le solde à jour sans tableur.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Ressources humaines avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, sur la base de démonstration. L'application Congés est incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Chaque congé est rattaché à une fiche employé : l'article précédent de la série, sur les
+                    employés et l'organigramme, montre comment la remplir. L'application <strong>Congés</strong>
+                    s'installe depuis <strong>Applications</strong> ; sa carte porte encore le nom anglais
+                    <strong>Time Off</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Time Off dans la liste des applications d'Odoo 20, avec la mention Allocate time off and follow leave requests" style="max-width:60%; height:auto;"/>
+                    <figcaption>La carte de l'application dans Applications.</figcaption>
+                </figure>
+                <p>Deux personnes de la démonstration servent d'exemple : <strong>Marc Demo</strong>, l'employé, et
+                    <strong>Mitchell Admin</strong>, son manager. Parce que Mitchell Admin est le manager de Marc
+                    Demo, il est aussi, par défaut, celui qui valide ses congés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire le tableau de bord de vos congés ;</li>
+                    <li>régler un type de congé : allocation et circuit de validation ;</li>
+                    <li>attribuer des jours à un employé ;</li>
+                    <li>déposer une demande de congé, puis la valider en tant que responsable.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire son tableau de bord</h2>
+                <p>L'application s'ouvre sur <strong>Mes congés</strong>. En haut, une tuile par type de congé
+                    indique les jours disponibles et, s'il y en a une, leur date limite de validité. Dessous, le calendrier de l'année
+                    montre les congés déjà posés ; à droite, la légende distingue les congés approuvés, à approuver
+                    et refusés, suivie des jours obligatoires et des jours fériés.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Tableau de bord Mes congés de Marc Demo dans Odoo 20 : tuiles de solde par type de congé, tuile Nouvelle demande, calendrier annuel et légende" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le tableau de bord de Marc Demo : une tuile par type de congé, puis le calendrier de l'année.</figcaption>
+                </figure>
+                <p>Le menu résume l'application : <strong>My Time</strong> pour vos propres congés,
+                    <strong>Vue d'ensemble</strong> pour le calendrier de l'équipe, <strong>Management</strong> pour
+                    les demandes à traiter, <strong>Analyse</strong> pour les soldes, et <strong>Configuration</strong>
+                    pour les types, les jours fériés et les règles. Marc Demo, qui n'administre pas l'application, ne voit que les trois premiers : Management apparaît parce qu'il valide lui-même les congés d'un collègue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Régler un type de congé</h2>
+                <p>Dans Odoo 20, un type de congé est un <strong>type d'entrée de travail</strong> : la même liste
+                    sert aux congés, aux présences et à la paie. Elle s'ouvre par
+                    <strong>Configuration › Types d'entrée de travail</strong>. Ouvrez
+                    <strong>Congé compensatoire</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Formulaire du type Congé compensatoire dans Odoo 20 : code, considéré comme Absence, unité Jours, onglet Congés avec la validation des demandes, la section Allocation et la configuration" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le type Congé compensatoire et son onglet Congés.</figcaption>
+                </figure>
+                <p>Le haut du formulaire décrit le temps lui-même : <strong>Considéré comme</strong> Absence,
+                    compté en <strong>Jours</strong>, avec un <strong>Type de durée</strong> Demi-journée. La case
+                    <strong>Congés</strong> de la ligne <strong>Availability</strong> le rend proposable dans les
+                    demandes. L'onglet <strong>Congés</strong> règle le reste :</p>
+                <ul>
+                    <li><strong>Demandes de congés › Validation</strong> : qui approuve une demande. Ici, Par
+                        l'approbateur de l'employé, c'est-à-dire l'approbateur des congés inscrit sur sa fiche, par défaut son manager ;</li>
+                    <li><strong>Nécessite une allocation</strong> : l'employé ne peut poser que des jours qui lui ont
+                        été attribués ;</li>
+                    <li><strong>Autoriser les demandes des employés</strong> : l'employé peut réclamer lui-même une
+                        allocation, validée ici Par le responsable RH ;</li>
+                    <li><strong>Configuration</strong> : solde négatif autorisé ou non, jours ouvrés ou calendaires,
+                        jours fériés ignorés ou non, justificatif attendu.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Attribuer des jours</h2>
+                <p>Marc Demo récupère des heures faites pendant un salon professionnel : cinq jours.
+                    <strong>Management › Allocations</strong>, puis <strong>Nouveau</strong> : choisissez le type
+                    Congé compensatoire, saisissez 5 jours, l'employé Marc Demo et un motif. La période de validité
+                    démarre aujourd'hui ; laissée vide, sa fin vaut Sans limites.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Allocation de 5 jours de Congé compensatoire à Marc Demo dans Odoo 20, à l'état À approuver, avec les boutons Valider et Refuser" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'allocation enregistrée attend sa validation.</figcaption>
+                </figure>
+                <p>Enregistrée, l'allocation est <strong>À approuver</strong>, et une activité de validation est
+                    créée. Le bouton <strong>Valider</strong> la fait passer à <strong>Approuvé</strong> : l'employé
+                    reçoit un message qui confirme les jours, et sa tuile affiche désormais 5 jours disponibles.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Demander un congé</h2>
+                <p>Connecté comme Marc Demo, ouvrez <strong>Mes congés</strong> et cliquez sur le bouton <strong>Nouveau</strong>. Deux choix apparaissent : <strong>Nouvelle demande de congé</strong>
+                    pour poser des jours, <strong>Nouvelle demande d'allocation</strong> pour en réclamer.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Menu du bouton Nouveau dans Mes congés d'Odoo 20 : Nouvelle demande de congé et Nouvelle demande d'allocation" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le bouton Nouveau sépare la demande de congé de la demande d'allocation.</figcaption>
+                </figure>
+                <p>Choisissez Nouvelle demande de congé. Le type affiche le solde entre parenthèses :
+                    « 5 restant sur 5 jours ». Cliquez sur la date de début, puis sur la date de fin, pour choisir
+                    du 12 au 13 octobre. Comme le type se demande par demi-journée, Odoo propose une demi-journée de départ et une demi-journée de retour ; laissées à Matin et Après-midi, elles couvrent les deux journées
+                    entières. La durée calculée, 2 jours, s'affiche dessous. Une description aide le responsable à
+                    décider.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Nouvelle demande de congé dans Odoo 20 : Congé compensatoire avec 5 jours restants, du 12 au 13 octobre, Matin à Après-midi, 2 jours, description Pont après le salon professionnel" style="max-width:70%; height:auto;"/>
+                    <figcaption>La demande de Marc Demo, prête à être soumise.</figcaption>
+                </figure>
+                <p><strong>Soumettre la demande</strong> l'enregistre à l'état À approuver. Sur le calendrier, les
+                    jours demandés apparaissent hachurés, comme l'indique la légende.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Valider la demande</h2>
+                <p>Côté Mitchell Admin, <strong>Management › Congés</strong> s'ouvre sur le filtre
+                    <strong>En attente de ma signature</strong> : seules les demandes qu'il doit traiter y figurent.
+                    Chaque ligne porte déjà une icône pour approuver et une autre pour refuser. Ouvrez la demande de Marc Demo pour la
+                    lire en entier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Demande de congé de Marc Demo ouverte par son responsable dans Odoo 20 : Congé compensatoire du 12 au 13 octobre, 2 jours, boutons Valider et Refuser, encadré Résumé 2026" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande vue par le responsable, avec le résumé des congés de l'année.</figcaption>
+                </figure>
+                <p>L'encadré <strong>Résumé 2026</strong> récapitule, par type, les jours déjà pris par l'employé dans l'année ; ici, 6 jours de Guaranted monthly wage illness. <strong>Valider</strong> fait passer la demande à Approuvé ; un bouton
+                    <strong>Retour à la validation</strong> permet de revenir en arrière. La tuile de Marc Demo
+                    tombe à 3 jours disponibles.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Tuiles du tableau de bord de Marc Demo après validation : 3 jours de Congé compensatoire disponibles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après validation, le solde de Marc Demo passe de 5 à 3 jours.</figcaption>
+                </figure>
+                <p><strong>Vue d'ensemble</strong> affiche ensuite le congé sur le calendrier de l'équipe, et
+                    <strong>Analyse</strong> présente les soldes par employé et par type.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Types de congés, allocations, plans de cumul de congés, jours
+                        fériés, jours obligatoires, règles automatiques, demandes, validation à un ou deux niveaux,
+                        vue d'ensemble et analyses sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La tuile « Nouvelle demande » ne demande pas un congé</h4>
+                    <p>Sur le tableau de bord, la tuile grise <strong>Nouvelle demande</strong> ouvre une
+                        <strong>Nouvelle allocation</strong> : elle réclame des jours, elle n'en pose pas. Pour
+                        poser un congé, passez par le bouton Nouveau.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des types en double dans la configuration</h4>
+                    <p>La liste des types d'entrée de travail peut montrer deux fois le même nom : un type générique
+                        et un type propre à un pays. Une demande de congé ne propose que les types du pays de la
+                        société, ou les types sans pays si ce pays n'en a aucun. Réglez donc le type du pays de votre
+                        société, sinon vos changements n'apparaîtront pas dans les demandes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire réclamer une allocation par l'employé lui-même.</p>
+                    <p><strong>Indication :</strong> connecté comme Marc Demo, choisissez Nouveau › Nouvelle demande
+                        d'allocation, type Congé compensatoire, 1 jour. Reconnectez-vous comme Mitchell Admin et
+                        validez-la depuis Management › Allocations.</p>
+                    <p><strong>Critère de réussite :</strong> la tuile Congé compensatoire de Marc Demo gagne un
+                        jour.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Dans Odoo 20, un type de congé est un type d'entrée de travail.</li>
+                    <li>Un type qui nécessite une allocation ne se pose qu'après l'attribution de jours.</li>
+                    <li>Le circuit de validation se règle par type : personne, le responsable RH, l'approbateur de
+                        l'employé, ou les deux.</li>
+                    <li>L'approbateur des congés de la fiche employé, par défaut son manager, valide ses demandes.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Employés et organigramme dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Présences dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme</a></h5>
+                            <p class="small text-muted mb-0">Le manager qui valide les congés.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/feuilles-temps-facturation-odoo-226">Feuilles de temps et facturation</a></h5>
+                            <p class="small text-muted mb-0">Le temps passé, côté projets.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites</a></h5>
+                            <p class="small text-muted mb-0">Ce que contient Odoo 20 Community.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
