@@ -1,0 +1,399 @@
+<!--
+Article — Réceptions et livraisons en plusieurs étapes dans Odoo 20
+Série « Achats, stock et fabrication avec Odoo 20 » (blog Fonctionnel) — étape 4
+Date : 2026-09-27
+Slug : receptions-livraisons-plusieurs-etapes-odoo
+Mot-clé cible : réception livraison plusieurs étapes odoo 20
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func.
+  stock/models/stock_warehouse.py:785-800 (get_rules_dict : 1re règle pull, étapes suivantes push) ;
+  stock/views/stock_warehouse_views.xml:49-54 (onglet, groupe Expéditions = group_adv_location) ;
+  stock/models/res_config_settings.py:62-65 (décocher Emplacements décoche Routes) ;
+  stock/views/stock_picking_views.xml:259-266 (Transfert suivant) ; stock_sms/wizard/confirm_stock_sms.py:13-30 ;
+  fr.po stock : « Pick » = « Transfert ». Emplacements : WH/Entrée parent_path 6/8/, WH/Stock 6/7/.
+  Parcours joué : P00024 confirmée → WH/IN/00021 (→ WH/Entrée) → WH/STOR/00001 → WH/Stock ;
+  S00037 Gemini Furniture 10 boîtes → WH/PICK/00001 → WH/PACK/00001 → WH/OUT/00081 (SMS : Désactiver SMS).
+  Anciens transferts inchangés (preuve par exécution) : WH/IN/00020 (Vendors → WH/Stock), WH/OUT/00080 (WH/Stock → Customers).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Réceptions et livraisons en plusieurs étapes dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Par défaut, Odoo reçoit directement en stock et livre
+                    directement depuis le stock. Un entrepôt organisé en quais, zones de colisage et contrôles
+                    demande davantage : une réception suivie d'un rangement, un transfert, un colisage, puis
+                    l'expédition. Deux réglages suffisent, et Odoo enchaîne les étapes tout seul.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau intermédiaire · série <strong>Achats, stock et fabrication avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, avec Inventaire, Achats et Ventes installés. Emplacements, routes en plusieurs
+                        étapes et types d'opération sont inclus dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Un entrepôt Odoo est un ensemble d'<strong>emplacements</strong> : le stock proprement dit
+                    (WH/Stock), mais aussi une zone d'entrée pour les marchandises déchargées (WH/Entrée), une
+                    zone de colisage (WH/Zone de colisage) et une zone de sortie où les colis attendent le
+                    transporteur (WH/Sortie). Chaque passage d'un emplacement à l'autre est un
+                    <strong>transfert</strong>, rattaché à un <strong>type d'opération</strong> qui lui donne
+                    son préfixe : WH/IN pour les réceptions, WH/OUT pour les livraisons, et ainsi de suite.</p>
+                <p>L'exemple reprend la demande de prix P00024 de
+                    <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans
+                    Odoo 20</a> (82 boîtes de rangement et 9 écrans anti-bruit chez Wood Corner), puis une vente
+                    de 10 boîtes à Gemini Furniture. En une étape, le parcours est celui de
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la
+                    demande de prix à la facture</a> et de
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les emplacements et les routes en plusieurs étapes ;</li>
+                    <li>choisir le nombre d'étapes de réception et de livraison d'un entrepôt ;</li>
+                    <li>suivre une réception en deux étapes, de la commande au rangement ;</li>
+                    <li>suivre une livraison en trois étapes, du stock au client.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les emplacements et les routes</h2>
+                <p><strong>Inventaire › Configuration › Paramètres</strong>, section Entrepôt : cochez
+                    <strong>Emplacements de stockage</strong>, puis <strong>Routes en plusieurs étapes</strong>,
+                    et enregistrez. La seconde option dépend de la première : décocher les emplacements décoche
+                    aussi les routes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20, section Entrepôt : Emplacements de stockage coché avec le lien Emplacements, Routes en plusieurs étapes coché avec le lien Définir les routes de l'entrepôt" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les deux options de la section Entrepôt.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Choisir les étapes de l'entrepôt</h2>
+                <p><strong>Inventaire › Configuration › Entrepôts</strong>, puis l'entrepôt (ici YourCompany, nom court WH).
+                    L'onglet Configuration de l'entrepôt propose, grâce aux routes en plusieurs étapes, trois
+                    choix pour chaque sens :</p>
+                <table class="tmc">
+                    <thead><tr><th>Réceptions</th><th>Expéditions</th></tr></thead>
+                    <tbody>
+                        <tr><td>Recevoir et stocker (1 étape)</td><td>Livrer (étape 1)</td></tr>
+                        <tr><td>Recevoir puis stocker (2 étapes) : WH/Entrée, puis WH/Stock</td>
+                            <td>Choisir puis livrer (2 étapes) : WH/Sortie, puis le client</td></tr>
+                        <tr><td>Recevoir, Contrôle qualité, puis stocker (3 étapes)</td>
+                            <td>Choisir, emballer, puis livrer (3 étapes) : WH/Zone de colisage, WH/Sortie, puis le
+                                client</td></tr>
+                    </tbody>
+                </table>
+                <p>Retenez <strong>Recevoir puis stocker (2 étapes)</strong> et <strong>Choisir, emballer, puis
+                    livrer (3 étapes)</strong>, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche de l'entrepôt YourCompany d'Odoo 20, onglet Configuration de l'entrepôt : Réceptions sur Recevoir puis stocker (2 étapes), Expéditions sur Choisir, emballer, puis livrer (3 étapes), Acheter pour réapprovisionner coché, boutons Routes et Emplacements" style="max-width:100%; height:auto;"/>
+                    <figcaption>Réception en deux étapes, livraison en trois.</figcaption>
+                </figure>
+                <p>Odoo active les emplacements et les types d'opération nécessaires. La vue d'ensemble
+                    d'Inventaire affiche désormais une carte par type, notamment Réceptions, Stockage,
+                    Transferts internes, Transfert, Colis et Bons de livraison.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Vue d'ensemble d'Inventaire d'Odoo 20 (Aperçu du stock) avec six cartes : Réceptions 16 à recevoir, Stockage, Transferts internes, Transfert, Colis, Bons de livraison 30 à livrer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une carte par type d'opération : Stockage, Transfert et Colis arrivent avec les nouvelles étapes.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Recevoir en deux étapes</h2>
+                <p>À la confirmation de P00024, Odoo crée une seule réception, WH/IN/00021. Son emplacement de
+                    destination n'est plus WH/Stock mais <strong>WH/Entrée</strong> : le quai où l'on décharge.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Réception WH/IN/00021 d'Odoo 20 à l'état Prêt : Recevoir de Wood Corner, type d'opération YourCompany: Réceptions, emplacement de destination WH/Entrée, document d'origine P00024, 82 Boîte de rangement et 9 Écrans anti-bruit (Noir)" style="max-width:100%; height:auto;"/>
+                    <figcaption>La réception mène à l'entrée de l'entrepôt, pas au stock.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Valider</strong>. La réception passe à Terminé, et un bouton intelligent
+                    <strong>Transfert suivant</strong> apparaît : Odoo vient de créer l'étape suivante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Réception WH/IN/00021 d'Odoo 20 à l'état Terminé, date effective 27 septembre, boutons intelligents Allocation, Mouvements et Transfert suivant" style="max-width:100%; height:auto;"/>
+                    <figcaption>Valider la réception fait naître le rangement.</figcaption>
+                </figure>
+                <p>Ce transfert, WH/STOR/00001 (type Stockage), déplace les mêmes quantités de WH/Entrée vers
+                    WH/Stock. Il est déjà Prêt : les marchandises sont physiquement à l'entrée. Le magasinier les
+                    range, puis valide.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Transfert WH/STOR/00001 d'Odoo 20 à l'état Prêt : contact Wood Corner, type d'opération YourCompany: Stockage, de WH/Entrée vers WH/Stock, document d'origine P00024, 82 Boîte de rangement et 9 Écrans anti-bruit disponibles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le rangement : de l'entrée vers le stock.</figcaption>
+                </figure>
+                <p>Tant que ce rangement n'est pas validé, les boîtes se trouvent en WH/Entrée, un emplacement
+                    voisin du stock et non inclus dans celui-ci : une livraison, qui puise dans WH/Stock, ne peut
+                    pas encore les réserver.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Livrer en trois étapes</h2>
+                <p>Le devis S00037 pour Gemini Furniture porte sur 10 boîtes de rangement. À sa confirmation,
+                    Odoo crée un seul transfert, WH/PICK/00001, de type <strong>Transfert</strong> (le
+                    prélèvement dans les rayons) : de WH/Stock vers WH/Zone de colisage.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Transfert WH/PICK/00001 d'Odoo 20 à l'état Prêt : contact Gemini Furniture, type d'opération YourCompany: Transfert, de WH/Stock vers WH/Zone de colisage, document d'origine S00037, 10 Boîte de rangement disponibles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Première étape de la livraison : prélever en stock.</figcaption>
+                </figure>
+                <p>Chaque validation crée l'étape suivante, accessible par le bouton Transfert suivant :</p>
+                <ol>
+                    <li>valider WH/PICK/00001 crée <strong>WH/PACK/00001</strong> (type Colis), de la zone de
+                        colisage vers WH/Sortie ;</li>
+                    <li>valider WH/PACK/00001 crée <strong>WH/OUT/00081</strong> (type Bons de livraison), de
+                        WH/Sortie vers le client ;</li>
+                    <li>valider WH/OUT/00081 termine la livraison.</li>
+                </ol>
+                <p>Sur la commande, le bouton intelligent <strong>Livraison</strong> compte alors 3 transferts, et
+                    la commande est marquée Entièrement livré, avec 10 en colonne Délivré.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Commande client S00037 d'Odoo 20 pour Gemini Furniture : bouton intelligent Livraison 3, pastille Entièrement livré, ligne 10 Boîte de rangement à 15,80 dollars, 10 délivrées, 0 facturée, sans les totaux" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois transferts pour une commande : seul le dernier sort de l'entrepôt.</figcaption>
+                </figure>
+                <p>Seul ce dernier transfert, WH/OUT, compte comme livraison pour le client : c'est lui qui met à
+                    jour la quantité délivrée, donc ce qui peut être facturé quand la politique de facturation de
+                    l'article est « Quantités livrées ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Emplacements, réceptions en une, deux ou trois étapes,
+                        livraisons en une, deux ou trois étapes et enchaînement automatique des transferts sont
+                        inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Les transferts déjà créés gardent l'ancien circuit</h4>
+                    <p>Changer les étapes de l'entrepôt ne touche que les documents à venir. Dans la démonstration,
+                        la réception WH/IN/00020 de P00021, créée avant le changement, mène toujours directement à
+                        WH/Stock, et la livraison WH/OUT/00080 de S00036 part toujours de WH/Stock vers le client.
+                        Changez les étapes à un moment calme, quand peu de transferts sont en cours.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Transfert » désigne ici le prélèvement</h4>
+                    <p>La traduction française appelle « Transfert » le type d'opération de prélèvement (WH/PICK),
+                        alors que tous les documents de l'inventaire sont aussi des « transferts ». Pour lever
+                        l'ambiguïté, renommez le type (Configuration › Types d'opérations), par exemple en
+                        « Prélèvement ».</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une fenêtre SMS à la première livraison</h4>
+                    <p>À la validation du premier bon de livraison d'un client qui a un numéro de téléphone, Odoo propose d'envoyer une confirmation par SMS
+                        au client. <strong>Confirmer</strong> garde l'envoi (un service payant),
+                        <strong>Désactiver SMS</strong> le coupe pour la société, <strong>Ignorer</strong>
+                        referme la fenêtre sans valider. Dans les deux premiers cas, la livraison est validée et la
+                        question n'est plus posée.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre SMS d'Odoo 20 : Vous êtes sur le point de confirmer cet ordre de livraison par SMS, boutons Confirmer, Désactiver SMS et Ignorer" style="max-width:100%; height:auto;"/>
+                        <figcaption>La fenêtre SMS, posée une seule fois par société.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> suivre une réception en deux étapes jusqu'au stock.</p>
+                    <p><strong>Indication :</strong> créez et confirmez une demande de prix de 5 « Boîte de
+                        rangement » chez Wood Corner, validez la réception, puis le transfert suivant.</p>
+                    <p><strong>Critère de réussite :</strong> la réception WH/IN mène à WH/Entrée, un transfert
+                        WH/STOR de WH/Entrée vers WH/Stock est créé à sa validation, Prêt, et une fois ce rangement validé
+                        la réception et le rangement sont tous deux à l'état Terminé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les étapes se choisissent par entrepôt, après activation des emplacements et des routes en
+                        plusieurs étapes.</li>
+                    <li>Odoo ne crée que le premier transfert ; chaque validation crée le suivant.</li>
+                    <li>Les marchandises en WH/Entrée ne sont pas encore disponibles pour les livraisons.</li>
+                    <li>Seul le bon de livraison final met à jour la quantité délivrée de la commande.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Réassort automatique dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Lots, numéros de série et dates de péremption dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">La livraison en une étape, réservation et reliquats.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La réception en une étape et la facture fournisseur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">D'où vient la demande de prix reçue ici.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
