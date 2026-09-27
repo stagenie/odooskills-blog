@@ -1,0 +1,368 @@
+<!--
+Article — Livraison directe et coûts logistiques dans Odoo 20
+Série « Achats, stock et fabrication avec Odoo 20 » (blog Fonctionnel) — étape 6
+Date : 2026-09-27
+Slug : livraison-directe-couts-logistiques-odoo
+Tags : intermediaire, achats, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func.
+  stock/views/res_config_settings_views.xml:186-190 (Dropshipping) ; stock_account/views/res_config_settings_views.xml:10-13
+  (Coûts logistiques) ; stock_landed_costs/models/product.py:16-19 (Appliquer sur, NOUVEAU en 20 ; aide : seuls AVCO/FIFO
+  voient leur valeur modifiée) ; stock_landed_costs/models/stock_landed_cost.py:115-163 (validation, écritures seulement
+  real_time) ; account/views/product_view.xml:121-130 (méthode de coût sur la catégorie, groups account.group_account_readonly,
+  que l'admin Community n'a pas).
+  Parcours joué : article 42 route Dropshipping ; S00040 Acme Corporation → P00028 Wood Corner (Livrer à Dropship) → DS/00001
+  Vendors → Customers ; LC/2026/0001 120 $ Égal sur WH/IN/00022 : 380→440, 246→306, coût article inchangé (standard, 0 $),
+  pas d'écriture (valorisation périodique).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Livraison directe et coûts logistiques dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Deux situations sortent du circuit habituel. L'article vendu ne
+                    passe pas par l'entrepôt : le fournisseur livre directement le client. Ou bien il y passe, mais
+                    le transport et la douane s'ajoutent à son prix d'achat. Odoo 20 Community traite la première
+                    entièrement ; pour la seconde, il faut savoir ce que le réglage par défaut prend en compte.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Achats, stock et fabrication avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, avec Inventaire, Achats et Ventes installés. Dropshipping et coûts logistiques sont
+                        inclus dans la Community ; l'effet des coûts logistiques sur le coût des articles dépend de la
+                        méthode de coût (voir la partie 2).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>La <strong>livraison directe</strong> (dropshipping dans l'interface) évite le stock : un bureau
+                    fabriqué sur mesure part de l'atelier du fournisseur vers le client, sans jamais entrer dans
+                    l'entrepôt. Les <strong>coûts logistiques</strong> (frais d'approche : fret, droits de douane,
+                    assurance) sont des dépenses facturées à part, qu'on veut rattacher aux marchandises reçues.</p>
+                <p>Les deux options s'activent dans <strong>Inventaire › Configuration › Paramètres</strong> ;
+                    chacune installe un module. L'exemple reprend Wood Corner comme fournisseur, et la réception
+                    WH/IN/00022 de
+                    <a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et
+                    dates de péremption dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>faire livrer un client directement par le fournisseur ;</li>
+                    <li>suivre la chaîne vente, achat, livraison directe ;</li>
+                    <li>répartir des coûts logistiques sur une réception ;</li>
+                    <li>savoir ce que ces coûts changent, selon la méthode de coût.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PARTIE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La livraison directe</h2>
+                <h3>Activer et paramétrer l'article</h3>
+                <p>Dans les paramètres d'Inventaire, section Logistique, cochez <strong>Dropshipping</strong>, puis
+                    enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20 : Dropshipping coché, Demander à vos fournisseurs de livrer à vos clients, option Réapprovisionner sur commande (MTO) non cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'option Dropshipping.</figcaption>
+                </figure>
+                <p>Un article livré en direct a besoin d'un fournisseur (onglet Achats de sa fiche) et de la route
+                    <strong>Dropshipping</strong>, à cocher dans l'onglet Inventaire, section Opérations. Ici, le
+                    « Bureau assis-debout sur mesure », vendu 890 $, acheté 610 $ chez Wood Corner.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche article Bureau assis-debout sur mesure d'Odoo 20, onglet Inventaire : section Opérations avec la route Dropshipping cochée et le lien Voir le diagramme, section Logistique" style="max-width:100%; height:auto;"/>
+                    <figcaption>La route Dropshipping, sur la fiche de l'article.</figcaption>
+                </figure>
+
+                <h3>De la vente à l'achat</h3>
+                <p>Le devis S00040 pour Acme Corporation porte sur un bureau. À sa confirmation, Odoo ne crée pas de
+                    livraison depuis l'entrepôt : il crée la demande de prix P00028 chez Wood Corner. OdooBot en est
+                    l'auteur, et le bouton intelligent <strong>Ventes</strong> la relie à la commande client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Demande de prix P00028 d'Odoo 20 créée par la vente S00040 : fournisseur Wood Corner, Livrer à Dropship, adresse de dropshipping Acme Corporation, 1 Bureau assis-debout sur mesure à 610 dollars, total 701,50 dollars, bouton intelligent Ventes 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande de prix porte l'adresse du client.</figcaption>
+                </figure>
+                <p>Le champ <strong>Livrer à</strong> vaut Dropship, et l'<strong>Adresse de dropshipping</strong>
+                    est celle du client : c'est elle qui figure sur la commande envoyée au fournisseur. L'acheteur
+                    envoie et confirme la demande comme une autre.</p>
+
+                <h3>Valider la livraison directe</h3>
+                <p>La confirmation crée un transfert DS/00001 de type Dropship, de l'emplacement Vendors
+                    (fournisseurs) vers Customers (clients) : la marchandise ne touche aucun emplacement de
+                    l'entrepôt. Quand le fournisseur confirme l'expédition, validez-le.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Transfert DS/00001 d'Odoo 20 à l'état Prêt, avant validation : contact Wood Corner, type d'opération Dropship, emplacement d'origine Vendors, emplacement de destination Customers, document d'origine P00028, 1 Bureau assis-debout sur mesure" style="max-width:100%; height:auto;"/>
+                    <figcaption>Du fournisseur au client, sans passer par le stock.</figcaption>
+                </figure>
+                <p>La commande client passe alors à Entièrement livré, avec 1 en colonne Délivré, et devient
+                    facturable si la politique de facturation est aux quantités livrées. Le stock de l'entrepôt, lui,
+                    n'a pas bougé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Commande client S00040 d'Odoo 20 pour Acme Corporation : pastille Entièrement livré, ligne Bureau assis-debout sur mesure, quantité 1, délivré 1, facturé 0, prix 890 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La vente est livrée, alors qu'aucun bureau n'est passé par l'entrepôt.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PARTIE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les coûts logistiques</h2>
+                <h3>Activer et créer l'article de frais</h3>
+                <p>Dans les paramètres d'Inventaire, section Valorisation, cochez <strong>Coûts logistiques</strong>,
+                    puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Paramètres d'Inventaire d'Odoo 20 : Coûts logistiques coché, Ajouter un coût additionnel (transport, douane) dans la valeur du produit" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'option Coûts logistiques.</figcaption>
+                </figure>
+                <p>Un coût logistique est un article de type Service. Créez « Fret et dédouanement », type Service,
+                    puis, dans l'onglet Achats, cochez <strong>Est un coût logistique</strong>. Deux champs
+                    apparaissent : <strong>Appliquer sur</strong>, qui limite par défaut le frais à certains articles
+                    (vide : tous), et <strong>Méthode de répartition par défaut</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fiche article Fret et dédouanement d'Odoo 20, onglet Achats, section Factures fournisseurs : Est un coût logistique coché, Appliquer sur vide (All Products), Méthode de répartition par défaut vide, Politique de contrôle sur base des quantités commandées" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un service marqué comme coût logistique.</figcaption>
+                </figure>
+
+                <h3>Répartir les frais sur une réception</h3>
+                <p><strong>Inventaire › Opérations › Coûts logistiques</strong> (section Ajustements), puis <strong>Nouveau</strong>.
+                    Dans <strong>Transferts</strong>, choisissez la réception WH/IN/00022 (40 vernis à 9,50 $,
+                    3 perceuses à 82 $). Dans l'onglet Coûts additionnels, ajoutez une ligne « Fret et
+                    dédouanement » de 120 $. La <strong>Méthode de répartition</strong> vaut Égal, faute de méthode
+                    par défaut sur l'article ; les autres choix sont Par quantité, Par coût actuel, Par poids et
+                    Par volume.</p>
+                <p><strong>Calculer</strong> remplit l'onglet <strong>Correction de valorisation</strong>, puis
+                    <strong>Valider</strong> passe le document LC/2026/0001 à l'état Publié.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Coût logistique LC/2026/0001 d'Odoo 20 à l'état Publié, transfert WH/IN/00022, journal Valorisation d'inventaire, onglet Correction de valorisation : Vernis mat pour mobilier 40 unités valeur d'origine 380 dollars nouvelle valeur 440 dollars, Perceuse-visseuse d'atelier 3 unités 246 dollars devenus 306 dollars, 60 dollars de coûts logistiques chacun" style="max-width:100%; height:auto;"/>
+                    <figcaption>Répartition égale : 60 $ sur chaque article de la réception.</figcaption>
+                </figure>
+                <p>Égal partage le montant entre les lignes de la réception, sans tenir compte des quantités :
+                    60 $ sur les 40 vernis, 60 $ sur les 3 perceuses. Par quantité aurait réparti 120 $ au prorata
+                    des 43 unités ; Par coût actuel, au prorata des 626 $ de valeur.</p>
+
+                <h3>Ce que la correction change vraiment</h3>
+                <p>La valeur de chaque mouvement de réception augmente : 440 $ pour les vernis, 306 $ pour les
+                    perceuses. Le <strong>coût de l'article</strong>, lui, ne change que si l'article est valorisé au
+                    coût moyen (AVCO) ou en premier entré, premier sorti (FIFO) : l'aide du champ Appliquer sur le dit
+                    elle-même. Or une base Community en configuration standard valorise ses articles au
+                    <strong>coût standard</strong>, et le champ qui permet de changer de méthode, sur la catégorie
+                    d'articles, n'est pas visible sans les fonctions comptables complètes.</p>
+                <p>Sur la base de démonstration, le coût du vernis est resté à 0 $ après validation, et aucune
+                    écriture comptable n'a été générée : la valorisation y est périodique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ENTERPRISE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Dropshipping complet (route, demande de prix automatique,
+                        transfert Dropship), documents de coûts logistiques, calcul et répartition sont inclus.
+                        Pour que les frais d'approche entrent dans le coût des articles, il faut une méthode de coût
+                        AVCO ou FIFO, réglée dans l'onglet Comptabilité de la catégorie d'articles, visible seulement
+                        avec les fonctions comptables complètes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>L'échéance de commande est souvent déjà passée</h4>
+                    <p>La demande de prix créée par la vente vise une arrivée à la date de la vente ; son échéance de
+                        commande, la veille, s'affiche donc déjà en rouge sur P00028. Envoyez-la sans attendre, et renseignez
+                        un délai réaliste dans la liste de prix du fournisseur.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Égal n'est pas équitable</h4>
+                    <p>La répartition Égal charge autant 3 perceuses que 40 pots de vernis. Pour du fret, choisissez
+                        plutôt Par poids ou Par volume (à condition de renseigner poids et volume sur les articles), et
+                        fixez-la comme méthode par défaut sur l'article de frais.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des libellés restés en anglais</h4>
+                    <p>Le type d'opération Dropship, les emplacements Vendors et Customers et l'indication « All
+                        Products » du champ Appliquer sur ne sont pas traduits dans cette version. Ce sont de simples
+                        libellés, que l'on peut renommer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> comparer deux méthodes de répartition.</p>
+                    <p><strong>Indication :</strong> créez un nouveau coût logistique sur WH/IN/00022, avec une ligne
+                        « Fret et dédouanement » de 86 $ en méthode Par quantité, puis cliquez sur Calculer sans
+                        valider.</p>
+                    <p><strong>Critère de réussite :</strong> l'onglet Correction de valorisation répartit 80 $ sur
+                        les vernis et 6 $ sur les perceuses (2 $ par unité).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La route Dropshipping transforme une vente en demande de prix livrée chez le client.</li>
+                    <li>Le transfert Dropship va du fournisseur au client, sans toucher le stock.</li>
+                    <li>Un coût logistique répartit un service sur les articles d'une réception.</li>
+                    <li>En coût standard, la correction s'arrête aux mouvements : le coût de l'article ne bouge pas.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Lots, numéros de série et dates de péremption dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Nomenclatures et ordres de fabrication dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La suite de la demande de prix, jusqu'à la facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Facturer une vente livrée.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires dans Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Ce que la comptabilité Community montre, et ce qu'elle cache.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
