@@ -1,0 +1,396 @@
+<!--
+Article — Présences dans Odoo 20
+Série « Ressources humaines avec Odoo 20 » (blog Fonctionnel) — étape 3
+Date : 2026-09-27
+Slug : presences-pointage-odoo
+Tags : debutant, rh, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community, base vs20_func (hr_attendance installé depuis Applications, carte « Attendances »).
+  hr_attendance/__manifest__.py:18 depends hr, hr_work_entry, barcodes, base_geolocalize ;
+  odoo19 models/hr_attendance_overtime*.py, overtime_hours/overtime_status/validated_overtime_hours SUPPRIMÉS ;
+  models/hr_attendance.py:86-106 NOUVEAUX break_duration, work_entry_type_id (« Time Type »), state draft/validated/refused,
+  time_rule_id, source_attendance_id, overtime_attendance_ids ; :660 seules les présences validées alimentent les règles ;
+  :689-701 état à la création selon res.company.attendance_validation (no_validation / manual_validation / tolerance_validation) ;
+  hr_work_entry/models/hr_time_rule.py (NOUVEAU moteur de règles, menu Configuration › Automatic Rules) ;
+  :281 _compute_country_work_entry_type_ids (une règle sans pays ne voit que les types sans pays) ;
+  hr_work_entry/data/hr_time_rule_data.xml:5-10 « Employee Schedule Rule » générique = type generic_work_entry_type_attendance ;
+  hr_attendance/models/res_company.py:76 type des présences = type du pays de la société (FR : fr_work_entry_type_attendance).
+  Parcours joué : validation manuelle posée ; Marc Demo pointe Arrivée/Départ depuis la barre (état Draft) ;
+  règle « Employee Schedule Rule » : 0 sortie sur une journée de 10 h 30 (types Work générique ≠ Work FR) ;
+  règle « Heures supplémentaires France » créée (société My Company (San Francisco), horaire de l'employé,
+  excédent → Overtime hours non recoverable - 150%) ; journée du 24 sept. 08:00-18:30 saisie puis validée :
+  présence ramenée à 08:00-16:00 (8 h) + sortie « OT » 16:00-18:30 (2 h 30).
+  Non-rétroactivité constatée : la présence du 25 sept. (10 h 30), validée AVANT la création de la règle, reste sans sortie après.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Présences dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">L'employé pointe son arrivée et son départ, le responsable valide la
+                    journée, et Odoo calcule les heures supplémentaires. Dans Odoo 20, ce calcul est confié à des
+                    règles automatiques qu'il faut savoir régler.</p>
+                <p class="small text-light mt-2">~8 minutes de lecture · niveau débutant · série <strong>Ressources humaines avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, septembre
+                        2026, sur la base de démonstration. L'application Présences est incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une présence est rattachée à une fiche employé et comparée à son horaire de travail : le premier
+                    article de la série, sur les employés, montre où se règle cet horaire. L'application
+                    <strong>Présences</strong> s'installe depuis <strong>Applications</strong> ; sa carte porte le
+                    nom anglais <strong>Attendances</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Attendances dans la liste des applications d'Odoo 20, avec la mention Track employee attendance" style="max-width:60%; height:auto;"/>
+                    <figcaption>La carte de l'application dans Applications.</figcaption>
+                </figure>
+                <p>Les exemples reprennent deux personnes de la démonstration : <strong>Marc Demo</strong>, qui
+                    pointe, et <strong>Mitchell Admin</strong>, administrateur de l'application, qui valide. Marc Demo
+                    travaille selon l'horaire <strong>40 hours/week</strong>, soit 8 heures par jour du lundi au
+                    vendredi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>pointer une arrivée et un départ depuis la barre d'Odoo ;</li>
+                    <li>exiger la validation des journées par un responsable ;</li>
+                    <li>créer la règle qui transforme l'excédent d'heures en heures supplémentaires ;</li>
+                    <li>lire, sur une présence validée, les heures supplémentaires qu'elle a produites.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Pointer depuis la barre d'Odoo</h2>
+                <p>Une fois l'application installée, un rond apparaît dans la barre supérieure, à gauche des
+                    messages ; il est rouge tant que vous n'avez pas pointé. Un clic ouvre le panneau de pointage :
+                    le bouton <strong>Arrivée</strong> enregistre l'heure d'entrée. Le panneau affiche ensuite le
+                    créneau en cours et sa durée, et le bouton <strong>Départ</strong> le clôt.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Panneau de pointage de Marc Demo dans Odoo 20 : à gauche le bouton Arrivée, à droite le créneau 13:35 - Maintenant et le bouton Départ" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avant l'arrivée, puis pendant la présence : le panneau passe d'Arrivée à Départ.</figcaption>
+                </figure>
+                <p>Ce pointage depuis la barre dépend de l'option <strong>Présences depuis le backend</strong> des
+                    paramètres, cochée par défaut. Le menu <strong>Mes présences</strong> montre ensuite vos
+                    propres créneaux dans un calendrier à la semaine. Pour un poste partagé à l'entrée des locaux,
+                    le <strong>Mode kiosque</strong> ouvre une page où chacun pointe par badge ou en choisissant
+                    son nom.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Exiger la validation des journées</h2>
+                <p>Chaque présence porte désormais un statut : <strong>Draft</strong>, <strong>Validated</strong>
+                    ou <strong>Refused</strong>. Par défaut, Odoo valide tout seul les journées pointées. Pour qu'un responsable les
+                    contrôle, ouvrez <strong>Configuration › Paramètres</strong> et choisissez, sous
+                    <strong>Attendance Validation</strong>, l'option <strong>Worked days require manual
+                    approval</strong>, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Paramètres de l'application Présences dans Odoo 20 : bloc Attendance Validation avec l'option Worked days require manual approval sélectionnée" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le réglage de validation, en tête des paramètres de Présences.</figcaption>
+                </figure>
+                <p>La troisième option, <strong>Worked days require approval if outside tolerance</strong>, ne
+                    fait valider à la main que les journées qui s'écartent de l'horaire au-delà d'une tolérance en
+                    heures. Le choix compte au-delà du contrôle : seules les présences validées entrent dans le
+                    calcul des heures supplémentaires.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Retrouver les présences à valider</h2>
+                <p>Le menu <strong>Gestion › Présences</strong> s'ouvre avec le filtre <strong>To
+                    Validate</strong> : il liste les présences terminées, encore en brouillon, des employés actifs. Chaque ligne
+                    porte deux boutons, <strong>Validate</strong> et <strong>Refuser</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste Gestion › Présences filtrée sur To Validate dans Odoo 20 : deux présences de Marc Demo au statut Draft, avec les boutons Validate et Refuser" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux présences de Marc Demo attendent la validation : un pointage de test et une journée longue.</figcaption>
+                </figure>
+                <p>Le responsable peut aussi saisir une présence à la place de l'employé, par exemple un oubli de
+                    pointage : depuis <strong>Gestion › Tableau de bord</strong>, le bouton
+                    <strong>Nouveau</strong> ouvre une fiche où choisir l'employé, puis l'arrivée et le départ.
+                    La présence créée reste en brouillon jusqu'à sa validation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Créer la règle des heures supplémentaires</h2>
+                <p>Odoo 20 ne compte plus les heures supplémentaires dans un compteur de l'employé. Des
+                    <strong>règles automatiques</strong> découpent chaque présence validée : la part qui dépasse
+                    l'horaire devient une présence distincte, d'un autre type de temps. Ces règles se trouvent dans
+                    <strong>Configuration › Automatic Rules</strong>.</p>
+                <p>Créez une règle pour votre société avec <strong>Nouveau</strong> :</p>
+                <ul>
+                    <li>nom : <strong>Heures supplémentaires France</strong> ;</li>
+                    <li><strong>Société</strong> : My Company (San Francisco), la société de Marc Demo, dont le pays
+                        est la France ; le champ <strong>Pays</strong> affiche alors France ;</li>
+                    <li><strong>Type de temps</strong> : laissez <strong>Work</strong>, proposé d'office : c'est le type de temps donné aux présences de la société ;</li>
+                    <li><strong>Working Hours</strong> : <strong>Exceed</strong> <strong>the daily schedule</strong>,
+                        et, en face de <strong>based on</strong>, <strong>Employee Schedule</strong> ;</li>
+                    <li><strong>Set Excess to</strong> : <strong>Overtime hours non recoverable - 150%</strong>.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fiche de règle automatique Heures supplémentaires France dans Odoo 20 : société My Company (San Francisco), type de temps Work, Exceed the daily schedule based on Employee Schedule, Set Excess to Overtime hours non recoverable - 150%" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle lit l'horaire de chaque employé et range l'excédent en heures supplémentaires.</figcaption>
+                </figure>
+                <p>Les jours cochés et la plage <strong>from</strong> / <strong>to</strong> limitent la règle à
+                    certains jours ou à certaines heures ; laissés tels quels, ils couvrent toute la semaine. Le
+                    champ <strong>Allocate</strong>, présent quand l'application Congés est installée, crédite, sur un type de congé choisi dans
+                    <strong>Allocate to</strong>, des jours calculés à partir d'un pourcentage de l'excédent.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Valider une journée longue</h2>
+                <p>Marc Demo a travaillé un jeudi de 08:00 à 18:30, soit 10 h 30 pour un horaire de
+                    8 heures. La présence, saisie par le responsable, apparaît en <strong>Draft</strong> avec son
+                    <strong>Temps de travail</strong> et son <strong>Time Type</strong>, Work.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Présence de Marc Demo le 24 septembre de 08:00 à 18:30 dans Odoo 20, au statut Draft, temps de travail 10h 30min, boutons Validate et Refuser" style="max-width:100%; height:auto;"/>
+                    <figcaption>La journée de 10 h 30, encore en brouillon.</figcaption>
+                </figure>
+                <p>Un clic sur <strong>Validate</strong> fait passer la présence en <strong>Validated</strong> et
+                    déclenche la règle. La présence est ramenée à l'horaire, de 08:00 à 16:00, soit 8 heures, et un
+                    onglet <strong>Rules Outputs</strong> apparaît : il contient une nouvelle ligne
+                    <strong>Overtime hours non recoverable - 150%</strong> de 16:00 à 18:30, soit 2 h 30.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Présence validée de Marc Demo dans Odoo 20 : arrivée 08:00, départ 16:00, 8 heures, et onglet Rules Outputs avec une ligne Overtime hours non recoverable - 150% de 16:00 à 18:30, 2h 30min" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après validation : 8 heures de travail et 2 h 30 d'heures supplémentaires.</figcaption>
+                </figure>
+                <p>Les heures supplémentaires sont donc elles-mêmes des présences. Elles figurent dans les listes de
+                    présences sous leur propre type de temps, abrégé <strong>OT</strong>, à côté des présences
+                    ordinaires, abrégées <strong>A</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Pointage depuis la barre, mode kiosque, validation des
+                        présences, règles automatiques d'heures supplémentaires et analyses des présences sont inclus
+                        dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La règle fournie ne compte rien pour une société française</h4>
+                    <p>Odoo installe une règle <strong>Employee Schedule Rule</strong>, valable pour tous les pays.
+                        Elle surveille le type de temps <strong>Work</strong> générique. Or, dans une société dont le
+                        pays est la France, les présences reçoivent le type <strong>Work</strong> propre à la France :
+                        même nom, autre type. La règle ne les voit pas, et une journée de 10 h 30 ne produit aucune
+                        heure supplémentaire. Une règle sans pays ne propose d'ailleurs que les types sans pays :
+                        c'est pourquoi l'étape 4 crée une règle rattachée à la société.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une présence en brouillon ne compte pas</h4>
+                    <p>Avec la validation manuelle, une présence non validée n'entre pas dans le calcul des heures
+                        supplémentaires. De même, créer la règle ne recalcule pas les présences déjà validées :
+                        seules les présences validées après sa création en tiennent compte.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> produire des heures supplémentaires pour un autre employé.</p>
+                    <p><strong>Indication :</strong> depuis Gestion › Tableau de bord, saisissez pour un employé de
+                        votre société une présence de 08:00 à 19:00 un jour ouvré passé, puis validez-la.</p>
+                    <p><strong>Critère de réussite :</strong> l'onglet Rules Outputs de la présence validée montre
+                        une ligne Overtime hours non recoverable - 150%.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Chaque présence porte un statut ; la validation manuelle se règle dans les paramètres.</li>
+                    <li>Seules les présences validées alimentent les heures supplémentaires.</li>
+                    <li>Dans Odoo 20, les heures supplémentaires sont des présences produites par des règles
+                        automatiques.</li>
+                    <li>Une règle doit viser le type de temps du pays de la société, sinon elle ne produit rien.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Congés et absences dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Notes de frais dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences</a></h5>
+                            <p class="small text-muted mb-0">Les types d'entrée de travail, côté congés.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme</a></h5>
+                            <p class="small text-muted mb-0">L'horaire de travail de la fiche employé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/feuilles-temps-facturation-odoo-226">Feuilles de temps et facturation</a></h5>
+                            <p class="small text-muted mb-0">Le temps passé sur les projets.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
