@@ -1,0 +1,574 @@
+<!--
+Article — Emailing et SMS dans Odoo 20
+Série « Vendre en ligne et en boutique avec Odoo 20 » (blog Fonctionnel, série 32) — étape 4
+Date : 2026-09-27
+Slug : emailing-sms-odoo
+Tags : debutant, marketing, guide, community
+Sources vérifiées le 2026-09-27 : Odoo 20.0 Community (révision 3538ed82), base vs20_func.
+  Installation jouée à l'écran : Applications, recherche « Marketing » : cartes Email Marketing, Marketing Card, SMS Marketing (Activer) ;
+  Social Marketing et Marketing Automation (Mettre à niveau ; modules social et marketing_automation absents de odoo/addons).
+  Email Marketing → Activer : 218 → 224 modules (mass_mailing, mass_mailing_crm, mass_mailing_sale, mass_mailing_themes, website_mass_mailing,
+  website_sale_mass_mailing). SMS Marketing → Activer : 224 → 228 (mass_mailing_sms, mass_mailing_crm_sms, mass_mailing_sale_sms, website_mass_mailing_sms).
+  Menus v20 : Mailings, Destinataires (Listes de diffusion, Contacts de la liste de diffusion, Dynamic Lists), Templates, Analyse, Configuration
+  (mass_mailing/views/mailing_menus.xml:32-45 ; odoo19 : ni Templates ni Dynamic Lists, favoris action_set_favorite).
+  Liste « Clients professionnels » (mailing.list 3, is_public = « Afficher dans préférences », mailing_list.py:42-43 ; color nouveau champ).
+  Contacts › Actions › « Add to Mailing List » : res_partner_to_list_action (wizard/mailing_contact_to_list_views.xml:32-44, binding res.partner),
+  plusieurs listes (mailing_list_ids, odoo19 : mailing_list_id unique) ; contacts de diffusion 9-12 créés avec partner_id (mailing_contact.py:69, nouveau),
+  statistiques par contact nouvelles (mailing_contact.py:58-67 : opened_ratio, last_opened_datetime…). Fusion de listes = action serveur (data/ir_actions_server_data.xml ;
+  modèle mailing.list.merge supprimé).
+  Site : bloc « Bloc newsletter » (s_newsletter_block) inséré sur l'accueil (vue 3278), option Newsletter → liste 1 (data-list-id), visiteur anonyme
+  visiteur@example.com abonné à Newsletter (mailing.contact 13), message « Thanks for registering! ». Nouveaux blocs v20 : Waiting List, Newsletter Aside
+  (website_mass_mailing/views/snippets_templates.xml:9 et :34, absents de odoo19).
+  Mailing 3 « Nouveautés : bureaux et chaises de bureau », liste Clients professionnels, modèle Catalog, textes remplacés dans l'éditeur.
+  Bouton Aperçu nouveau (mailing_mailing_views.xml:88, action_preview mailing.py:640 ; odoo19 : seulement Test). Test : chatter
+  « L'envoi d'essai n'a pas pu être envoyé à admin@example.com : 111 Connexion refusée » (aucun ir.mail_server, SMTP local absent).
+  Planifier : 5 oct. 09:00 → état « Dans la file d'attente ». Enregistrer comme modèle : action_save_as_template (mailing.py:828), is_template (mailing.py:87),
+  mailing 7 dans Templates › Template Library, et proposé dans la galerie d un nouveau mailing (Playwright w4y.py : TEMPLATE_IN_GALLERY True).
+  Statistiques : mailing de démonstration 1 « Thanks for joining us! » (traces démo : 5 délivrés, 3 échecs, ouvert 80 %, répondu 40 %, cliqué 60 %).
+  Suivi : pixel /mail/track/<id>/<token>/blank.gif et liens /r/<code>/m/<trace> (mass_mailing/controllers/main.py:396, :410).
+  Rapport 24 h : mass_mailing_reports (res_config_settings.py:26-28).
+  SMS : mailing 6 « Promotion chaises de bureau », liste démo « Interested in List Promotions », NON envoyé. Envoi via IAP : sms/tools/sms_api.py:56-64
+  (DEFAULT_ENDPOINT sms.api.odoo.com, insufficient_credit → sms_credit, not_active_db → sms_database_non_active nouveau en 20) ;
+  mass_mailing_sms/models/mailing_mailing.py:45-47 (sms_has_insufficient_credit), :149 (action_buy_sms_credits). Paramètres généraux › Contacts › Envoyer un SMS
+  « Gérer les services et acheter des crédits » (sms/views/res_config_settings_views.xml:8-9). Alternative : module sms_twilio (LGPL, Community),
+  res_company.sms_provider iap | twilio (sms_twilio/models/res_company.py:12-19).
+-->
+
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Emailing et SMS dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Constituer une liste de diffusion, recueillir des abonnés depuis le site,
+                    composer un e-mail à partir d'un modèle, le tester, le planifier, lire ses statistiques, puis préparer
+                    une campagne SMS en sachant ce qu'elle coûte : le marketing par e-mail et par SMS d'Odoo 20, joué sur
+                    la base de démonstration.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau débutant · série <strong>Vendre en ligne et en boutique avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community + complément Enterprise.</strong> Écrit et vérifié sur Odoo 20.0
+                        Community, septembre 2026, sur la base de démonstration. E-mail Marketing et SMS Marketing sont inclus
+                        dans la Community ; ils existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le site, la boutique et la caisse attendent le client ; l'<strong>emailing</strong> va le chercher. Une
+                    lettre d'information, l'annonce d'une nouvelle collection, une promotion de fin de semaine : le même
+                    message part vers des centaines de destinataires, chacun reçoit son exemplaire, et Odoo compte ceux qui
+                    l'ont reçu, ouvert, cliqué ou qui y ont répondu. Le <strong>SMS</strong> suit la même logique pour un
+                    message court, lu presque aussitôt.</p>
+                <p>Dans <strong>Applications</strong>, une recherche sur « Marketing » affiche cinq cartes. Trois
+                    s'installent dans la Community : <strong>Email Marketing</strong>, <strong>SMS Marketing</strong> et
+                    <strong>Marketing Card</strong> (des visuels à partager). Les deux autres, <strong>Social
+                    Marketing</strong> et <strong>Marketing Automation</strong>, portent le bouton <strong>Mettre à
+                    niveau</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Cartes Marketing dans les applications d'Odoo 20 : Email Marketing, Marketing Card et SMS Marketing avec le bouton Activer ; Social Marketing et Marketing Automation avec le bouton Mettre à niveau" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les applications de marketing : trois s'activent, deux demandent l'Enterprise.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Activer</strong> sur la carte <strong>Email Marketing</strong>. Sur la base de
+                    démonstration, six modules arrivent : l'application elle-même, sa bibliothèque de modèles d'e-mails, et
+                    ses liaisons avec le CRM, les Ventes, le site web et la boutique en ligne installés dans les articles
+                    précédents. Le menu principal affiche alors <strong>E-mail Marketing</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une liste de diffusion et y ajouter des clients depuis l'application Contacts ;</li>
+                    <li>recueillir des abonnés avec un bloc newsletter sur le site web ;</li>
+                    <li>composer un e-mail à partir d'un modèle, le prévisualiser, le tester et le planifier ;</li>
+                    <li>lire les statistiques d'envoi, d'ouverture et de clic d'une campagne ;</li>
+                    <li>préparer une campagne SMS et savoir ce qui, dans l'envoi, est payant.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer une liste de diffusion</h2>
+                <p>Une <strong>liste de diffusion</strong> regroupe des destinataires : les abonnés à la lettre
+                    d'information, les clients professionnels, les participants à un salon. La base de démonstration en
+                    fournit deux, <strong>Newsletter</strong> et <strong>Imported Contacts</strong>. Ouvrez
+                    <strong>E-mail Marketing › Destinataires › Listes de diffusion</strong> et cliquez sur
+                    <strong>Nouveau</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Créer une liste de diffusion d'Odoo 20 : Nom de la liste Clients professionnels, interrupteur Afficher dans préférences activé, champ Couleur, boutons Créer une liste de diffusion et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Une liste « Clients professionnels », visible dans les préférences des abonnés.</figcaption>
+                </figure>
+                <p>Nommez la liste <strong>Clients professionnels</strong>. L'interrupteur <strong>Afficher dans
+                    préférences</strong> rend la liste visible sur la page où chaque destinataire gère ses abonnements : il
+                    peut s'y désinscrire de cette liste sans quitter les autres. Cliquez sur <strong>Créer une liste de
+                    diffusion</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ajouter des clients depuis Contacts</h2>
+                <p>Les destinataires d'une liste sont des <strong>contacts de diffusion</strong>, distincts du carnet
+                    d'adresses : un abonné à la newsletter n'est pas forcément un client. Odoo 20 relie désormais ces deux
+                    ensembles. Ouvrez l'application <strong>Contacts</strong> en vue liste, cochez les clients à ajouter, ici
+                    <strong>Acme Corporation</strong>, <strong>Azure Interior</strong>, <strong>Gemini Furniture</strong>
+                    et <strong>Wood Corner</strong>, puis ouvrez le menu <strong>Actions</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des contacts d'Odoo 20 avec 4 sélectionnés : Acme Corporation, Azure Interior, Gemini Furniture et Wood Corner cochés parmi leurs contacts employés ; menu Actions ouvert avec Exporter, Dupliquer, Archiver, Désarchiver, Supprimer, Fusionner, Envoyer un e-mail, Envoyer un SMS, Add to Mailing List, Télécharger (vCard), Enrich, Donner accès au portail" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'action « Add to Mailing List » du menu Actions de Contacts.</figcaption>
+                </figure>
+                <p>Choisissez <strong>Add to Mailing List</strong>. La fenêtre accepte plusieurs listes à la fois :
+                    sélectionnez <strong>Clients professionnels</strong> et <strong>Newsletter</strong>, puis cliquez sur
+                    <strong>Add to Lists</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Add to Mailing List d'Odoo 20 : champ Listes de diffusion avec les étiquettes Clients professionnels et Newsletter, boutons Add to Lists et Ignorer" style="max-width:65%; height:auto;"/>
+                    <figcaption>Deux listes d'un coup pour les quatre clients.</figcaption>
+                </figure>
+                <p>Odoo crée un contact de diffusion par client, avec son adresse e-mail, et le rattache au contact
+                    d'origine. Les quatre clients figurent maintenant dans les deux listes. Dans Odoo 20, chaque contact de
+                    diffusion garde aussi ses propres statistiques : taux d'ouverture, de clic et de réponse, date de la
+                    dernière ouverture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Recueillir des abonnés sur le site</h2>
+                <p>Avec le site web installé, Email Marketing ajoute des blocs d'inscription à l'éditeur. Ouvrez le site,
+                    cliquez sur <strong>Modifier</strong>, puis sur la catégorie <strong>Contact &amp; Formulaires</strong> :
+                    elle regroupe plusieurs blocs newsletter, dont deux nouveaux dans Odoo 20, <strong>Newsletter
+                    Aside</strong> et <strong>Waiting List</strong> (une liste d'attente). Insérez le <strong>Bloc
+                    newsletter</strong> sur la page d'accueil.</p>
+                <p>Un réglage compte : la liste qui recevra les inscriptions. Cliquez sur le bloc ; dans l'onglet
+                    <strong>Style</strong>, la section <strong>Bloc newsletter</strong> propose le champ
+                    <strong>Newsletter</strong>. Par défaut, Odoo y place la première liste trouvée, qui n'est pas forcément
+                    la bonne : sur la présente base, c'était la liste Clients professionnels à peine créée. Choisissez
+                    <strong>Newsletter</strong>, puis cliquez sur <strong>Sauver</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Options du Bloc newsletter dans l'éditeur de site Odoo 20 : Agencement Grid ou Colonne, Arrière-plan, Forme Aucun, Modèle Abonnement par e-mail, Newsletter Newsletter, Afficher le message de remerciement, Hauteur Automatique, Largeur contenu, Visibilité" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le champ Newsletter choisit la liste qui reçoit les inscriptions.</figcaption>
+                </figure>
+                <p>Le champ <strong>Modèle</strong> offre deux formes : <strong>Abonnement par e-mail</strong>, un simple
+                    champ d'adresse, ou <strong>Abonnement par formulaire</strong>, qui laisse le visiteur cocher les listes
+                    qui l'intéressent. Côté visiteur, il suffit de saisir son adresse et de cliquer sur
+                    <strong>S'inscrire</strong> ; le bloc affiche aussitôt une confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Bloc newsletter sur la page d'accueil du site Odoo 20 après inscription : titre Abonnez-vous à notre newsletter, texte d'invitation, et à droite le message vert Thanks for registering! avec une coche" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le visiteur est inscrit : son adresse rejoint la liste Newsletter.</figcaption>
+                </figure>
+                <p>L'adresse saisie apparaît dans <strong>E-mail Marketing › Destinataires › Contacts de la liste de
+                    diffusion</strong>, abonnée à la liste Newsletter, sans aucune saisie au bureau.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Composer l'e-mail à partir d'un modèle</h2>
+                <p>Ouvrez <strong>E-mail Marketing › Mailings</strong> et cliquez sur <strong>Nouveau</strong>. Saisissez
+                    le <strong>Sujet</strong>, ici « Nouveautés : bureaux et chaises de bureau », et choisissez la liste
+                    <strong>Clients professionnels</strong> dans <strong>Listes de diffusion</strong>. Sous l'onglet
+                    <strong>Corps de l'e-mail</strong>, Odoo propose une galerie de modèles : partir de zéro, texte simple,
+                    message d'accueil, catalogue, lettre d'information, offre de remise…</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Nouveau mailing dans Odoo 20 : boutons Envoyer et Planifier, étapes Brouillon, En cours d'envoi, Envoyé, Sujet Nouveautés : bureaux et chaises de bureau, Destinataires Liste de diffusion, Listes de diffusion Clients professionnels, onglets Corps de l'e-mail et Paramètres, galerie de modèles Partir De Zéro, Texte Simple, Message D'accueil, Catalog, Newsletter, Discount Offer, Grande Nouvelle, Event Promotion, Terms Update, Actualités" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sujet, destinataires, puis le choix d'un modèle de départ.</figcaption>
+                </figure>
+                <p>Choisissez <strong>Catalog</strong>. L'éditeur s'ouvre en plein écran : l'e-mail à gauche, le panneau
+                    d'édition à droite. Cliquez dans un texte pour le remplacer, comme sur le site web. L'onglet
+                    <strong>Blocs</strong> classe les blocs à glisser par familles (en-têtes, textes, images, personnes,
+                    colonnes, contenus du site, pieds de page) ; l'onglet <strong>Style</strong> règle le bloc
+                    sélectionné, l'onglet <strong>Design</strong> les polices et couleurs de tout l'e-mail.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Éditeur d'e-mail d'Odoo 20 en plein écran : e-mail avec NOUVELLE COLLECTION, titre Bureaux et chaises, texte Découvrez les nouveaux modèles pour équiper vos bureaux, photo d'un canapé, légende Tous les modèles sont présentés dans la boutique en ligne, bouton Voir la boutique ; panneau de droite avec Enregistrer, Ignorer, onglets Blocs, Style, Design et les options du bloc sélectionné : Colonnes, Couleur de fond, Visibilité Toujours visible" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le modèle Catalog, textes remplacés, dans l'éditeur plein écran.</figcaption>
+                </figure>
+                <p>L'option <strong>Visibilité</strong> d'un bloc accepte aussi <strong>Conditionnellement</strong> : le bloc
+                    n'apparaît qu'aux destinataires qui remplissent une condition. Cliquez sur <strong>Enregistrer</strong>
+                    en haut du panneau, puis enregistrez le mailing.</p>
+                <p>Un e-mail réussi mérite d'être réutilisé. Le menu ⋮ du mailing propose, nouveauté d'Odoo 20,
+                    <strong>Enregistrer comme modèle</strong> : le mailing rejoint le menu <strong>Templates</strong>, où
+                    il servira de point de départ aux campagnes suivantes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Menu Templates d'E-mail Marketing dans Odoo 20 : vue Template Library filtrée sur My Templates, une carte avec l'aperçu de l'e-mail Bureaux et chaises, le titre Nouveautés : bureaux et chai..., la mention Liste de diffusion et l'avatar du responsable" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le mailing enregistré comme modèle, dans le menu Templates.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Prévisualiser et tester</h2>
+                <p>Deux boutons précèdent l'envoi. <strong>Aperçu</strong>, nouveau dans Odoo 20, affiche l'e-mail tel qu'un
+                    destinataire le recevra : expéditeur, sujet, adresse de réponse et corps, avec une bascule entre écran
+                    d'ordinateur et téléphone, et des flèches pour changer de destinataire d'exemple, car un e-mail
+                    personnalisé change d'un destinataire à l'autre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Preview Mailing d'Odoo 20 : De Mitchell Admin admin@example.com, Sujet Nouveautés : bureaux et chaises de bureau, Adresse de réponse, destinataire d'exemple Acme C..., compteur 1 / 10 avec flèches, bascule ordinateur / téléphone, puis le corps de l'e-mail Bureaux et chaises avec le bouton Voir la boutique" style="max-width:90%; height:auto;"/>
+                    <figcaption>L'aperçu : l'e-mail vu par un destinataire.</figcaption>
+                </figure>
+                <p><strong>Tester</strong> envoie un exemplaire réel à une adresse de contrôle, par défaut celle de
+                    l'utilisateur. C'est le moment de vérifier le rendu dans une vraie messagerie et de cliquer sur les
+                    liens.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Test Mailing d'Odoo 20 : texte Send a sample mailing for testing purpose to the address below, champ Destinataires Mitchell Admin admin@example.com, boutons Send test et Ignorer" style="max-width:65%; height:auto;"/>
+                    <figcaption>L'envoi d'essai, vers l'adresse de l'utilisateur.</figcaption>
+                </figure>
+                <p>Sur la présente base de démonstration, aucun serveur de messagerie sortant n'est configuré. L'essai
+                    échoue donc, et Odoo le dit dans l'historique du mailing plutôt que de laisser croire à un envoi.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Message de l'historique d'un mailing Odoo 20 : Mitchell Admin, L'envoi d'essai n'a pas pu être envoyé à admin@example.com : 111 Connexion refusée" style="max-width:70%; height:auto;"/>
+                    <figcaption>Sans serveur sortant, l'essai échoue et l'historique le signale.</figcaption>
+                </figure>
+                <p>Pour envoyer réellement, déclarez un serveur SMTP : dans <strong>Paramètres › Paramètres généraux</strong>,
+                    section <strong>E-mails</strong>, cochez <strong>Utiliser les serveurs de messagerie
+                    personnalisés</strong> et suivez le lien <strong>Serveurs de messagerie sortants</strong>. L'option
+                    <strong>Serveur dédié</strong> des paramètres d'E-mail Marketing réserve un serveur aux envois de masse.
+                    Selon l'aide du réglage Utiliser les serveurs de messagerie personnalisés, les bases hébergées en ligne par Odoo disposent déjà d'un serveur
+                    prêt à l'emploi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Envoyer ou planifier</h2>
+                <p><strong>Envoyer</strong> met le mailing en file d'attente immédiatement. <strong>Planifier</strong>
+                    demande une date : l'annonce partira par exemple le 5 octobre à 9 h, un lundi matin.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Fenêtre Quand voulez-vous envoyer votre e-mail ? d'Odoo 20 : champ Envoyer le 5 oct., 09:00, boutons Planifier et Ignorer" style="max-width:65%; height:auto;"/>
+                    <figcaption>La planification : une date et une heure d'envoi.</figcaption>
+                </figure>
+                <p>Le mailing passe à l'état <strong>Dans la file d'attente</strong>, un bandeau rappelle l'heure prévue et
+                    le bouton <strong>Annuler</strong> le ramène en brouillon tant que l'envoi n'a pas commencé. Les
+                    compteurs de statistiques apparaissent déjà en haut du formulaire, encore à zéro.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Mailing planifié dans Odoo 20 : compteurs 0 Délivré, 0 Échec, Ouvert 0 %, Répondu 0 %, Cliqué 0 %, bouton Plus, boutons Aperçu, Tester, Annuler, bandeau Cet envoi est prévu pour 5 oct., 09:00, étape Dans la file d'attente, sujet et liste Clients professionnels" style="max-width:100%; height:auto;"/>
+                    <figcaption>Planifié : l'envoi attend son heure dans la file.</figcaption>
+                </figure>
+                <p>À l'heure dite, une tâche planifiée d'Odoo génère un e-mail par destinataire et les remet au serveur
+                    sortant. Les contacts sur liste noire et ceux qui se sont désinscrits de la liste sont écartés
+                    automatiquement. Le pied de page des modèles contient un lien de désinscription : ne le supprimez pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Lire les statistiques</h2>
+                <p>Faute de serveur sortant, la campagne de cet article ne produira pas de chiffres réels. La base de
+                    démonstration contient en revanche un mailing déjà envoyé, <strong>Thanks for joining us!</strong>,
+                    avec des résultats fictifs livrés par Odoo : il suffit pour apprendre à lire les compteurs.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Compteurs du mailing de démonstration Thanks for joining us! dans Odoo 20 : 5 Délivré, 3 Échec, Ouvert 80 %, Répondu 40 %, Cliqué 60 %, bouton Plus, boutons Réessayer et Dupliquer, étape Envoyé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les compteurs d'un mailing envoyé (données de démonstration).</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Compteur</th><th>Ce qu'il mesure</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Délivré</strong> / <strong>Échec</strong></td><td>e-mails acceptés par le serveur du destinataire, et ceux qui n'ont pas pu partir ou sont revenus</td></tr>
+                        <tr><td><strong>Ouvert</strong></td><td>part des destinataires dont la messagerie a chargé l'image de suivi, invisible, insérée dans l'e-mail</td></tr>
+                        <tr><td><strong>Cliqué</strong></td><td>part des destinataires ayant cliqué au moins un lien, qu'Odoo réécrit pour les compter</td></tr>
+                        <tr><td><strong>Répondu</strong></td><td>part des destinataires ayant répondu à l'e-mail</td></tr>
+                    </tbody>
+                </table>
+                <p>Chaque compteur ouvre la liste des destinataires concernés. Le bouton <strong>Plus</strong> ajoute le
+                    taux de rejet, les pistes et devis générés par la campagne, le chiffre d'affaires, et les liens suivis.
+                    <strong>Réessayer</strong> relance les envois en échec. Le menu <strong>Analyse › Analyse des
+                    mailings</strong> cumule ces chiffres pour toutes les campagnes, et l'option <strong>24 heures de
+                    statistiques des rapports d'envoi</strong>, cochée par défaut, envoie au responsable un bilan le
+                    lendemain de chaque campagne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Préparer une campagne SMS</h2>
+                <p>Retour dans <strong>Applications</strong> : activez la carte <strong>SMS Marketing</strong>. Quatre
+                    modules arrivent, dont les liaisons avec le CRM, les Ventes et le site, et l'application
+                    <strong>SMS Marketing</strong> apparaît au menu. Elle réutilise les listes de diffusion ; la base de
+                    démonstration en ajoute une, <strong>Interested in List Promotions</strong>, dont les contacts ont un
+                    numéro de mobile.</p>
+                <p>Cliquez sur <strong>Nouveau</strong>, saisissez un <strong>Titre</strong> interne (« Promotion chaises de
+                    bureau »), choisissez la liste, puis le texte dans <strong>Contenu du SMS</strong>. Un lien placé dans
+                    le texte est raccourci et suivi, comme dans un e-mail.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_16" alt="Campagne SMS Marketing dans Odoo 20 : boutons Envoyer et Planifier, étape Brouillon, Titre Promotion chaises de bureau, Destinataires Liste de diffusion, Listes de diffusion Interested in List Promotions, onglet Contenu du SMS avec le texte Chaises de bureau : -10 % cette semaine en magasin et sur la boutique en ligne. https://www.example.com/shop" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une campagne SMS en brouillon, prête à partir.</figcaption>
+                </figure>
+                <p>C'est ici que l'emailing et le SMS divergent. Un e-mail part par le serveur de messagerie de
+                    l'entreprise, sans coût par message. Un SMS, lui, est remis à un opérateur téléphonique, et cet
+                    acheminement se paie. Par défaut, Odoo envoie les SMS par son service d'achats intégrés (IAP), qui
+                    débite des <strong>crédits SMS</strong> achetés à l'avance ; sans crédit, l'envoi échoue avec le motif
+                    « crédit insuffisant » et Odoo propose d'en acheter. Le lien <strong>Gérer les services et acheter des
+                    crédits</strong> se trouve dans <strong>Paramètres › Paramètres généraux</strong>, section
+                    <strong>Contacts</strong> ; taper « SMS » dans la recherche des paramètres le fait apparaître aussitôt.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_17" alt="Paramètres généraux d'Odoo 20 filtrés par la recherche SMS, section Contacts : réglage Envoyer un SMS, Envoyer des sms à vos contacts, lien Gérer les services et acheter des crédits" style="max-width:80%; height:auto;"/>
+                    <figcaption>Les crédits SMS se gèrent dans les paramètres généraux.</figcaption>
+                </figure>
+                <p>Ce qui est gratuit : l'application, les listes, la rédaction, la planification et les statistiques. Ce
+                    qui est payant : l'acheminement de chaque SMS. La Community contient aussi un module
+                    <strong>Twilio SMS</strong> qui ajoute, dans <strong>Paramètres › Paramètres généraux</strong>, section <strong>Contacts</strong>, le choix <strong>Envoyer via Twilio</strong> : les SMS partent alors
+                    par un compte Twilio ouvert et payé par l'entreprise, au lieu des crédits Odoo. La campagne de cet
+                    article n'a pas été envoyée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Community.</strong> Les listes, l'inscription depuis le site, l'éditeur, l'aperçu, le test, la
+                        planification, les modèles et la campagne SMS de cet article ont été joués sur Odoo 20 Community. Seuls
+                        l'envoi réel des e-mails, qui exige un serveur sortant, et celui des SMS, qui exige des crédits, n'ont
+                        pas été faits.</p>
+                </div>
+                <div class="ee-box">
+                    <h4>Complément Enterprise — à venir</h4>
+                    <p>Les applications <strong>Marketing Automation</strong> (<code>marketing_automation</code>) et
+                        <strong>Social Marketing</strong> (<code>social</code>) portent le bouton <strong>Mettre à
+                        niveau</strong> : elles ne sont pas incluses dans la Community. Leur fonctionnement sera présenté
+                        dans un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PIÈGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le bloc newsletter prend la première liste venue</h4>
+                    <p>À l'insertion, le bloc d'inscription du site est rattaché à la première liste de diffusion trouvée,
+                        qui peut être une liste interne. Vérifiez le champ <strong>Newsletter</strong> du bloc avant de
+                        sauver, sinon les visiteurs rejoignent la mauvaise liste.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Pas de serveur sortant, pas d'envoi</h4>
+                    <p>Sur une installation locale ou hébergée par vos soins, ni le test ni la campagne ne partent sans
+                        serveur SMTP. L'échec est consigné dans l'historique du mailing : testez toujours avant la première
+                        vraie campagne.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le taux d'ouverture est une estimation</h4>
+                    <p>L'ouverture se mesure au chargement d'une image invisible. Une messagerie qui bloque les images la
+                        sous-estime ; une messagerie qui les précharge automatiquement la surestime. Le taux de clic est un
+                        indicateur plus fiable.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un SMS sans crédit ne part pas</h4>
+                    <p>Le bouton Envoyer d'une campagne SMS est actif même sans crédit : l'échec n'apparaît qu'à l'envoi,
+                        message par message, puis un bandeau du mailing propose d'acheter des crédits. Achetez des crédits, ou configurez Twilio, avant de lancer la campagne.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> préparer une deuxième campagne à partir du modèle enregistré.</p>
+                    <p><strong>Indication :</strong> créez un nouveau mailing avec le sujet « Chaises de bureau : l'offre de la
+                        semaine », destiné à la liste Newsletter, choisissez votre modèle dans la galerie, modifiez le titre,
+                        vérifiez-le avec <strong>Aperçu</strong>, puis planifiez-le pour le lundi suivant à 9 h.</p>
+                    <p><strong>Critère de réussite :</strong> le mailing est à l'état Dans la file d'attente, son bandeau
+                        affiche la date prévue, et l'aperçu montre le titre modifié.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une campagne s'adresse à une ou plusieurs listes de diffusion, alimentées à la main, depuis Contacts ou
+                        par un bloc d'inscription sur le site.</li>
+                    <li>Dans Odoo 20, l'action « Add to Mailing List » de Contacts ajoute des clients à plusieurs listes d'un
+                        coup, et chaque contact de diffusion reste relié à son contact d'origine.</li>
+                    <li>L'e-mail se compose à partir d'un modèle, dans un éditeur plein écran ; tout mailing peut devenir un
+                        modèle réutilisable.</li>
+                    <li>Aperçu, test puis envoi ou planification : sans serveur sortant configuré, rien ne part.</li>
+                    <li>Les statistiques comptent les e-mails délivrés, ouverts, cliqués et les réponses, par campagne et par
+                        destinataire.</li>
+                    <li>Le SMS se prépare gratuitement, mais son acheminement se paie : crédits Odoo ou compte Twilio.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Point de vente et commande en libre-service dans Odoo 20</div>
+                        </a>
+                    </div>
+                    <div class="col-md-6 text-md-end">
+                        <div class="d-block h-100 p-3 border rounded">
+                            <div class="small text-muted mb-1">Article suivant &rarr;</div>
+                            <div class="fw-bold">Évènements et sondages dans Odoo 20 (à paraître)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Les applications gratuites d'Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Le pilier : où se placent l'emailing et le SMS.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/creer-site-web-odoo-233">Créer son site web avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'éditeur de site, où s'insère le bloc newsletter.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La boutique vers laquelle renvoient les campagnes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
