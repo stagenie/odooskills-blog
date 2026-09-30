@@ -1,0 +1,610 @@
+<!--
+Article — Mettre Odoo 20 en HTTPS avec Nginx
+Série « Déployer Odoo 20 » (id 33), étape 3 — blog Développement Odoo (id=2), parcours Infrastructure
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-30
+Slug : nginx-https-odoo-20
+Meta : Mettre Odoo 20 en HTTPS avec Nginx et Let's Encrypt, et faire tourner deux instances (native et Docker) sur le même serveur.
+Mot-clé cible : odoo 20 nginx https
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~14 minutes
+Sources vérifiées le 2026-09-30 : VPS de démonstration Ubuntu 24.04.5, nginx 1.24.0, certbot 2.9.0, Odoo 20 natif 24b59ae7 +
+  image odoo:20.0-20260926 ; domaines demo20 / docker20.lab.odooskills.com ; journaux docs/ebook-e3-20/preuves-vps/12 à 17
+Captures : aucune (preuves = sorties terminal) ; schéma SVG en ligne
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-nginx.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Mettre Odoo 20 en HTTPS avec Nginx</h1>
+                <p class="lead mt-3 text-white">Un Odoo qui n'écoute que sur 127.0.0.1, c'est sûr mais inutilisable. Nginx fait le lien : il reçoit
+                    les visiteurs en HTTPS, avec un certificat Let's Encrypt gratuit, et transmet à Odoo. On le pose devant <strong>deux
+                    instances Odoo 20 sur le même serveur</strong> : l'installation native de l'article précédent et l'installation Docker du
+                    premier article, chacune sur son propre nom de domaine. Tout a été rejoué sur le serveur de démonstration.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Le reverse proxy</h4>
+                        <p>Un site Nginx par instance, le temps réel (<code>/websocket</code>), les en-têtes que <code>proxy_mode</code> attend.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le certificat</h4>
+                        <p>Let's Encrypt avec certbot : obtention, redirection HTTP vers HTTPS, renouvellement automatique, HSTS.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Deux instances</h4>
+                        <p>Odoo 20 natif et Odoo 20 sous Docker côte à côte : ports, bases, noms de domaine.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le serveur Ubuntu 24.04 de <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a> :
+                            Odoo natif en service, sur <code>127.0.0.1:8069</code> et <code>8072</code>, base <code>prod</code>.</li>
+                        <li>Pour la seconde instance, la pile de <a href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">Installer Odoo 20 avec Docker</a>
+                            dans <code>/opt/odoo20</code>, base <code>demo20</code>. Une seule instance t'intéresse ? Saute la partie 2 et le second site.</li>
+                        <li><strong>Un nom de domaine par instance</strong>, chacun avec un enregistrement DNS de type A vers l'adresse IP du serveur.
+                            Ici : <code>demo20.lab.odooskills.com</code> (natif) et <code>docker20.lab.odooskills.com</code> (Docker).
+                            Vérifie avant de commencer : <code>dig +short demo20.lab.odooskills.com</code> doit afficher l'IP du serveur.</li>
+                        <li>Les ports 80 et 443 joignables depuis Internet (pare-feu de l'hébergeur compris).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Vue d'ensemble</h2>
+                <figure class="preview-figure">
+                    <svg viewBox="0 0 760 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Schéma : les visiteurs arrivent en HTTPS sur Nginx, qui envoie demo20 vers Odoo natif (8069 et 8072) et docker20 vers le conteneur Odoo (8169)" style="max-width:100%; height:auto; background:#fff;">
+                        <defs><marker id="fh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#475569"/></marker></defs>
+                        <rect x="10" y="118" width="120" height="64" rx="8" fill="#fff" stroke="#64748b"/>
+                        <text x="70" y="146" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="700" fill="#0f172a">Visiteurs</text>
+                        <text x="70" y="166" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#475569">HTTPS 443</text>
+                        <path d="M130 150 H188" stroke="#475569" stroke-width="2" marker-end="url(#fh)"/>
+                        <rect x="190" y="20" width="560" height="270" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+                        <text x="206" y="42" font-family="sans-serif" font-size="13" font-weight="700" fill="#334155">Serveur Ubuntu 24.04</text>
+                        <rect x="210" y="96" width="150" height="108" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+                        <text x="285" y="122" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#047857">Nginx</text>
+                        <text x="285" y="144" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#0f172a">certificats</text>
+                        <text x="285" y="160" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#0f172a">Let's Encrypt</text>
+                        <text x="285" y="184" text-anchor="middle" font-family="monospace" font-size="10" fill="#475569">80 → 301 → 443</text>
+                        <path d="M360 128 C400 128 400 88 438 88" stroke="#714b67" stroke-width="2" fill="none" marker-end="url(#fh)"/>
+                        <path d="M360 172 C400 172 400 222 438 222" stroke="#336791" stroke-width="2" fill="none" marker-end="url(#fh)"/>
+                        <text x="398" y="104" text-anchor="middle" font-family="monospace" font-size="10" fill="#714b67">demo20</text>
+                        <text x="398" y="206" text-anchor="middle" font-family="monospace" font-size="10" fill="#336791">docker20</text>
+                        <rect x="440" y="52" width="290" height="80" rx="8" fill="#fdf4fb" stroke="#714b67" stroke-width="1.5"/>
+                        <text x="585" y="76" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="700" fill="#714b67">Odoo 20 natif (systemd)</text>
+                        <text x="585" y="96" text-anchor="middle" font-family="monospace" font-size="11" fill="#0f172a">127.0.0.1:8069  pages</text>
+                        <text x="585" y="114" text-anchor="middle" font-family="monospace" font-size="11" fill="#0f172a">127.0.0.1:8072  /websocket</text>
+                        <rect x="440" y="182" width="290" height="80" rx="8" fill="#eff6ff" stroke="#336791" stroke-width="1.5"/>
+                        <text x="585" y="206" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="700" fill="#336791">Odoo 20 Docker (compose)</text>
+                        <text x="585" y="226" text-anchor="middle" font-family="monospace" font-size="11" fill="#0f172a">127.0.0.1:8169  pages</text>
+                        <text x="585" y="244" text-anchor="middle" font-family="monospace" font-size="11" fill="#0f172a">+ /websocket (même port)</text>
+                    </svg>
+                    <figcaption>Seul Nginx est exposé. Les deux Odoo n'écoutent que sur la boucle locale, chacun sur ses ports.</figcaption>
+                </figure>
+                <p>Deux règles tiennent l'ensemble : <strong>un port par instance</strong> (deux programmes ne peuvent pas écouter sur le même),
+                    et <strong>un nom de domaine par instance</strong> (c'est lui qui permet à Nginx de savoir à quel Odoo transmettre).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. NGINX ET CERTBOT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Installer Nginx et certbot, ouvrir le pare-feu</h2>
+<pre class="language-bash"><code class="language-bash">apt-get update
+apt-get install -y nginx certbot python3-certbot-nginx
+nginx -v
+certbot --version
+
+ufw allow 'Nginx Full'
+ufw status</code></pre>
+<div class="out">nginx version: nginx/1.24.0 (Ubuntu)
+certbot 2.9.0
+Rule added
+Rule added (v6)
+Status: active
+
+To                         Action      From
+--                         ------      ----
+OpenSSH                    ALLOW       Anywhere
+Nginx Full                 ALLOW       Anywhere
+OpenSSH (v6)               ALLOW       Anywhere (v6)
+Nginx Full (v6)            ALLOW       Anywhere (v6)</div>
+                <p><code>Nginx Full</code> est un profil UFW livré avec Nginx : il ouvre 80 (HTTP, indispensable à la validation Let's Encrypt et à
+                    la redirection) et 443 (HTTPS). Les ports d'Odoo, eux, restent fermés : ils n'écoutent que sur <code>127.0.0.1</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. DEUX INSTANCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Faire tourner les deux instances côte à côte</h2>
+                <p>L'instance native occupe déjà <code>127.0.0.1:8069</code> et <code>8072</code>. La pile Docker de l'article 1 publiait elle aussi
+                    le port 8069 : lancée telle quelle, elle échouerait. On la déplace sur <strong>8169</strong>, dans <code>/opt/odoo20/compose.yaml</code> :</p>
+<pre class="language-bash"><code class="language-bash">cd /opt/odoo20
+nano compose.yaml</code></pre>
+                <p>Dans le service <code>odoo</code>, remplace la ligne du port :</p>
+<pre class="language-yaml"><code class="language-yaml">    ports:
+      - "127.0.0.1:8169:8069"</code></pre>
+                <p>Le conteneur continue d'écouter sur son port 8069 <em>interne</em> ; seul le port côté serveur change. Avant de l'exposer
+                    au public, ferme aussi son gestionnaire de bases, comme sur l'instance native. Dans <code>nano config/odoo.conf</code>,
+                    <strong>remplace</strong> la ligne <code>list_db = True</code> par ces deux lignes :</p>
+<pre class="language-ini"><code class="language-ini">dbfilter = ^demo20$
+list_db = False</code></pre>
+                <div class="pitfall-box">
+                    <h4><code>DuplicateOptionError: option 'list_db' in section 'options' already exists</code></h4>
+                    <p>Si tu <em>ajoutes</em> <code>list_db = False</code> sans retirer <code>list_db = True</code>, Odoo refuse de démarrer : une même
+                        option ne peut apparaître qu'une fois dans <code>odoo.conf</code>. Vérifie avec <code>grep -c ^list_db config/odoo.conf</code>, qui doit afficher <code>1</code>.</p>
+                </div>
+                <p><code>proxy_mode = True</code> y figure déjà depuis l'article 1. <code>docker compose up -d</code> recrée le conteneur puisque son port
+                    a changé, et il relit <code>odoo.conf</code> au démarrage (pour une simple modification de <code>odoo.conf</code>,
+                    <code>docker compose restart odoo</code> suffit). Relance, puis vérifie les deux instances :</p>
+<pre class="language-bash"><code class="language-bash">docker compose up -d
+ss -tlnp | grep -E ':(8069|8072|8169) '
+curl -s http://127.0.0.1:8069/web/webclient/version_info -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","params":{}}'
+curl -s http://127.0.0.1:8169/web/webclient/version_info -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","params":{}}'</code></pre>
+<div class="out">LISTEN 0      4096       127.0.0.1:8169      0.0.0.0:*    users:(("docker-proxy",pid=30015,fd=8))
+LISTEN 0      40         127.0.0.1:8069      0.0.0.0:*    users:(("python",pid=29542,fd=6),("python",pid=29541,fd=6),...)
+LISTEN 0      128        127.0.0.1:8072      0.0.0.0:*    users:(("python",pid=29543,fd=4))
+{"jsonrpc": "2.0", "id": null, "result": {"server_version": "20.0", "server_version_info": [20, 0, 0, "final", 0, ""], "server_serie": "20.0"}}
+{"jsonrpc": "2.0", "id": null, "result": {"server_version": "20.0-20260926", "server_version_info": [20, 0, 0, "final", 0, ""], "server_serie": "20.0"}}</div>
+                <p>Deux Odoo 20 bien distincts : les sources de la branche 20.0 d'un côté (<code>20.0</code>), l'image Docker datée de l'autre
+                    (<code>20.0-20260926</code>). Chacun a sa base, son PostgreSQL (celui d'Ubuntu d'un côté, le conteneur <code>postgres:17</code> de l'autre)
+                    et son filestore. Les deux ensemble occupent environ 1 Go de mémoire au repos sur ce serveur de 4 Go.</p>
+                <div class="v19-box">
+                    <h4>Pourquoi le conteneur n'a-t-il pas de port 8072 ?</h4>
+                    <p>L'instance native tourne avec des <code>workers</code> : Odoo sert alors le temps réel (<code>/websocket</code>) sur un port à part, 8072.
+                        Le conteneur de l'article 1 n'a pas de <code>workers</code> : pages et websocket passent par le même port. D'où deux sites Nginx
+                        légèrement différents.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. SITE NATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le site Nginx de l'instance native</h2>
+                <p>D'abord, un petit fichier commun aux deux sites, qui calcule l'en-tête <code>Connection</code> du websocket :</p>
+<pre class="language-bash"><code class="language-bash">nano /etc/nginx/conf.d/odoo-websocket.conf</code></pre>
+                <div class="alert alert-secondary">
+                    <strong>nano en trois gestes.</strong> Colle le contenu (clic droit, ou <kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>V</kbd>), enregistre avec
+                    <kbd>Ctrl</kbd>+<kbd>O</kbd> puis <kbd>Entrée</kbd>, quitte avec <kbd>Ctrl</kbd>+<kbd>X</kbd>.
+                </div>
+<pre class="language-nginx"><code class="language-nginx">map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}</code></pre>
+                <p>Nginx lit <code>conf.d/</code> avant les sites : la variable <code>$connection_upgrade</code> est ainsi disponible pour tous, et le bloc
+                    n'est écrit qu'une fois. Ensuite, le site lui-même : un fichier dans <code>/etc/nginx/sites-available/</code>, activé par un lien dans
+                    <code>sites-enabled/</code>. On l'écrit en HTTP simple ; certbot ajoutera la partie HTTPS à l'étape 5. Remplace le nom de domaine par le tien.</p>
+<pre class="language-bash"><code class="language-bash">nano /etc/nginx/sites-available/demo20.lab.odooskills.com</code></pre>
+<pre class="language-nginx"><code class="language-nginx">upstream odoo {
+    server 127.0.0.1:8069;
+}
+upstream odoochat {
+    server 127.0.0.1:8072;
+}
+
+server {
+    listen 80;
+    server_name demo20.lab.odooskills.com;
+
+    proxy_read_timeout 720s;
+    proxy_connect_timeout 720s;
+    proxy_send_timeout 720s;
+    client_max_body_size 100m;
+
+    access_log /var/log/nginx/odoo.access.log;
+    error_log /var/log/nginx/odoo.error.log;
+
+    location /websocket {
+        proxy_pass http://odoochat;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_redirect off;
+        proxy_pass http://odoo;
+        proxy_cookie_flags session_id samesite=lax secure;
+    }
+
+    gzip on;
+    gzip_types text/css text/scss text/plain text/xml application/xml application/json application/javascript;
+}</code></pre>
+                <p>C'est le modèle de la documentation officielle d'Odoo 20, en quatre idées :</p>
+                <ul>
+                    <li><strong><code>upstream</code></strong> : les deux ports de l'instance, pages (8069) et temps réel (8072).</li>
+                    <li><strong><code>location /websocket</code></strong> vers 8072, avec <code>Upgrade</code> et <code>Connection</code> : sans eux, la connexion
+                        temps réel (notifications, discussions) ne s'établit pas.</li>
+                    <li><strong><code>X-Forwarded-*</code></strong> : l'adresse du visiteur, le nom de domaine et le protocole (HTTPS) d'origine.
+                        Odoo ne les lit que si <code>proxy_mode = True</code>.</li>
+                    <li><strong><code>proxy_cookie_flags</code></strong> : le cookie de session n'est envoyé qu'en HTTPS (<code>secure</code>) et pas par des sites tiers (<code>samesite=lax</code>).
+                        <code>client_max_body_size</code> autorise les pièces jointes jusqu'à 100 Mo (1 Mo par défaut dans Nginx).</li>
+                </ul>
+                <p>Active le site, retire la page d'accueil par défaut de Nginx, vérifie et recharge :</p>
+<pre class="language-bash"><code class="language-bash">ln -s /etc/nginx/sites-available/demo20.lab.odooskills.com /etc/nginx/sites-enabled/
+rm /etc/nginx/sites-enabled/default
+nginx -t &amp;&amp; systemctl reload nginx</code></pre>
+<div class="out">nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful</div>
+                <p>Côté Odoo, passe <code>proxy_mode</code> à <code>True</code> (<code>nano /etc/odoo/odoo.conf</code>), puis <code>systemctl restart odoo</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. SITE DOCKER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le site Nginx de l'instance Docker</h2>
+<pre class="language-bash"><code class="language-bash">nano /etc/nginx/sites-available/docker20.lab.odooskills.com</code></pre>
+<pre class="language-nginx"><code class="language-nginx">upstream odoo_docker {
+    server 127.0.0.1:8169;
+}
+
+server {
+    listen 80;
+    server_name docker20.lab.odooskills.com;
+
+    proxy_read_timeout 720s;
+    proxy_connect_timeout 720s;
+    proxy_send_timeout 720s;
+    client_max_body_size 100m;
+
+    access_log /var/log/nginx/odoo-docker.access.log;
+    error_log /var/log/nginx/odoo-docker.error.log;
+
+    # Conteneur sans workers : pages et websocket sur le même port
+    location / {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_redirect off;
+        proxy_pass http://odoo_docker;
+        proxy_cookie_flags session_id samesite=lax secure;
+    }
+
+    gzip on;
+    gzip_types text/css text/scss text/plain text/xml application/xml application/json application/javascript;
+}</code></pre>
+                <p>Trois différences avec le premier site : un <code>upstream</code> au <strong>nom différent</strong> (<code>odoo_docker</code> : deux
+                    <code>upstream odoo</code> sur le même serveur Nginx seraient en conflit), une seule <code>location</code> qui transmet aussi
+                    <code>Upgrade</code> et <code>Connection</code> (le websocket passe par le même port), et des journaux séparés.</p>
+                <div class="pitfall-box">
+                    <h4>Deux erreurs de <code>nginx -t</code> à connaître</h4>
+                    <p><code>unknown "connection_upgrade" variable</code> : le fichier <code>conf.d/odoo-websocket.conf</code> manque (c'est le cas si tu as
+                        copié ce site seul sur un autre serveur). <code>duplicate upstream "odoo"</code> : deux sites déclarent un <code>upstream</code> du
+                        même nom ; d'où <code>odoo_docker</code> ici.</p>
+                </div>
+<pre class="language-bash"><code class="language-bash">ln -s /etc/nginx/sites-available/docker20.lab.odooskills.com /etc/nginx/sites-enabled/
+nginx -t &amp;&amp; systemctl reload nginx</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. CERTIFICATS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les certificats HTTPS</h2>
+                <p>certbot demande un certificat à Let's Encrypt, prouve que le domaine pointe bien vers ce serveur (par une requête HTTP sur le port 80),
+                    puis <strong>modifie lui-même</strong> le site Nginx : ajout du HTTPS et redirection de HTTP vers HTTPS. Une commande par domaine :</p>
+<pre class="language-bash"><code class="language-bash">certbot --nginx -d demo20.lab.odooskills.com --redirect --agree-tos --no-eff-email -m ton-adresse@exemple.com
+certbot --nginx -d docker20.lab.odooskills.com --redirect --agree-tos --no-eff-email -m ton-adresse@exemple.com</code></pre>
+<div class="out">Successfully received certificate.
+...
+Successfully deployed certificate for demo20.lab.odooskills.com to /etc/nginx/sites-enabled/demo20.lab.odooskills.com
+Congratulations! You have successfully enabled HTTPS on https://demo20.lab.odooskills.com</div>
+                <p>L'adresse électronique sert aux avertissements de Let's Encrypt (renouvellement en échec, par exemple) ; <code>--no-eff-email</code> évite une question sur l'inscription à la lettre de l'EFF. Moins d'une minute par
+                    certificat. Rouvre le fichier du site : certbot a transformé le bloc <code>listen 80</code> en <code>listen 443 ssl</code> avec les chemins
+                    des certificats (lignes marquées <code># managed by Certbot</code>), et ajouté un second bloc <code>server</code> qui renvoie le HTTP vers le HTTPS.</p>
+
+                <h3>HSTS : le HTTPS obligatoire côté navigateur</h3>
+                <p>Dans chacun des deux fichiers, sous la ligne <code>listen 443 ssl; # managed by Certbot</code>, ajoute :</p>
+<pre class="language-nginx"><code class="language-nginx">    add_header Strict-Transport-Security "max-age=31536000" always;</code></pre>
+                <p>Le navigateur retient pendant un an que ce site ne se consulte qu'en HTTPS, même si on tape <code>http://</code>. Puis
+                    <code>nginx -t &amp;&amp; systemctl reload nginx</code>. Trois précautions :</p>
+                <ul>
+                    <li>c'est un engagement : si le certificat venait à manquer, les visiteurs ne pourraient plus du tout entrer. Pour un premier essai,
+                        commence par <code>max-age=300</code> (cinq minutes), puis passe à un an une fois tout vérifié ;</li>
+                    <li>n'ajoute <code>includeSubDomains</code> que si <em>tous</em> les sous-domaines sont en HTTPS ;</li>
+                    <li>la ligne est placée au niveau du bloc <code>server</code> ; si tu ajoutes un jour un <code>add_header</code> dans une <code>location</code>,
+                        Nginx n'hérite plus des en-têtes du bloc parent pour cette <code>location</code> : il faudra y répéter celui-ci.</li>
+                </ul>
+
+                <h3>Le renouvellement</h3>
+                <p>Les certificats Let's Encrypt durent 90 jours. Le paquet certbot installe un minuteur systemd qui les renouvelle tout seul ;
+                    on vérifie qu'il existe et qu'un renouvellement fonctionnerait :</p>
+<pre class="language-bash"><code class="language-bash">certbot certificates
+systemctl list-timers certbot.timer
+certbot renew --dry-run</code></pre>
+<div class="out">  Certificate Name: demo20.lab.odooskills.com
+    Expiry Date: 2026-12-29 07:19:41+00:00 (VALID: 89 days)
+  Certificate Name: docker20.lab.odooskills.com
+    Expiry Date: 2026-12-29 07:41:59+00:00 (VALID: 89 days)
+
+NEXT                             LEFT LAST PASSED UNIT          ACTIVATES
+Wed 2026-09-30 13:49:31 CEST 2h 56min -         - certbot.timer certbot.service
+...
+Congratulations, all simulated renewals succeeded:</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. VÉRIFIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Vérifier depuis ton poste</h2>
+                <p>Ces tests se lancent <strong>depuis ton poste</strong>, pas depuis le serveur : c'est le chemin qu'emprunteront les utilisateurs.</p>
+<pre class="language-bash"><code class="language-bash">curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" http://demo20.lab.odooskills.com/web/login
+curl -sI https://demo20.lab.odooskills.com/web/login | grep -i -E "^(HTTP|strict|set-cookie)"
+echo | openssl s_client -connect demo20.lab.odooskills.com:443 -servername demo20.lab.odooskills.com 2&gt;/dev/null \
+    | openssl x509 -noout -subject -enddate</code></pre>
+<div class="out">301 https://demo20.lab.odooskills.com/web/login
+HTTP/1.1 200 OK
+set-cookie: session_id=CV8Hl9qu...; Expires=Thu, 30 Sep 2027 08:52:57 GMT; Max-Age=604800; HttpOnly; Path=/; Secure; SameSite=Lax
+Strict-Transport-Security: max-age=31536000
+subject=CN = demo20.lab.odooskills.com
+notAfter=Dec 29 07:19:41 2026 GMT</div>
+                <p>Redirection 301, page servie en HTTPS, cookie <code>Secure; SameSite=Lax</code>, en-tête HSTS, certificat au bon nom. Même résultat
+                    pour <code>docker20</code>. Le temps réel se teste en simulant l'ouverture d'un websocket :</p>
+<pre class="language-bash"><code class="language-bash">curl -s -m 5 --http1.1 -o /dev/null -w "%{http_code}\n" \
+    -H "Origin: https://demo20.lab.odooskills.com" -H "Connection: Upgrade" -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: $(openssl rand -base64 16)" \
+    https://demo20.lab.odooskills.com/websocket</code></pre>
+<div class="out">101</div>
+                <p><code>101</code> (« changement de protocole ») : le websocket est ouvert, sur les deux sites. En navigateur, le journal
+                    <code>/var/log/nginx/odoo.access.log</code> montre la même chose après une connexion : <code>"GET /websocket?version=... HTTP/1.1" 101</code>.</p>
+                <div class="pitfall-box">
+                    <h4><code>400 Bad Request: Empty or missing header(s): origin</code></h4>
+                    <p>Sans l'en-tête <code>Origin</code>, Odoo 20 refuse le websocket (<code>400</code>) et l'écrit dans son journal. Un navigateur l'envoie
+                        toujours ; un test à la main l'oublie facilement. Ce n'est donc pas une panne de Nginx.</p>
+                </div>
+                <p>Dernier contrôle, le plus important : <strong>seul Nginx doit être joignable</strong>. Depuis ton poste, les ports d'Odoo et de
+                    PostgreSQL doivent rester fermés :</p>
+<pre class="language-bash"><code class="language-bash">for p in 8069 8072 8169 5432; do
+    timeout 5 bash -c "&lt;/dev/tcp/demo20.lab.odooskills.com/$p" 2&gt;/dev/null &amp;&amp; echo "$p OUVERT" || echo "$p fermé"
+done</code></pre>
+<div class="out">8069 fermé
+8072 fermé
+8169 fermé
+5432 fermé</div>
+                <p>Enfin, dans le journal d'Odoo, les requêtes portent maintenant la <strong>vraie adresse IP</strong> des visiteurs, et non plus
+                    <code>127.0.0.1</code> : c'est <code>proxy_mode</code> qui lit l'en-tête <code>X-Forwarded-For</code>. Tu y verras aussi, dès les premières
+                    minutes, des robots qui essaient des adresses comme <code>/.vscode/sftp.json</code> : un serveur en ligne est scanné en permanence,
+                    d'où l'intérêt d'un gestionnaire de bases fermé et de mots de passe forts.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="v19-box">
+                    <h4>Ce qui change par rapport à Odoo 19</h4>
+                    <ul>
+                        <li>Le modèle Nginx de la documentation est le même qu'en Odoo 19 (<code>/websocket</code> vers le port gevent, en-têtes <code>X-Forwarded-*</code>).</li>
+                        <li>Odoo 20 écoute par défaut sur <code>127.0.0.1</code> : derrière Nginx, c'est exactement ce qu'on veut, sans rien régler.
+                            Sans Nginx, <code>http://IP:8069</code> ne répond plus (il répondait en 19).</li>
+                        <li>PostgreSQL 16 au minimum : sans effet ici, Nginx ne dépend pas de la base.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRODUCTION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et ensuite ?</h2>
+                <p>Les deux Odoo sont en ligne, chiffrés et protégés. Pour une vraie production, il reste la sauvegarde automatique (bases et filestores),
+                    la rotation des journaux, la supervision et une procédure de mise à jour avec retour arrière. Ces sujets, avec la sécurisation du serveur
+                    et plusieurs versions d'Odoo sur la même machine, sont traités pas à pas dans l'ebook
+                    <a href="/shop/ebook-e3-formation-deploiement-odoo-19-ebook-5"><strong>Déployer Odoo en production</strong></a>, dont l'édition Odoo 20
+                    est en cours de rédaction sur ce même serveur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>apt-get install nginx certbot python3-certbot-nginx</code>, puis <code>ufw allow 'Nginx Full'</code> (80 et 443).</li>
+                    <li>Un port par instance (natif 8069 + 8072, Docker 8169), toujours sur <code>127.0.0.1</code> ; un nom de domaine par instance.</li>
+                    <li>Un site Nginx par instance : <code>/websocket</code> vers 8072 pour l'instance avec workers, tout sur un port pour le conteneur ;
+                        le <code>map</code> du websocket une seule fois, dans <code>conf.d/</code> ; des noms d'<code>upstream</code> différents.</li>
+                    <li><code>proxy_mode = True</code> dans chaque <code>odoo.conf</code>, et gestionnaire de bases fermé (<code>list_db = False</code>, en remplacement, jamais en double).</li>
+                    <li><code>certbot --nginx -d … --redirect</code> par domaine, HSTS ajouté à la main, renouvellement vérifié par <code>certbot renew --dry-run</code>.</li>
+                    <li>Tests depuis l'extérieur : 301 puis 200, cookie <code>Secure</code>, websocket 101 (avec <code>Origin</code>), ports d'Odoo fermés.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Procédure rejouée le 30/09/2026 sur le serveur de démonstration (Ubuntu 24.04.5, 2 vCPU, 4 Go), Nginx 1.24.0, certbot 2.9.0,
+                    Odoo 20 natif (commit <code>24b59ae7</code>) et image <code>odoo:20.0-20260926</code> :</p>
+                <ul class="small">
+                    <li><a href="https://www.odoo.com/documentation/20.0/administration/on_premise/deploy.html" target="_blank" rel="noopener">Documentation Odoo 20 : déploiement</a> (configuration Nginx, <code>proxy_mode</code>)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/bus/websocket.py" target="_blank" rel="noopener"><code>addons/bus/websocket.py</code></a> : en-têtes obligatoires du websocket, dont <code>Origin</code></li>
+                    <li><a href="https://eff-certbot.readthedocs.io/en/stable/using.html#nginx" target="_blank" rel="noopener">Documentation certbot : plugin nginx</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Installer Odoo 20 sur un serveur Ubuntu</div>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">Installer Odoo 20 avec Docker</a></h5>
+                            <p class="small text-muted mb-0">La pile Docker de la seconde instance, et ses trois pannes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">Sécuriser Odoo en production</a></h5>
+                            <p class="small text-muted mb-0">Mot de passe maître, liste des bases, proxy : les réglages à ne pas oublier.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Les nouveautés techniques d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Tout ce qui change pour les développeurs et les administrateurs.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!--
+TODO avant publication :
+- navigation : poser la carte « Article suivant » sur le 242
+-->
