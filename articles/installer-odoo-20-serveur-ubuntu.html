@@ -1,0 +1,626 @@
+<!--
+Article — Installer Odoo 20 sur un serveur Ubuntu
+Série « Déployer Odoo 20 » (id 33), étape 2 — blog Développement Odoo (id=2), parcours Infrastructure
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-30
+Slug : installer-odoo-20-serveur-ubuntu
+Meta : Installer Odoo 20 en production sur un VPS Ubuntu 24.04 : PostgreSQL 16, venv, odoo.conf avec workers et limites, service systemd.
+Mot-clé cible : installer odoo 20 serveur ubuntu
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+Sources vérifiées le 2026-09-30 : rejeu littéral sur le VPS de démonstration Ubuntu 24.04.5 (LXC, 2 vCPU / 4 Go, sans Odoo natif ;
+  pile Docker de l'article 241 arrêtée), Odoo 20.0 commit 24b59ae7, journaux docs/ebook-e3-20/preuves-vps/10 et 11
+Captures : content/blog/screenshots/installer-odoo-20-serveur-ubuntu/ (01-02, Playwright via tunnel SSH)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Installer Odoo 20 sur un serveur Ubuntu</h1>
+                <p class="lead mt-3 text-white">Un Odoo de production n'est pas un Odoo de développement lancé sur un serveur. Il tourne
+                    sous son propre utilisateur, démarre avec la machine, se relance tout seul s'il tombe, répartit la charge entre
+                    plusieurs processus et n'expose rien directement à Internet. On le monte sur un VPS Ubuntu 24.04, sans conteneur,
+                    en moins de dix minutes. Chaque commande a été rejouée telle quelle sur le serveur de démonstration.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Le socle</h4>
+                        <p>Paquets système, PostgreSQL 16, wkhtmltopdf, un utilisateur <code>odoo</code> et les sources 20.0 dans un environnement Python dédié.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>La configuration</h4>
+                        <p>Un <code>odoo.conf</code> de production : workers, limites de mémoire, gestionnaire de bases fermé, journal dans un fichier.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le service</h4>
+                        <p>Une unité systemd : démarrage au boot, relance automatique, arrêt propre des processus.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un VPS sous <strong>Ubuntu 24.04 LTS</strong>, accessible en SSH en <code>root</code> (ou avec <code>sudo -i</code>).
+                            La démonstration tourne sur 2 vCPU, 4 Go de mémoire et 40 Go de disque.</li>
+                        <li>Environ <strong>2 Go</strong> d'espace disque : 1,4 Go pour les sources, 260 Mo pour l'environnement Python.</li>
+                        <li>Un serveur propre : pas d'autre service sur les ports 8069 et 8072.</li>
+                    </ul>
+                    <p class="mt-2 mb-0 small">Tu cherches à installer Odoo sur ton poste pour développer ? C'est l'objet de
+                        <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>.
+                        Tu préfères les conteneurs ? Lis <a href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">Installer Odoo 20 avec Docker</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Vue d'ensemble</h2>
+                <p>À la fin de l'article, le serveur contient ceci :</p>
+                <table class="tmc">
+                    <tr><th>Élément</th><th>Emplacement</th><th>Propriétaire</th></tr>
+                    <tr><td>Sources d'Odoo 20</td><td><code>/opt/odoo/odoo</code></td><td><code>odoo</code></td></tr>
+                    <tr><td>Environnement Python</td><td><code>/opt/odoo/venv</code></td><td><code>odoo</code></td></tr>
+                    <tr><td>Tes modules</td><td><code>/opt/odoo/custom-addons</code></td><td><code>odoo</code></td></tr>
+                    <tr><td>Filestore (pièces jointes, images)</td><td><code>/opt/odoo/data</code></td><td><code>odoo</code></td></tr>
+                    <tr><td>Configuration</td><td><code>/etc/odoo/odoo.conf</code></td><td><code>root</code>, lisible par le groupe <code>odoo</code></td></tr>
+                    <tr><td>Journal</td><td><code>/var/log/odoo/odoo.log</code></td><td><code>odoo</code></td></tr>
+                    <tr><td>Service</td><td><code>/etc/systemd/system/odoo.service</code></td><td><code>root</code></td></tr>
+                </table>
+                <p>Odoo n'écoute que sur <code>127.0.0.1</code> : ports 8069 (pages et API) et 8072 (temps réel, websocket). L'accès public
+                    passera par un reverse proxy Nginx en HTTPS, étape suivante de la série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. PAQUETS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les paquets système et PostgreSQL</h2>
+                <p>Ubuntu 24.04 convient exactement : il fournit <strong>Python 3.12</strong> et <strong>PostgreSQL 16</strong>, les deux minimums
+                    d'Odoo 20. Aucun dépôt externe n'est nécessaire.</p>
+<pre class="language-bash"><code class="language-bash">apt-get update
+apt-get install -y git python3-venv python3-dev build-essential \
+    libpq-dev libldap2-dev libsasl2-dev postgresql
+
+python3 --version
+psql --version
+systemctl is-active postgresql</code></pre>
+<div class="out">Python 3.12.3
+psql (PostgreSQL) 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
+active</div>
+                <p><code>build-essential</code>, <code>python3-dev</code> et les trois bibliothèques <code>-dev</code> permettent à <code>pip</code>
+                    de compiler une dépendance quand aucun paquet précompilé ne convient, typiquement le pilote PostgreSQL
+                    (<code>psycopg2</code>) et le client LDAP (<code>python-ldap</code>). Compte un peu plus d'une minute.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. WKHTMLTOPDF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. wkhtmltopdf, pour les rapports PDF</h2>
+                <p>Pour ses devis et factures en PDF, Odoo 20 utilise par défaut wkhtmltopdf. Le paquet d'Ubuntu est compilé sans le « patch Qt »
+                    et produit des PDF sans en-tête ni pied de page. On installe celui du projet wkhtmltopdf, publié pour Ubuntu 22.04
+                    (« jammy ») : il n'existe pas de paquet 24.04, et celui-ci s'y installe sans problème.</p>
+<pre class="language-bash"><code class="language-bash">apt-get install -y fontconfig libfontconfig1 libjpeg-turbo8 libxrender1 xfonts-75dpi xfonts-base
+curl -fsSL -o /tmp/wkhtmltox.deb \
+    https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb
+apt-get install -y /tmp/wkhtmltox.deb
+wkhtmltopdf --version</code></pre>
+<div class="out">wkhtmltopdf 0.12.6.1 (with patched qt)</div>
+                <p>La mention <code>(with patched qt)</code> est celle qu'il faut voir. Sans elle, les rapports sortiront sans en-tête ni pied de page.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. UTILISATEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. L'utilisateur <code>odoo</code> et son rôle PostgreSQL</h2>
+                <p>Odoo ne tourne jamais en <code>root</code>. On crée un utilisateur système dont le dossier personnel sera
+                    <code>/opt/odoo</code>, puis un rôle PostgreSQL du même nom :</p>
+<pre class="language-bash"><code class="language-bash">useradd --system --create-home --home-dir /opt/odoo --shell /bin/bash odoo
+sudo -u postgres createuser --createdb odoo
+sudo -u postgres psql -Atc "select rolname, rolcreatedb, rolsuper from pg_roles where rolname='odoo'"</code></pre>
+<div class="out">odoo|t|f</div>
+                <p>Le rôle peut créer des bases (<code>t</code>) mais n'est pas super-utilisateur (<code>f</code>). Et il n'a <strong>pas de
+                    mot de passe</strong> : PostgreSQL, sur Ubuntu, reconnaît l'utilisateur système qui se connecte par la socket locale
+                    (authentification <em>peer</em>). Le processus Odoo tournant sous l'utilisateur <code>odoo</code>, il se connecte au rôle
+                    <code>odoo</code> sans secret à stocker dans la configuration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. SOURCES ET VENV ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les sources et l'environnement Python</h2>
+                <p>Tout se fait <strong>en tant qu'utilisateur <code>odoo</code></strong> (<code>sudo -u odoo</code>), pour que les fichiers
+                    lui appartiennent. <code>--depth 1</code> ne récupère que le dernier état de la branche 20.0, pas tout l'historique :</p>
+<pre class="language-bash"><code class="language-bash">sudo -u odoo git clone --depth 1 --branch 20.0 https://github.com/odoo/odoo.git /opt/odoo/odoo
+
+sudo -u odoo python3 -m venv /opt/odoo/venv
+sudo -u odoo /opt/odoo/venv/bin/pip install --upgrade pip wheel
+sudo -u odoo /opt/odoo/venv/bin/pip install -r /opt/odoo/odoo/requirements.txt
+sudo -u odoo /opt/odoo/venv/bin/pip install phonenumbers</code></pre>
+                <p>Sur le VPS de démonstration : 2 min 30 pour le clone (1,4 Go), 1 min 20 pour les dépendances (260 Mo). La dernière ligne
+                    n'est pas une option : <code>phonenumbers</code> ne figure pas dans <code>requirements.txt</code>, et sans lui
+                    l'activation de l'application Ventes échoue sur une dépendance manquante.</p>
+                <p>Pour noter la version exacte installée (utile le jour d'une mise à jour ou d'un incident) :</p>
+<pre class="language-bash"><code class="language-bash">sudo -u odoo git -C /opt/odoo/odoo log -1 --format='%h %cd' --date=short</code></pre>
+<div class="out">24b59ae7 2026-09-30</div>
+                <div class="pitfall-box">
+                    <h4><code>fatal: detected dubious ownership in repository</code></h4>
+                    <p>La même commande lancée en <code>root</code>, sans <code>sudo -u odoo</code>, est refusée par Git : le dépôt appartient à un
+                        autre utilisateur. Ne contourne pas avec <code>git config --global --add safe.directory</code> comme le suggère le message :
+                        lance simplement Git sous l'utilisateur propriétaire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. ODOO.CONF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le fichier de configuration</h2>
+<pre class="language-bash"><code class="language-bash">sudo -u odoo mkdir -p /opt/odoo/custom-addons /opt/odoo/data
+mkdir -p /etc/odoo /var/log/odoo &amp;&amp; chown odoo:odoo /var/log/odoo
+
+MASTER=$(openssl rand -hex 16)
+echo "$MASTER" &gt; /root/odoo-master-password.txt &amp;&amp; chmod 600 /root/odoo-master-password.txt
+
+cat &gt; /etc/odoo/odoo.conf &lt;&lt;EOF
+[options]
+admin_passwd = $MASTER
+db_user = odoo
+dbfilter = ^prod$
+list_db = False
+addons_path = /opt/odoo/odoo/addons,/opt/odoo/custom-addons
+data_dir = /opt/odoo/data
+logfile = /var/log/odoo/odoo.log
+
+http_interface = 127.0.0.1
+http_port = 8069
+gevent_port = 8072
+proxy_mode = False
+
+workers = 5
+max_cron_threads = 1
+limit_memory_soft = 671088640
+limit_memory_hard = 805306368
+limit_time_cpu = 60
+limit_time_real = 120
+EOF
+
+chown root:odoo /etc/odoo/odoo.conf &amp;&amp; chmod 640 /etc/odoo/odoo.conf</code></pre>
+                <p>Le fichier se lit en trois blocs.</p>
+                <h3>Bases et chemins</h3>
+                <ul>
+                    <li><strong><code>admin_passwd</code></strong> : le mot de passe maître, tiré au sort et rangé dans un fichier réservé à <code>root</code>.</li>
+                    <li><strong><code>db_user = odoo</code></strong>, sans <code>db_host</code> ni <code>db_password</code> : connexion par la socket locale, authentification <em>peer</em>.</li>
+                    <li><strong><code>dbfilter = ^prod$</code></strong> et <strong><code>list_db = False</code></strong> : cette instance ne sert qu'une
+                        base, <code>prod</code>, et le gestionnaire de bases (création, duplication, suppression, restauration depuis le
+                        navigateur) est fermé. Un serveur de production ne doit pas offrir ces boutons au monde.</li>
+                    <li><strong><code>logfile</code></strong> : le journal va dans un fichier, et non dans le journal système.</li>
+                </ul>
+                <h3>Réseau</h3>
+                <ul>
+                    <li><strong><code>http_interface = 127.0.0.1</code></strong> : c'est déjà la valeur par défaut d'Odoo 20 ; l'écrire évite toute surprise.
+                        Odoo n'est joignable que depuis le serveur lui-même.</li>
+                    <li><strong><code>gevent_port = 8072</code></strong> : le port du service temps réel (notifications, discussions), qui n'existe qu'avec des workers.</li>
+                    <li><strong><code>proxy_mode = False</code></strong> : passera à <code>True</code> en même temps que la pose de Nginx.</li>
+                </ul>
+                <h3>Processus et garde-fous</h3>
+                <ul>
+                    <li><strong><code>workers = 5</code></strong> : cinq processus pour les requêtes web, selon la règle (2 × nombre de vCPU) + 1, soit 5 sur 2 vCPU.
+                        C'est un plafond dicté par le processeur ; vérifie aussi la mémoire : 5 workers + 1 cron à 640 Mo chacun, c'est près de 4 Go
+                        dans le pire cas. Au repos, la machine n'en utilise que 770 Mo, mais sur un serveur chargé de 4 Go, 3 workers sont plus prudents.</li>
+                    <li><strong><code>max_cron_threads = 1</code></strong> : un processus de plus, dédié aux tâches planifiées. Le défaut est 2 ; un seul suffit sur 4 Go.</li>
+                    <li><strong><code>limit_memory_soft</code></strong> (640 Mo) : un worker qui dépasse ce seuil termine sa requête puis est remplacé.
+                        <strong><code>limit_memory_hard</code></strong> (768 Mo) : plafond imposé par le système au processus ; toute allocation au-delà
+                        échoue, et la requête en cours plante (<code>MemoryError</code>). Les deux mesurent la mémoire virtuelle, pas la mémoire
+                        physique réellement occupée.</li>
+                    <li><strong><code>limit_time_cpu</code> / <code>limit_time_real</code></strong> : une requête est interrompue après 60 s de calcul ou 120 s au total.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. BASE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Créer la base <code>prod</code></h2>
+                <p>Le gestionnaire de bases étant fermé, la base se crée en ligne de commande, toujours sous l'utilisateur <code>odoo</code> :</p>
+<pre class="language-bash"><code class="language-bash">sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin -c /etc/odoo/odoo.conf \
+    -d prod -i base --load-language=fr_FR --stop-after-init --no-http
+tail -2 /var/log/odoo/odoo.log
+sudo -u postgres psql -d prod -Atc "select count(*) from ir_module_module where state='installed'"</code></pre>
+<div class="out">... INFO prod odoo.addons.bus.websocket: Disconnecting 0 websockets
+... INFO prod odoo.service.server.PreforkServer: Stopping workers gracefully
+16</div>
+                <p>Environ 25 secondes. La commande n'affiche rien à l'écran : avec <code>logfile</code>, tout part dans le journal. Les deux
+                    lignes du journal montrent l'arrêt normal de <code>--stop-after-init</code>, et la base compte 16 modules installés. La base est vide : aucune donnée de démonstration
+                    (il faudrait <code>--with-demo</code>), ce qui est ce qu'on veut en production.</p>
+                <p>Le journal contient aussi un avertissement <code>invalid addons directory '/opt/odoo/custom-addons', skipped</code> :
+                    le dossier est vide, Odoo l'ignore. Il disparaîtra au premier module que tu y déposeras.</p>
+                <div class="pitfall-box">
+                    <h4>Pourquoi <code>--no-http</code> ? <code>OSError: [Errno 98] Address already in use</code></h4>
+                    <p>Avec <code>workers</code> supérieur à 0, <code>odoo-bin</code> ouvre le port 8069 <em>avant</em> même de traiter
+                        <code>-i</code> ou <code>-u</code>, y compris avec <code>--stop-after-init</code>. Lancée pendant que le service tourne,
+                        la commande s'arrête aussitôt sur cette erreur. Ici le service n'existe pas encore, mais garde le réflexe :
+                        toute commande ponctuelle (<code>-i</code>, <code>-u</code>, <code>shell</code>) prend <code>--no-http</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. SYSTEMD ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le service systemd</h2>
+<pre class="language-bash"><code class="language-bash">cat &gt; /etc/systemd/system/odoo.service &lt;&lt;'EOF'
+[Unit]
+Description=Odoo 20
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=odoo
+Group=odoo
+WorkingDirectory=/opt/odoo
+ExecStart=/opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemd-analyze verify /etc/systemd/system/odoo.service
+systemctl daemon-reload
+systemctl enable --now odoo</code></pre>
+                <ul>
+                    <li><strong><code>After=</code> / <code>Wants=postgresql.service</code></strong> : au démarrage de la machine, PostgreSQL passe avant Odoo.</li>
+                    <li><strong><code>User=odoo</code></strong> et <strong><code>WorkingDirectory=/opt/odoo</code></strong> : l'identité et le dossier de travail du processus.</li>
+                    <li><strong><code>Restart=on-failure</code></strong> : relance après un plantage, mais pas après un <code>systemctl stop</code> volontaire.</li>
+                    <li><strong><code>KillMode=mixed</code></strong> : à l'arrêt, le signal va d'abord au processus principal, qui arrête proprement ses workers ;
+                        ceux qui traînent encore après 30 secondes sont tués.</li>
+                    <li><strong><code>LimitNOFILE=65536</code></strong> : relève le nombre de fichiers et de connexions ouverts simultanément (sockets vers
+                        PostgreSQL et entre processus, fichiers du filestore), au-dessus de la limite par défaut.</li>
+                </ul>
+                <p><code>systemd-analyze verify</code> ne doit rien afficher, et <code>enable --now</code> démarre le service et l'inscrit au démarrage de la machine.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. VÉRIFIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Vérifier</h2>
+<pre class="language-bash"><code class="language-bash">systemctl is-active odoo
+systemctl is-enabled odoo
+ss -tlnp | grep -E ":(8069|8072) "
+ps -o pid,rss,cmd -u odoo --forest</code></pre>
+<div class="out">active
+enabled
+LISTEN 0      40         127.0.0.1:8069      0.0.0.0:*    users:(("python",pid=27796,fd=6),("python",pid=27794,fd=6),...
+LISTEN 0      128        127.0.0.1:8072      0.0.0.0:*    users:(("python",pid=27797,fd=4))
+    PID   RSS CMD
+  27780 102368 /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27788 79916  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27789 79916  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27792 79916  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27794 79916  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27796 79916  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+  27797 108204  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin gevent --config /etc/odoo/odoo.conf
+  27798 80552  \_ /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf</div>
+                <p>Huit processus : le processus principal, les cinq workers web, le serveur temps réel (<code>gevent</code>) et le worker des
+                    tâches planifiées. Les deux ports n'écoutent que sur <code>127.0.0.1</code>. Le journal confirme les rôles :</p>
+<pre class="language-bash"><code class="language-bash">grep -E "running on|Alive" /var/log/odoo/odoo.log | tail -8</code></pre>
+<div class="out">... INFO ? odoo.service.server: HTTP service running on 127.0.0.1:8069
+... INFO ? odoo.service.server.WorkerHTTP: Alive
+... INFO ? odoo.service.server.WorkerHTTP: Alive
+... INFO ? odoo.service.server.WorkerHTTP: Alive
+... INFO ? odoo.service.server.WorkerHTTP: Alive
+... INFO ? odoo.service.server.WorkerCron: Alive
+... INFO ? odoo.service.server.WorkerHTTP: Alive
+... INFO ? odoo.service.server.GeventServer: Evented/WebSocket service running on 127.0.0.1:8072</div>
+                <p>Côté HTTP, depuis le serveur :</p>
+<pre class="language-bash"><code class="language-bash">curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8069/web/login
+curl -s http://127.0.0.1:8069/web/webclient/version_info \
+     -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","params":{}}'</code></pre>
+<div class="out">200
+{"jsonrpc": "2.0", "id": null, "result": {"server_version": "20.0", "server_version_info": [20, 0, 0, "final", 0, ""], "server_serie": "20.0"}}</div>
+                <p>Au repos, la machine entière (Odoo, PostgreSQL et le système) utilise environ 770 Mo sur ses 4 Go.</p>
+
+                <h3>Le service se relève-t-il seul ?</h3>
+                <p>On simule un plantage en tuant brutalement le processus principal :</p>
+<pre class="language-bash"><code class="language-bash">P=$(systemctl show -p MainPID --value odoo); kill -9 $P; sleep 12
+echo "ancien $P nouveau $(systemctl show -p MainPID --value odoo) état $(systemctl is-active odoo)"</code></pre>
+<div class="out">ancien 27780 nouveau 27834 état active</div>
+                <p>systemd a relancé Odoo cinq secondes plus tard (<code>RestartSec=5</code>) ; la page de connexion répond de nouveau <code>200</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. PREMIÈRE CONNEXION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Première connexion</h2>
+                <p>Tant que Nginx n'est pas posé, on atteint Odoo par un tunnel SSH lancé <strong>depuis ton poste</strong> :</p>
+<pre class="language-bash"><code class="language-bash">ssh -N -L 8069:127.0.0.1:8069 root@ADRESSE_DU_SERVEUR</code></pre>
+                <p>Puis <code>http://localhost:8069</code> dans le navigateur. Connecte-toi avec <code>admin</code> / <code>admin</code>, et
+                    <strong>change ce mot de passe tout de suite</strong>, et en tout cas avant d'ouvrir Odoo au public avec Nginx : avatar en haut à droite › Mes préférences › onglet Sécurité ›
+                    Modifier le mot de passe. Le bas des Paramètres généraux confirme l'édition installée :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bas des Paramètres généraux d'Odoo 20 : section Outils développeur puis À propos, Odoo 20.0 (Edition Community)" style="max-width:90%; height:auto;"/>
+                    <figcaption>Paramètres › Paramètres généraux, section « À propos ».</figcaption>
+                </figure>
+                <p>Et le gestionnaire de bases est bien fermé :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Page /web/database/manager : The database manager has been disabled by the administrator" style="max-width:60%; height:auto;"/>
+                    <figcaption><code>/web/database/manager</code> avec <code>list_db = False</code>.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== AU QUOTIDIEN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Au quotidien</h2>
+                <table class="tmc">
+                    <tr><th>Besoin</th><th>Commande</th></tr>
+                    <tr><td>État du service</td><td><code>systemctl status odoo</code></td></tr>
+                    <tr><td>Redémarrer (nouveau module, <code>odoo.conf</code> modifié)</td><td><code>systemctl restart odoo</code></td></tr>
+                    <tr><td>Suivre le journal</td><td><code>tail -f /var/log/odoo/odoo.log</code></td></tr>
+                    <tr><td>Événements du service (démarrages, plantages)</td><td><code>journalctl -u odoo</code></td></tr>
+                    <tr><td>Mettre à jour un module (ici <code>base</code>), service en marche</td><td><code>sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin -c /etc/odoo/odoo.conf -d prod -u base --stop-after-init --no-http</code>, puis <code>systemctl restart odoo</code></td></tr>
+                    <tr><td>Sauvegarder la base</td><td><code>sudo -u odoo pg_dump -Fc prod &gt; prod.dump</code></td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="v19-box">
+                    <h4>Ce qui change par rapport à Odoo 19</h4>
+                    <ul>
+                        <li><strong>PostgreSQL 16 minimum</strong> : le PostgreSQL 16 d'Ubuntu 24.04 suffit. Sur Ubuntu 22.04 (PostgreSQL 14), il
+                            faudrait le dépôt officiel de PostgreSQL.</li>
+                        <li><strong>Python 3.12 à 3.14</strong> : le Python 3.12 d'Ubuntu 24.04 convient.</li>
+                        <li><strong><code>http_interface</code> vaut <code>127.0.0.1</code> par défaut</strong> (<code>0.0.0.0</code> en 19). Sur un serveur
+                            derrière Nginx, c'est exactement ce qu'on veut ; mais un Odoo qu'on comptait joindre par <code>http://IP:8069</code>
+                            ne répond plus.</li>
+                        <li>Le reste de la procédure (utilisateur, venv, workers, systemd) est identique à Odoo 19.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRODUCTION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui manque encore</h2>
+                <ul>
+                    <li>un <strong>reverse proxy Nginx</strong> avec certificat <strong>HTTPS</strong>, les routes <code>/websocket</code> vers le port 8072
+                        et <code>proxy_mode = True</code> : prochain article de la série ;</li>
+                    <li>un <strong>pare-feu</strong> (UFW : SSH, HTTP, HTTPS) et un accès SSH par clé, sans mot de passe ;</li>
+                    <li>la <strong>rotation du journal</strong>, sans quoi <code>odoo.log</code> grossit indéfiniment ;</li>
+                    <li>des <strong>sauvegardes</strong> automatiques de la base et de <code>/opt/odoo/data</code>, avec un test de restauration.</li>
+                </ul>
+                <p>Tout cela, avec la sécurisation du serveur, plusieurs instances et plusieurs versions d'Odoo sur la même machine, la supervision
+                    et les mises à jour avec retour arrière, fait l'objet de l'ebook
+                    <a href="/shop/ebook-e3-formation-deploiement-odoo-19-ebook-5"><strong>Déployer Odoo en production</strong></a>. Son édition Odoo 20
+                    est en cours de rédaction, sur le serveur qui a servi à cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Ubuntu 24.04 fournit Python 3.12 et PostgreSQL 16, les minimums d'Odoo 20.</li>
+                    <li>wkhtmltopdf 0.12.6.1-3 « jammy », avec <code>(with patched qt)</code>.</li>
+                    <li>Utilisateur système <code>odoo</code>, rôle PostgreSQL <code>odoo</code> sans mot de passe (authentification <em>peer</em>).</li>
+                    <li>Sources <code>--depth 1 --branch 20.0</code> et venv, installés sous <code>sudo -u odoo</code> ; <code>phonenumbers</code> en plus.</li>
+                    <li><code>odoo.conf</code> : une base (<code>dbfilter</code>), gestionnaire fermé (<code>list_db = False</code>), 5 workers + 1 cron,
+                        limites de mémoire et de temps, écoute sur <code>127.0.0.1</code>.</li>
+                    <li>Unité systemd : <code>Restart=on-failure</code>, <code>KillMode=mixed</code>, démarrage au boot.</li>
+                    <li>Toute commande <code>odoo-bin</code> ponctuelle prend <code>--no-http</code>, sinon le port 8069 est déjà pris.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Procédure rejouée le 30/09/2026 sur un VPS Ubuntu 24.04.5 (2 vCPU, 4 Go), Odoo 20.0 commit <code>24b59ae7</code> :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/release.py" target="_blank" rel="noopener"><code>odoo/release.py</code></a> : Python 3.12 à 3.14, PostgreSQL 16 minimum</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : <code>http_interface</code> (défaut <code>127.0.0.1</code>), <code>gevent_port</code>, <code>max_cron_threads</code>, limites</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/requirements.txt" target="_blank" rel="noopener"><code>requirements.txt</code></a> : dépendances Python (sans <code>phonenumbers</code>)</li>
+                    <li><a href="https://www.odoo.com/documentation/20.0/administration/on_premise/deploy.html" target="_blank" rel="noopener">Documentation Odoo : déploiement</a> (workers, limites de mémoire)</li>
+                    <li><a href="https://github.com/wkhtmltopdf/packaging/releases/tag/0.12.6.1-3" target="_blank" rel="noopener">wkhtmltopdf 0.12.6.1-3</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== NAVIGATION DE SÉRIE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <a class="d-block h-100 p-3 border rounded text-decoration-none text-reset"
+                           href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">
+                            <div class="small text-muted mb-1">&larr; Article précédent</div>
+                            <div class="fw-bold">Installer Odoo 20 avec Docker</div>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">Sécuriser Odoo en production</a></h5>
+                            <p class="small text-muted mb-0">Mot de passe maître, liste des bases, proxy : les réglages à ne pas oublier.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Les nouveautés techniques d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Tout ce qui change pour les développeurs et les administrateurs.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0">psql, requêtes utiles et sauvegarde propre d'une base.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!--
+TODO avant publication :
+- remplacer PLACEHOLDER_01 et 02 par les ids ir.attachment en prod
+- navigation : poser la carte « Article suivant » sur le 241
+-->
