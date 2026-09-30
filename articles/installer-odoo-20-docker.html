@@ -1,0 +1,641 @@
+<!--
+Article — Installer Odoo 20 avec Docker
+Article indépendant, blog Développement Odoo (id=2), parcours Infrastructure
+Auteur : BENHAMIDA Mustapha
+Date : 2026-09-30
+Slug : installer-odoo-20-docker
+Meta : Installer Odoo 20 avec Docker Compose sur Ubuntu 24.04 : image odoo:20.0, PostgreSQL 17, odoo.conf durci et les trois pannes qui cassent les tutoriels Odoo 19.
+Mot-clé cible : installer odoo 20 docker
+Tags : debutant, infrastructure, guide, community
+Temps de lecture : ~12 minutes
+Sources vérifiées le 2026-09-30 : VPS Ubuntu 24.04.5 (LXC, 2 vCPU / 4 Go), Docker 29.8.1, Compose v5.5.1,
+  image odoo:20.0 (20.0-20260926, digest dc76c42d292a), postgres:17 ; journaux docs/ebook-e3-20/preuves-vps/ (09 = rejeu littéral de l'article, dossier vierge)
+Captures : content/blog/screenshots/installer-odoo-20-docker/ (01-02, Playwright via tunnel SSH)
+-->
+
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Installer Odoo 20 avec Docker</h1>
+                <p class="lead mt-3 text-white">Un fichier Compose, deux conteneurs (Odoo et PostgreSQL), un <code>odoo.conf</code> :
+                    Odoo 20 tourne sur un serveur Ubuntu en quelques minutes. Mais un fichier Compose écrit pour Odoo 19
+                    démarre sans erreur… et ne répond jamais. On monte l'installation de zéro, et on passe par les trois
+                    pannes qui attendent ceux qui recopient un ancien tutoriel. L'article a été rejoué tel quel, commande par commande,
+                    sur un VPS neuf.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau débutant · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>La pile</h4>
+                        <p>Docker Engine depuis le dépôt officiel, l'image <code>odoo:20.0</code> et PostgreSQL 17 dans un seul <code>compose.yaml</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>La configuration</h4>
+                        <p>Un <code>odoo.conf</code> monté dans le conteneur, les secrets hors du Compose, une base créée en ligne de commande.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Les pannes</h4>
+                        <p>Odoo muet sur son port, <code>NoSectionError</code> au démarrage, pare-feu contourné : le symptôme, la cause, le correctif.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un serveur ou une machine virtuelle sous <strong>Ubuntu 24.04 LTS</strong>, accessible en SSH avec un compte
+                            <code>root</code> ou <code>sudo</code>. La démonstration tourne sur un petit VPS : 2 vCPU, 4 Go de mémoire, 40 Go de disque.</li>
+                        <li>Environ <strong>5 Go</strong> d'espace disque : l'image Odoo occupe 3,5 Go une fois décompressée, celle de PostgreSQL 650 Mo.</li>
+                        <li>Aucune installation préalable de Python ni de PostgreSQL sur l'hôte : tout vit dans les conteneurs.</li>
+                    </ul>
+                    <p class="mt-2 mb-0 small">Les commandes sont lancées en <code>root</code> (<code>sudo -i</code>). Tu préfères une installation
+                        « à la main », sans conteneur, pour développer ? Lis plutôt
+                        <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 0. VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Vue d'ensemble</h2>
+                <p>L'installation tient dans un dossier, <code>/opt/odoo20</code>, qui contient quatre choses :</p>
+                <table class="tmc">
+                    <tr><th>Élément</th><th>Rôle</th></tr>
+                    <tr><td><code>compose.yaml</code></td><td>décrit les deux conteneurs, leurs volumes et le port publié</td></tr>
+                    <tr><td><code>.env</code></td><td>le mot de passe PostgreSQL, lu par Compose, jamais écrit dans le <code>compose.yaml</code></td></tr>
+                    <tr><td><code>config/odoo.conf</code></td><td>la configuration d'Odoo, montée en lecture seule dans le conteneur</td></tr>
+                    <tr><td><code>addons/</code></td><td>tes modules, montés sur <code>/mnt/extra-addons</code></td></tr>
+                </table>
+                <p>Les données, elles, ne sont pas dans le dossier : la base PostgreSQL et le filestore d'Odoo (pièces jointes, images)
+                    vivent dans deux <strong>volumes nommés</strong> : des espaces de stockage gérés par Docker, qui survivent aux conteneurs.
+                    Supprimer ou recréer un conteneur ne les efface pas ; seule une commande explicite (<code>docker compose down -v</code>) le fait.</p>
+
+                <figure class="preview-figure">
+                    <svg viewBox="0 0 760 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Schéma : le navigateur passe par 127.0.0.1:8069 sur l'hôte, qui mène au conteneur Odoo, relié au conteneur PostgreSQL ; deux volumes conservent les données" style="max-width:100%; height:auto; background:#fff;">
+                        <rect x="10" y="10" width="740" height="230" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+                        <text x="26" y="34" font-family="sans-serif" font-size="14" font-weight="700" fill="#334155">Hôte Ubuntu 24.04 (Docker Engine)</text>
+                        <rect x="30" y="95" width="130" height="56" rx="8" fill="#fff" stroke="#64748b"/>
+                        <text x="95" y="119" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="700" fill="#0f172a">127.0.0.1:8069</text>
+                        <text x="95" y="138" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#475569">port publié</text>
+                        <path d="M160 123 H238" stroke="#714b67" stroke-width="2" marker-end="url(#fl)"/>
+                        <defs><marker id="fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#714b67"/></marker></defs>
+                        <rect x="240" y="70" width="200" height="106" rx="8" fill="#fdf4fb" stroke="#714b67" stroke-width="1.5"/>
+                        <text x="340" y="96" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#714b67">conteneur odoo</text>
+                        <text x="340" y="118" text-anchor="middle" font-family="monospace" font-size="12" fill="#0f172a">odoo:20.0</text>
+                        <text x="340" y="138" text-anchor="middle" font-family="monospace" font-size="11" fill="#b45309">écoute 0.0.0.0:8069</text>
+                        <text x="340" y="158" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#475569">lit /etc/odoo/odoo.conf</text>
+                        <path d="M440 123 H518" stroke="#336791" stroke-width="2" marker-end="url(#fl2)"/>
+                        <defs><marker id="fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#336791"/></marker></defs>
+                        <text x="479" y="114" text-anchor="middle" font-family="monospace" font-size="11" fill="#336791">db:5432</text>
+                        <rect x="520" y="70" width="200" height="106" rx="8" fill="#eff6ff" stroke="#336791" stroke-width="1.5"/>
+                        <text x="620" y="96" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#336791">conteneur db</text>
+                        <text x="620" y="118" text-anchor="middle" font-family="monospace" font-size="12" fill="#0f172a">postgres:17</text>
+                        <text x="620" y="138" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#475569">jamais publié sur l'hôte</text>
+                        <rect x="265" y="192" width="150" height="32" rx="6" fill="#fff" stroke="#94a3b8" stroke-dasharray="4 3"/>
+                        <text x="340" y="213" text-anchor="middle" font-family="monospace" font-size="11" fill="#334155">volume odoo-data</text>
+                        <rect x="545" y="192" width="150" height="32" rx="6" fill="#fff" stroke="#94a3b8" stroke-dasharray="4 3"/>
+                        <text x="620" y="213" text-anchor="middle" font-family="monospace" font-size="11" fill="#334155">volume db-data</text>
+                        <path d="M340 176 V192 M620 176 V192" stroke="#94a3b8" stroke-width="1.5"/>
+                    </svg>
+                    <figcaption>Odoo écoute sur toutes ses interfaces <em>dans</em> le conteneur ; l'hôte ne publie le port que sur 127.0.0.1.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DOCKER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Installer Docker Engine</h2>
+                <p>Le paquet <code>docker.io</code> d'Ubuntu existe, mais il suit le rythme d'Ubuntu, pas celui de Docker. On installe donc
+                    Docker Engine et le greffon Compose depuis le dépôt officiel de Docker :</p>
+<pre class="language-bash"><code class="language-bash">apt-get update
+apt-get install -y ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+cat &gt; /etc/apt/sources.list.d/docker.sources &lt;&lt;EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release &amp;&amp; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin</code></pre>
+                <p>Vérification : les deux versions, le service actif et le conteneur de test.</p>
+<pre class="language-bash"><code class="language-bash">docker --version
+docker compose version
+systemctl is-active docker
+docker run --rm hello-world</code></pre>
+<div class="out">Docker version 29.8.1, build 4a63305
+Docker Compose version v5.5.1
+active
+...
+Hello from Docker!
+This message shows that your installation appears to be working correctly.</div>
+                <p>Note bien la syntaxe : <code>docker compose</code>, avec une espace. L'ancien exécutable <code>docker-compose</code>
+                    (avec un tiret) n'est plus maintenu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. DOSSIER ET SECRETS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le dossier du projet et les secrets</h2>
+                <p>Deux secrets sont nécessaires : le mot de passe du rôle PostgreSQL <code>odoo</code>, et le <strong>mot de passe maître</strong>
+                    d'Odoo, celui qui protège le gestionnaire de bases (créer, dupliquer, supprimer une base). On les tire au sort avec
+                    <code>openssl</code> plutôt que de les inventer :</p>
+<pre class="language-bash"><code class="language-bash">mkdir -p /opt/odoo20/config /opt/odoo20/addons
+cd /opt/odoo20
+
+PGPW=$(openssl rand -hex 24)
+MASTER=$(openssl rand -hex 16)
+
+echo "POSTGRES_PASSWORD=$PGPW" &gt; .env
+chmod 600 .env
+echo "$MASTER" &gt; /root/odoo20-master-password.txt   # à ranger dans ton gestionnaire de mots de passe
+chmod 600 /root/odoo20-master-password.txt</code></pre>
+                <p>Compose lit automatiquement le fichier <code>.env</code> posé à côté du <code>compose.yaml</code> : la variable
+                    <code>${POSTGRES_PASSWORD}</code> y sera remplacée. Si le dossier est versionné avec Git, ajoute <code>.env</code> au
+                    <code>.gitignore</code>.</p>
+                <div class="pitfall-box">
+                    <h4>Une seule fois</h4>
+                    <p>PostgreSQL ne lit <code>POSTGRES_PASSWORD</code> qu'à la toute première initialisation de son volume. Relancer ce bloc
+                        plus tard tire un nouveau mot de passe, qui ne correspond plus à celui de la base : Odoo échouera à s'y connecter.
+                        Une fois la pile démarrée, change le mot de passe dans PostgreSQL <em>et</em> dans les deux fichiers, ou pas du tout.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. ODOO.CONF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le fichier <code>odoo.conf</code></h2>
+                <p>L'image officielle lit sa configuration dans <code>/etc/odoo/odoo.conf</code>. On lui fournit la nôtre, écrite dans la
+                    même session de terminal que l'étape précédente : les variables <code>$MASTER</code> et <code>$PGPW</code> doivent encore être
+                    définies. La première ligne le vérifie (après une coupure SSH, elles sont perdues ; ne relance pas l'étape 2 pour autant,
+                    relis le mot de passe PostgreSQL dans <code>.env</code> et le mot de passe maître dans <code>/root/odoo20-master-password.txt</code>).
+                    Le bloc suivant utilise un <em>heredoc</em> (<code>&lt;&lt;EOF</code> … <code>EOF</code>) : tout le texte entre les deux
+                    marqueurs est écrit dans le fichier, variables remplacées.</p>
+<pre class="language-bash"><code class="language-bash">test -n "$PGPW" &amp;&amp; test -n "$MASTER" &amp;&amp; echo "variables présentes"
+
+cat &gt; config/odoo.conf &lt;&lt;EOF
+[options]
+; Odoo 20 écoute sur 127.0.0.1 par défaut : obligatoire dans un conteneur
+http_interface = 0.0.0.0
+proxy_mode = True
+admin_passwd = $MASTER
+db_host = db
+db_port = 5432
+db_user = odoo
+db_password = $PGPW
+list_db = True
+addons_path = /mnt/extra-addons
+data_dir = /var/lib/odoo
+EOF
+
+chmod 755 config
+chown root:101 config/odoo.conf
+chmod 640 config/odoo.conf</code></pre>
+                <p>Quatre lignes méritent une explication :</p>
+                <ul>
+                    <li><strong><code>http_interface = 0.0.0.0</code></strong> : la ligne que les tutoriels Odoo 19 n'avaient pas besoin d'écrire. Sans elle,
+                        Odoo 20 n'écoute que sur l'interface locale <em>du conteneur</em>, et rien ne l'atteint de l'extérieur (voir la panne n° 1).</li>
+                    <li><strong><code>proxy_mode = True</code></strong> : prépare le passage derrière un <em>reverse proxy</em>, un serveur web
+                        (Nginx) placé devant Odoo, qui porte le HTTPS et transmet l'adresse réelle du visiteur.</li>
+                    <li><strong><code>db_host = db</code></strong> : <code>db</code> est le nom du service PostgreSQL dans le Compose ; Docker le
+                        résout en adresse IP sur le réseau interne.</li>
+                    <li><strong><code>addons_path = /mnt/extra-addons</code></strong> : ton dossier de modules. Les modules standard d'Odoo
+                        sont ajoutés d'office, pas besoin de les lister.</li>
+                </ul>
+                <p>Et les droits ? Dans l'image, Odoo tourne sous l'utilisateur <code>odoo</code> (uid 100, groupe 101), pas sous
+                    <code>root</code>. Le fichier doit donc être lisible par le groupe 101, sans l'être par tout le monde puisqu'il contient
+                    deux mots de passe. C'est l'objet des trois dernières commandes (voir la panne n° 2). Un <code>ls -l config/odoo.conf</code>
+                    affiche alors <code>root messagebus</code> : <code>messagebus</code> est simplement le nom que l'hôte Ubuntu donne au groupe 101,
+                    sans rapport avec Odoo.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. COMPOSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le fichier <code>compose.yaml</code></h2>
+<pre class="language-yaml"><code class="language-yaml">services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  odoo:
+    image: odoo:20.0
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8069:8069"
+    volumes:
+      - odoo-data:/var/lib/odoo
+      - ./config:/etc/odoo:ro
+      - ./addons:/mnt/extra-addons
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  odoo-data:</code></pre>
+                <ul>
+                    <li><strong><code>postgres:17</code></strong> : Odoo 20 exige PostgreSQL 16 au minimum. Face à un <code>postgres:13</code> ou
+                        <code>postgres:14</code> recopié d'un vieux tutoriel, il ne s'arrête pas : il émet un simple avertissement et démarre,
+                        mais certaines contraintes de la base (<code>NULLS NOT DISTINCT</code>, apparu en PostgreSQL 15) sont perdues en silence.
+                        Ne pas s'y fier.</li>
+                    <li><strong><code>healthcheck</code> + <code>condition: service_healthy</code></strong> : le <em>healthcheck</em> est un test
+                        de santé que Docker lance toutes les 10 secondes (<code>pg_isready</code>) ; grâce à lui, Odoo attend que PostgreSQL
+                        accepte les connexions avant de démarrer, au lieu de simplement attendre que son conteneur existe.</li>
+                    <li><strong><code>"127.0.0.1:8069:8069"</code></strong> : le port n'est publié que sur la boucle locale du serveur. C'est
+                        voulu : on n'expose pas Odoo en HTTP clair sur Internet (voir la panne n° 3).</li>
+                    <li><strong><code>./config:/etc/odoo:ro</code></strong> : le dossier de configuration, monté en lecture seule.</li>
+                    <li>Aucun <code>ports:</code> sur <code>db</code> : PostgreSQL n'est pas publié sur l'hôte ; seuls les conteneurs de ce Compose y accèdent.</li>
+                </ul>
+                <p>Avant d'aller plus loin, fais valider le fichier par Compose : <code>docker compose config -q</code> ne doit rien afficher.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. BASE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Créer la première base</h2>
+                <p>On démarre d'abord PostgreSQL seul, puis on crée la base avec un conteneur Odoo à usage unique
+                    (<code>run --rm</code>) : installation du module <code>base</code>, chargement du français, arrêt.</p>
+<pre class="language-bash"><code class="language-bash">docker compose up -d db
+docker compose run --rm odoo odoo -d demo20 -i base --load-language=fr_FR --stop-after-init</code></pre>
+<div class="out">... INFO demo20 odoo.modules.loading: Modules loaded.
+... INFO demo20 odoo.registry: Registry loaded in 18.734s</div>
+                <p>Entre 20 et 35 secondes sur le VPS de démonstration. Le premier lancement télécharge les deux images : compte plutôt
+                    quelques minutes (850 Mo à télécharger pour Odoo, 170 Mo pour PostgreSQL).</p>
+                <div class="v19-box">
+                    <h4>Et les données de démonstration ?</h4>
+                    <p>Cette base est vide : 16 modules installés, aucune donnée de démonstration. Elles ne se chargent que si on les demande
+                        avec <code>--with-demo</code>. Pour une base d'essai avec clients, articles et devis fictifs, ajoute l'option à la
+                        commande ci-dessus.</p>
+                </div>
+                <p>Tu peux aussi créer la base depuis le navigateur, avec l'écran de création de base et le mot de passe maître. La ligne de
+                    commande a un avantage : elle se rejoue à l'identique, dans un script ou une documentation d'exploitation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. DÉMARRER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Démarrer et vérifier</h2>
+<pre class="language-bash"><code class="language-bash">docker compose up -d
+docker compose ps
+docker compose logs odoo | grep "HTTP service running"
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8069/web/login</code></pre>
+<div class="out">NAME            IMAGE         COMMAND                  SERVICE   CREATED          STATUS                    PORTS
+odoo20-db-1     postgres:17   "docker-entrypoint.s…"   db        51 seconds ago   Up 50 seconds (healthy)   5432/tcp
+odoo20-odoo-1   odoo:20.0     "/entrypoint.sh odoo"    odoo      16 seconds ago   Up 15 seconds             127.0.0.1:8069->8069/tcp, 8071-8072/tcp
+odoo-1  | ... INFO ? odoo.service.server: HTTP service running on 0.0.0.0:8069
+200</div>
+                <p>Deux indices à lire : <code>(healthy)</code> sur la base, et surtout <code>0.0.0.0:8069</code> dans le journal d'Odoo.
+                    Si tu y lis <code>127.0.0.1:8069</code>, la ligne <code>http_interface</code> n'a pas été prise en compte.</p>
+                <p>La version exacte se lit sans navigateur :</p>
+<pre class="language-bash"><code class="language-bash">curl -s http://127.0.0.1:8069/web/webclient/version_info \
+     -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","params":{}}'</code></pre>
+<div class="out">{"jsonrpc": "2.0", "id": null, "result": {"server_version": "20.0-20260926", "server_version_info": [20, 0, 0, "final", 0, ""], "server_serie": "20.0"}}</div>
+
+                <h3>Ouvrir Odoo depuis ton poste</h3>
+                <p>Le port n'étant publié que sur la boucle locale du serveur, on y accède par un tunnel SSH, lancé <strong>depuis ton poste</strong> :</p>
+<pre class="language-bash"><code class="language-bash">ssh -N -L 8069:127.0.0.1:8069 root@ADRESSE_DU_SERVEUR</code></pre>
+                <p>Tant que la commande tourne, <code>http://localhost:8069</code> sur ton poste mène à l'Odoo du serveur. La page
+                    <code>/web/database/manager</code> liste la base créée à l'étape 5 :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Gestionnaire de bases Odoo 20 : la base demo20 avec les boutons Backup, Duplicate, Delete, puis Create Database, Restore Database, Set Master Password" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le gestionnaire de bases, protégé par le mot de passe maître de <code>odoo.conf</code>.</figcaption>
+                </figure>
+                <p>Connecte-toi à <code>demo20</code> avec l'identifiant <code>admin</code> et le mot de passe <code>admin</code>, puis
+                    <strong>change ce mot de passe immédiatement</strong> (avatar en haut à droite › Mes préférences › onglet
+                    Sécurité › Modifier le mot de passe). L'écran Applications confirme une Odoo 20 Community prête à recevoir ses modules :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Écran Applications d'Odoo 20 : cartes Ventes, Restaurant, Facturation, CRM, Site Web, Inventaire, Achats, Point de Vente avec les boutons Activer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Applications : les cartes marquées « Mettre à niveau » relèvent de l'édition Enterprise.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. AU QUOTIDIEN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Au quotidien</h2>
+                <table class="tmc">
+                    <tr><th>Besoin</th><th>Commande (dans <code>/opt/odoo20</code>)</th></tr>
+                    <tr><td>Suivre le journal d'Odoo</td><td><code>docker compose logs -f odoo</code></td></tr>
+                    <tr><td>Redémarrer Odoo (après un nouveau module dans <code>addons/</code>)</td><td><code>docker compose restart odoo</code></td></tr>
+                    <tr><td>Ouvrir un shell Odoo sur la base</td><td><code>docker compose exec odoo odoo shell -d demo20 --no-http</code></td></tr>
+                    <tr><td>Arrêter la pile (les volumes restent)</td><td><code>docker compose down</code></td></tr>
+                </table>
+
+                <h3>Mettre à jour Odoo</h3>
+                <p>L'image <code>odoo:20.0</code> est reconstruite régulièrement avec les correctifs de la branche 20.0. Mettre à jour,
+                    c'est sauvegarder la base, récupérer la nouvelle image, puis mettre à jour les modules de la base avant de relancer le serveur :</p>
+<pre class="language-bash"><code class="language-bash">docker compose exec -T db pg_dump -U odoo -Fc demo20 &gt; /root/demo20-avant-maj.dump
+docker compose pull odoo
+docker compose stop odoo
+docker compose run --rm odoo odoo -d demo20 -u all --stop-after-init
+docker compose up -d</code></pre>
+<div class="out">... INFO demo20 odoo.modules.loading: Modules loaded.
+... INFO demo20 odoo.registry: Registry loaded in 14.048s</div>
+                <p>Le tag <code>20.0</code> bouge à chaque publication. En production, préfère un tag <strong>daté</strong>, comme
+                    <code>odoo:20.0-20260926</code> : tu choisis le moment de la mise à jour, et revenir en arrière consiste à remettre
+                    l'ancien tag et à restaurer la sauvegarde. Le <code>pg_dump</code> ci-dessus couvre la base (1,3 Mo pour une base neuve) ;
+                    le filestore, dans le volume <code>odoo-data</code>, se sauvegarde à part. Une vraie politique de sauvegarde, testée par une
+                    restauration, sort du cadre de cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. PANNES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Les trois pannes, reproduites</h2>
+                <p>Chacune a été provoquée volontairement sur le serveur de démonstration. Aucune ne désigne clairement sa cause.</p>
+
+                <div class="pitfall-box">
+                    <h4>Panne n° 1 : Odoo démarre, mais le port ne répond jamais</h4>
+                    <p>Symptôme : un Compose « à l'ancienne », avec <code>ports: - "8069:8069"</code> et sans <code>odoo.conf</code>. Les
+                        conteneurs sont <code>Up</code>, aucune erreur, mais le navigateur tourne dans le vide et <code>curl</code> échoue :</p>
+<div class="out">odoo-1  | ... INFO ? odoo.service.server: HTTP service running on 127.0.0.1:8069
+$ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8069/web/login
+000</div>
+                    <p>Cause : depuis Odoo 20, l'option <code>--http-interface</code> vaut <code>127.0.0.1</code> par défaut (elle valait
+                        <code>0.0.0.0</code> en Odoo 19). Dans un conteneur, « 127.0.0.1 » désigne le conteneur lui-même : la redirection de
+                        port de Docker arrive sur une autre interface, où personne n'écoute. L'image officielle ne corrige pas ce défaut.</p>
+                    <p>Correctif : <code>http_interface = 0.0.0.0</code> dans <code>odoo.conf</code>, ou, sans fichier de configuration,
+                        <code>command: -- --http-interface=0.0.0.0</code> sur le service <code>odoo</code>. Le journal affiche alors
+                        <code>HTTP service running on 0.0.0.0:8069</code>, et la même requête répond <code>200</code>.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>Panne n° 2 : <code>NoSectionError: No section: 'options'</code></h4>
+                    <p>Symptôme : le conteneur Odoo s'arrête aussitôt, avec une trace Python qui vient d'un script d'attente de la base :</p>
+<div class="out">  File "/usr/local/bin/wait-for-psql.py", line 25, in &lt;module&gt;
+    config_options = { k:v for k,v in config.items('options')}
+configparser.NoSectionError: No section: 'options'</div>
+                    <p>Cause : le fichier contient pourtant bien <code>[options]</code>. Mais le dossier <code>config/</code> est en droits
+                        <code>700</code>, réservé à <code>root</code> : c'est le cas si ta session utilise un <code>umask 077</code> (réglage
+                        de durcissement courant) ou après un <code>chmod 700 config</code>. L'utilisateur <code>odoo</code> du conteneur ne peut pas
+                        lire le fichier, et le lecteur de configuration Python, au lieu de se plaindre d'un fichier illisible, le traite comme vide.</p>
+                    <p>Correctif : <code>chmod 755 config</code>, puis <code>chown root:101</code> et <code>chmod 640</code> sur
+                        <code>odoo.conf</code>. Pour vérifier l'identité de l'utilisateur de l'image :
+                        <code>docker compose run --rm --entrypoint id odoo</code> affiche <code>uid=100(odoo) gid=101(odoo)</code>.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>Panne n° 3 : le pare-feu est actif, et Odoo reste joignable depuis Internet</h4>
+                    <p>Symptôme : UFW refuse tout ce qui entre sauf SSH, et pourtant un port publié en <code>"8069:8069"</code> répond depuis
+                        n'importe où :</p>
+<div class="out">$ ufw status verbose        # extrait
+Status: active
+Default: deny (incoming), allow (outgoing), deny (routed)
+22/tcp (OpenSSH)           ALLOW IN    Anywhere
+
+# depuis un autre poste :
+$ curl -s -o /dev/null -w "%{http_code}\n" http://ADRESSE_DU_SERVEUR:8069/web/login
+200</div>
+                    <p>Cause : Docker écrit ses propres règles de pare-feu (redirection d'adresse et routage vers les conteneurs) ; le trafic vers
+                        un port publié n'emprunte jamais la chaîne que filtre UFW.
+                        Avec le gestionnaire de bases ouvert, c'est une porte d'entrée sur tes données.</p>
+                    <p>Correctif : publier sur la boucle locale, <code>"127.0.0.1:8069:8069"</code>, comme dans le Compose de cet article.
+                        Le même test depuis l'extérieur échoue alors (<code>000</code>). L'accès public passera par un reverse proxy en HTTPS.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="v19-box">
+                    <h4>Ce qui change par rapport à Odoo 19</h4>
+                    <ul>
+                        <li><code>--http-interface</code> : <code>127.0.0.1</code> par défaut au lieu de <code>0.0.0.0</code>. C'est la panne n° 1.</li>
+                        <li>PostgreSQL <strong>16 minimum</strong>, Python 3.12 à 3.14 : l'image embarque Ubuntu 24.04 et Python 3.12.3.</li>
+                                                <li>Le reste de l'image (volumes <code>/var/lib/odoo</code> et <code>/mnt/extra-addons</code>, configuration dans
+                            <code>/etc/odoo/odoo.conf</code>, utilisateur <code>odoo</code>) ne change pas : un Compose Odoo 19 se porte
+                            en changeant le tag et en ajoutant <code>http_interface</code>, avec PostgreSQL 16 au minimum.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et pour la production ?</h2>
+                <p>Cette installation est saine, mais elle n'est pas encore une production. Il manque :</p>
+                <ul>
+                    <li>un <strong>reverse proxy Nginx avec HTTPS</strong> (certificat Let's Encrypt), les routes <code>/websocket</code> et la
+                        redirection HTTP vers HTTPS ;</li>
+                    <li>des <strong>workers</strong> dimensionnés sur la machine et des limites de mémoire ;</li>
+                    <li>un gestionnaire de bases fermé (<code>list_db = False</code>) une fois la base de production créée ;</li>
+                    <li><strong>la sauvegarde</strong> de la base et du volume <code>odoo-data</code>, et surtout un test de restauration ;</li>
+                    <li>une procédure de <strong>mise à jour avec retour arrière</strong> par tag daté.</li>
+                </ul>
+                <p>C'est le programme de l'ebook <a href="/shop/ebook-e3-formation-deploiement-odoo-19-ebook-5"><strong>Déployer Odoo en
+                    production</strong></a> : VPS, sécurité, PostgreSQL, systemd, Nginx et HTTPS, plusieurs instances et plusieurs versions sur
+                    un même serveur, Docker, sauvegardes, supervision et mises à jour, chaque commande jouée sur un vrai serveur.
+                    Son édition Odoo 20 est en cours de rédaction, sur le serveur qui a servi à cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Docker Engine et <code>docker compose</code> depuis le dépôt officiel de Docker, pas le paquet <code>docker.io</code>.</li>
+                    <li><code>odoo:20.0</code> + <code>postgres:17</code> (16 minimum), avec un healthcheck sur la base.</li>
+                    <li>Secrets tirés au sort : PostgreSQL dans <code>.env</code> (droits 600), mot de passe maître dans <code>odoo.conf</code>.</li>
+                    <li><code>http_interface = 0.0.0.0</code> dans <code>odoo.conf</code>, sinon Odoo 20 reste muet dans son conteneur.</li>
+                    <li><code>odoo.conf</code> lisible par le groupe 101 du conteneur : dossier 755, fichier <code>root:101</code> en 640.</li>
+                    <li>Port publié sur <code>127.0.0.1</code> seulement : Docker passe outre UFW.</li>
+                    <li>Base créée par <code>docker compose run --rm odoo odoo -d … -i base</code> ; mise à jour = <code>pg_dump</code>, <code>pull</code>, puis <code>-u all</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Procédure exécutée le 30/09/2026 sur un VPS Ubuntu 24.04.5 (2 vCPU, 4 Go), Docker 29.8.1, Compose v5.5.1,
+                    image <code>odoo:20.0</code> (<code>20.0-20260926</code>) et <code>postgres:17</code> :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : <code>--http-interface</code>, valeur par défaut <code>127.0.0.1</code> ; <code>--with-demo</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/release.py" target="_blank" rel="noopener"><code>odoo/release.py</code></a> : <code>MIN_PY_VERSION = (3, 12)</code>, <code>MAX_PY_VERSION = (3, 14)</code>, <code>MIN_PG_VERSION = 16</code></li>
+                    <li><a href="https://github.com/odoo/docker/tree/master/20.0" target="_blank" rel="noopener"><code>odoo/docker</code>, dossier 20.0</a> : Dockerfile, <code>entrypoint.sh</code>, <code>wait-for-psql.py</code>, <code>odoo.conf</code> par défaut</li>
+                    <li><a href="https://docs.docker.com/engine/install/ubuntu/" target="_blank" rel="noopener">Docker Engine sur Ubuntu</a> et <a href="https://docs.docker.com/engine/network/packet-filtering-firewalls/" target="_blank" rel="noopener">Docker et les pare-feu</a> (documentation Docker)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer Odoo 20 sur Ubuntu et le lancer dans PyCharm</a></h5>
+                            <p class="small text-muted mb-0">L'installation depuis les sources, pour développer et déboguer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Les nouveautés techniques d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Tout ce qui change pour les développeurs et les administrateurs.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/securiser-odoo-production-90">Sécuriser Odoo en production</a></h5>
+                            <p class="small text-muted mb-0">Mot de passe maître, liste des bases, proxy : les réglages à ne pas oublier.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!--
+TODO avant publication :
+- remplacer PLACEHOLDER_01 et 02 par les ids ir.attachment en prod
+- encadré « version Odoo 20 » à poser en tête du post 53 (installer-odoo-docker, Odoo 19)
+-->
