@@ -1,0 +1,522 @@
+<!--
+Article — Valorisation du stock Odoo 20 : coût moyen, FIFO, frais
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : valoriser-stock-cout-moyen-fifo-odoo
+Meta : Odoo 20 Community : régler le coût moyen ou le FIFO, comparer le coût des sorties sur un exemple chiffré, ajouter des frais d'approche et clôturer la valorisation.
+Mot-clé cible : odoo valorisation stock
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b9 (copie de vs20_func, démonstration).
+  Architecture : account/models/company.py:343-351 (inventory_valuation Periodic (at closing) / Perpetual (at invoicing),
+  défaut periodic), :367-375 (cost_method Standard / AVCO, défaut standard) ; stock_account/models/res_company.py:13-16 (FIFO
+  ajouté par stock_account) ; account/models/product.py:30-38 (property_valuation), :52-62 (property_cost_method, défaut =
+  méthode de la société). v19 : les trois champs étaient dans stock_account (odoo19 stock_account/models/res_company.py:19-47,
+  product.py) ; groupe « Inventory Valuation » de la catégorie visible de tous (odoo19 stock_account/views/product_views.xml:15-26).
+  v20 : onglet Comptabilité de la catégorie, groups account.group_account_readonly (account/views/product_view.xml:116-135) ;
+  groupe « Show Full Accounting Features » = group_account_user, implique readonly (account/security/account_security.xml:49-70) ;
+  Mitchell Admin hors des deux groupes (shell), case cochée à l'écran en mode développeur (rubrique Droits supplémentaires).
+  Rapport Stock : colonnes cost_method (optionnelle), avg_cost « Coût unitaire » → stock_avco_report_action (désactivé en FIFO),
+  total_value « Valeur totale » → stock_move_valuation_action (stock_account/views/product_views.xml:27-62 ; stock_move_views.xml:60-87).
+  Changement de méthode sur une catégorie → _correct_inventory_valuation depuis la dernière clôture (stock_account/models/product.py:761-773).
+  Création d'article → ligne product.value datée datetime.min (stock_account/models/product.py:192-195, absent de 19) = ligne
+  « Adjustment / Invalid DateTime » de l'Historique du coût unitaire.
+  Coûts logistiques : réglage module_stock_landed_costs (stock_account/views/res_config_settings_views.xml:9-15) ; menu
+  stock_landed_costs/views/stock_landed_cost_views.xml:224 ; validation : écriture seulement pour les articles real_time, puis
+  _set_value des mouvements (stock_landed_costs/models/stock_landed_cost.py:114-165).
+  Clôture : action client account.action_report_stock_valuation, chemin stock-valuation-closing, sans menuitem dans odoo/addons
+  (account/report/account_stock_valuation_report.xml:3-9 ; grep menuitem) ; menu « Valuation Adjustments » en mode développeur
+  seulement (stock_account/views/product_value_views.xml:80) ; cron mensuel/quotidien account/data/service_cron.xml:23-27.
+  Parcours joué : catégories Biens / Coût moyen (AVCO) et Biens / FIFO créées à l'écran ; Lampe LED (FURN_0003) → Coût moyen,
+  Bac à courrier (FURN_0004) → FIFO ; P00034 Wood Corner 100 + 100 à 0,40 $ (WH/IN/00027), P00035 à 0,60 $ (WH/IN/00028),
+  rangement WH/STOR/00005-00006 (réception 2 étapes de la base) → 200 u., coût 0,50 $, valeur 100 $ chacun ;
+  S00082 Acme Corporation 150 + 150, WH/OUT/00085 : valeur de sortie −75 $ (AVCO) / −70 $ (FIFO), reste 50 u. 25 $ à 0,50 $ /
+  30 $ à 0,60 $ ; P00036 50 + 50 à 0,60 $ (WH/IN/00029) → 0,55 $ / 0,60 $ ; LC/2026/0002 Fret et dédouanement 10 $ Par quantité
+  sur WH/IN/00029 : 30 → 35 $ par article, aucun account.move (valorisation périodique) → 0,60 $ / 60 $ et 0,65 $ / 65 $.
+  Clôture : « Generate Entries » → pièce brouillon « Stock Closing » journal Valorisation d'inventaire, 110100 débit /
+  110200 crédit 336 363,50 $ = somme des total_value des articles stockables (shell).
+  Article sans catégorie → méthode société (account/models/product.py:208-217). Admin : account_manager True, readonly False (shell).
+  Exercice vérifié par shell puis annulé (rollback) : +100 à 0,80 $ → 0,70 $ / 0,73 $ ; sortie de 50 → 35 $ / 30 $ ;
+  reste 150 u. 105 $ (0,70 $) / 115 $ (0,77 $).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Valorisation du stock Odoo 20 : coût moyen, FIFO, frais</h1>
+                <p class="lead mt-3 text-white">Le même article, acheté deux fois à deux prix différents, ne sort pas
+                    du stock au même coût selon la méthode choisie. Cet article règle le coût moyen et le premier
+                    entré, premier sorti (FIFO) dans Odoo 20 Community, compare les deux sur un exemple chiffré,
+                    ajoute des frais de transport au coût des articles, puis montre où se fait la clôture de
+                    la valorisation.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Inventaire, Achats et Ventes installés. Méthodes de coût, rapport de stock valorisé,
+                        coûts logistiques et rapport de clôture sont inclus dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Deux réglages, pas un</h2>
+                <p>Valoriser le stock, c'est attribuer un coût à chaque unité qui entre et à chaque unité qui sort.
+                    Odoo 20 sépare deux questions que l'on confond souvent.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Réglage</th><th>Question posée</th><th>Choix dans Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Méthode de coût</strong></td>
+                            <td>À quel coût sort une unité ?</td>
+                            <td>Standard Price (coût fixé à la main, par défaut) · Average Cost (AVCO), le coût moyen
+                                pondéré · Premier rentré premier sorti (FIFO)</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Valorisation d'inventaire</strong></td>
+                            <td>Quand la comptabilité en est-elle informée ?</td>
+                            <td>Periodic (at closing), à la clôture, par défaut · Perpetual (at invoicing), à la
+                                facturation</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>Les deux se règlent sur la <strong>catégorie d'articles</strong> ; à défaut, Odoo applique la
+                    valeur de la société. Sur la base de démonstration, toutes les catégories sont en coût standard
+                    et en valorisation périodique.</p>
+                <p><strong>Ce qui change depuis la version 19.</strong> Ces réglages ont quitté le module de
+                    valorisation du stock pour le module Facturation : la société porte désormais une méthode de
+                    coût et un mode de valorisation par défaut définis côté comptabilité, et le FIFO s'y ajoute dès
+                    qu'Inventaire est installé. Conséquence visible : en version 19, la méthode de coût
+                    s'affichait dans un bloc « Inventory Valuation » de la catégorie, pour tous ; en version 20,
+                    elle est rangée dans l'onglet <strong>Comptabilité</strong> de la catégorie, que seuls voient
+                    les utilisateurs dotés des fonctions comptables. L'administrateur d'une base neuve ne la voit
+                    donc pas.</p>
+                <p>Pour la saisie des frais d'approche eux-mêmes (transport, douane), l'article
+                    <a href="/blog/fonctionnel-odoo-1/livraison-directe-couts-logistiques-odoo-222">Livraison directe
+                    et coûts logistiques dans Odoo 20</a> présente le document pas à pas ; la présente page montre ce
+                    que ces frais changent au coût des articles selon la méthode.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>rendre visible et changer la méthode de coût d'une catégorie d'articles ;</li>
+                    <li>lire le coût unitaire et la valeur du stock de chaque article ;</li>
+                    <li>prévoir le coût d'une sortie en coût moyen et en FIFO ;</li>
+                    <li>faire entrer des frais de transport dans le coût des articles ;</li>
+                    <li>trouver le rapport de clôture de la valorisation périodique.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Donner accès à la méthode de coût</h2>
+                <p>Le champ <strong>Méthode de coût</strong> est réservé au droit <strong>Montrer les fonctions de
+                    comptabilité complètes</strong>, que l'administrateur de la base de démonstration n'a pas. Ce
+                    droit se coche en mode développeur : <code>Paramètres › Utilisateurs &amp; Sociétés ›
+                    Utilisateurs</code>, fiche de l'utilisateur, onglet <strong>Droits d'accès</strong>, rubrique
+                    <strong>Droits supplémentaires</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" style="max-width:60%; height:auto;" alt="Fiche utilisateur d'Odoo 20 en mode développeur, rubrique Droits supplémentaires : case Montrer les fonctions de comptabilité complètes cochée" loading="lazy"/>
+                    <figcaption>Le droit à cocher, dans la rubrique Droits supplémentaires de la fiche utilisateur.</figcaption>
+                </figure>
+                <p>Ce droit donne aussi accès aux comptes comptables des catégories et des réglages ; il se
+                    réserve donc à la personne qui décide de la valorisation, en général la responsable comptable,
+                    pas à chaque magasinier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Une catégorie par méthode</h2>
+                <p>La méthode se règle par catégorie : les articles valorisés de la même façon partagent une
+                    catégorie. <code>Inventaire › Configuration › Catégories</code>, <strong>Nouveau</strong> :
+                    nom « Coût moyen », parent « Biens », puis dans l'onglet <strong>Comptabilité</strong>, le
+                    champ <strong>Méthode de coût</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" style="max-width:100%; height:auto;" alt="Formulaire de catégorie d'articles d'Odoo 20, onglet Comptabilité : Valorisation d'inventaire Periodic (at closing), liste Méthode de coût ouverte sur Standard Price, Average Cost (AVCO) et Premier rentré premier sorti (FIFO)" loading="lazy"/>
+                    <figcaption>Les trois méthodes de coût, dans l'onglet Comptabilité de la catégorie.</figcaption>
+                </figure>
+                <p>L'exemple crée deux catégories, « Biens / Coût moyen » en <strong>Average Cost (AVCO)</strong> et
+                    « Biens / FIFO » en <strong>Premier rentré premier sorti (FIFO)</strong>, puis range deux
+                    articles de la démonstration, jusque-là sans stock : la <strong>Lampe LED</strong> dans
+                    Coût moyen, le <strong>Bac à courrier</strong> dans FIFO (champ Catégorie de la fiche article).
+                    Le champ <strong>Valorisation d'inventaire</strong> reste sur Periodic (at closing).</p>
+                <p>Changer la méthode d'une catégorie qui contient déjà du stock n'est pas anodin : Odoo
+                    recalcule la valeur de ses articles depuis la dernière clôture de valorisation. Mieux vaut
+                    choisir la méthode avant les premiers mouvements, ou juste après une clôture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Deux réceptions à deux prix</h2>
+                <p>Deux commandes chez Wood Corner portent chacune 100 lampes et 100 bacs : la première à
+                    0,40 $ l'unité (P00034), la seconde à 0,60 $ (P00035). Les deux réceptions sont validées. Pour
+                    lire le résultat : <code>Inventaire › Analyse › Stock</code>, recherche sur les deux articles,
+                    et la colonne optionnelle <strong>Méthode de coût</strong> ajoutée par le bouton de réglage des
+                    colonnes, en bout d'en-tête.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" style="max-width:100%; height:auto;" alt="Rapport Stock d'Odoo 20 après deux réceptions : Lampe LED en Average Cost (AVCO) et Bac à courrier en FIFO, 200 disponibles chacun, coût unitaire 0,50 dollar, valeur totale 100 dollars" loading="lazy"/>
+                    <figcaption>Après les deux réceptions : même quantité, même valeur pour les deux articles.</figcaption>
+                </figure>
+                <p>Tant que rien n'est sorti, les deux méthodes donnent la même chose : 100 × 0,40 + 100 × 0,60 =
+                    100 $ pour 200 unités, soit 0,50 $. Le <strong>Coût unitaire</strong> affiché est la valeur du
+                    stock divisée par la quantité ; il devient aussi le coût de l'article (champ Coût de la fiche).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Une livraison de 150 unités : le coût moyen et le FIFO divergent</h2>
+                <p>La commande S00082 d'Acme Corporation porte 150 lampes et 150 bacs ; sa livraison WH/OUT/00085
+                    est validée. Le rapport Stock change alors de visage.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" style="max-width:100%; height:auto;" alt="Rapport Stock d'Odoo 20 après la livraison de 150 unités : Lampe LED en AVCO 50 disponibles, coût 0,50 dollar, valeur 25 dollars ; Bac à courrier en FIFO 50 disponibles, coût 0,60 dollar, valeur 30 dollars" loading="lazy"/>
+                    <figcaption>Après la livraison : 50 unités restent de chaque article, mais pas à la même valeur.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th></th><th>Lampe LED, coût moyen</th><th>Bac à courrier, FIFO</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Coût des 150 unités livrées</td><td>150 × 0,50 = 75 $</td><td>100 × 0,40 + 50 × 0,60 = 70 $</td></tr>
+                        <tr><td>Stock restant</td><td>50 × 0,50 = 25 $</td><td>50 × 0,60 = 30 $</td></tr>
+                        <tr><td>Coût unitaire affiché</td><td>0,50 $</td><td>0,60 $</td></tr>
+                    </tbody>
+                </table>
+                <p>En coût moyen, chaque sortie part au coût moyen du moment ; le coût moyen ne bouge qu'à
+                    l'entrée. En FIFO, la sortie consomme d'abord le lot le plus ancien : les 100 unités à 0,40 $,
+                    puis 50 unités à 0,60 $. Quand les prix montent, le FIFO donne un coût des ventes plus bas et un
+                    stock restant plus cher ; c'est l'inverse quand ils baissent. Sur un an, l'écart pèse sur la marge
+                    affichée, pas sur la trésorerie : les factures fournisseurs restent les mêmes.</p>
+
+                <h3>Voir les lots FIFO restants</h3>
+                <p>Dans le rapport Stock, la <strong>Valeur totale</strong> du Bac à courrier est un lien. Il ouvre la
+                    liste <strong>Valorisation</strong>, filtrée sur les entrées qui ont encore du stock. Retirer les
+                    filtres « Entrant » et « Restant » affiche tous les mouvements de l'article.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" style="max-width:100%; height:auto;" alt="Liste Valorisation d'Odoo 20 pour le Bac à courrier : WH/OUT/00085 150 unités valeur moins 70 dollars ; WH/IN/00028 100 unités 60 dollars, quantité restante 50, valeur restante 30 dollars ; WH/IN/00027 100 unités 40 dollars, restant 0" loading="lazy"/>
+                    <figcaption>En FIFO, chaque réception garde sa quantité et sa valeur restantes.</figcaption>
+                </figure>
+                <p>La première réception, WH/IN/00027, est épuisée ; la seconde garde 50 unités pour 30 $. La
+                    livraison est valorisée à −70 $. Cette liste répond à la question qu'un contrôleur de gestion
+                    pose en fin de mois : de quels achats est fait le stock qui reste.</p>
+
+                <h3>Suivre le coût moyen</h3>
+                <p>Pour la Lampe LED, c'est le <strong>Coût unitaire</strong> qui est un lien (il ne l'est pas pour
+                    un article en FIFO). Il ouvre l'<strong>Historique du coût unitaire</strong> : chaque mouvement,
+                    la valeur ajoutée, la valeur et la quantité totales après le mouvement, et le coût moyen qui en
+                    résulte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" style="max-width:100%; height:auto;" alt="Historique du coût unitaire d'Odoo 20 pour la Lampe LED : WH/IN/00027 100 unités 40 dollars coût 0,40 ; WH/IN/00028 100 unités 60 dollars total 200 unités 100 dollars coût 0,50 ; WH/OUT/00085 moins 150 unités moins 75 dollars, reste 50 unités 25 dollars coût 0,50 ; ligne Adjustment Invalid DateTime" loading="lazy"/>
+                    <figcaption>Le coût moyen passe de 0,40 $ à 0,50 $ à la seconde réception ; la livraison ne le modifie pas.</figcaption>
+                </figure>
+                <p>La dernière ligne, « Adjustment » datée « Invalid DateTime », n'est pas une erreur de saisie :
+                    Odoo 20 enregistre un coût initial à la création de chaque article, avec une date antérieure à
+                    tout mouvement, que la liste ne sait pas afficher. Elle est sans effet sur le calcul.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Faire entrer des frais de transport dans le coût</h2>
+                <p>Le prix d'achat ne dit pas tout : transport, douane ou assurance s'ajoutent au coût réel. Odoo
+                    les répartit sur les articles d'une réception grâce aux <strong>coûts logistiques</strong>.
+                    La fonction s'active dans <code>Inventaire › Configuration › Paramètres</code>, bloc
+                    <strong>Valorisation</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" style="max-width:100%; height:auto;" alt="Paramètres Inventaire d'Odoo 20, bloc Valorisation : case Coûts logistiques cochée, Ajouter un coût additionnel (transport, douane) dans la valeur du produit, champ Journal par défaut" loading="lazy"/>
+                    <figcaption>La case Coûts logistiques, dans le bloc Valorisation des paramètres d'Inventaire.</figcaption>
+                </figure>
+                <p>Une troisième commande (P00036) apporte 50 lampes et 50 bacs à 0,60 $, réceptionnés en
+                    WH/IN/00029. Le transporteur facture 10 $. Dans <code>Inventaire › Opérations › Coûts
+                    logistiques</code>, <strong>Nouveau</strong> : Appliquer sur <strong>Transferts</strong>,
+                    Transferts WH/IN/00029, puis une ligne avec l'article de démonstration <strong>Fret et
+                    dédouanement</strong> (un service marqué comme coût logistique), méthode de répartition
+                    <strong>Par quantité</strong>, coût 10 $. Le bouton <strong>Calculer</strong> fait la
+                    répartition.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" style="max-width:100%; height:auto;" alt="Document de coût logistique LC/2026/0002 d'Odoo 20 : appliqué sur le transfert WH/IN/00029, journal Valorisation d'inventaire, ligne Fret et dédouanement compte 600000 Charges, méthode Par quantité, coût 10 dollars, total 10 dollars, bouton Calculer" loading="lazy"/>
+                    <figcaption>Le coût logistique : 10 $ de fret à répartir sur la réception WH/IN/00029.</figcaption>
+                </figure>
+                <p>L'onglet <strong>Correction de valorisation</strong> montre le résultat avant validation : 50
+                    unités de chaque article, donc 5 $ chacun, et une valeur de réception qui passe de 30 $ à 35 $.
+                    Les autres méthodes (Égal, Par coût actuel, Par poids, Par volume) changent seulement la clé de
+                    répartition.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" style="max-width:100%; height:auto;" alt="Onglet Correction de valorisation d'Odoo 20 : Fret et dédouanement sur Lampe LED et Bac à courrier, 50 unités chacun, valeur d'origine 30 dollars, nouvelle valeur 35 dollars, coûts logistiques additionnels 5 dollars" loading="lazy"/>
+                    <figcaption>La répartition par quantité : 5 $ par article, 0,10 $ par unité.</figcaption>
+                </figure>
+                <p>Après <strong>Valider</strong>, le rapport Stock confirme l'effet sur le coût des deux articles.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" style="max-width:100%; height:auto;" alt="Rapport Stock d'Odoo 20 après le coût logistique : Lampe LED AVCO 100 disponibles, coût 0,60 dollar, valeur 60 dollars ; Bac à courrier FIFO 100 disponibles, coût 0,65 dollar, valeur 65 dollars" loading="lazy"/>
+                    <figcaption>Le fret est entré dans la valeur du stock : 0,60 $ en coût moyen, 0,65 $ en FIFO.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th></th><th>Lampe LED, coût moyen</th><th>Bac à courrier, FIFO</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Avant la réception</td><td>50 u., 25 $</td><td>50 u. à 0,60 $, 30 $</td></tr>
+                        <tr><td>Réception WH/IN/00029</td><td>+ 50 u., 30 $</td><td>+ 50 u., 30 $</td></tr>
+                        <tr><td>Fret réparti</td><td>+ 5 $</td><td>+ 5 $ sur ce seul lot</td></tr>
+                        <tr><td>Résultat</td><td>100 u., 60 $, soit 0,60 $</td><td>50 u. à 0,60 $ + 50 u. à 0,70 $ = 65 $</td></tr>
+                    </tbody>
+                </table>
+                <p>En coût moyen, le fret se fond dans la moyenne. En FIFO, il reste attaché au lot qu'il a
+                    transporté : les 50 bacs de WH/IN/00029 sortiront à 0,70 $, après les 50 plus anciens à
+                    0,60 $. En coût standard, en revanche, la valeur des mouvements est corrigée mais le coût de
+                    l'article ne bouge pas : c'est la situation par défaut de la base de démonstration.</p>
+                <p>Aucune écriture comptable n'a été créée par ce document : ses articles sont en valorisation
+                    périodique. Odoo n'écrit en comptabilité, à la validation d'un coût logistique, que pour les
+                    articles en valorisation Perpetual (at invoicing).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Clôturer la valorisation périodique</h2>
+                <p>En valorisation périodique, les mouvements de stock n'écrivent rien en comptabilité : le stock
+                    est porté au bilan à la clôture, par une pièce qui ajuste le compte de stock à la valeur du
+                    rapport. L'écran qui la prépare, <strong>Valorisation d'inventaire</strong>, n'a pas d'entrée
+                    de menu dans Odoo 20 Community ; il s'ouvre par son adresse, <code>/odoo/stock-valuation-closing</code>,
+                    ajoutée à l'adresse de la base.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" style="max-width:100%; height:auto;" alt="Rapport Valorisation d'inventaire d'Odoo 20 au 06/10/2026 : Initial Balance 0, Stock Variation avec 110200 Inventory Variation au crédit et 110100 Valorisation d'inventaire au débit pour 336 363,50 dollars, Ending Stock 336 363,50 dollars, bouton Generate Entries" loading="lazy"/>
+                    <figcaption>Le rapport de clôture : solde initial, variation du stock et stock final, compte par compte.</figcaption>
+                </figure>
+                <p>Le rapport part du solde du compte de stock (Initial Balance, 0 $ sur la démonstration, jamais
+                    clôturée), calcule la variation et aboutit au stock final, ici 336 363,50 $ : la somme des
+                    valeurs de tous les articles stockés de la société, dont les 125 $ de l'exemple. Le bouton
+                    <strong>Generate Entries</strong> crée la pièce « Stock Closing » dans le journal Valorisation
+                    d'inventaire, en <strong>brouillon</strong> : débit 110100 Valorisation d'inventaire, crédit
+                    110200 Inventory Variation. La responsable comptable la vérifie, puis la comptabilise ; le bouton
+                    de date (As of) fixe la date d'arrêté du rapport.</p>
+                <p>En valorisation Perpetual (at invoicing), la logique est inverse : selon l'aide du champ, Odoo
+                    crée automatiquement une écriture de valorisation du stock lorsqu'un article est facturé, client
+                    ou fournisseur. Le choix entre les deux relève de l'expert-comptable.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Les trois méthodes de coût, les deux modes de valorisation, le rapport Stock valorisé,
+                        l'historique du coût moyen, la liste des lots FIFO, les coûts logistiques et le rapport de
+                        clôture sont tous présents dans Odoo 20 Community. Deux accès demandent un détour : la
+                        méthode de coût exige le droit « Montrer les fonctions de comptabilité complètes », et le
+                        rapport de clôture n'a pas de menu.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Points de vigilance</h4>
+                    <ul>
+                        <li><strong>Pas d'onglet Comptabilité sur la catégorie ?</strong> Le droit « Montrer les
+                            fonctions de comptabilité complètes » manque à l'utilisateur (étape 1). Le rôle
+                            Administrateur de la comptabilité ne suffit pas.</li>
+                        <li><strong>Une catégorie, une méthode.</strong> Changer la méthode d'une catégorie
+                            revalorise tous ses articles depuis la dernière clôture : à faire en connaissance de
+                            cause, de préférence juste après une clôture.</li>
+                        <li><strong>Article sans catégorie.</strong> En version 20, la catégorie est facultative ;
+                            un article qui n'en a pas suit la méthode de la société, le coût standard sur la
+                            démonstration.</li>
+                        <li><strong>Coût logistique en coût standard.</strong> La valeur des mouvements est corrigée,
+                            le coût de l'article non : pour que le fret pèse sur la marge, la catégorie doit être en
+                            coût moyen ou en FIFO.</li>
+                        <li><strong>Pièce de clôture en brouillon.</strong> Generate Entries ne comptabilise rien
+                            seul : tant que la pièce reste en brouillon, le bilan ignore le stock.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> prévoir, puis vérifier, le coût d'une sortie dans les deux
+                        méthodes après une hausse de prix.</p>
+                    <p><strong>Indication :</strong> à partir de l'état final de l'exemple (100 lampes à 60 $,
+                        100 bacs à 65 $), recevez 100 unités de chaque article à 0,80 $, puis livrez 50 unités de
+                        chacun. Calculez d'abord sur papier : coût moyen après la réception, lots FIFO consommés par
+                        la livraison.</p>
+                    <p><strong>Critère de réussite :</strong> après la réception, le rapport Stock affiche 0,70 $
+                        pour la lampe et 0,73 $ pour le bac ; la livraison est valorisée 35 $ en coût moyen et 30 $
+                        en FIFO ; il reste 150 lampes pour 105 $ et 150 bacs pour 115 $ (0,77 $).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Méthode de coût (standard, moyen, FIFO) et mode de valorisation (périodique, perpétuel)
+                        sont deux réglages distincts de la catégorie d'articles.</li>
+                    <li>En Odoo 20, ils se trouvent dans l'onglet Comptabilité de la catégorie, visible avec le droit
+                        « Montrer les fonctions de comptabilité complètes ».</li>
+                    <li>Le coût moyen ne change qu'aux entrées ; le FIFO fait sortir les lots les plus anciens
+                        d'abord.</li>
+                    <li>Les coûts logistiques s'ajoutent au coût des articles en coût moyen ou en FIFO, pas en coût
+                        standard.</li>
+                    <li>En valorisation périodique, la comptabilité ne voit le stock qu'à la clôture, préparée par
+                        le rapport Valorisation d'inventaire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livraison-directe-couts-logistiques-odoo-222">Livraison directe et coûts logistiques</a></h5>
+                            <p class="small text-muted mb-0">Le document de coût logistique pas à pas, et le dropshipping.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">Les commandes fournisseurs qui alimentent la valorisation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/maitriser-approvisionnements-valorisation-stock-fifo-avco-99">Valorisation FIFO et AVCO, version Odoo 19</a></h5>
+                            <p class="small text-muted mb-0">Pour une base encore en version 19.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

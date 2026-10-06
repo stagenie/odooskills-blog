@@ -1,0 +1,535 @@
+<!--
+Article — Code promo Odoo 20 qui ne fonctionne pas : 8 causes
+Série « Remises et promotions avec Odoo 20 » (blog Fonctionnel) — dépannage
+Date : 2026-10-06
+Slug : code-promo-ne-fonctionne-pas-odoo
+Mot-clé cible : odoo coupon ne fonctionne pas / code promo odoo ne s'applique pas
+Tags : intermediaire, ventes, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_a4 (copie de vs20_func, démonstration native),
+réglage « Promotions, Fidélité & Cartes-Cadeaux » coché à l'écran (Ventes › Configuration › Paramètres).
+  Programme d'essai « Offre mobilier : 15 % dès 500 $ » (Code de remise MOBILIER15, Achat minimum 500 taxes incluses,
+  catégorie Mobilier, 15 % sur la commande) ; promotion « Promotion : 5 % dès 1 500 $ » (automatique).
+  Recherche du code : sale_loyalty/models/sale_order.py:1738-1740 (égalité stricte, donc sensible à la casse) ; écran :
+  « mobilier15 » → « Ce code n'est pas valide (mobilier15). » ; « MOBILIER15 » suivi d'une espace accepté.
+  Période, liste de prix, société, case Ventes : _get_program_domain / _get_trigger_domain :792-834 ; date du jour dans
+  le fuseau de la société :836-860 ; code introuvable → :1764-1778. Écran : Availability Dates 1 sept. → 5 oct. vu le
+  6 oct. → « Ce code n'est pas valide (MOBILIER15). » ; Pour = USD, devis Azure Interior (liste Grossiste) → même message.
+  Condition : :1505-1516 (montant des seules lignes éligibles, TTC si « taxes incluses »), message :1605-1611 (nouveau
+  libellé en 20, v19 « A minimum of … should be purchased » ; non traduit dans fr.po) ; quantité :1612-1615.
+  Écran : S00083 Acme, 10 Boîte de rangement 158 $ + Montage de meubles 2 000 $ (total 2 481,70 $) → « To take advantage
+  of this offer, your order must include at least 500.0 USD of the eligible products. »
+  Limite : :1790-1791 « Ce code est expiré (%s). » ; comptage sale_loyalty/models/loyalty_program.py:12-27 (toute ligne de
+  récompense, devis en brouillon compris). Écran : limite 1, S00082 en brouillon → « 1 utilisé(s) », devis S00084 Wood
+  Corner → « Ce code est expiré (MOBILIER15). ». Shell (transaction annulée) : annuler un devis ou supprimer sa ligne de
+  remise fait baisser le compteur (4 → 3 → 2).
+  Une fois par client : :1745-1754 (saisie), :206-210 (confirmation, UserError), :312-316 (client mémorisé à la
+  confirmation) ; message non traduit. Écran : Ready Mat, code appliqué sur S00090 et S00091 en brouillon, S00090
+  confirmée, S00091 → « Opération invalide — This promo code can only be used once. » ; ligne de remise supprimée sur
+  S00091 → confirmée. Suppression de la ligne = règle retirée : sale_loyalty/models/sale_order_line.py:133-156.
+  Récompense non choisie : sale_loyalty/wizard/sale_loyalty_reward_wizard.py:48-51 (« Aucune récompense
+  sélectionnée. ») ; bouton radio non présélectionné même avec une seule récompense (vu à l'écran). Annuler la fenêtre
+  laisse le code enregistré sans remise (S00086, S00097) ; Récompense n'ajoute rien ; ressaisir le code + cocher → ligne
+  -88,35 $. Bouton Récompense : une seule récompense → ajoutée sans fenêtre (:285-294).
+  Promotion automatique : :196-280 ; écran S00094 Acme 3 Table extérieure 1 767 $ confirmée sans remise, notification
+  « Récompenses disponibles. Il existe des récompenses disponibles non ajoutées à cette commande. »
+  Devis modifié : _update_programs_and_rewards (:1188) appelé par Récompense (:285-287) et à la confirmation (:222) ;
+  écran S00093 Gemini Furniture 40 → 20 Boîte de rangement, ligne -94,80 $ restée, confirmation → ligne retirée sans
+  message ; S00096 Azure Interior → Récompense retire la ligne ; S00098 Wood Corner 10pc 2 → 1 Table, -117,80 $ →
+  Récompense → -58,90 $.
+  Deux remises sur la commande : :1688-1717 ; écran S00095 Wood Corner : MOBILIER15 puis 10pc → « La remise (10% de
+  réduction sur votre commande) n'est pas compatible avec "15% sur votre commande". Veuillez la supprimer pour appliquer
+  celle-ci. » ; la meilleure remplace l'ancienne : :1092-1104 ; remise « globale » = pourcentage ou montant par commande
+  appliqué à la Commande : loyalty/models/loyalty_reward.py:330-336 ; libellés Commande / Produit le moins cher /
+  Produits spécifiques : loyalty/i18n/fr.po.
+  Bons : :1771-1774 (« Ce bon de réduction est expiré. », « Ce bon de réduction a déjà été utilisé. »).
+Captures : content/blog/screenshots/code-promo-ne-fonctionne-pas-odoo/ (01-14, Playwright,
+docs/blog-odoo20/captures-base-vs20_func/a4-promo-depannage/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Code promo Odoo 20 qui ne fonctionne pas : 8 causes</h1>
+                <p class="lead mt-3 text-white">Le client cite son code, le commercial le saisit sur le devis, et
+                    Odoo refuse, ou accepte sans rien déduire. Derrière quelques messages souvent trompeurs se cachent
+                    huit causes, toutes reproduites ici sur la base de démonstration, avec leur correction.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Remises et promotions avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration (Ventes, Site Web, eCommerce, Point de vente), avec l'option
+                        Promotions, Fidélité &amp; Cartes-Cadeaux activée. Les programmes de promotion existent aussi
+                        dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Sur un devis, un code se saisit avec le bouton <strong>Code promotionnel</strong>, sous les
+                    lignes ; une promotion sans code s'applique avec le bouton <strong>Récompense</strong>. Odoo
+                    contrôle alors le programme dans un ordre précis : le code existe-t-il, le programme est-il en
+                    vigueur pour ce devis, la condition est-elle remplie, le code a-t-il encore des usages, la
+                    récompense a-t-elle bien été ajoutée. Chaque étape a son message, et le même message peut
+                    recouvrir plusieurs causes. Pour la prise en main des remises du devis et des listes de prix,
+                    voir <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et
+                    remises dans Odoo 20</a>.</p>
+                <p>Toutes les causes ci-dessous sont reproduites avec un programme d'essai, créé dans
+                    <strong>Ventes › Promotions › Remise &amp; Fidélité</strong> : type <strong>Code de
+                    remise</strong>, nom « Offre mobilier : 15 % dès 500 $ », récompense de 15 % sur la commande et
+                    une règle unique.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Règle conditionnelle d'un programme Odoo 20 : code de remise MOBILIER15, quantité minimale 1, achat minimum 500,00 taxes incluses, catégorie Mobilier" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle du programme d'essai : le code MOBILIER15, 500 $ taxes incluses, parmi les articles de la catégorie Mobilier.</figcaption>
+                </figure>
+                <p>Le tableau suivant sert de point d'entrée : repérez le message affiché, puis lisez la section
+                    correspondante.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Message affiché</th><th>Causes possibles</th><th>Section</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>« Ce code n'est pas valide (…). »</td><td>Code mal saisi ; programme hors période, réservé à une autre liste de prix ou société, archivé, non disponible pour les Ventes</td><td>1, 2</td></tr>
+                        <tr><td>« To take advantage of this offer, your order must include at least … »</td><td>Montant minimum non atteint sur les articles éligibles</td><td>3</td></tr>
+                        <tr><td>« Ce code est expiré (…). »</td><td>Limite d'utilisation atteinte, devis en brouillon compris</td><td>4</td></tr>
+                        <tr><td>« This promo code can only be used once. »</td><td>Case « Once per user » : le client a déjà utilisé le code</td><td>5</td></tr>
+                        <tr><td>« Aucune récompense sélectionnée. » ou aucun message</td><td>Code accepté mais récompense non choisie ; promotion automatique jamais appliquée</td><td>6</td></tr>
+                        <tr><td>Aucun message, remise fausse ou disparue</td><td>Devis modifié après l'application du code</td><td>7</td></tr>
+                        <tr><td>« La remise (…) n'est pas compatible avec … »</td><td>Deux remises sur la commande entière</td><td>8</td></tr>
+                        <tr><td>« Ce bon de réduction est expiré. » / « … a déjà été utilisé. »</td><td>Bon de réduction à usage unique déjà consommé ou périmé</td><td>4</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>relier chaque message d'erreur d'un code promo à sa cause réelle ;</li>
+                    <li>vérifier la période, la liste de prix, la condition et la limite d'un programme ;</li>
+                    <li>débloquer un devis refusé par l'option « une fois par client » ;</li>
+                    <li>repérer une remise oubliée, périmée ou retirée avant de confirmer la commande.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le code est mal saisi</h2>
+                <p>Sur un devis pour Acme Corporation avec une Table extérieure (589 $), cliquez sur
+                    <strong>Code promotionnel</strong> et saisissez <code>mobilier15</code>, en minuscules.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Erreur de validation d'Odoo 20 : Ce code n'est pas valide (mobilier15)." style="max-width:60%; height:auto;"/>
+                    <figcaption>Le code saisi en minuscules est inconnu.</figcaption>
+                </figure>
+                <p>Odoo cherche le code tel quel : la casse compte. <code>MOBILIER15</code> passe,
+                    <code>mobilier15</code> non. Les espaces avant ou après le code, en revanche, sont ignorés.</p>
+                <p><strong>Correction :</strong> recopiez le code depuis la règle du programme (fenêtre de la
+                    figure 1). Pour les codes diffusés au public, préférez des codes en majuscules seules, sans
+                    lettres ambiguës. Si le code est correct et le message persiste, passez à la cause 2 : le
+                    même message signale un programme inaccessible.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le programme ne vise pas ce devis</h2>
+                <p>Au-dessus des onglets du programme, deux champs restreignent son usage :
+                    <strong>Pour</strong> (des listes de prix) et <strong>Availability Dates</strong> (une période,
+                    bornes incluses). Pour la démonstration, la période est fixée du 1er septembre au 5 octobre, et le
+                    code est saisi le 6 octobre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="En-tête du programme Odoo 20 : Limite d'utilisation, Once per user, Pour (All Pricelist), Availability Dates du 1 sept. au 5 oct." style="max-width:100%; height:auto;"/>
+                    <figcaption>Une période de validité terminée la veille.</figcaption>
+                </figure>
+                <p>Le code, pourtant correctement saisi, est refusé avec le même message qu'une faute de frappe :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Erreur de validation d'Odoo 20 : Ce code n'est pas valide (MOBILIER15)." style="max-width:60%; height:auto;"/>
+                    <figcaption>Hors période, le code est « non valide », et non « expiré ».</figcaption>
+                </figure>
+                <p>Odoo ne cherche le code que parmi les programmes en vigueur pour le devis. Sont écartés, avec ce
+                    même message :</p>
+                <ul>
+                    <li>un programme dont la période est terminée ou pas encore commencée (la date du jour est prise
+                        dans le fuseau horaire de la société) ;</li>
+                    <li>un programme réservé à d'autres listes de prix : avec <strong>Pour</strong> = USD, le devis
+                        d'Azure Interior, client de la liste « Grossiste », est refusé ;</li>
+                    <li>un programme d'une autre société ;</li>
+                    <li>un programme dont la case <strong>Ventes</strong> de l'onglet <strong>Settings</strong>
+                        (bloc Disponible sur) est décochée, ou un programme archivé.</li>
+                </ul>
+                <p><strong>Correction :</strong> ouvrez le programme et contrôlez ces quatre points ; vérifiez sur le
+                    devis la liste de prix et la société. Prolonger la période ou ajouter la liste de prix suffit, le
+                    code s'applique aussitôt.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La condition n'est pas remplie</h2>
+                <p>Un devis pour Acme Corporation porte dix Boîtes de rangement (158 $) et un Montage de meubles
+                    (2 000 $), soit 2 481,70 $ toutes taxes comprises. Le code MOBILIER15 est saisi :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Erreur de validation d'Odoo 20 : To take advantage of this offer, your order must include at least 500.0 USD of the eligible products." style="max-width:60%; height:auto;"/>
+                    <figcaption>Le minimum se calcule sur les seuls articles éligibles.</figcaption>
+                </figure>
+                <p>Le devis dépasse largement 500 $, mais le montage est un service hors de la catégorie Mobilier :
+                    seules les boîtes comptent, 181,70 $ taxes comprises. Le message, affiché en anglais, dit
+                    exactement cela : « au moins 500 USD <em>des produits éligibles</em> ». Odoo 20 a changé ce
+                    texte : en Odoo 19, il parlait seulement d'un minimum à acheter.</p>
+                <p>Deux réglages de la règle font la différence :</p>
+                <ul>
+                    <li><strong>Parmi</strong> (produits, catégories, étiquette) : délimite les articles pris en
+                        compte dans le montant et la quantité minimale ;</li>
+                    <li><strong>taxes incluses</strong> / <strong>taxes exclues</strong> à côté de l'achat minimum :
+                        par défaut, le seuil se compare au montant TTC.</li>
+                </ul>
+                <p>Quand c'est la quantité qui manque, le message devient « Vous n'avez pas les quantités de produit
+                    requises sur votre commande client. ».</p>
+                <p><strong>Correction :</strong> c'est le comportement voulu par la règle. Ajoutez des articles
+                    éligibles, ou élargissez la règle si l'offre annoncée au client portait sur toute la commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. La limite d'utilisation est atteinte</h2>
+                <p>Cochez <strong>Limite d'utilisation</strong> et fixez-la à 1. Le programme affiche aussitôt
+                    « 1 utilisé(s) », alors qu'aucune commande n'est confirmée : le premier devis d'Acme
+                    Corporation, resté en brouillon, porte déjà la remise.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Programme Odoo 20 : Limite d'utilisation cochée, au 1 usages, 1 utilisé(s)" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le compteur d'usages compte les devis qui portent la remise, brouillons compris.</figcaption>
+                </figure>
+                <p>Sur un nouveau devis, pour Wood Corner, le code est refusé :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Erreur de validation d'Odoo 20 : Ce code est expiré (MOBILIER15)." style="max-width:60%; height:auto;"/>
+                    <figcaption>« Expiré » signifie ici « plus d'usage disponible », pas « date dépassée ».</figcaption>
+                </figure>
+                <p>Le compteur additionne toutes les commandes qui portent une ligne de récompense du programme,
+                    quel que soit leur état. Un devis abandonné mais jamais annulé consomme donc un usage. Annuler le
+                    devis ou supprimer sa ligne de remise libère l'usage.</p>
+                <p>Les <strong>bons de réduction</strong> à usage unique suivent la même logique, avec leurs propres
+                    messages : « Ce bon de réduction a déjà été utilisé. » et, après la date de validité du bon,
+                    « Ce bon de réduction est expiré. ».</p>
+                <p><strong>Correction :</strong> repérez les devis qui portent la remise (liste des devis, recherche
+                    sur le code ou le client), annulez ceux qui sont abandonnés ou supprimez leur ligne de remise ;
+                    sinon relevez la limite.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le client a déjà utilisé le code</h2>
+                <p>Odoo 20 ajoute aux programmes de type Code de remise une case <strong>Once per user</strong>
+                    (une fois par client). Le client est mémorisé à la <strong>confirmation</strong> d'une commande
+                    qui porte le code, pas à la saisie. D'où deux situations.</p>
+                <p>Le cas simple : le client a déjà une commande confirmée avec le code ; une nouvelle saisie
+                    affiche « This promo code can only be used once. » dans une fenêtre Erreur de validation.</p>
+                <p>Le cas déroutant : le code a été saisi sur <strong>deux devis</strong> du même client, ici Ready
+                    Mat, tant qu'aucun n'était confirmé. Les deux portent la remise de 15 %. Le premier se confirme
+                    normalement ; le second est bloqué au moment de la confirmation :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Opération invalide d'Odoo 20 : This promo code can only be used once." style="max-width:60%; height:auto;"/>
+                    <figcaption>Le second devis du même client ne peut plus être confirmé.</figcaption>
+                </figure>
+                <p><strong>Correction :</strong> sur le devis bloqué, supprimez la ligne de remise du code (icône
+                    corbeille), enregistrez, puis confirmez : la commande passe, sans la remise. Le code reste
+                    utilisable par les autres clients.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La récompense n'a pas été ajoutée</h2>
+                <p>Un code accepté ne crée pas encore de remise : Odoo ouvre la fenêtre <strong>Récompenses
+                    disponibles</strong>, dans laquelle il faut <strong>cocher</strong> la récompense, même quand
+                    elle est seule. Cliquer directement sur Appliquer donne :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Erreur de validation d'Odoo 20 : Aucune récompense sélectionnée." style="max-width:60%; height:auto;"/>
+                    <figcaption>La récompense n'est jamais présélectionnée.</figcaption>
+                </figure>
+                <p>Le piège vient ensuite. Si le commercial ferme cette fenêtre par <strong>Annuler</strong>, le
+                    devis reste sans remise, mais le code y est mémorisé : le bouton Récompense ne propose plus rien,
+                    et une remise « une fois par client » peut même bloquer la confirmation (cause 5) sans avoir rien
+                    accordé. Ressaisissez le code et cochez la récompense :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Récompenses disponibles d'Odoo 20 : récompense Offre mobilier 15 % dès 500 $ - 15% sur votre commande cochée, boutons Appliquer et Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>La récompense cochée, puis Appliquer : la ligne « 15% sur votre commande » apparaît.</figcaption>
+                </figure>
+                <p>Les promotions <strong>automatiques</strong> posent le même problème sous une autre forme : sur
+                    un devis, rien ne s'applique seul. Avec la promotion « 5 % dès 1 500 $ », un devis de trois
+                    Tables extérieures (1 767 $) confirmé sans clic sur Récompense devient une commande sans remise.
+                    Odoo se contente d'une notification :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Notification Odoo 20 : Récompenses disponibles. Il existe des récompenses disponibles non ajoutées à cette commande." style="max-width:70%; height:auto;"/>
+                    <figcaption>Une simple notification : la commande est déjà confirmée.</figcaption>
+                </figure>
+                <p><strong>Correction :</strong> vérifiez qu'une ligne de remise figure sur le devis avant de le
+                    confirmer ; cliquez sur <strong>Récompense</strong> pour les promotions sans code. Quand une seule
+                    récompense est disponible, ce bouton l'ajoute directement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le devis a été modifié après le code</h2>
+                <p>La ligne de remise est calculée au moment où le code est appliqué. Si le commercial modifie
+                    ensuite les quantités, elle n'est pas recalculée. Sur un devis pour Gemini Furniture, 40 Boîtes de
+                    rangement (632 $) reçoivent 15 %, soit −94,80 $. La quantité passe ensuite à 20 :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Devis Odoo 20 : 20 Boîtes de rangement pour 316,00 $ et une ligne 15% sur votre commande restée à -94,80 $, total 221,20 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La remise est restée à −94,80 $ alors que 15 % de 316 $ font 47,40 $.</figcaption>
+                </figure>
+                <p>Le devis affiche donc une remise fausse, et la condition des 500 $ n'est même plus remplie. À la
+                    confirmation, Odoo réévalue les programmes et retire la ligne, <strong>sans aucun
+                    message</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Commande Odoo 20 confirmée : 20 Boîtes de rangement pour 316,00 $, plus de ligne de remise, total 316,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après confirmation, la remise a disparu : le client découvre un total différent du devis envoyé.</figcaption>
+                </figure>
+                <p><strong>Correction :</strong> après toute modification d'un devis qui porte une promotion,
+                    cliquez sur <strong>Récompense</strong>. Le bouton met à jour les lignes de promotion : sur un
+                    devis où la condition n'est plus remplie, il retire la remise ; sur un devis encore éligible, il
+                    recalcule le montant. Renvoyez le devis au client après cette mise à jour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Deux remises sur la commande entière</h2>
+                <p>Un devis pour Wood Corner porte déjà la remise MOBILIER15 (15 %). Le commercial saisit aussi le
+                    code de démonstration <code>10pc</code> (10 % sur la commande) :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Fenêtre Erreur de validation d'Odoo 20 : La remise (10% de réduction sur votre commande) n'est pas compatible avec 15% sur votre commande. Veuillez la supprimer pour appliquer celle-ci." style="max-width:60%; height:auto;"/>
+                    <figcaption>Deux remises sur la commande entière ne se cumulent pas.</figcaption>
+                </figure>
+                <p>Odoo n'accorde qu'une remise s'appliquant à toute la commande. Quand la nouvelle est moins
+                    avantageuse, elle est refusée avec ce message ; quand elle est plus avantageuse, elle remplace
+                    l'ancienne. Les remises de la liste de prix (colonne Rem.%) ne sont pas concernées : elles
+                    s'ajoutent au code.</p>
+                <p><strong>Correction :</strong> si le cumul est voulu, dans la récompense de l'un des deux programmes, remplacez
+                    l'application sur la <strong>Commande</strong> par <strong>Produits spécifiques</strong> ou
+                    <strong>Produit le moins cher</strong> ; sinon, supprimez la ligne de la remise la moins
+                    utile.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Les programmes, les codes, leurs contrôles et tous les messages
+                        de cet article appartiennent aux modules Promotions et Ventes d'Odoo 20 Community. Les mêmes
+                        programmes servent en boutique en ligne et en caisse, avec les mêmes conditions.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le message ne nomme pas toujours la cause</h4>
+                    <p>« Ce code n'est pas valide » couvre la faute de frappe comme la période terminée ; « Ce code
+                        est expiré » désigne la limite d'usages, pas une date. Avant de recréer un programme,
+                        ouvrez-le et contrôlez période, listes de prix, limite et règle.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un devis abandonné garde ses avantages</h4>
+                    <p>Un devis en brouillon qui porte une remise consomme un usage de la limite. Annulez les devis
+                        perdus plutôt que de les laisser ouverts.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les programmes de démonstration se mêlent aux essais</h4>
+                    <p>Sur la base de démonstration, la livraison gratuite, la fidélité et le bon « prochaine
+                        commande » sont actifs : la fenêtre Récompenses disponibles peut proposer d'autres lignes que
+                        celle du code testé, et une commande confirmée affiche des points de fidélité. Lisez le nom
+                        du programme avant de cocher.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> constater qu'une remise n'est pas recalculée après une
+                        modification du devis, puis la mettre à jour.</p>
+                    <p><strong>Indication :</strong> sur un devis pour Wood Corner avec deux Tables extérieures,
+                        appliquez le code de démonstration <code>10pc</code> (bouton Code promotionnel, récompense
+                        cochée). Passez ensuite la quantité à 1 et enregistrez, puis cliquez sur Récompense.</p>
+                    <p><strong>Critère de réussite :</strong> après l'application, la remise vaut −117,80 $ ; elle
+                        reste à −117,80 $ après le passage à une table ; elle passe à −58,90 $ après le clic sur
+                        Récompense.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le code est sensible à la casse ; un programme hors période, hors liste de prix ou d'une autre
+                        société donne le même message qu'une faute de frappe.</li>
+                    <li>Le montant minimum se calcule sur les seuls articles éligibles, taxes comprises par
+                        défaut.</li>
+                    <li>La limite d'utilisation compte les devis en brouillon ; « Once per user » mémorise le client
+                        à la confirmation et peut bloquer un second devis.</li>
+                    <li>Un code accepté ne remise rien tant que la récompense n'est pas cochée ; une promotion
+                        automatique attend le bouton Récompense.</li>
+                    <li>Après toute modification du devis, Récompense met à jour la remise ; sans cela, la
+                        confirmation la corrige ou la retire sans prévenir.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Le prix par client et la colonne Rem.% du devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Le devis, sa confirmation et son envoi au client.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne</a></h5>
+                            <p class="small text-muted mb-0">Le canal où les codes promo se saisissent au panier.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

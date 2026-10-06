@@ -1,0 +1,514 @@
+<!--
+Article — Préparer par lots et par vagues (batch picking) dans Odoo 20
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : preparer-lots-vagues-odoo
+Meta : Transferts par lot et par vague dans Odoo 20 Community : regrouper des livraisons, imprimer une liste de préparation, valider en une fois, lots et vagues automatiques.
+Mot-clé cible : odoo batch picking ; odoo transfert par lot ; odoo vague de préparation
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base de démonstration (Ventes, Achats, Inventaire, Fabrication,
+  Site Web installés ; entrepôt YourCompany repassé en livraison 1 étape, réception laissée en 2 étapes).
+  Fusion du module : odoo/addons/stock_picking_batch absent en 20 (ls), présent en 19 (manifeste « Warehouse Management:
+  Batch Transfer », depends stock) ; delivery_stock_picking_batch absent en 20, ses champs batch_group_by_carrier /
+  batch_max_weight passent dans stock_delivery/models/stock_picking_type.py:23-24. Modèle stock.picking.batch désormais dans
+  stock/models/stock_picking_batch.py (485 lignes ; 19 : stock_picking_batch/models/stock_picking_batch.py), vues
+  stock/views/stock_picking_batch_views.xml, assistants stock/wizard/stock_picking_to_batch.py et stock_add_to_wave.py,
+  rapport stock/report/report_picking_batch.xml, données de démo stock/data/stock_demo3_batch.xml (BATCH/WH/OUT/00001 et 00002).
+  Réglage : stock/models/res_config_settings.py:19-20 group_stock_picking_batch « Batch, Wave & Cluster Transfers »
+  = groupe implicite (19 : module_stock_picking_batch, odoo19 stock/models/res_config_settings.py:28 → installation de
+  module) ; écran : bloc Opérations, « Transferts par lot, vague & cluster » (stock/views/res_config_settings_views.xml:31-34).
+  Menu : Opérations › Jobs › Batch Transfers (stock/views/stock_menu_views.xml:11, stock_picking_batch_views.xml:247-249,
+  action filtrée Brouillon + In progress, groupée par type d'opération :212-222). 19 : second menu Wave Transfers
+  (odoo19 stock_picking_batch/views/stock_picking_wave_views.xml:57-58, 134-138) → supprimé, vagues dans la même liste.
+  Séquence unique picking.batch BATCH/ (stock/data/stock_sequence_data.xml:26-32, stock_picking_batch.py:389-402) ;
+  19 : picking.wave WAVE/ séparée (odoo19 stock_picking_batch_data.xml:19-25). Étoile de priorité nouvelle
+  (stock_picking_batch.py:49, tri :12). is_wave non filtrable (:404-409).
+  Assistant « Add to batch » (stock/wizard/stock_picking_to_batch_views.xml:29-35, action liée aux listes de transferts) :
+  nouveau lot confirmé sauf case Brouillon (stock_picking_to_batch.py:37-38). Valider = action_done (:226-268), transferts
+  sans quantité retirés du lot, mention « Transferred by: Batch Transfer » postée sur chaque transfert (:254-260) ;
+  filtre To Do = responsable vide ou soi (stock_picking_batch_views.xml:186). Date planifiée = plus ancienne des transferts (:152-155). Impression = rapport
+  report_picking_batch : résumé des transferts puis lignes par emplacement d'origine, triées par article (:12, :77-91).
+  Vague : bouton « Add to Batch » de la liste Detailed Moves (stock/views/stock_move_line_views.xml:86-89), menu de la
+  carte Bons de livraison « Detailed Moves » / « Prepare Batch » (stock_picking_type_views.xml:256-263), assistant
+  stock.add.to.wave sans description (stock_add_to_wave.py:29-33) ; _add_to_wave (stock_move_line.py:1362-1428) crée
+  is_wave=True et scinde chaque transfert dont une partie seulement est prise (copy_data :1406).
+  Automatique : stock_picking_type.py:227-265 (batch_creation_type Manual Only/Automatique, maxima, Auto-confirm défaut
+  True, regroupements) ; wave_group_by_date + wave_date_granularity nouveaux en 20 (:252-257, absents odoo19
+  stock_picking_batch/models/stock_picking.py:13-33) ; batch_creation_type nouveau (19 : case auto_batch seule).
+  _find_auto_batch déclenché à la confirmation (stock_picking.py:781-784, 2052-2084), transfert Prêt exigé (:2086-2095),
+  domaine des transferts compatibles (:1997-2015), description = critères (:2038). Vagues auto : _auto_wave
+  (stock_move_line.py:1459, appelé stock_move.py:2267) ; lot auto ignoré si un critère de vague est coché (:2055-2057).
+  Parcours joué : S00082 Acme Corporation, S00083 Lumber Inc, S00084 Ready Mat (créées pour l'exemple) → WH/OUT/00085-87
+  → Add to batch « Tournée du matin », Marc Demo → BATCH/WH/OUT/00004 en cours → Imprimer → Valider : 3 livraisons
+  Terminé, aucune fenêtre. Vague : S00085 Azure Interior, S00086 Wood Corner, S00087 Gemini Furniture → 3 lignes Boîte de
+  rangement → BATCH/WH/OUT/00005 (is_wave) avec WH/OUT/00091-93, reliquats WH/OUT/00088-90 hors vague ; validée.
+  Automatique par Contact : S00088 + S00089 Acme confirmées à l'écran → BATCH/WH/OUT/00006 « Acme Corporation » avec
+  WH/OUT/00094, 00095 et l'ancienne WH/OUT/00080 (S00036), sans responsable, date 27 sept. Puis Produit : S00090
+  Lumber Inc + S00091 Ready Mat → vagues BATCH/WH/OUT/00007 « [E-COM08] Boîte de rangement » et 00008 « [FURN_8855]
+  Tiroir », chaque commande scindée en deux livraisons.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Préparer par lots et vagues (batch picking) dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Dix commandes, dix allers-retours dans les allées : c'est le coût d'une
+                    préparation commande par commande. Le transfert par lot réunit plusieurs livraisons dans une seule
+                    tournée, la vague va chercher un même article pour tous les clients d'un coup. En Odoo 20, les deux
+                    sont dans l'application Inventaire, derrière une simple case à cocher.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Ventes et Inventaire installés. Les transferts par lot et par vague font partie de
+                        l'application Inventaire de la Community ; ils existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Odoo 20 distingue deux façons de regrouper la préparation :</p>
+                <ul>
+                    <li>le <strong>lot</strong> (batch) réunit des transferts entiers : trois bons de livraison, trois
+                        clients, une seule tournée et une seule validation ;</li>
+                    <li>la <strong>vague</strong> (wave) réunit des lignes : par exemple toutes les Boîtes de rangement
+                        à sortir aujourd'hui, quel que soit le client. Odoo détache ces lignes de leur livraison
+                        d'origine.</li>
+                </ul>
+                <p>Jusqu'à la version 19, ces fonctions vivaient dans un module à part, « Batch Transfer »
+                    (<code>stock_picking_batch</code>), que la case du même nom installait. Ce module n'existe plus en
+                    20 : ses modèles, écrans et rapports ont été intégrés au module <code>stock</code>, et la case
+                    n'active plus qu'un groupe de droits. Rien à installer, rien à désinstaller.</p>
+                <p>Les exemples portent sur les <strong>bons de livraison</strong> d'un entrepôt réglé en livraison
+                    en une étape. Le même réglage existe sur les réceptions et les transferts internes : dans un
+                    entrepôt en plusieurs étapes, ce sont alors les opérations de prélèvement qui se regroupent. Pour
+                    la prise en main de l'entrepôt et des livraisons, voir
+                    <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et
+                    livraisons en plusieurs étapes dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les transferts par lot et trouver leur menu ;</li>
+                    <li>regrouper plusieurs livraisons dans un lot, l'attribuer et imprimer sa liste de préparation ;</li>
+                    <li>valider toutes les livraisons du lot en une fois ;</li>
+                    <li>préparer une vague à partir de lignes de plusieurs commandes ;</li>
+                    <li>laisser Odoo créer les lots ou les vagues tout seul, par client ou par article.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les transferts par lot</h2>
+                <p>Ouvrez <strong>Inventaire › Configuration › Paramètres</strong>. Dans le bloc
+                    <strong>Opérations</strong>, cochez <strong>Transferts par lot, vague &amp; cluster</strong>, puis
+                    <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20 : case cochée Transferts par lot, vague et cluster, Optimisez vos transferts en regroupant les opérations et en attribuant des tâches aux travailleurs" style="max-width:70%; height:auto;"/>
+                    <figcaption>Une case, aucun module installé.</figcaption>
+                </figure>
+                <p>Le menu <strong>Opérations</strong> gagne une rubrique <strong>Jobs</strong> avec l'entrée
+                    <strong>Batch Transfers</strong> : c'est la liste des lots et des vagues. Elle s'ouvre sur les lots
+                    en brouillon et en cours, groupés par type d'opération. La base de démonstration en contient déjà
+                    deux, BATCH/WH/OUT/00001 et 00002 ; la carte <strong>Bons de livraison</strong> de la vue
+                    d'ensemble affiche un bouton <strong>2 Batches</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Regrouper des livraisons dans un lot</h2>
+                <p>Trois commandes du jour attendent leur préparation : Acme Corporation (4 Boîtes de rangement,
+                    2 Tiroirs), Lumber Inc (6 boîtes, 4 Chaises de conférence) et Ready Mat (2 tiroirs, 3 chaises).
+                    Leurs livraisons WH/OUT/00085 à 00087 sont <strong>Prêt</strong> : la marchandise est réservée.</p>
+                <p>Dans <strong>Inventaire › Opérations › Livraisons</strong>, cochez les trois lignes, puis
+                    <strong>Actions › Add to batch</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des livraisons d'Odoo 20 avec WH/OUT/00087 Ready Mat, WH/OUT/00086 Lumber Inc et WH/OUT/00085 Acme Corporation cochées, statut Prêt, menu Actions ouvert sur Add to batch" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois livraisons sélectionnées, l'action Add to batch dans le menu Actions.</figcaption>
+                </figure>
+                <p>La fenêtre propose d'ajouter les livraisons à un lot existant ou à un nouveau lot. Pour un
+                    nouveau lot, saisissez une <strong>Description</strong> qui parle au magasinier, ici « Tournée du
+                    matin », et un <strong>Responsable</strong> : Marc Demo, utilisateur de la démonstration.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Add to batch d'Odoo 20 : a new batch transfer sélectionné, Description Tournée du matin, Responsable Marc Demo, case Brouillon décochée, boutons Confirmer et Ignorer" style="max-width:85%; height:auto;"/>
+                    <figcaption>Un nouveau lot, décrit et attribué.</figcaption>
+                </figure>
+                <p><strong>Confirmer</strong> crée BATCH/WH/OUT/00004, déjà <strong>In progress</strong> : le lot est
+                    confirmé d'office. Cochez <strong>Brouillon</strong> pour le laisser en préparation, le temps d'y
+                    ajouter d'autres livraisons. Une notification donne le numéro du lot, qui reprend le préfixe des
+                    bons de livraison.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Préparer avec le lot</h2>
+                <p>Ouvrez le lot depuis <strong>Opérations › Jobs › Batch Transfers</strong>. L'onglet
+                    <strong>Opérations</strong> liste toutes les lignes des trois livraisons, avec la quantité demandée
+                    et la quantité réservée ; l'onglet <strong>Transferts</strong> liste les livraisons elles-mêmes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Lot BATCH/WH/OUT/00004 d'Odoo 20 en statut In progress, Responsable Marc Demo, Type d'opération YourCompany Bons de livraison, Description Tournée du matin, onglet Opérations avec six lignes : Tiroir et Chaise de conférence pour WH/OUT/00087, Boîte de rangement et Chaise de conférence pour WH/OUT/00086, Boîte de rangement et Tiroir pour WH/OUT/00085" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lot : six lignes de trois livraisons, un seul responsable.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Imprimer</strong> produit la liste de préparation du lot. Elle commence par un
+                    résumé des transferts, avec leurs codes-barres, puis donne les lignes regroupées par emplacement
+                    d'origine et triées par article : les 6 et 4 Boîtes de rangement se suivent, le magasinier les
+                    prend en un seul passage devant l'étagère.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste de préparation du lot BATCH/WH/OUT/00004 d'Odoo 20, Responsible Marc Demo, section FROM WH/Stock TO Customers : Boîte de rangement 6 pour WH/OUT/00086 et 4 pour WH/OUT/00085, Chaise de conférence Acier 3 et 4, Tiroir 2 et 2" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste imprimée : par emplacement, puis par article.</figcaption>
+                </figure>
+                <p>Le bouton intelligent <strong>Mouvements</strong> ouvre les mêmes lignes en liste détaillée,
+                    utile pour saisir des numéros de lot ou ajuster une quantité.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Valider tout le lot en une fois</h2>
+                <p>La préparation faite, cliquez sur <strong>Valider</strong> dans le lot. Les trois livraisons
+                    passent à <strong>Terminé</strong> d'un seul clic, et le lot aussi. Chaque livraison reçoit dans son
+                    historique la mention du lot qui l'a validée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Lot BATCH/WH/OUT/00004 d'Odoo 20 au statut Terminé, onglet Transferts : WH/OUT/00085 Acme Corporation S00082, WH/OUT/00086 Lumber Inc S00083, WH/OUT/00087 Ready Mat S00084, toutes Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un clic, trois livraisons terminées.</figcaption>
+                </figure>
+                <p>Les livraisons gardent leur vie propre : chacune a son bon de livraison, son client et sa
+                    commande. Si une ligne manque, le reliquat se traite comme sur une livraison seule ; une livraison
+                    sans aucune quantité préparée est simplement retirée du lot à la validation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Préparer une vague d'articles</h2>
+                <p>Trois nouvelles commandes contiennent toutes des Boîtes de rangement : Azure Interior (5),
+                    Wood Corner (3) et Gemini Furniture (2), avec chacune un autre article. La vague consiste à aller
+                    chercher les 10 boîtes d'un coup, sans toucher au reste.</p>
+                <p>La vague se prépare à partir des <strong>lignes</strong>. Dans la vue d'ensemble d'Inventaire,
+                    ouvrez le menu (trois points) de la carte <strong>Bons de livraison</strong>, puis
+                    <strong>Detailed Moves</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Carte Bons de livraison de la vue d'ensemble d'Odoo 20 avec les boutons 2 Batches et 35 À livrer, menu ouvert : View, Analyse, Detailed Moves, Prepare Batch, Configuration" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le menu de la carte : Detailed Moves pour les vagues, Configuration pour l'automatisme.</figcaption>
+                </figure>
+                <p>Recherchez l'article « Boîte de rangement » (option Produit), cochez les trois lignes à
+                    préparer, puis cliquez sur <strong>Add to Batch</strong> au-dessus de la liste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste Bons de livraison Detailed Moves d'Odoo 20 filtrée sur Boîte de rangement, trois lignes Disponible cochées pour Azure Interior 5, Wood Corner 3 et Gemini Furniture 2, bouton Add to Batch" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois lignes de trois commandes, un même article.</figcaption>
+                </figure>
+                <p>La fenêtre est la même que pour un lot, sans description ni case Brouillon : choisissez
+                    <strong>a new batch transfer</strong>, un responsable, puis <strong>Confirmer</strong>. Odoo crée
+                    BATCH/WH/OUT/00005, une vague. Elle ne contient pas les livraisons d'origine mais trois
+                    <strong>nouveaux</strong> transferts, WH/OUT/00091 à 00093, qui ne portent que les boîtes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Vague BATCH/WH/OUT/00005 d'Odoo 20 en cours, Responsable Marc Demo, onglet Transferts : WH/OUT/00091 Azure Interior S00085, WH/OUT/00092 Wood Corner S00086, WH/OUT/00093 Gemini Furniture S00087, statut Prêt, liens Add a transfer et Add a move line" style="max-width:100%; height:auto;"/>
+                    <figcaption>La vague : trois transferts créés pour les seules boîtes.</figcaption>
+                </figure>
+                <p>Les livraisons d'origine restent hors de la vague avec les autres articles. Chaque commande a donc
+                    maintenant deux livraisons, que la liste des livraisons montre côte à côte :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Liste des livraisons d'Odoo 20 filtrée sur les commandes S0008 : WH/OUT/00085 à 00087 Terminé dans BATCH/WH/OUT/00004, WH/OUT/00091 à 00093 Prêt dans BATCH/WH/OUT/00005, WH/OUT/00088 à 00090 Prêt sans lot, colonne Batch Transfer" style="max-width:100%; height:auto;"/>
+                    <figcaption>La colonne Batch Transfer : le lot validé, la vague, et les restes des commandes.</figcaption>
+                </figure>
+                <p>La vague se valide comme un lot ; les livraisons restantes suivent leur propre chemin, ou une
+                    autre vague. Dans une vague déjà créée, le lien <strong>Add a move line</strong> de l'onglet
+                    Transferts y ajoute d'autres lignes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Laisser Odoo regrouper tout seul</h2>
+                <p>Le regroupement automatique se règle par type d'opération. Ouvrez le menu de la carte
+                    <strong>Bons de livraison</strong>, puis <strong>Configuration</strong> : le formulaire du type
+                    d'opération contient une section <strong>Batch Transfers</strong>. Passez <strong>Batch
+                    Creation</strong> de Manual Only à <strong>Automatique</strong>, puis choisissez au moins un
+                    critère dans <strong>Grouping by</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Section Batch Transfers du type d'opération Bons de livraison d'Odoo 20 : Batch Creation Automatique, Maximum Tous transferts, Tous lignes, All kg, Auto-confirm coché, Grouping by Contact coché, Produit, Catégorie de produits, Transporteur, Pays de destination, General Source Location, Product Source Location, Emplacement de destination, Date if same Day décochés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Création automatique, regroupement par client.</figcaption>
+                </figure>
+                <p>Les critères se lisent en deux familles :</p>
+                <table class="tmc">
+                    <thead><tr><th>Critère</th><th>Ce qu'Odoo crée</th></tr></thead>
+                    <tbody>
+                        <tr><td>Contact, Pays de destination, Transporteur, General Source Location, Emplacement de
+                            destination</td><td>des <strong>lots</strong> : les livraisons entières qui partagent la
+                            valeur</td></tr>
+                        <tr><td>Produit, Catégorie de produits, Product Source Location, Date if same</td><td>des
+                            <strong>vagues</strong> : les lignes qui partagent la valeur, détachées de leurs
+                            livraisons</td></tr>
+                    </tbody>
+                </table>
+                <p>Les maxima (transferts, lignes, poids) bornent la taille d'un lot ; <strong>Auto-confirm</strong>
+                    le met directement en cours. Le critère Transporteur et le poids maximum viennent du module des
+                    modes de livraison, installé sur la base de démonstration.</p>
+                <p>Avec <strong>Contact</strong> coché, deux commandes d'Acme Corporation sont confirmées dans
+                    Ventes. Dès la première, Odoo crée BATCH/WH/OUT/00006, décrit « Acme Corporation » ; la seconde
+                    livraison le rejoint.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Lot automatique BATCH/WH/OUT/00006 d'Odoo 20, Responsable vide, Date planifiée 27 sept., Description Acme Corporation, onglet Transferts : WH/OUT/00094 S00088, WH/OUT/00095 S00089 et WH/OUT/00080 S00036, toutes Acme Corporation et Prêt" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lot créé par Odoo : les deux nouvelles livraisons, et une plus ancienne.</figcaption>
+                </figure>
+                <p>Le lot a aussi recueilli WH/OUT/00080, une livraison prête d'Acme Corporation datant du
+                    27 septembre : Odoo y range toutes les livraisons prêtes du même client qui ne sont dans aucun lot.
+                    La date planifiée du lot est celle de la plus ancienne.</p>
+                <p>Remplacez ensuite Contact par <strong>Produit</strong> et confirmez deux commandes, Lumber Inc et
+                    Ready Mat, qui contiennent chacune des Boîtes de rangement et un Tiroir. Odoo crée deux vagues, une
+                    par article, décrites par l'article :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Liste Batch Transfers d'Odoo 20, filtre Brouillon ou In Progress, groupe YourCompany Bons de livraison 5 records : BATCH/WH/OUT/00008 Tiroir, BATCH/WH/OUT/00007 Boîte de rangement, BATCH/WH/OUT/00006 Acme Corporation, BATCH/WH/OUT/00002 et 00001, tous In progress" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux vagues par article, un lot par client : la même liste pour tous.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change depuis Odoo 19</h2>
+                <table class="tmc">
+                    <thead><tr><th>Point</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Fonction</td><td>module « Batch Transfer » à installer</td><td>dans le module Inventaire,
+                            activée par une case (groupe de droits)</td></tr>
+                        <tr><td>Menus</td><td>Batch Transfers et Wave Transfers</td><td>une seule liste, Batch
+                            Transfers, pour les lots et les vagues</td></tr>
+                        <tr><td>Numérotation</td><td>BATCH/… pour les lots, WAVE/… pour les vagues</td><td>BATCH/…
+                            pour les deux</td></tr>
+                        <tr><td>Priorité</td><td>—</td><td>étoile sur le lot, les lots prioritaires en tête de liste</td></tr>
+                        <tr><td>Création automatique</td><td>case Automatic Batches</td><td>liste Batch Creation (Manual
+                            Only / Automatique)</td></tr>
+                        <tr><td>Critères de vague</td><td>produit, catégorie, emplacement</td><td>+ <strong>Date if
+                            same</strong>, au jour ou à la semaine</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Lots, vagues, liste de préparation imprimée et regroupement
+                        automatique sont inclus dans Odoo 20 Community. Le module de scan, <code>stock_barcode</code>
+                        (Lecteur de codes-barres, badge « Entreprise » dans les paramètres), n'est pas inclus dans la
+                        Community ; son fonctionnement sera présenté dans un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une vague scinde les livraisons</h4>
+                    <p>Après une vague, une commande a deux livraisons, ou plus. Si le client doit tout recevoir dans
+                        un seul colis, validez les deux le même jour, ou préférez un lot, qui garde les livraisons
+                        entières. En automatique par Produit, chaque article d'une commande part dans sa propre vague.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le lot automatique n'a pas de responsable</h4>
+                    <p>BATCH/WH/OUT/00006 est resté sans responsable : Odoo reprend celui des livraisons, vide sur la
+                        démonstration. Attribuez-le dans la liste avant la tournée : un lot sans responsable figure dans
+                        le filtre À faire de chaque utilisateur.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Seules les livraisons prêtes sont regroupées</h4>
+                    <p>Le regroupement automatique ne prend une livraison qu'à l'état Prêt, au moment de la
+                        confirmation. Une livraison en attente de stock reste hors lot ; ajoutez-la ensuite à la main
+                        par Add to batch.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Rien ne distingue une vague d'un lot dans la liste</h4>
+                    <p>La liste Batch Transfers ne montre pas la différence et ne permet pas de filtrer les vagues.
+                        Une description explicite (la tournée, l'article, la zone) évite les confusions.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> préparer deux livraisons de démonstration dans un lot en brouillon,
+                        puis le confirmer.</p>
+                    <p><strong>Indication :</strong> activez les transferts par lot, ouvrez Inventaire › Opérations ›
+                        Livraisons, cochez deux livraisons au statut Prêt, puis Actions › Add to batch, a new batch
+                        transfer, case Brouillon cochée. Ouvrez le lot et cliquez sur Confirmer.</p>
+                    <p><strong>Critère de réussite :</strong> le lot apparaît dans Opérations › Jobs › Batch Transfers,
+                        d'abord en Brouillon puis en In progress ; son onglet Transferts liste les deux livraisons et
+                        la colonne Batch Transfer de la liste des livraisons porte son numéro.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Odoo 20, lots et vagues font partie d'Inventaire : une case dans les paramètres, un menu
+                        Opérations › Jobs › Batch Transfers.</li>
+                    <li>Un lot regroupe des livraisons entières ; il s'imprime en liste de préparation et se valide en
+                        un clic.</li>
+                    <li>Une vague regroupe des lignes depuis Detailed Moves et crée des transferts séparés pour
+                        elles.</li>
+                    <li>Le type d'opération peut créer lots et vagues tout seul, par client, pays, transporteur,
+                        article, catégorie, emplacement ou date.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Prélever, emballer, expédier : les étapes que les lots regroupent.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">La livraison d'une commande, avant de la regrouper.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et péremption</a></h5>
+                            <p class="small text-muted mb-0">Les numéros à saisir pendant la préparation.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

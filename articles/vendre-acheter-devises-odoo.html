@@ -1,0 +1,556 @@
+<!--
+Article — Multi-devise dans Odoo 20 : vendre et acheter en devises
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : vendre-acheter-devises-odoo
+Meta : Multi-devise dans Odoo 20 Community : activer l'euro, saisir les taux, liste de prix, devis, commande et facture en EUR, paiement à un autre taux et écart de change.
+Mot-clé cible : odoo multi devise · odoo taux de change · odoo écart de change
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, comptabilite, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_c5 (copie de vs20_func, démonstration, Ventes +
+Achats + Inventaire + Facturation ; livraison repassée en 1 étape sur la copie). Société My Company (San Francisco), USD.
+  Réglages : account/views/res_config_settings_views.xml:128-146 (bloc Devises ; module_currency_rate_live en
+  widget upgrade_boolean → badge Entreprise ; dossier odoo/addons/currency_rate_live absent, comme en 19) ; :294-305
+  (journal et comptes de différence de change sous groups account.group_account_user) ; account/security/
+  account_security.xml:67-70 (group_account_user « Show Full Accounting Features », groupe technique).
+  Groupe multi-devise : odoo/addons/base/models/res_currency.py:111-133 (_toggle_group_multi_currency : activé dès
+  2 devises actives). EUR déjà actif sur la démo (société FR Company, base.EUR).
+  🆕 v20 : odoo/addons/base/models/res_currency.py:186 `('name', '<', date)` (v19 res_currency.py:127 `'<='`) → un
+  taux daté du jour J sert à partir de J+1 ; prouvé en shell (taux 06/10 créé : 100 EUR → USD le 06/10 = 128,35 avec
+  l'ancien taux, le 07/10 = 117,65) et à l'écran (fig. 3-4 et 7 : taux 1,22 daté du 6 oct., taux actuel = 5 oct.,
+  facture du 6 oct. à 1,20). Colonne « Devise de base » nouvelle et colonnes « Unité/Base » / « Base/Unité »
+  (base/views/res_currency_views.xml:164-167 ; fr.po base :4631,4657,20419). Liste : « Dernière mise à jour du taux »
+  = rate_date (v19 `date`, res_currency_views.xml:90).
+  🆕 v20 : widget account_currency_exchange_rate « 1 USD ⇄ x EUR » avec bouton d'inversion mémorisé dans le
+  navigateur (account/static/src/components/account_pick_currency_rate/account_pick_currency_rate.js:43-101,
+  account_move_views.xml:1244) ; aussi dans la fenêtre Payer (account/wizard/account_payment_register_views.xml:
+  122-126, champ exchange_rate account_payment_register.py:86, absent de 19).
+  🆕 v20 : purchase/models/res_partner.py:63-67 : écrire « Devise du fournisseur » réécrit la devise de toutes les
+  lignes de prix fournisseur sans convertir le montant (Tiroir noir 20 $ → 20 €, Chaise de bureau 90 $ → 90 €, SQL
+  avant/après) ; absent de purchase/models/res_partner.py v19.
+  🐛 v20 : ligne « total en devise société » du bon de commande jamais affichée : purchase/static/src/components/
+  tax_totals/tax_totals.xml:5 lit `this.totals.amount_total_cc` alors que account TaxTotalsField expose
+  `totals = computed(...)` (account/static/src/components/tax_totals/tax_totals.js:152, template :48 `this.totals()`) ;
+  amount_total_cc = 240 $ en shell, rien à l'écran (fig. 10).
+  🆕 v20 : colonne « Montant dû » (amount_residual_signed, devise société) visible par défaut dans la liste des
+  factures (account_move_views.xml:587 optional="show" ; v19 :545 optional="hide").
+  Devise de commande : sale_order.py:652-654 (devise = liste de prix), purchase_order.py:521-527 (devise du
+  fournisseur) ; taux du devis sale_order.py:657-663 (date de commande).
+  Comptes de change démo (shell) : 441000 Foreign Exchange Gain, 641000 Foreign Exchange Loss, journal « Différence de
+  change » (EXCH). Date comptable fournisseur : account_move.py:897-916 (_get_accounting_date, séquence).
+  Essai : changer la liste de prix d'un devis brouillon recalcule les lignes (Lampe 40,00 $ → 33,333333 €).
+  Parcours joué (06/10/2026) : taux EUR 30/09 = 1,25 $, 05/10 = 1,20 $, 06/10 = 1,22 $ ; liste de prix démo « EUR »
+  (website_sale.list_eur, 0 % sur USD) + règle Tiroir prix fixe 90 € ; S00082 Bloem GmbH 4 Tiroir 90 € + 2 Lampe de
+  bureau 33,333333 € (40/1,20) = 426,67 €, position Foreign Trade auto (0% Exports) → WH/OUT/00085 → FAC/2026/00015
+  426,67 € = 512,00 $ (432 + 80) ; FAC/2026/00016 Bloem GmbH 1 oct. 10 Tiroir à 90 € (prix proposé 88,40 =
+  110,50/1,25) = 900 € = 1 125 $ → payée 06/10 PBNK1/2026/00012 1 080 $ → EXCH/2026/10/0001 641000 D 45 / 121000 C 45 ;
+  Gemini Furniture devise EUR → P00034 10 Tiroir noir 20 € = 200 € (amount_total_cc 240 $) → WH/IN/00027 →
+  FACTURE/2026/10/0001 200 € = 240 $ ; FACTURE/2026/10/0002 Gemini 1 oct. 2 Chaise de bureau 90 € = 180 € = 225 $ (date
+  comptable 6 oct.) → payée PBNK1/2026/00013 216 $ → EXCH/2026/10/0002 211000 D 9 / 441000 C 9.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Multi-devise dans Odoo 20 : vendre et acheter en devises</h1>
+                <p class="lead mt-3 text-white">Un client paie en euros, un fournisseur facture en euros, mais la
+                    comptabilité tient en dollars. Odoo convertit chaque document au taux de sa date et, quand le
+                    paiement arrive à un autre taux, passe lui-même l'écart de change. Encore faut-il saisir les
+                    bons taux, aux bonnes dates.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec Ventes, Achats, Inventaire et Facturation installés. La gestion multi-devise fait
+                        partie de l'application Facturation, incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Chaque société a une <strong>devise principale</strong> : celle de sa comptabilité. Toute pièce
+                    établie dans une autre devise garde ses montants dans cette devise (ce que voit le client ou le
+                    fournisseur) et enregistre en plus leur contre-valeur en devise principale, au taux du jour de la
+                    pièce. Le multi-devise d'Odoo repose donc sur deux choses : des devises actives et une table de
+                    taux datés.</p>
+                <p>La base de démonstration sert d'exemple. Sa société affichée, « My Company (San Francisco) »,
+                    tient ses comptes en <strong>dollars</strong> (plan comptable générique). L'article lui fait
+                    vendre en euros au client de démonstration Bloem GmbH (Berlin) et acheter en euros au fournisseur
+                    Gemini Furniture (Saint-Marin). La prise en main des factures et des paiements eux-mêmes est
+                    décrite dans <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients
+                    et avoirs dans Odoo 20</a> et
+                    <a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs dans
+                    Odoo 20</a> ; le présent article n'en reprend que ce qui change avec une devise étrangère.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer une deuxième devise et saisir ses taux sans vous tromper de sens ni de date ;</li>
+                    <li>vendre en euros grâce à une liste de prix en euros, avec prix convertis ou prix fixes ;</li>
+                    <li>acheter en euros en donnant une devise à un fournisseur ;</li>
+                    <li>lire la contre-valeur en dollars d'une facture en euros ;</li>
+                    <li>comprendre l'écart de change passé au paiement : montant, journal, compte.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer la deuxième devise</h2>
+                <p>Ouvrez <strong>Facturation › Configuration › Paramètres</strong>, bloc
+                    <strong>Devises</strong>. Le champ <strong>Devise</strong> rappelle la devise principale de la
+                    société (USD) ; le lien <strong>Devises</strong> ouvre la liste de toutes les devises connues.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Bloc Devises des paramètres de Facturation d'Odoo 20 : Devise principale USD, lien Devises, case Taux de change automatiques avec le badge Entreprise" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bloc Devises : la devise principale, et la mise à jour automatique réservée à l'Enterprise.</figcaption>
+                </figure>
+                <p>Dans la liste, une devise s'active par l'interrupteur de la colonne <strong>Actif</strong>.
+                    Dès que deux devises sont actives, Odoo affiche partout les champs de devise (devis, factures,
+                    paiements) ; avec une seule, ils restent masqués. Sur la base de démonstration, l'euro est déjà
+                    actif : une seconde société de la démo, en France, tient ses comptes en euros.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des devises d'Odoo 20 : EUR et USD actifs avec la date de dernière mise à jour du taux 1 janv. 2010 et le taux actuel 0,779100 pour l'euro, AED et AFN inactifs" style="max-width:100%; height:auto;"/>
+                    <figcaption>EUR et USD actifs ; le taux de l'euro date de 2010, celui des données de démonstration.</figcaption>
+                </figure>
+                <p>La colonne <strong>Taux actuel</strong> se lit en unités de la devise pour 1 dollar :
+                    0,7791 € pour 1 $. Et la colonne <strong>Dernière mise à jour du taux</strong> donne l'alerte :
+                    ce taux date du 1er janvier 2010. Avant toute vente en euros, il faut des taux récents.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Saisir les taux de change</h2>
+                <p>La case <strong>Taux de change automatiques</strong> du bloc Devises porte le badge Entreprise :
+                    le module qui télécharge les taux auprès des banques centrales (<code>currency_rate_live</code>)
+                    n'est pas inclus dans la Community. En Community, les taux se saisissent à la main, sur la fiche
+                    de la devise.</p>
+                <p>Ouvrez <strong>EUR</strong>, onglet <strong>Taux</strong>, puis <strong>Ajouter une
+                    ligne</strong>. Chaque ligne porte une date et deux colonnes qui disent la même chose dans les
+                    deux sens :</p>
+                <ul>
+                    <li><strong>Unité/Base</strong> : combien d'euros pour 1 dollar (la devise de base) ;</li>
+                    <li><strong>Base/Unité</strong> : combien de dollars pour 1 euro, la cotation habituelle de
+                        l'euro.</li>
+                </ul>
+                <p>Saisissez l'une ou l'autre, Odoo calcule la seconde. Pour l'exemple, trois cotations ont été
+                    saisies dans <strong>Base/Unité</strong> : 1 € = 1,25 $ au 30 septembre, 1,20 $ au 5 octobre,
+                    1,22 $ au 6 octobre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche de la devise EUR dans Odoo 20, onglet Taux : lignes 6 oct. 1,22, 5 oct. 1,20, 30 sept. 1,25 et 1 janv. 2010 en colonne Base/Unité, avec la société My Company (San Francisco) et la devise de base USD" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les taux de l'euro, datés : la colonne Base/Unité donne les dollars pour 1 euro.</figcaption>
+                </figure>
+                <p>Retour à la liste des devises, le même jour : l'euro affiche un taux actuel de 0,833333,
+                    c'est-à-dire 1,20 $, et une dernière mise à jour au <strong>5 octobre</strong>. Le taux du
+                    6 octobre, pourtant saisi, n'est pas encore utilisé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des devises d'Odoo 20 le 6 octobre : EUR avec la dernière mise à jour du taux au 5 oct. et le taux actuel 0,833333" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le 6 octobre, Odoo 20 applique encore le taux du 5 octobre.</figcaption>
+                </figure>
+                <p>C'est une règle nouvelle d'Odoo 20 : un taux daté d'un jour donné s'applique
+                    <strong>à partir du lendemain</strong>. Odoo 19 l'appliquait dès sa date. Une facture du
+                    6 octobre est donc convertie au dernier taux daté d'avant le 6, ici 1,20 $. Pour qu'un taux serve
+                    le jour même, datez-le de la veille.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Une liste de prix en euros</h2>
+                <p>Côté vente, ce n'est pas le client qui porte la devise, c'est la <strong>liste de prix</strong> :
+                    un devis prend la devise de sa liste de prix. La démonstration en contient une, nommée « EUR »
+                    (<strong>Ventes › Produits › Listes de prix</strong>), avec une seule règle : 0 % de remise sur
+                    la liste USD. Autrement dit, le prix de vente en dollars, converti en euros au taux du jour.</p>
+                <p>Ce mode suit le taux : le prix en euros change chaque fois qu'un nouveau taux est saisi. Pour un
+                    tarif export stable, ajoutez des règles <strong>Prix fixe</strong> en euros. L'exemple fixe le
+                    Tiroir (110,50 $ au catalogue) à 90 €.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste de prix EUR dans Odoo 20, devise EUR : règle Tiroir à prix fixe 90,00 euros, puis règle Tous les produits 0 % de remise sur USD" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste de prix EUR : un prix fixe pour le Tiroir, la conversion pour tout le reste.</figcaption>
+                </figure>
+                <p>La règle la plus précise l'emporte : le Tiroir vaut 90 € quel que soit le taux, les autres
+                    articles suivent le dollar. Le fonctionnement général des listes de prix est décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises
+                    dans Odoo 20</a>. Pour qu'un client reçoive toujours cette liste, choisissez-la dans le champ
+                    <strong>Liste de prix</strong> de sa fiche, onglet Ventes &amp; Achats.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Devis et facture client en euros</h2>
+                <p>Créez un devis pour Bloem GmbH, choisissez la liste de prix <strong>EUR (EUR)</strong>, puis
+                    ajoutez 4 Tiroir et 2 Lampe de bureau. Si des lignes existent déjà, changer de liste de prix sur
+                    le devis brouillon les recalcule : essai fait, une Lampe de bureau saisie à 40,00 $ passe à
+                    33,333333 € dès que la liste EUR est choisie.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Devis S00082 d'Odoo 20 pour Bloem GmbH à Berlin, liste de prix EUR (EUR) : 4 Tiroir à 90,00, 2 Lampe de bureau à 33,333333, taxes 0% Exports, total 426,67 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un devis en euros : prix fixe pour le Tiroir, prix converti pour la lampe.</figcaption>
+                </figure>
+                <p>Le Tiroir sort à 90,00 €, son prix fixe. La Lampe de bureau, 40 $ au catalogue, sort à
+                    33,333333 € : 40 divisé par 1,20, le taux du jour. Le total, 426,67 €, est affiché en euros
+                    seulement. La taxe « 0% Exports » vient de la position fiscale d'exportation que la démonstration
+                    applique d'office aux clients étrangers ; elle n'a rien à voir avec la devise.</p>
+                <p>Confirmez, livrez, puis <strong>Créer une facture</strong>. La facture reprend la devise de la
+                    commande. Sous le journal, une ligne nouvelle en Odoo 20 donne le taux appliqué. Par défaut elle
+                    se lit « 1 USD ⇄ 0.833333 EUR » ; la flèche double inverse le sens.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Facture client FAC/2026/00015 d'Odoo 20 pour Bloem GmbH datée du 6 oct., journal Ventes dans EUR, ligne de taux 1 EUR vers 1.200000 USD, total 426,67 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture en euros et son taux : 1 € = 1,20 $, le taux du 5 octobre.</figcaption>
+                </figure>
+                <p>Le sens choisi est mémorisé par le navigateur. En brouillon, le taux est même modifiable à la
+                    main, et une icône de calendrier à côté de la devise permet de reprendre le taux d'une autre
+                    date. La comptabilité, elle, enregistre 512,00 $ : 360 € × 1,20 = 432 $ pour les tiroirs,
+                    66,67 € × 1,20 = 80 $ pour les lampes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Acheter en euros</h2>
+                <p>Côté achat, la devise est portée par le <strong>fournisseur</strong>. Ouvrez la fiche de Gemini
+                    Furniture, onglet <strong>Ventes &amp; Achats</strong>, et choisissez EUR dans
+                    <strong>Devise du fournisseur</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Rubrique Achats de la fiche Gemini Furniture dans Odoo 20 : Grouper les demandes de prix Sur commande, Rappel de réception, Devise du fournisseur EUR, Incoterm" style="max-width:70%; height:auto;"/>
+                    <figcaption>La devise du fournisseur : toute nouvelle demande de prix sera en euros.</figcaption>
+                </figure>
+                <p>Odoo 20 fait davantage que retenir cette devise : il l'applique aussi à tous les
+                    <strong>prix fournisseur</strong> déjà enregistrés pour ce fournisseur, sans convertir les
+                    montants. Gemini Furniture vendait le Tiroir noir 20 $ ; après l'enregistrement, la fiche de
+                    l'article affiche 20,00 €.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Onglet Achat de l'article Tiroir noir dans Odoo 20 : fournisseur Gemini Furniture, quantité 1,00, prix unitaire 20,00 euros, délai 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le prix fournisseur, passé de 20 $ à 20 € par le seul changement de devise.</figcaption>
+                </figure>
+                <p>Si le fournisseur tarifait vraiment en dollars, ces prix sont faux de 20 % : relisez-les article
+                    par article (voir les points de vigilance). Ici, le tarif en euros est le bon.</p>
+                <p>La demande de prix créée ensuite pour Gemini Furniture est en euros, et ses prix viennent de ce
+                    tarif : 10 Tiroir noir à 20,00 €, soit 200,00 €. Confirmée, elle devient le bon de commande
+                    P00034.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Bon de commande P00034 d'Odoo 20 pour Gemini Furniture, devise EUR : 10 Tiroir noir à 20,00, taxe 0% Imports, montant 200,00 euros, total 200,00 euros sans contre-valeur en dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon de commande en euros ; sa contre-valeur en dollars n'apparaît nulle part.</figcaption>
+                </figure>
+                <p>Le module Achats calcule pourtant la contre-valeur en devise société (240 $, au taux de 1,20) et
+                    prévoit de l'afficher sous le total ; dans Odoo 20.0, cette ligne ne s'affiche pas. Après la
+                    réception, la facture fournisseur créée depuis la commande
+                    (case de la commande dans la liste des bons de commande, puis <strong>Créer des factures</strong>)
+                    est en euros, avec la même ligne de taux que la facture client : 200 € enregistrés pour 240 $.
+                    Le circuit de la facture fournisseur est détaillé dans
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats dans Odoo 20 : de
+                    la demande de prix à la facture</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Payer à un autre taux : l'écart de change</h2>
+                <p>Entre la facture et son paiement, le taux bouge. Le client paie bien le montant facturé en
+                    euros, mais ces euros ne valent plus le même nombre de dollars. L'exemple : une facture de
+                    10 Tiroir à 90 € pour Bloem GmbH, datée du <strong>1er octobre</strong>, donc convertie au taux
+                    du 30 septembre (1 € = 1,25 $) : 900 € enregistrés pour <strong>1 125 $</strong>. Le prix
+                    proposé à la saisie de la ligne était d'ailleurs 88,40 €, soit 110,50 $ divisé par 1,25 ; il a
+                    été remplacé par le tarif export de 90 €.</p>
+                <p>Le 6 octobre, le client règle ses 900 €. Cliquez sur <strong>Payer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Payer d'Odoo 20 : journal Banque, montant 900,00 euros, ligne de taux 1 USD vers 0.833333 EUR, date de règlement 6 oct., mémo FAC/2026/00016, bouton Créer un paiement" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le paiement en euros, au taux du jour de règlement : 1 € = 1,20 $.</figcaption>
+                </figure>
+                <p>La fenêtre propose le montant en euros et affiche, nouveauté d'Odoo 20, le taux de la date de
+                    règlement : 0,833333 € pour 1 $, soit 1,20 $ pour 1 €. Les 900 € reçus valent donc
+                    <strong>1 080 $</strong>. Cliquez sur <strong>Créer un paiement</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Facture client FAC/2026/00016 d'Odoo 20 avec le ruban PAYÉ, datée du 1 oct. au taux 1 USD vers 0.800000 EUR, 10 Tiroir à 90,00, total 900,00 euros, Payé le 06/10/2026 900,00 euros, 45,00 dollars Perte de change, montant dû 0,00 euro" style="max-width:100%; height:auto;"/>
+                    <figcaption>Facture soldée en euros ; en dollars, il manque 45 $, comptés en perte de change.</figcaption>
+                </figure>
+                <p>En euros, la facture est soldée : PAYÉ, montant dû 0,00 €. En dollars, la créance valait
+                    1 125 $ et l'encaissement 1 080 $. Odoo passe la différence, <strong>45 $</strong>, dans une
+                    écriture à part, signalée sous le paiement par la ligne « Perte de change ». L'icône
+                    d'information de cette ligne ouvre ses écritures.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Lignes de l'écriture EXCH/2026/10/0001 dans Odoo 20 : journal Différence de change, partenaire Bloem GmbH, libellé Différence de taux de change, une ligne au crédit de 45,00 dollars lettrée, une ligne au débit de 45,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'écriture de différence de change : 45 $, datée du jour du paiement.</figcaption>
+                </figure>
+                <p>Cette écriture, EXCH/2026/10/0001, est passée dans le journal <strong>Différence de
+                    change</strong>, à la date du paiement. Elle crédite le compte client de 45 $, pour solder la
+                    créance en dollars, et débite le compte de perte de change de la société : 641000 « Foreign
+                    Exchange Loss » dans le plan comptable de la démonstration. Le journal et les deux comptes (gain
+                    et perte) sont réglés dans les paramètres de Facturation, bloc des comptes par défaut ; ce bloc
+                    et la colonne des comptes ne s'affichent qu'aux utilisateurs dotés des fonctions de comptabilité
+                    complètes.</p>
+
+                <h3>Côté fournisseur : un gain</h3>
+                <p>Le raisonnement s'inverse pour une dette. Une facture de Gemini Furniture datée du 1er octobre,
+                    2 Chaise de bureau à 90 €, vaut 180 € soit <strong>225 $</strong> au taux de 1,25. Payée le
+                    6 octobre à 1,20, elle ne coûte que <strong>216 $</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Facture fournisseur FACTURE/2026/10/0002 d'Odoo 20 pour Gemini Furniture, ruban PAYÉ : date 1 oct., date comptable 6 oct., taux 1 USD vers 0.800000 EUR, 2 Chaise de bureau à 90,00, total 180,00 euros, Payé le 06/10/2026 180,00 euros, 9,00 dollars Gain de change" style="max-width:100%; height:auto;"/>
+                    <figcaption>La dette payée moins cher en dollars : 9 $ de gain de change.</figcaption>
+                </figure>
+                <p>La ligne « Gain de change » affiche <strong>9 $</strong>. L'écriture EXCH/2026/10/0002 débite
+                    le compte fournisseur de 9 $ et crédite le compte de gain de change, 441000 « Foreign Exchange
+                    Gain ». La figure montre au passage une particularité des factures fournisseur antidatées : la
+                    <strong>Date comptable</strong> est le 6 octobre (Odoo garde la numérotation du journal dans
+                    l'ordre des dates), mais le <strong>taux</strong> reste celui de la date de facture, 1,25 $.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Pièce</th><th>En euros</th><th>Taux à la facture</th><th>Taux au paiement</th><th>Écart de change</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Facture client du 1er octobre</td><td>900,00 €</td><td>1,25 → 1 125 $</td>
+                            <td>1,20 → 1 080 $</td><td>perte de 45 $ (641000)</td></tr>
+                        <tr><td>Facture fournisseur du 1er octobre</td><td>180,00 €</td><td>1,25 → 225 $</td>
+                            <td>1,20 → 216 $</td><td>gain de 9 $ (441000)</td></tr>
+                    </tbody>
+                </table>
+                <p>Quand l'euro baisse, une créance en euros perd de la valeur et une dette en euros en gagne ;
+                    c'est l'inverse quand l'euro monte. L'écart n'est passé qu'au <strong>paiement</strong> : tant
+                    qu'une facture en devise reste ouverte, sa contre-valeur en dollars reste celle du jour de la
+                    facture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Lire les totaux en devise société</h2>
+                <p>Dans <strong>Facturation › Clients › Factures</strong>, les colonnes ne sont pas toutes dans la
+                    même devise.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Liste des factures clients d'Odoo 20 : FAC/2026/00015 Bloem GmbH hors taxes 426,67 euros, total 426,67 euros, montant dû 512,00 dollars, Comptabilisé ; FAC/2026/00016 Bloem GmbH 900,00 euros, montant dû 0,00 dollar, Payé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Hors taxes et Total en devise de la facture, Montant dû en devise de la société.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Hors taxes</strong> et <strong>Total</strong> sont en devise de la facture :
+                        426,67 €, ce que le client doit lire.</li>
+                    <li><strong>Montant dû</strong> est en devise de la société : 512,00 $ pour la même facture.
+                        Cette colonne est affichée par défaut en Odoo 20 (elle était masquée en Odoo 19).</li>
+                </ul>
+                <p>Le reste à encaisser se pilote donc en dollars, toutes devises confondues, sur la colonne
+                    Montant dû. La liste des factures fournisseurs suit la même règle : FACTURE/2026/10/0001,
+                    200 € au total, y doit encore 240 $. Le devis et le bon de commande, eux, n'affichent que leur
+                    propre devise (figures 6 et 10).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>Complément Enterprise — à venir</h4>
+                    <p>Devises, taux manuels, listes de prix, commandes, factures et écarts de change en devise sont
+                        inclus dans Odoo 20 Community. Le module de mise à jour automatique des taux
+                        (<code>currency_rate_live</code>) n'est pas inclus dans la Community ; son fonctionnement sera
+                        présenté dans un prochain article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un taux saisi aujourd'hui ne sert que demain</h4>
+                    <p>Odoo 20 retient le dernier taux daté <em>avant</em> la date de la pièce. Le taux saisi le
+                        6 octobre et daté du 6 n'a été appliqué à aucune pièce du 6. Pour coter le jour même, datez la
+                        ligne de la veille ; pour une habitude de saisie venue d'Odoo 19, c'est un changement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Unité/Base et Base/Unité : vérifier le sens</h4>
+                    <p>Une cotation saisie dans la mauvaise colonne inverse le taux : 1,20 au lieu de 0,833333.
+                        Contrôlez la colonne <strong>Taux actuel</strong> de la liste des devises (unités de la
+                        devise pour 1 unité de devise principale) et la ligne de taux de la première facture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Changer la devise d'un fournisseur ne convertit pas ses prix</h4>
+                    <p>Tous les prix fournisseur de ce fournisseur prennent la nouvelle devise avec le même chiffre.
+                        Si ses tarifs étaient en dollars, convertissez-les à la main, article par article, avant la
+                        prochaine demande de prix.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une facture en devise ouverte n'est pas réévaluée</h4>
+                    <p>Seul le paiement fait naître un écart de change. Une facture en euros impayée garde en
+                        comptabilité sa valeur en dollars du jour de facture, même si l'euro a beaucoup bougé depuis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> produire un gain de change sur une facture client.</p>
+                    <p><strong>Indication :</strong> sur la base de démonstration, saisissez deux taux de l'euro
+                        (Base/Unité) : 1,10 daté d'il y a dix jours et 1,20 daté d'avant-hier. Créez pour Bloem GmbH
+                        une facture en EUR datée d'il y a une semaine, d'une ligne à 100 € sans taxe, confirmez-la, puis
+                        enregistrez aujourd'hui un paiement de 100 €.</p>
+                    <p><strong>Critère de réussite :</strong> la facture affiche PAYÉ et, sous le paiement, une ligne
+                        « Gain de change » de 10,00 $ (100 € valaient 110 $ à la facture et 120 $ au paiement).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Deux devises actives suffisent pour faire apparaître les champs de devise ; en Community,
+                        les taux se saisissent à la main sur la fiche de la devise.</li>
+                    <li>En Odoo 20, un taux s'applique à partir du lendemain de sa date.</li>
+                    <li>En vente, la devise vient de la liste de prix ; en achat, de la devise du fournisseur.</li>
+                    <li>Chaque facture affiche son taux ; la comptabilité enregistre la contre-valeur au taux de la
+                        date de facture.</li>
+                    <li>Au paiement, l'écart est passé automatiquement dans le journal Différence de change :
+                        perte ou gain selon le sens du taux.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture client, de la saisie à l'avoir.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaissements, paiements partiels et crédits à imputer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs</a></h5>
+                            <p class="small text-muted mb-0">Saisir, contrôler et payer les factures d'achat.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

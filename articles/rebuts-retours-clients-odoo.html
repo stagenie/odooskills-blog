@@ -1,0 +1,563 @@
+<!--
+Article — Rebut et retour client dans Odoo 20 : ce qui change
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : rebuts-retours-clients-odoo
+Meta : Rebut et retour dans Odoo 20 Community : le rebut devient un mouvement de stock, le bouton Retour crée le transfert sans assistant, motifs de retour et demande depuis le portail.
+Mot-clé cible : odoo retour ; odoo rebut ; odoo retour client ; odoo retour fournisseur
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base de démonstration (Ventes, Achats, Inventaire, Fabrication,
+  Site Web installés ; entrepôt réglé en livraison et réception en 1 étape).
+  Rebut — modèle stock.scrap supprimé : odoo/addons/stock/models/ ne contient plus stock_scrap.py (19 : 245 lignes,
+  _name = 'stock.scrap', _inherit mail.thread, scrap_qty default=1.0 :47-49) ; ir.model 'stock.scrap' et
+  'stock.return.picking' absents de la base (search_count = 0). Le rebut est un stock.move : is_scrap
+  (stock/models/stock_move.py:139), scrap_reason_tag_ids / should_replenish_scrapped (:203-204), destination par défaut
+  = company.scrap_location_id (:232-248), _prepare_scrap_move_vals référence séquence stock.scrap SP/ (:2951-2955),
+  _action_scrap (:2957-2966, réappro si case cochée), action_scrap (:2968-2995 : quantité nulle refusée « Vous ne pouvez
+  saisir que des quantités positives », assistant stock.warn.insufficient.qty.scrap si stock insuffisant — prouvé par RPC
+  avec 100 Armoires : « Quantité insuffisante pour la mise au rebut »). Pas de reliquat pour un rebut (:2415-2417).
+  Vues : stock/views/stock_move_views.xml:369-406 (formulaire Produits de rebut), :408-423 (liste), :562-571 (action
+  Rebuts, domaine is_scrap), :600 (menu Scrap sous menu_stock_adjustments — même place qu'en 19,
+  stock_scrap_views.xml:182-187). res_company.py:19-20, 61-65 : emplacement de rebut = premier emplacement « Perte
+  d'inventaire » de la société (Inventory adjustment sur la démo ; un emplacement « Scrap » n'est créé que s'il n'en
+  existe aucun, :106-112, idem 19). Depuis un transfert : action serveur « Rebut » du menu Actions
+  (stock_picking_views.xml:602-611 → stock_picking.py:1717-1745, origine = emplacement de destination si le transfert
+  est fait) ; bouton intelligent Rebuts (stock_picking_views.xml:208, stock_picking.py:1762).
+  Valorisation : stock_account/models/stock_move.py:248-258 (valeur posée à la validation), :756-764 (écriture comptable
+  seulement en Perpetual + compte sur l'emplacement, champ « Compte des pertes » stock_account/views/stock_location_views.xml) ;
+  démo en « Periodic (at closing) » : aucune pièce (account_move_id False sur SP/00001, valeur -241).
+  Retour : stock_picking.py:812-821 (action_return ouvre directement le transfert créé), :823-836 (Tout renvoyer =
+  quantité livrée moins déjà retournée), :838-841 (Effacer), :843-860 (Échange : nouveau transfert sans lien de retour,
+  confirmé et réservé), :939 (demande à 0), :959-974 (type = type de retour du type d'opération, destination = destination
+  par défaut des Réceptions), :976-993 (chaque appel crée un transfert : RPC, 1 → 2 retours de WH/OUT/00085).
+  stock_picking_views.xml:190-191 (Retour / Échange), :411-412 (Tout renvoyer / Effacer). Assistant stock.return.picking
+  de 19 : stock/wizard/stock_picking_return.py (absent en 20) ; case « Update quantities on SO/PO » (to_refund) visible en
+  mode développeur en 19 (stock_account/views/stock_account_views.xml:10), plus aucune vue en 20 ;
+  to_refund défaut True (stock_account/models/stock_move.py:27-29). Valeur du retour = valeur de la livraison d'origine au
+  prorata (:576-585) : 1 000 $ pour 2 bureaux sur 2 000 $.
+  Nouveau 20 (sale_stock, absent de 19 : grep return_reason/spontaneous vide) : res_company.py:10-11 (Allow Spontaneous
+  Returns, 14 jours), res_config_settings_views.xml:19-40 (bloc Opérations des paramètres Inventaire), modèle return.reason
+  (models/return_reason.py, 5 motifs data/return_reason_data.xml non traduits), champ Return Reason sur un retour entrant
+  si réglage actif (views/stock_picking_views.xml:26-33), menu Analyse › Retours (:68-100, graphique par motif) ; portail :
+  sale_order.py:265-275 (commande confirmée, livrée depuis moins de N jours), controllers/return_order.py (étiquette PDF +
+  message, aucun transfert créé : 3 transferts avant et après), static/src/interactions/return_order.js:9-12 (bouton
+  inactif sans access_token dans l'URL).
+  Parcours joué : SP/00001 2 × [E-COM11] Armoire avec portes (coût 120,50 $) motif « Endommagé en stock », Valeur totale
+  3 976,50 → 3 735,50 $, disponible 33 → 31 ; S00083 Acme Corporation 4 × FURN_0096 livrée WH/OUT/00085 ; Retour →
+  WH/IN/00027 brouillon à 0, Tout renvoyer 4, ramené à 2, motif « Item arrived damaged or defective », validé vers
+  WH/Stock ; Livré 4 → 2 ; SP/00002 1 bureau depuis WH/IN/00027 motif « Retour client » ; Échange → WH/OUT/00087
+  2 bureaux, validé, Livré → 4 ; P00034 Wood Corner 10 × [E-COM08] Boîte de rangement 13 $ reçue WH/IN/00028, Retour 3 →
+  WH/OUT/00086 vers Vendors, Reçu 10 → 7 (chatter « Quantité reçue : 10.0 -> 7.0 »), statut de réception resté
+  « Entièrement reçu » ; portail S00083 : Request a return 1 bureau, étiquette téléchargée, message OdooBot sur la commande.
+  Exercice vérifié par RPC : SP/00003 3 Boîtes avec Doit être réapprovisionné → demande de prix P00035 Wood Corner 3 × 13 $.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Rebut et retour client dans Odoo 20 : ce qui change</h1>
+                <p class="lead mt-3 text-white">Un article cassé en rayon, un client qui renvoie la moitié de sa
+                    livraison, une palette fournisseur à refuser : trois gestes de stock courants, et trois écrans que
+                    la version 20 a remaniés. Le document de rebut disparaît au profit d'un simple mouvement, et le
+                    bouton Retour ne passe plus par une fenêtre intermédiaire.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Achats et Inventaire installés. Rebuts et retours font
+                        partie des applications Inventaire et Ventes, incluses dans la Community ; elles existent aussi
+                        dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Mettre au rebut, c'est sortir du stock une marchandise inutilisable : elle quitte l'emplacement
+                    interne pour un emplacement virtuel de perte, et cesse d'être comptée dans la valeur du stock.
+                    Retourner, c'est faire le chemin inverse d'un transfert déjà validé : le client renvoie ce qu'il a
+                    reçu, ou l'entreprise renvoie au fournisseur ce qu'elle a réceptionné. Les deux gestes existaient
+                    en Odoo 19 ; c'est leur mécanique qui change en 20.</p>
+                <table class="tmc">
+                    <tr><th>Geste</th><th>Odoo 19</th><th>Odoo 20</th></tr>
+                    <tr><td>Rebut</td><td>Un document « ordre de rebut » à part, avec son historique et une quantité
+                        proposée à 1</td><td>Un mouvement de stock marqué « rebut », référencé SP/…, quantité proposée
+                        à 0</td></tr>
+                    <tr><td>Retour</td><td>Une fenêtre intermédiaire listait les lignes à retourner avant de créer le
+                        transfert</td><td>Le bouton Retour crée aussitôt le transfert de retour, en brouillon, quantités à
+                        0</td></tr>
+                    <tr><td>Motif de retour</td><td>Aucun</td><td>Liste de motifs, rapport Analyse › Retours, demande
+                        de retour depuis le portail client</td></tr>
+                </table>
+                <p>Pour la prise en main des livraisons, voir
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande dans Odoo 20</a> ; pour les réceptions,
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à
+                    la facture fournisseur</a>. L'avoir qui suit un retour relève de la facturation, traitée dans
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                    avoirs</a>. Le présent article reste côté stock.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>mettre un article au rebut, avec un motif, et mesurer l'effet sur le stock et sa valeur ;</li>
+                    <li>créer un retour client partiel, choisir où la marchandise revient et noter le motif ;</li>
+                    <li>remettre en stock la partie saine et mettre au rebut la partie abîmée, puis renvoyer un
+                        remplacement ;</li>
+                    <li>renvoyer une partie d'une réception au fournisseur ;</li>
+                    <li>ouvrir la demande de retour au client, depuis son portail.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Mettre un article au rebut</h2>
+                <p>Le menu n'a pas bougé : <strong>Inventaire › Opérations › Rebut</strong>, dans la rubrique
+                    Ajustements, à côté de l'inventaire physique.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Menu Opérations de l'application Inventaire d'Odoo 20 : rubriques Transferts (Réceptions, Livraisons, Interne, Fabrications, Dropshippings), Ajustements (Inventaire physique, Rebut, Coûts logistiques) et Approvisionnement (Réassort)" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le rebut se trouve dans la rubrique Ajustements du menu Opérations.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Nouveau</strong>. Le formulaire <strong>Produits de rebut</strong> demande peu
+                    de choses :</p>
+                <ul>
+                    <li><strong>Produit</strong> et <strong>Quantité</strong> : la quantité part de 0, et Odoo refuse
+                        de confirmer à 0 (« Vous ne pouvez saisir que des quantités positives ») ;</li>
+                    <li><strong>Raison de mise au rebut</strong> : des étiquettes libres. La base de démonstration
+                        n'en contient aucune ; tapez le motif et choisissez <strong>Créer</strong> pour l'ajouter à la
+                        volée ;</li>
+                    <li><strong>Emplacement d'origine</strong> : WH/Stock par défaut ;</li>
+                    <li><strong>Emplacement de rebut</strong> : proposé d'office (voir plus bas) ;</li>
+                    <li><strong>Doit être réapprovisionné</strong> : si la case est cochée, Odoo lance
+                        l'approvisionnement de la quantité détruite (voir l'exercice).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Formulaire Produits de rebut d'Odoo 20 au statut Nouveau : Produit [E-COM11] Armoire avec portes, Quantité 2,00 Unité(s), Raison de mise au rebut Endommagé en stock, Emplacement d'origine WH/Stock, Emplacement de rebut Inventory adjustment, Société My Company (San Francisco), case Doit être réapprovisionné décochée, bouton Confirmer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux armoires abîmées, avec le motif « Endommagé en stock ».</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Confirmer</strong> : le statut passe directement de Nouveau à
+                    <strong>Terminé</strong>. Il n'y a pas d'étape de réservation ni de validation séparée. Si la
+                    quantité demandée dépasse ce que contient l'emplacement d'origine, Odoo ouvre d'abord une fenêtre
+                    « Quantité insuffisante pour la mise au rebut » : elle demande de confirmer la sortie, qui « peut
+                    donner lieu à des incohérences dans votre inventaire ».</p>
+                <p>Ce qui change en 20 se voit au titre de la fiche une fois confirmée : « E-COM11:
+                    Stock&gt;Inventory adjustment ». Le rebut n'est plus un document à part, c'est un
+                    <strong>mouvement de stock</strong> marqué comme rebut. Il n'a donc plus de fil de discussion,
+                    et sa référence <strong>SP/00001</strong> ne se lit que dans la liste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que le rebut change : stock, emplacement, valeur</h2>
+                <p>La liste <strong>Rebuts</strong> (même menu) regroupe tous les mouvements de rebut, avec leur
+                    référence SP/, l'emplacement d'origine et l'emplacement de rebut. La capture est prise en fin de
+                    parcours : la seconde ligne vient de la section 5.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste Rebuts d'Odoo 20 : SP/00001 du 6 octobre, [E-COM11] Armoire avec portes 2,00 Unité(s), de WH/Stock vers Inventory adjustment, Terminé ; SP/00002, [FURN_0096] Bureau personnalisable (Blanc, Acier) 1,00 Unité(s), de WH/Stock vers Inventory adjustment, Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste des rebuts : une ligne par mouvement, référence SP/.</figcaption>
+                </figure>
+                <p><strong>L'emplacement de rebut.</strong> Odoo retient le premier emplacement de type « Perte
+                    d'inventaire » de la société. Sur la démonstration, c'est <strong>Inventory adjustment</strong>,
+                    le même emplacement virtuel que celui des écarts d'inventaire. Rebuts et corrections de comptage
+                    finissent donc au même endroit ; seule la référence (SP/ d'un côté, motif d'inventaire de
+                    l'autre) les distingue dans l'historique.</p>
+                <p><strong>Le stock et sa valeur.</strong> Dans <strong>Inventaire › Analyse › Stock</strong>,
+                    l'Armoire avec portes passait de 33 à <strong>31</strong> unités disponibles, et sa
+                    <strong>Valeur totale</strong> de 3 976,50 $ à <strong>3 735,50 $</strong> : 2 × 120,50 $, son
+                    coût unitaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Rapport Stock d'Odoo 20 filtré sur [E-COM11] Armoire avec portes : Disponible 31,00, Virtuellement disponible 14,00, Coût unitaire 120,50 dollars, Valeur totale 3 735,50 dollars, Entrant 120,00, Sortant 17,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le rebut : 31 armoires, 3 735,50 $ de valeur.</figcaption>
+                </figure>
+                <p><strong>Et la comptabilité ?</strong> La base de démonstration valorise le stock en mode
+                    <strong>Periodic (at closing)</strong> : le rebut baisse la valeur du stock mais ne crée aucune
+                    pièce comptable sur le moment. En mode <strong>Perpetual (at invoicing)</strong>, une écriture
+                    n'est passée que si l'emplacement de rebut porte un compte : champ <strong>Compte des
+                    pertes</strong>, dans la section Informations comptables de la fiche de l'emplacement
+                    (<strong>Inventaire › Configuration › Emplacements</strong>, avec les emplacements de stockage
+                    activés).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Avant le premier retour : activer les motifs</h2>
+                <p>Le retour client s'enrichit en 20 d'un réglage, dans
+                    <strong>Inventaire › Configuration › Paramètres</strong>, rubrique Opérations :
+                    <strong>Allow Spontaneous Returns</strong>. Cochée, la case ouvre deux choses : un champ
+                    <strong>Return Reason</strong> sur les retours clients, et un bouton de demande de retour sur le
+                    portail (section 7), valable un nombre de jours après la livraison, 14 par défaut. Le lien
+                    <strong>Manage Return Reasons</strong> ouvre la liste des motifs ; cinq sont fournis, en anglais
+                    (article erroné, arrivé endommagé, ne répond pas aux attentes, caractéristiques incompatibles,
+                    commandé par erreur), et se renomment ou se complètent librement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Réglage Allow Spontaneous Returns coché dans les paramètres Inventaire d'Odoo 20 : Allow users to return products, 14 days after delivery, lien Manage Return Reasons" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le réglage des retours, avec le délai en jours et l'accès aux motifs.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Créer un retour client</h2>
+                <p>L'exemple part d'une commande S00083 d'Acme Corporation : 4 Bureaux personnalisables (Blanc, Acier),
+                    livrés par le bon WH/OUT/00085. Le client en renvoie deux. Ouvrez le bon de livraison
+                    (<strong>Inventaire › Opérations › Livraisons</strong>, ou bouton intelligent Livraison de la
+                    commande). Le bon est au statut Terminé ; le bouton <strong>Retour</strong> figure en tête du
+                    formulaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Bon de livraison WH/OUT/00085 d'Odoo 20 au statut Terminé : boutons Imprimer, Retour, Déverrouiller ; Adresse de livraison Acme Corporation, Type d'opération YourCompany: Bons de livraison, Document d'origine S00083 ; ligne [FURN_0096] Bureau personnalisable (Blanc, Acier) demande 4,00 quantité 4,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison faite : le bouton Retour est en tête du formulaire.</figcaption>
+                </figure>
+                <p>En Odoo 19, ce bouton ouvrait une fenêtre où l'on saisissait les quantités avant de créer quoi que ce
+                    soit. En 20, un clic suffit : Odoo crée le transfert de retour <strong>WH/IN/00027</strong> et
+                    l'ouvre aussitôt, au statut <strong>Brouillon</strong>. Les quantités demandées sont à
+                    <strong>0</strong> ; deux boutons sous les lignes servent à les remplir ou à les vider :</p>
+                <ul>
+                    <li><strong>Tout renvoyer</strong> : reporte sur chaque ligne la quantité livrée, moins ce qui a
+                        déjà été retourné ;</li>
+                    <li><strong>Effacer</strong> : remet toutes les lignes à 0.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Transfert de retour WH/IN/00027 d'Odoo 20 au statut Brouillon : boutons Marquer comme à faire, Valider, Annuler ; Recevoir de Acme Corporation, Type d'opération YourCompany: Réceptions, Emplacement de destination WH/Stock, Document d'origine Retour de WH/OUT/00085, champ Return Reason vide ; ligne Bureau personnalisable demande 0,00 ; boutons Effacer et Tout renvoyer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le retour est créé d'emblée, en brouillon, avec une demande à 0.</figcaption>
+                </figure>
+                <p>Trois informations se lisent dans l'en-tête :</p>
+                <ul>
+                    <li>le <strong>Type d'opération</strong> est celui des Réceptions : le retour d'une livraison
+                        prend le type de retour défini sur le type « Bons de livraison », c'est-à-dire les
+                        réceptions de l'entrepôt ;</li>
+                    <li>l'<strong>Emplacement de destination</strong> est la destination habituelle des réceptions,
+                        ici WH/Stock. La marchandise revient donc en stock vendable. Pour la mettre à part en attendant
+                        un contrôle, modifiez ce champ avant de valider (un emplacement interne dédié, créé au
+                        préalable) ;</li>
+                    <li>le <strong>Document d'origine</strong> rappelle « Retour de WH/OUT/00085 ».</li>
+                </ul>
+                <p>Cliquez sur <strong>Tout renvoyer</strong> (la ligne passe à 4), corrigez la demande à
+                    <strong>2</strong>, puis choisissez le motif « Item arrived damaged or defective » dans
+                    <strong>Return Reason</strong>. Enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Transfert de retour WH/IN/00027 en brouillon : Return Reason Item arrived damaged or defective, ligne Bureau personnalisable (Blanc, Acier) demande 2,00, emplacement de destination WH/Stock" style="max-width:100%; height:auto;"/>
+                    <figcaption>Retour partiel : 2 bureaux sur 4, avec le motif du client.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Valider</strong>. Le passage par « Marquer comme à faire » est facultatif :
+                    depuis le brouillon, Valider confirme et termine le retour d'un coup. Le transfert passe à Terminé,
+                    et le bouton Retour laisse la place à <strong>Échange</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Retour WH/IN/00027 au statut Terminé : boutons Imprimer, Échange, Déverrouiller ; Date effective 6 octobre ; Return Reason Item arrived damaged or defective ; ligne Bureau personnalisable demande 2,00 quantité 2,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le retour validé : deux bureaux rentrés dans WH/Stock.</figcaption>
+                </figure>
+                <p>Les effets se vérifient ailleurs :</p>
+                <ul>
+                    <li>sur la commande S00083, la colonne <strong>Livré</strong> de la ligne passe de 4 à
+                        <strong>2</strong>. Avec une politique de facturation sur quantités livrées, la facture ou
+                        l'avoir suivra ce chiffre ;</li>
+                    <li>le stock de bureaux remonte de 2, et sa valeur de 1 000 $ : un retour client est valorisé au
+                        coût de la livraison d'origine (4 bureaux sortis pour 2 000 $), au prorata des quantités.</li>
+                </ul>
+                <p>En 19, la fenêtre de retour cachait, en mode développeur, une case « mettre à jour les quantités sur
+                    la commande ». Elle n'a plus d'écran en 20 : la mise à jour de la quantité livrée est la règle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Marchandise retournée : remettre en stock, mettre au rebut, remplacer</h2>
+                <p>Le retour a remis les deux bureaux dans WH/Stock. Supposez qu'à l'ouverture du colis l'un soit sain,
+                    l'autre irréparable. Le sain reste où il est : il est déjà disponible à la vente. L'abîmé se met au
+                    rebut <strong>depuis le retour lui-même</strong>, pour garder le lien entre les deux.</p>
+                <p>Sur WH/IN/00027, ouvrez le menu <strong>Actions</strong> (roue dentée à côté du nom) et choisissez
+                    <strong>Rebut</strong>. La fenêtre Produits de rebut s'ouvre préremplie : seuls les articles du
+                    transfert sont proposés, l'emplacement d'origine est la destination du retour (WH/Stock, puisque le
+                    retour est fait) et le champ <strong>Transfert</strong> renvoie à WH/IN/00027. Saisissez 1, le
+                    motif « Retour client », puis Confirmer.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Produits de rebut ouverte depuis le retour : Produit [FURN_0096] Bureau personnalisable, Quantité 1,00, Raison de mise au rebut Retour client, Emplacement d'origine WH/Stock, Emplacement de rebut Inventory adjustment, Transfert WH/IN/00027, bouton Confirmer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le rebut lancé depuis le retour garde la référence du transfert.</figcaption>
+                </figure>
+                <p>Le rebut devient SP/00002 (la seconde ligne de la figure 3), et un bouton intelligent
+                    <strong>Rebuts</strong> apparaît sur le retour. Le stock de bureaux a fait 45 → 41 (livraison)
+                    → 43 (retour) → <strong>42</strong> (rebut). La quantité livrée de la commande, elle, reste à 2 :
+                    le rebut ne touche pas la vente.</p>
+                <p>Pour envoyer un remplacement, cliquez sur <strong>Échange</strong> sur le retour. Odoo crée une
+                    nouvelle livraison, <strong>WH/OUT/00087</strong>, pour Acme Corporation, déjà réservée : 2 bureaux
+                    depuis WH/Stock, rattachée à la commande S00083.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Livraison d'échange WH/OUT/00087 au statut Terminé : Adresse de livraison Acme Corporation, Type d'opération YourCompany: Bons de livraison, Emplacement d'origine WH/Stock, Document d'origine Retour de WH/IN/00027, ligne Bureau personnalisable demande 2,00 quantité 2,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison d'échange, ici validée : la commande repasse à 4 livrés.</figcaption>
+                </figure>
+                <p>Une fois cette livraison validée, la colonne Livré de la commande remonte à
+                    <strong>4</strong> : le client a reçu ses quatre bureaux, et rien n'est à refacturer. Le
+                    portail de la commande liste désormais deux livraisons et un retour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Retourner une marchandise au fournisseur</h2>
+                <p>Le mécanisme est le même dans l'autre sens. La commande d'achat P00034 portait 10 Boîtes de
+                    rangement chez Wood Corner, à 13 $, reçues par WH/IN/00028. Trois arrivent fendues. Sur la
+                    réception terminée, cliquez sur <strong>Retour</strong> : Odoo crée cette fois un transfert du
+                    type <strong>Bons de livraison</strong>, WH/OUT/00086, à destination de Wood Corner (emplacement
+                    virtuel Vendors). Tout renvoyer, ramenez la demande à <strong>3</strong>, puis Valider.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Retour fournisseur WH/OUT/00086 d'Odoo 20 au statut Terminé : Adresse de livraison Wood Corner, Type d'opération YourCompany: Bons de livraison, Emplacement d'origine WH/Stock, Document d'origine Retour de WH/IN/00028, ligne [E-COM08] Boîte de rangement demande 3,00 quantité 3,00, bouton Échange" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le retour fournisseur est une livraison vers le fournisseur.</figcaption>
+                </figure>
+                <p>Sur la commande d'achat, la colonne <strong>Reçu</strong> passe de 10 à <strong>7</strong>, et le
+                    fil de discussion note « Quantité reçue : 10.0 -&gt; 7.0 ». La facture fournisseur créée ensuite
+                    portera donc 7 boîtes si la politique de contrôle de facturation est « Quantités reçues ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Ligne de la commande d'achat P00034 : [E-COM08] Boîte de rangement, Quantité 10,00, Reçu 7,00, Facturé 0,00, Prix unitaire 13,00, Taxes 15 %, Montant 130,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le retour de 3 boîtes : 10 commandées, 7 reçues.</figcaption>
+                </figure>
+                <p>Aucune nouvelle réception n'est créée pour les trois boîtes manquantes. Si le fournisseur doit
+                    les remplacer, le bouton <strong>Échange</strong> du retour fournisseur crée la réception de
+                    remplacement, comme côté client.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. La demande de retour depuis le portail client</h2>
+                <p>Avec le réglage de la section 3 actif, la page d'une commande dans le portail client affiche un
+                    bouton <strong>Return</strong>, pendant le délai réglé après la livraison. Le client choisit les
+                    quantités, ligne par ligne et bon de livraison par bon de livraison, puis un motif.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Fenêtre Request a return du portail client d'Odoo 20 pour S00083 : Bureau personnalisable (Blanc, Acier) livré par WH/OUT/00085, 750 dollars, quantité 1 ; même article livré par WH/OUT/00087, quantité 0 ; Return reason Item arrived damaged or defective ; bouton Continuer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Côté client : quantités par livraison et motif obligatoire.</figcaption>
+                </figure>
+                <p><strong>Continuer</strong> affiche l'adresse de l'entrepôt et le bouton <strong>Download Return
+                    Label</strong> : une étiquette PDF à coller sur le colis. Côté Odoo, la commande reçoit un message
+                    qui détaille les articles annoncés et le motif.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Message posté par OdooBot sur la commande S00083 : A return label has been downloaded for the following products, WH/OUT/00085, 1 x Bureau personnalisable (Blanc, Acier), Return reason Item arrived damaged or defective" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande du client arrive comme un message sur la commande.</figcaption>
+                </figure>
+                <p>Rien d'autre n'est créé : la demande ne produit <strong>aucun transfert</strong>. Le magasinier crée
+                    le retour à réception du colis, par le bouton Retour de la section 4, et y reporte le motif. C'est ce
+                    champ qui alimente <strong>Inventaire › Analyse › Retours</strong>, un graphique des retours
+                    clients par semaine et par motif.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Chaque clic sur Retour crée un transfert</h4>
+                    <p>Il n'y a plus de fenêtre à annuler : un clic de trop laisse un retour en brouillon de plus, à
+                        0. Avant de recliquer, cherchez les retours existants (Document d'origine « Retour de … ») et
+                        supprimez les brouillons inutiles.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un retour client revient en stock vendable</h4>
+                    <p>La destination proposée est celle des réceptions. Dans un entrepôt réglé en réception en deux ou
+                        trois étapes, c'est donc l'emplacement d'entrée (WH/Entrée), pas le stock. Pour une marchandise à
+                        contrôler, changez l'emplacement de destination avant de valider.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Rebuts et écarts d'inventaire partagent un emplacement</h4>
+                    <p>Sur la démonstration, l'emplacement de rebut proposé est Inventory adjustment. Pour suivre les
+                        rebuts à part, ou leur donner un compte de pertes distinct, créez un emplacement de type Perte
+                        d'inventaire dédié et choisissez-le dans Emplacement de rebut.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'échange reprend toute la quantité retournée</h4>
+                    <p>Échange prépare une livraison de la totalité du retour (2 bureaux ici), même si une partie
+                        seulement est à remplacer. Ajustez la demande avant de valider la livraison d'échange.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le statut de réception d'un achat ne voit pas le retour</h4>
+                    <p>Après le retour de 3 boîtes, P00034 affiche toujours « Entièrement reçu » : ce statut suit l'état
+                        des réceptions, toutes terminées. C'est la colonne Reçu (7 sur 10) qui dit ce qui reste dû.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le bouton Return du portail exige le lien de la commande</h4>
+                    <p>Il ne réagit que si l'adresse de la page contient le jeton d'accès de la commande (lien du
+                        courriel ou de la liste « Commandes clients » du portail). Ouverte autrement, la page affiche le
+                        bouton, sans effet au clic.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> détruire trois Boîtes de rangement et déclencher leur
+                        remplacement en une seule opération.</p>
+                    <p><strong>Indication :</strong> dans Inventaire › Opérations › Rebut, créez un rebut de 3
+                        [E-COM08] Boîte de rangement depuis WH/Stock, cochez Doit être réapprovisionné, puis
+                        Confirmer.</p>
+                    <p><strong>Critère de réussite :</strong> la liste des rebuts montre une nouvelle ligne SP/ de 3
+                        boîtes, le disponible de la boîte baisse de 3, et Achats › Commandes › Demandes de prix contient
+                        une demande de prix en brouillon chez Wood Corner pour 3 boîtes à 13 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En 20, un rebut est un mouvement de stock (référence SP/) : même menu, plus de document à
+                        part, quantité proposée à 0.</li>
+                    <li>Le rebut sort la marchandise vers l'emplacement de perte et baisse la valeur du stock au coût ;
+                        l'écriture comptable n'existe qu'en valorisation perpétuelle avec un compte de pertes.</li>
+                    <li>Le bouton Retour crée directement le transfert, en brouillon à 0 : Tout renvoyer, ajuster,
+                        Valider.</li>
+                    <li>Un retour client réduit la quantité livrée de la commande ; un retour fournisseur réduit la
+                        quantité reçue de l'achat.</li>
+                    <li>Rebut depuis le retour pour la marchandise abîmée, Échange pour le remplacement ; motifs et
+                        demandes du portail se règlent dans les paramètres Inventaire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Où arrive un retour quand l'entrepôt reçoit en deux étapes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">L'avoir qui suit le retour, côté facturation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Racheter ce qui a été détruit, sans y penser.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

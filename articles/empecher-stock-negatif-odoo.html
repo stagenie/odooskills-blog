@@ -1,0 +1,554 @@
+<!--
+Article — Stock négatif dans Odoo 20 : comment l'empêcher
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : empecher-stock-negatif-odoo
+Mot-clé cible : odoo stock négatif ; odoo negative stock
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base de démonstration (Ventes, Inventaire, Fabrication, PdV,
+  eCommerce installés ; livraison en 1 étape).
+  Aucun réglage : grep -ri "allow_negative_stock|negative_stock" odoo/addons (v20 et v19) → seulement des tests ;
+  le seul allow_negative est un paramètre interne (stock/models/stock_quant.py:825).
+  Livraison forcée : stock/models/stock_move.py:2651-2660 (ligne de mouvement sans quant si le stock ne suffit pas ;
+  même logique v19 stock_move.py:2272+) ; quantité toujours modifiable (stock_move.py:377-379) ; badge
+  Disponible = quantité couvre la demande (stock_picking.py:272-294).
+  Brouillon validé : stock_picking.py:1176-1185 (quantité = demande) ; refus quantité nulle :1137-1157, message
+  :1323-1335 (fr : « Alerte transfert ! … »). Reliquat : _check_backorder :1353.
+  Fabrication : mrp_production.py:2379-2420 (Produire termine sans contrôle de stock).
+  Rebut : stock_move.py:2968-2995 + wizard stock_warn_insufficient_qty.py (avertissement, Confirmer possible).
+  Caisse : pos_stock (nouveau module 20, absent de 19) models/stock_picking.py:24-47,127-141 (transfert créé,
+  picked, _action_done) ; temps réel ou clôture : pos_session.py:129, pos_order.py:103.
+  Devis : sale_stock/static/src/widgets/qty_at_date_widget.xml (Disponibilité, information seule).
+  Boutique : website_sale/models/product_template.py:190 (allow_out_of_stock_order, défaut True ; en 19 dans
+  website_sale_stock) ; plafond panier website_sale/models/sale_order.py:716-760.
+  Filtre : stock/views/stock_quant_views.xml:44 (Stock négatif). Droit Valider : stock_picking_views.xml:178.
+  Parcours joué (vs20_func_b7) : S00085 Grande table de réunion 8 (libre 5) → icône rouge ; S00083 Espace de travail
+  individuel 20 (stock 16) → WH/OUT/00087 16/20, fenêtre reliquat, 20 saisis → badge Disponible, validé sans message,
+  stock −4 ; S00084 Lampe LED 2 (stock 0) → WH/OUT/00088 Valider → Opération invalide « Alerte transfert ! » ;
+  WH/OUT/00089 Porte-journaux 3 créé à la main, validé depuis le brouillon → −3 ; WH/MO/00011 Stratifié en
+  plastique 2, Produire → Plis de placage −2 ; rebut Lampe LED 1 → fenêtre Quantité insuffisante, Ignorer ;
+  WH/POS/00002 (base de travail, 27/09) Tiroir noir et Sous-main −1. Panier eCommerce : case décochée, demande 8
+  → (5, message « only 5 are available ») ; cochée → 8. Exercice vérifié par shell puis annulé : Porte-journaux
+  compté 0 → mouvement « Régularisation stock négatif » 3 de Inventory adjustment vers WH/Stock, disponible 0.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Stock négatif dans Odoo 20 : comment l'empêcher</h1>
+                <p class="lead mt-3 text-white">Un article affiché à −4 en stock, c'est une livraison validée sans
+                    marchandise enregistrée, une fabrication lancée sans composants ou une vente en caisse
+                    d'un article jamais réceptionné. Odoo 20 Community ne propose aucune case « interdire le stock
+                    négatif ». Il offre en revanche des garde-fous, une méthode de travail et un filtre pour
+                    repérer les écarts.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Inventaire, Fabrication, Point de vente et
+                        eCommerce installés. Tous les écrans montrés font partie de la Community ; ils existent aussi
+                        dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le stock d'un article dans un emplacement est une simple somme : ce qui est entré moins ce qui
+                    est sorti. Quand une sortie est validée alors qu'aucune entrée ne la couvre, la somme passe
+                    sous zéro. Odoo 20 Community l'accepte : il n'existe dans l'application Inventaire aucun réglage
+                    d'emplacement, de catégorie ou d'article qui refuse une sortie faute de stock. Le stock
+                    négatif n'est pas un bug ; c'est presque toujours le signe qu'une entrée manque (réception non
+                    saisie, inventaire de départ incomplet) ou qu'une sortie a été forcée.</p>
+                <p>Pour la prise en main de l'application Inventaire, voir
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande dans Odoo 20</a>. Le présent article part du problème : par où le stock devient
+                    négatif, ce qu'Odoo fait pour l'éviter, et ce qu'il reste à organiser soi-même.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>reconnaître les quatre chemins qui créent du stock négatif dans Odoo 20 Community ;</li>
+                    <li>lire les garde-fous natifs : alerte de disponibilité au devis, reliquat, refus d'un
+                        transfert à quantité nulle, avertissement au rebut ;</li>
+                    <li>bloquer la vente en rupture sur la boutique en ligne, seul blocage natif ;</li>
+                    <li>repérer les quantités négatives et les régulariser par un comptage.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DEVIS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Au devis : Odoo prévient, il ne bloque pas</h2>
+                <p>Le premier signal arrive dès la saisie de la commande. Sur un devis de 8 « Grande table de
+                    réunion » pour Acme Corporation, alors que 5 seulement sont libres en stock, une petite icône de
+                    graphique apparaît en rouge à côté de la quantité. Un clic ouvre la fenêtre
+                    <strong>Disponibilité</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Ligne de devis Odoo 20 : 8 Grande table de réunion, icône de disponibilité en rouge, fenêtre Disponibilité avec Stock prévu 5 et Disponible 5 en rouge, lien Voir les prévisions" style="max-width:100%; height:auto;"/>
+                    <figcaption>8 tables commandées, 5 disponibles : l'icône passe au rouge.</figcaption>
+                </figure>
+                <p><strong>Stock prévu</strong> donne la quantité attendue à la date de livraison,
+                    <strong>Disponible</strong> le stock libre, toutes opérations planifiées incluses. Le commercial
+                    peut pourtant confirmer la commande : l'alerte n'empêche rien. Elle sert à négocier un délai ou
+                    à déclencher un achat, pas à protéger le stock.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LIVRAISON PARTIELLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. À la livraison : valider ce qui est réservé</h2>
+                <p>Une commande confirmée de 20 « Espace de travail individuel », avec 16 unités en stock, crée la
+                    livraison WH/OUT/00087. Odoo y <strong>réserve</strong> ce qui existe : la colonne
+                    <strong>Quantité</strong> affiche 16 pour une <strong>Demande</strong> de 20, et la ligne porte
+                    le badge rouge « Pas disponible ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Livraison WH/OUT/00087 dans Odoo 20 : Espace de travail individuel, badge Pas disponible, Demande 20, Quantité 16, Disponibilité des produits Pas disponible" style="max-width:100%; height:auto;"/>
+                    <figcaption>Odoo propose de livrer ce qui est réservé : 16 sur 20.</figcaption>
+                </figure>
+                <p>Au clic sur <strong>Valider</strong>, Odoo constate l'écart avec la demande et demande quoi faire
+                    du reste :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Créer un reliquat ? d'Odoo 20 : Vous avez traité moins de produits que la demande initiale, boutons Créer un reliquat, Aucun reliquat, Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fenêtre de reliquat : la voie qui garde le stock juste.</figcaption>
+                </figure>
+                <p><strong>Créer un reliquat</strong> livre les 16 unités et ouvre une seconde livraison de 4, qui
+                    attendra le réassort. C'est le chemin qui garde le stock exact : seul ce qui est enregistré en
+                    stock quitte l'entrepôt.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. QUANTITÉ FORCÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Premier chemin vers le négatif : forcer la quantité</h2>
+                <p>La colonne <strong>Quantité</strong> de la livraison reste modifiable. Si le magasinier ferme
+                    la fenêtre de reliquat (Ignorer) et tape 20 à la place de 16, Odoo ne proteste pas. Pire, la
+                    ligne et le champ <strong>Disponibilité des produits</strong> passent au vert,
+                    « Disponible » : dès que la quantité saisie couvre la demande, l'indicateur se considère
+                    satisfait.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Livraison WH/OUT/00087 dans Odoo 20 après saisie manuelle : Demande 20, Quantité 20, badge vert Disponible et Disponibilité des produits Disponible, alors que 16 seulement sont en stock" style="max-width:100%; height:auto;"/>
+                    <figcaption>20 saisis pour 16 en stock : la ligne s'affiche « Disponible ».</figcaption>
+                </figure>
+                <p>Un clic sur <strong>Valider</strong> termine la livraison, sans fenêtre ni message. Les quatre
+                    unités manquantes sont prises sur WH/Stock comme si elles existaient : le stock de l'article
+                    passe à <strong>−4</strong>.</p>
+                <p>Ce comportement est voulu par le code : quand la quantité demandée dépasse ce que les quantités
+                    en stock peuvent fournir, Odoo crée une ligne de mouvement supplémentaire « depuis le mouvement
+                    lui-même », sans stock derrière. C'est déjà le cas en Odoo 19.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. QUANTITÉ NULLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le seul refus : un transfert à quantité nulle</h2>
+                <p>Une commande de 2 « Lampe LED », article sans aucun stock, crée la livraison WH/OUT/00088 avec
+                    une quantité réservée de 0. Cliquer sur <strong>Valider</strong> sans rien saisir déclenche
+                    cette fois un refus :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Opération invalide d'Odoo 20 : Alerte transfert ! Vous validez un transfert avec une quantité nulle ? Vous ne comptez tout de même pas déplacer des produits invisibles ? Indiquez des quantités avant de passer à l'action ! Bouton Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>« Alerte transfert ! » : Odoo refuse de valider une livraison où rien n'est
+                        indiqué.</figcaption>
+                </figure>
+                <p>Ce refus est réel, mais il porte sur la quantité <em>saisie</em>, pas sur le stock. Il suffit de
+                    taper 2 dans la colonne Quantité pour que la validation passe, comme à la section précédente.
+                    Le message, d'ailleurs, invite à « indiquer des quantités » : il pousse plutôt vers la saisie
+                    forcée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. TRANSFERT MANUEL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Deuxième chemin : la livraison créée à la main</h2>
+                <p>Dans <strong>Inventaire › Opérations › Livraisons</strong>, le bouton <strong>Nouveau</strong>
+                    crée une livraison libre, sans commande. Ici, 3 « Porte-journaux » pour Acme Corporation,
+                    article sans stock. Une fois enregistrée, la livraison est en <strong>Brouillon</strong> et la
+                    ligne affiche « Pas disponible ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Livraison WH/OUT/00089 en brouillon dans Odoo 20 : Porte-journaux, badge Pas disponible, Demande 3, aucune colonne Quantité, emplacement d'origine WH/Stock" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une livraison en brouillon : pas de colonne Quantité, rien de réservé.</figcaption>
+                </figure>
+                <p>Cliquer directement sur <strong>Valider</strong>, sans passer par « Marquer comme à faire »,
+                    produit l'effet le plus discret de tous : pour un transfert en brouillon, Odoo recopie la demande
+                    dans la quantité, puis valide. Pas d'alerte de quantité nulle, pas de fenêtre de reliquat : le
+                    transfert passe de Brouillon à Terminé et le stock de l'article tombe à <strong>−3</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. FABRICATION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Troisième chemin : produire sans composants</h2>
+                <p>La fabrication suit la même logique. L'ordre de fabrication WH/MO/00011 doit produire 2
+                    « Stratifié en plastique », dont la nomenclature consomme 2 « Plis de placage ». Il n'y en a
+                    aucun en stock : <strong>Statut des composants</strong> affiche « Pas disponible », la ligne de
+                    composant aussi, Consommé 0.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Ordre de fabrication WH/MO/00011 dans Odoo 20 : Stratifié en plastique, quantité 2 à produire, Statut des composants Pas disponible, composant Plis de placage Pas disponible, A consommer 2, Consommé 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Composant manquant, ordre de fabrication confirmé.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Produire</strong> reste pourtant actif. Il termine l'ordre sans aucun message :
+                    les 2 stratifiés entrent en stock, les 2 plis de placage sortent d'un stock qui n'existait pas,
+                    qui passe à <strong>−2</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. REBUT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Au rebut : un avertissement, enfin</h2>
+                <p>Le rebut est la seule opération courante qui compare la quantité au stock avant d'agir. Dans
+                    <strong>Inventaire › Opérations › Rebut</strong>, mettre au rebut 1 « Lampe LED » (stock 0)
+                    puis cliquer sur <strong>Confirmer</strong> ouvre cette fenêtre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Odoo 20 Lampe LED : Quantité insuffisante pour la mise au rebut, Inventaire actuel WH/Stock 0,00, question Confirmez-vous que vous voulez mettre au rebut 1,00 Unité(s) depuis l'emplacement WH/Stock ? Boutons Ignorer et Confirmer" style="max-width:100%; height:auto;"/>
+                    <figcaption>« Quantité insuffisante pour la mise au rebut » : le stock actuel est affiché.</figcaption>
+                </figure>
+                <p>Le bouton mis en avant est <strong>Ignorer</strong>, qui abandonne le rebut. Mais
+                    <strong>Confirmer</strong> reste disponible pour tout utilisateur : c'est un avertissement, pas
+                    une interdiction.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. CAISSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Quatrième chemin : la caisse</h2>
+                <p>Le Point de vente ne refuse jamais une vente pour cause de stock. À la validation du ticket (ou à la clôture
+                    de la session, selon le réglage de la société), Odoo crée un transfert de type « PoS Orders » et
+                    le termine aussitôt, quantités comprises, que le stock suffise ou non. Sur la base de travail, une vente en caisse d'un « Tiroir noir » et d'un
+                    « Sous-main », deux articles sans aucune entrée en stock, a produit ce transfert :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Transfert WH/POS/00002 dans Odoo 20 : type d'opération YourCompany: PoS Orders, emplacement d'origine WH/Stock, document d'origine Magasin de meubles - 000001, Tiroir noir demande 1 quantité 1, Sous-main demande 1 quantité 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le transfert d'une vente en caisse : validé d'office.</figcaption>
+                </figure>
+                <p>Les deux articles sont depuis à <strong>−1</strong>. C'est d'ailleurs la logique de la caisse :
+                    le client est parti avec l'article, le stock doit le constater. En Odoo 20, cette partie de la
+                    caisse vit dans un module à part, <code>pos_stock</code> (« PoS - Stock »), installé
+                    automatiquement avec Point de vente et Inventaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. REPÉRER ET CORRIGER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Repérer et corriger le stock négatif</h2>
+                <p>Puisque rien n'empêche totalement le stock négatif, il faut savoir le trouver. Ouvrez
+                    <strong>Inventaire › Opérations › Inventaire physique</strong>, puis, dans le menu de la
+                    recherche, le filtre <strong>Stock négatif</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Inventaire physique d'Odoo 20 filtré sur Stock négatif : WH/Stock Sous-main -1, Porte-journaux -3, Espace de travail individuel -4, Chaise de bureau -2, Tiroir noir -1, Plis de placage -2" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le filtre Stock négatif : les six articles passés sous zéro sur la base.</figcaption>
+                </figure>
+                <p>Le filtre fait réapparaître les résultats des sections précédentes : −4 pour la livraison forcée, −3 pour la
+                    livraison créée à la main, −2 pour le composant de fabrication, −1 pour chacun des deux articles
+                    vendus en caisse. La « Chaise de bureau » à −2 vient de livraisons plus nombreuses que les
+                    entrées enregistrées.</p>
+                <p>Pour chaque ligne, le bouton <strong>Historique</strong> montre les mouvements et donc la
+                    cause. La correction dépend de cette cause :</p>
+                <ul>
+                    <li><strong>une réception n'a pas été saisie</strong> : retrouvez-la et validez-la ; le stock
+                        remonte de lui-même ;</li>
+                    <li><strong>la marchandise n'existait pas</strong> (sortie saisie à tort) : la sortie doit être
+                        annulée par un retour ;</li>
+                    <li><strong>le stock réel est inconnu</strong> : comptez l'article, saisissez la quantité trouvée
+                        dans la colonne Compté et appliquez avec un motif explicite. Le mouvement de régularisation
+                        vient de l'emplacement d'ajustement d'inventaire et porte le motif comme référence.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 10. BOUTIQUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>10. Le seul blocage natif : la boutique en ligne</h2>
+                <p>Avec l'application eCommerce, chaque article porte, onglet <strong>eCommerce</strong>, une case
+                    <strong>Vendre même en rupture de stock</strong>. Elle est cochée par défaut sur la base de
+                    démonstration.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Onglet eCommerce d'un article dans Odoo 20, bloc Inventaire : case Vendre même en rupture de stock cochée, case Afficher la quantité disponible décochée, champ Message de rupture de stock" style="max-width:70%; height:auto;"/>
+                    <figcaption>La case qui autorise, ou non, la vente en ligne au-delà du stock.</figcaption>
+                </figure>
+                <p>Décochée, elle plafonne le panier au stock libre : pour une « Grande table de réunion » à 5
+                    unités libres, une demande de 8 est ramenée à 5, avec un message au visiteur. C'est le seul
+                    endroit d'Odoo 20 Community où le stock bloque réellement une commande. Il ne vaut que pour la
+                    boutique : un devis saisi dans Ventes, une livraison ou une vente en caisse n'en tiennent pas
+                    compte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DISCIPLINE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui empêche vraiment le stock négatif : une règle de travail</h2>
+                <p>En dehors de la boutique, le levier n'est pas un réglage, c'est une discipline, à écrire dans la
+                    procédure de l'entrepôt :</p>
+                <table class="tmc">
+                    <thead><tr><th>Règle</th><th>Ce qu'elle évite</th></tr></thead>
+                    <tbody>
+                        <tr><td>Ne livrer que la quantité réservée ; le reste part en <strong>reliquat</strong>.</td>
+                            <td>La livraison forcée (section 3).</td></tr>
+                        <tr><td>Ne jamais taper dans la colonne Quantité un chiffre supérieur à ce qui est en
+                            rayon ; si la marchandise est là mais pas en stock, chercher d'abord la réception
+                            manquante.</td>
+                            <td>Le contournement de l'alerte de quantité nulle (section 4).</td></tr>
+                        <tr><td>Passer les livraisons manuelles par <strong>Marquer comme à faire</strong> puis
+                            <strong>Réserver</strong>, jamais Valider depuis le brouillon.</td>
+                            <td>La validation silencieuse du brouillon (section 5).</td></tr>
+                        <tr><td>Ne cliquer sur Produire que lorsque Statut des composants est « Disponible ».</td>
+                            <td>La consommation à vide (section 6).</td></tr>
+                        <tr><td>Réceptionner avant de vendre en caisse, et compter régulièrement les articles vendus au comptoir.</td>
+                            <td>Le stock négatif de caisse (section 8).</td></tr>
+                        <tr><td>Consulter chaque semaine le filtre Stock négatif.</td>
+                            <td>Les écarts qui s'accumulent sans bruit (section 9).</td></tr>
+                    </tbody>
+                </table>
+                <p><strong>Et les droits d'accès ?</strong> Ils limitent qui valide, pas ce qui est validé : le
+                    bouton Valider d'une livraison est réservé aux utilisateurs de l'application Inventaire, mais
+                    chacun d'eux peut modifier la colonne Quantité. Retirer le droit Inventaire à un commercial
+                    l'empêche de valider des livraisons ; cela ne protège pas le stock contre un magasinier pressé.
+                    Aucun droit standard ne sépare « valider le réservé » de « saisir une quantité ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Odoo 20 Community ne contient aucun réglage « interdire le
+                        stock négatif », ni sur l'emplacement, ni sur la catégorie, ni sur l'article ; Odoo 19 non
+                        plus. Un blocage strict ne s'obtient que par un développement spécifique ou un module tiers,
+                        hors du périmètre de la Community, et qui pose ses propres questions (que faire en caisse
+                        quand le client est déjà parti avec l'article ?). Par rapport à Odoo 19, le comportement
+                        décrit ici est inchangé ; la case de la boutique a seulement changé de module (elle vient
+                        désormais avec eCommerce lui-même).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Disponible » ne veut pas dire « en stock »</h4>
+                    <p>Sur une livraison, le badge vert « Disponible » suit la quantité saisie. Une quantité tapée à
+                        la main au-delà du stock suffit à l'afficher. Pour savoir ce qui est réellement en stock,
+                        regardez la fiche de l'article ou l'Inventaire physique, pas la livraison.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Valider un brouillon, c'est forcer la quantité</h4>
+                    <p>Une livraison ou un transfert interne en brouillon validé directement prend la demande comme
+                        quantité, sans réservation ni message. C'est le chemin le plus discret vers le stock
+                        négatif.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un stock négatif fausse le réassort</h4>
+                    <p>Le stock prévu, sur lequel s'appuient les règles de réapprovisionnement, inclut les quantités
+                        négatives : un −4 non expliqué fait commander davantage. Régularisez avant de lancer le
+                        réassort.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Ignorer la fenêtre de reliquat ne l'annule pas</h4>
+                    <p>Le bouton Ignorer de la fenêtre « Créer un reliquat ? » ferme seulement la fenêtre : la
+                        livraison reste ouverte et sa quantité modifiable. C'est souvent à ce moment que la quantité
+                        est corrigée « pour que ça passe ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> créer un stock négatif, le repérer, puis le régulariser avec une
+                        trace.</p>
+                    <p><strong>Indication :</strong> dans Inventaire › Opérations › Livraisons, créez une livraison
+                        de 3 « Porte-journaux » (aucun stock sur la démonstration) et validez-la depuis le brouillon.
+                        Ouvrez ensuite Inventaire physique avec le filtre Stock négatif, saisissez 0 dans la colonne
+                        Compté de la ligne Porte-journaux, sélectionnez-la et cliquez sur Appliquer avec le motif
+                        « Régularisation stock négatif ».</p>
+                    <p><strong>Critère de réussite :</strong> la ligne apparaît d'abord à −3 avec une différence de
+                        3 ; après application, le disponible vaut 0, l'article sort du filtre Stock négatif, et
+                        l'historique montre un mouvement « Régularisation stock négatif » de 3 unités de Inventory
+                        adjustment vers WH/Stock.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 Community n'a aucune case « interdire le stock négatif ».</li>
+                    <li>Quatre chemins y mènent : quantité forcée sur une livraison, transfert validé depuis le
+                        brouillon, fabrication sans composants, vente en caisse.</li>
+                    <li>Les garde-fous (alerte au devis, reliquat, alerte de quantité nulle, avertissement au rebut)
+                        préviennent mais se contournent.</li>
+                    <li>Seule la boutique en ligne bloque vraiment, case « Vendre même en rupture de stock »
+                        décochée.</li>
+                    <li>Le vrai levier est une règle de travail, plus le filtre Stock négatif pour contrôler.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Le parcours normal : réserver, livrer, facturer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Racheter à temps plutôt que livrer à vide.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication</a></h5>
+                            <p class="small text-muted mb-0">Vérifier les composants avant de produire.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
