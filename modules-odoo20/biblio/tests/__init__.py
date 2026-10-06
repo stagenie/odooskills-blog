@@ -4,3 +4,4 @@ from . import test_loan_extend
 from . import test_loan_reminder
 from . import test_loan_report
 from . import test_portal
+from . import test_shelf
