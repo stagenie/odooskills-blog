@@ -1,0 +1,562 @@
+<!--
+Article — Personnaliser ses devis et factures PDF dans Odoo 20
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : personnaliser-devis-factures-pdf-odoo
+Meta : Personnaliser devis et factures PDF dans Odoo 20 sans développement : agencement, tableaux, police, couleurs, adresse, conditions générales, sections, page de présentation.
+Mot-clé cible : personnaliser devis odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_p2 (copie de vs20_func, démonstration, société
+  My Company (San Francisco), Ventes + sale_management + sale_pdf_quote_builder installés, wkhtmltopdf 0.12.5 patched qt).
+  Chaque réglage suivi d'un PDF régénéré par /report/pdf/... puis converti en PNG (pdftoppm), aucun aperçu HTML présenté comme PDF.
+  Configurateur : web/views/base_document_layout_views.xml:15-33 (Agencement, Tableaux, Texte, Logo, Couleurs, Adresse,
+  Slogan, Pied de page, Format de papier) ; account/views/base_document_layout_views.xml (N° TVA, Compte bancaire, Code QR) ;
+  web/models/base_document_layout.py:48 (format de papier absent de l'aperçu). Agencements v20 : web/data/report_layout.xml
+  (Light, Bubble, Wave, Folder, Center, Dual, Lines, Compact) ; v19 : Striped, Light, Boxed, Bold, Bubble, Wave, Folder.
+  Tableaux : base/models/res_company.py:132-140 (light, boxed, bold, striped, bubble, column, compact), lu par
+  web/views/report_templates.xml:443-455. Ligne « Fond » (layout_background Blank / Demo logo / Custom) supprimée :
+  odoo19 web/views/base_document_layout_views.xml:17-18, odoo19 res_company.py:78-79. Polices : res_company.py:141
+  (Fira Mono v19 remplacée par Noto Sans Mono).
+  🐛 Style de tableau : res.company.write ne régénère la feuille de style des rapports que pour external_report_layout_id,
+  font, primary_color, secondary_color (web/models/models.py:2432,2439, report_tables_id absent) ; styles colorés du
+  tableau (web/views/report_templates.xml:950-1000) absents du CSS compilé après le 1er Continuer (constaté : Rayé puis
+  Gras, en-têtes noirs, pas de bandes) ; second Continuer sans changement → appliqué (th couleur secondaire, bandes).
+  Adresse : company_details stocké (res_company.py:96) ; vide → web/views/report_templates.xml:370-381 affiche le
+  partenaire société (nom + adresse) ; joué : rue passée en « Suite 400 » via Mettre à jour les informations → PDF
+  toujours « Suite 300 » ; champ Adresse vidé → PDF « My Company (San Francisco), Suite 400 ».
+  Ventes : « Line Numbers » (show_sol_numbers, sale/models/res_company.py:77-79, non traduit) et « Afficher les images
+  des produits » (display_product_images_on_so, :43) NOUVEAUX en 20 (grep vide dans odoo19/addons) ; rapport
+  Masquer la structure joué (section Sièges : ligne unique 1,00 Unité(s), 140, 15 %) puis annulé. Exercice joué (Light +
+  Encadré, Adresse vide, 2 × Continuer) : intitulés en majuscules filetés, Total sur fond #1f4e79, nom de société.
+  sale/report/ir_actions_report_templates.xml:99 (colonne Rem.% si une ligne a une remise), :102 (colonne TVA si une
+  ligne a une taxe), :105 et :209-214 (numérotation, sections et notes comprises), :311 (image). En-têtes Description /
+  Quantité vides sur le PDF du devis (:118-123, aria-label seul ; v19 :91-92 avec texte). Bouton Télécharger du devis
+  NOUVEAU (sale/views/sale_order_views.xml:323-328). Menu de section Masquer les prix / Masquer la structure /
+  Ajouter une sous-section : account/static/src/components/section_and_note_fields_backend/ (existait en 19).
+  Conditions : account/views/res_config_settings_views.xml:175-190 ; account.use_invoice_terms ;
+  sale/models/sale_order.py:564-582 (note du devis à la création) ; account/models/account_move.py:2065-2070 (facture).
+  Le libellé « Conditions générales par défaut » se clique sur sa case : cliquer le titre décoche la case (constaté).
+  Générateur de devis PDF : module sale_pdf_quote_builder (CE), menu Ventes › Configuration › En-têtes/Pieds de page
+  (sale_pdf_quote_builder_menus.xml:4-7), quotation_document.py:26-54 (En-tête / Pied de page, Ajouter par défaut,
+  PDF seulement). Page « Votre projet d'aménagement » produite pour l'exemple (wkhtmltopdf), chargée par « Charger ».
+  Pied de page de facture : numéro du document ajouté par l10n_fr_account (account.display_name_in_footer,
+  l10n_fr_account/data/account_data.xml:4-5 ; web/views/report_templates.xml:412) ; avec Wave + pied de 2 lignes,
+  « Page 1 / 1 » coupé en bas de FAC/2026/00015 (constaté).
+  Parcours joué : S00001 Acme Corporation (PDF par défaut Light / Clair / Lato) ; configurateur Wave, Rayé, Montserrat,
+  #1f4e79 / #e07a1f, slogan, 2e ligne de pied ; S00082 créé (section Postes de travail, Écrans anti-bruit ×3, Lampe ×5
+  à 10 %, note, section Sièges, Chaise ×2) ; Masquer les prix sur la 1re section ; page de présentation ajoutée ;
+  FAC/2026/00015 (Chaise ×2, remise 5 %). Frontière : Paramètres › Technique › Actions › Rapports en mode développeur
+  (base/views/base_menus.xml:59-66).
+  Démo : n° fiscaux de démonstration (TIN US12345673 d'Acme Corporation) et compte BANK134567890 visibles dans les PDF.
+Captures : content/blog/screenshots/personnaliser-devis-factures-pdf-odoo/ (01-16, Playwright + pdftoppm)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Personnaliser ses devis et factures PDF dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un devis envoyé à un client, c'est une image de l'entreprise. Sans une
+                    ligne de code, Odoo 20 laisse choisir l'agencement, les couleurs, la police, l'en-tête et le pied
+                    de page, les conditions générales, la présentation des lignes et même une page de présentation
+                    placée avant le chiffrage.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau débutant · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec Ventes et Facturation installés. Chaque réglage a été suivi d'un PDF régénéré :
+                        les images de l'article sont des extraits de vrais PDF, pas de l'aperçu à l'écran.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Les devis, commandes et factures d'Odoo partagent un même cadre : en-tête avec logo et adresse,
+                    pied de page, police et couleurs. Ce cadre se règle une fois pour la société, dans un
+                    configurateur avec aperçu. Le contenu propre à chaque document, lui, se règle ailleurs :
+                    conditions générales dans la Facturation, numéros de ligne et images dans les Ventes, sections
+                    et notes sur le devis lui-même. Le présent article les passe en revue dans cet ordre, sur la
+                    base de démonstration.</p>
+                <p>Le premier passage dans le configurateur est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/creer-base-odoo-community-199">Créer sa base Odoo 20
+                    Community</a>, et les modèles de devis dans
+                    <a href="/blog/fonctionnel-odoo-1/modeles-devis-signature-ventes-odoo-204">Modèles de devis,
+                    options et signature en ligne</a>. Pour générer un PDF à chaque étape : bouton
+                    <strong>Télécharger</strong> d'un devis non confirmé (nouveau en 20), bouton
+                    <strong>Imprimer</strong> d'une facture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>choisir l'agencement, le style des tableaux, la police et les couleurs des documents ;</li>
+                    <li>régler l'adresse, le slogan et le pied de page sans figer d'information périmée ;</li>
+                    <li>imprimer des conditions générales sur les devis et les factures ;</li>
+                    <li>structurer un devis par sections, notes, numéros de ligne et images, et masquer des prix ;</li>
+                    <li>ajouter une page de présentation en tête du devis PDF.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir le configurateur de mise en page</h2>
+                <p>Ouvrez <strong>Paramètres › Paramètres généraux</strong>, bloc <strong>Sociétés</strong>. La
+                    rubrique <strong>Mise en page du document</strong> porte le lien <strong>Configurer la mise en
+                    page du document</strong> ; l'icône en forme d'immeuble rappelle que le réglage vaut pour la
+                    société courante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Bloc Sociétés des paramètres généraux d'Odoo 20 : fiche My Company (San Francisco) avec lien Mettre à jour les informations, rubrique Mise en page du document avec lien Configurer la mise en page du document, rubrique Modèles d'e-mail" style="max-width:85%; height:auto;"/>
+                    <figcaption>Paramètres généraux : la mise en page se règle par société.</figcaption>
+                </figure>
+                <p>La fenêtre <strong>Configurer l'agencement de votre document</strong> s'ouvre, l'aperçu d'une
+                    facture d'exemple à droite :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Configurer l'agencement de votre document dans Odoo 20 : Agencement Light, Bubble, Wave, Folder, Center, Dual, Lines, Compact ; Tableaux Clair, Encadré, Gras, Rayé, Bulle, Colonne, Compact ; Texte Lato ; logo Your logo ; deux couleurs ; Adresse ; Slogan ; Pied de page ; Format de papier A4 ; N° TVA ; Compte bancaire ; Code QR ; aperçu d'une facture" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le configurateur et son aperçu, réglages de la base de démonstration.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <tr><th>Ligne</th><th>Ce qu'elle règle</th></tr>
+                    <tr><td><strong>Agencement</strong></td><td>la disposition générale : en-tête, bloc client, pied de page (8 choix)</td></tr>
+                    <tr><td><strong>Tableaux</strong></td><td>le style des lignes et des totaux (7 choix)</td></tr>
+                    <tr><td><strong>Texte</strong></td><td>la police : Lato, Roboto, Open Sans, Montserrat, Oswald, Raleway, Tajawal, Noto Sans Mono</td></tr>
+                    <tr><td><strong>Logo</strong> et <strong>Couleurs</strong></td><td>le logo de la société et deux couleurs, proposées d'après le logo</td></tr>
+                    <tr><td><strong>Adresse</strong>, <strong>Slogan</strong>, <strong>Pied de page</strong></td><td>les textes de l'en-tête et du bas de page</td></tr>
+                    <tr><td><strong>Format de papier</strong></td><td>A4, US Letter… (non visible dans l'aperçu)</td></tr>
+                    <tr><td><strong>N° TVA</strong>, <strong>Compte bancaire</strong>, <strong>Code QR</strong></td><td>informations de paiement des factures, lues sur la société</td></tr>
+                </table>
+                <p>Le PDF de départ, devis S00001 pour Acme Corporation avec les réglages de la démonstration
+                    (agencement Light, tableaux Clair, police Lato) :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="PDF du devis S00001 d'Odoo 20 avec agencement Light : logo Your logo et adresse de la société en haut, adresse d'Acme Corporation, titre Devis S00001, dates, tableau des lignes Écrans anti-bruit, Lampe de bureau, Chaise de bureau, totaux 2 001 dollars" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le devis avec la mise en page de la démonstration.</figcaption>
+                </figure>
+                <p>Les données affichées sont celles de la démonstration : logo générique « Your logo », numéro
+                    fiscal fictif du client (TIN). Le logo se remplace par un clic sur l'image du configurateur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Agencement, tableaux, police et couleurs</h2>
+                <p>Dans le configurateur, choisissez <strong>Wave</strong> en Agencement, <strong>Rayé</strong> en
+                    Tableaux, <strong>Montserrat</strong> en Texte. Cliquez sur la première pastille de couleur
+                    (titres) puis sur la seconde (intitulés et accents) pour choisir vos teintes ; le bouton
+                    <strong>Réinitialiser</strong> apparaît alors et ramène aux couleurs tirées du logo. Saisissez
+                    un slogan (« Mobilier et aménagement de bureaux ») et ajoutez une ligne au pied de page
+                    (horaires). L'aperçu suit chaque clic :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Configurateur de mise en page Odoo 20 réglé : agencement Wave, tableaux Rayé, police Montserrat, couleurs bleu et orange, bouton Réinitialiser, slogan Mobilier et aménagement de bureaux, pied de page avec ligne Du lundi au vendredi 9 h - 18 h, aperçu mis à jour avec vagues en haut et en bas" style="max-width:100%; height:auto;"/>
+                    <figcaption>Wave, Rayé, Montserrat et deux couleurs : l'aperçu se met à jour.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Continuer</strong>, puis régénérez le devis S00001 :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="PDF du devis S00001 d'Odoo 20 avec agencement Wave : bandeau gris-bleu ondulé en haut avec logo, slogan bleu et adresse, titre Devis S00001 en bleu, intitulés orange, lignes du tableau une sur deux sur fond orangé clair, pied de page ondulé avec téléphone, e-mail, site et horaires" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le même devis après réglage : vagues, police, couleurs, bandes et slogan.</figcaption>
+                </figure>
+                <p>Le slogan s'affiche sous le logo, le titre prend la première couleur, les intitulés et les
+                    bandes du tableau la seconde. Les agencements diffèrent surtout par l'en-tête et le pied ;
+                    les styles de tableau, par les filets, bandes et cadres des lignes et des totaux.</p>
+                <p><strong>Ce qui change depuis Odoo 19.</strong> En 19, Rayé, Encadré et Gras étaient des
+                    agencements complets ; en 20, ils deviennent des styles de la ligne <strong>Tableaux</strong>,
+                    combinables avec n'importe quel agencement, et quatre agencements apparaissent (Center, Dual,
+                    Lines, Compact). La ligne <strong>Fond</strong> de la 19 (fond vierge, logo de démonstration
+                    ou image personnalisée en filigrane) a disparu du configurateur.</p>
+                <div class="pitfall-box">
+                    <h4>Le style de tableau ne s'applique qu'au second passage</h4>
+                    <p>Constaté sur Odoo 20.0 : après un premier <strong>Continuer</strong>, le PDF garde des
+                        en-têtes de colonnes noirs et des lignes sans bandes, alors que l'aperçu les montrait.
+                        Odoo ne recalcule la feuille de style des documents que lorsque l'agencement, la police ou
+                        les couleurs changent, pas le style de tableau. Rouvrez le configurateur et cliquez de
+                        nouveau sur <strong>Continuer</strong>, sans rien modifier : le PDF suivant est conforme à
+                        l'aperçu. Même chose après un changement de style de tableau seul.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Adresse, slogan et pied de page</h2>
+                <p>Le champ <strong>Adresse</strong> du configurateur est un texte libre, prérempli avec l'adresse
+                    de la société. Une fois enregistré, il devient une <strong>copie</strong> : il ne suit plus la
+                    fiche de la société. Sur la base de démonstration, la rue a été modifiée par
+                    <strong>Mettre à jour les informations</strong> (« Suite 300 » devient « Suite 400 ») : le PDF
+                    suivant affichait toujours l'ancienne adresse.</p>
+                <p>La solution consiste à <strong>vider</strong> le champ Adresse du configurateur. Odoo imprime
+                    alors l'adresse de la fiche société, nom compris, et la tient à jour d'elle-même :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Deux extraits d'en-tête de PDF Odoo 20 : avec le champ Adresse rempli, adresse figée 8000 Marina Blvd, Suite 300 ; avec le champ Adresse vidé, My Company (San Francisco), 8000 Marina Blvd, Suite 400, 94005 Brisbane, France" style="max-width:60%; height:auto;"/>
+                    <figcaption>Champ Adresse rempli : copie figée. Champ vidé : adresse de la fiche société.</figcaption>
+                </figure>
+                <p>Gardez le champ rempli seulement pour une présentation impossible à obtenir autrement (une
+                    adresse postale différente du siège, par exemple), et pensez à le corriger à chaque
+                    déménagement.</p>
+                <p>Le <strong>Slogan</strong> se place sous le logo dans l'agencement Wave ; selon l'agencement, il
+                    peut passer dans le pied de page. Le <strong>Pied de page</strong> est prérempli avec le
+                    téléphone, l'e-mail, le site et le numéro de TVA de la société ; c'est l'endroit des mentions
+                    légales (forme juridique, capital, immatriculation). Il est lui aussi une copie : à mettre à
+                    jour à la main si ces informations changent.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Conditions générales sur devis et factures</h2>
+                <p>Ouvrez <strong>Facturation › Configuration › Paramètres</strong> et cochez
+                    <strong>Conditions générales par défaut</strong>. Deux formes sont proposées :
+                    <strong>Ajouter une note</strong> (un texte imprimé en bas des documents) ou <strong>Ajouter un
+                    lien vers une page web</strong> (une page « Conditions » publiée, dont le lien est imprimé).
+                    Choisissez la note et saisissez le texte, puis enregistrez :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Réglage Conditions générales par défaut d'Odoo 20 coché : choix Ajouter une note sélectionné, Ajouter un lien vers une page web, texte Conditions générales de vente : devis valable jusqu'à la date d'échéance indiquée, livraison sous 15 jours ouvrés, garantie de 2 ans" style="max-width:55%; height:auto;"/>
+                    <figcaption>Les conditions générales en mode note, pour la société courante.</figcaption>
+                </figure>
+                <p>Le texte est copié dans chaque <strong>nouveau</strong> devis (zone sous les lignes, modifiable
+                    devis par devis) et dans chaque nouvelle facture. Les documents existants ne changent pas : le
+                    devis S00001, créé avant le réglage, n'a pas reçu le texte.</p>
+                <div class="pitfall-box">
+                    <h4>Un seul texte pour les devis et les factures</h4>
+                    <p>La même note part sur les deux documents. Une phrase écrite pour le devis (« devis valable
+                        jusqu'à… ») se retrouve sur la facture (voir plus bas). Rédigez des conditions valables
+                        pour les deux, ou passez par le lien vers une page web. Autre détail vu à l'écran : un clic
+                        sur l'intitulé « Conditions générales par défaut » coche ou décoche la case ; vérifiez-la
+                        avant d'enregistrer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Numéros de ligne, images, sections et colonnes</h2>
+                <p>Ouvrez <strong>Ventes › Configuration › Paramètres</strong>. Deux cases sont nouvelles en
+                    Odoo 20 : <strong>Line Numbers</strong> (libellé non traduit, numérote les lignes du devis) et
+                    <strong>Afficher les images des produits</strong> (vignette de l'article dans le PDF et le
+                    devis en ligne). Cochez-les et enregistrez. La case voisine <strong>Générateur de devis
+                    PDF</strong> sert à l'étape 6.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Paramètres Ventes d'Odoo 20 : Générateur de devis PDF coché avec lien En-têtes/Pieds de page, Line Numbers coché, Afficher les images des produits coché, Avertissements de vente décoché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Ventes › Configuration › Paramètres : numéros de ligne et images de produits.</figcaption>
+                </figure>
+                <p>Créez ensuite un devis pour Acme Corporation et structurez-le avec les liens sous les lignes :
+                    <strong>Ajouter une section</strong> « Postes de travail », trois Écrans anti-bruit et cinq
+                    Lampes de bureau à 10 % de remise, <strong>Ajouter une note</strong> pour le montage, une
+                    seconde section « Sièges » avec deux Chaises de bureau. Les conditions générales de l'étape 4
+                    sont déjà sous les lignes. Le menu <strong>⋮</strong> d'une section ouvre ses options :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Lignes du devis S00082 dans Odoo 20 : section Postes de travail 1 065 dollars, Écrans anti-bruit 3 à 295, Lampe de bureau 5 à 40 avec 10 % de remise, note de montage, section Sièges, Chaise de bureau 2 à 70 ; menu de section ouvert avec Ajouter une ligne, Ajouter une sous-section, Masquer les prix, Masquer la structure, Rendre optionnel, Ajouter une note, Enregistrer comme modèle, Déplacer vers le bas, Dupliquer, Supprimer ; conditions générales sous les lignes" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis S00082 : sections, note, remise, et le menu d'une section.</figcaption>
+                </figure>
+                <p>Téléchargez le devis. Les numéros, les vignettes, les sections avec leur sous-total et la note
+                    en italique apparaissent :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Tableau du PDF du devis S00082 dans Odoo 20 : colonne numéro, sections Postes de travail 1 065 dollars et Sièges 140 dollars sur fond orange, vignettes des produits, colonne Rem.% avec 10,00 sur la Lampe de bureau, note en italique numérotée 4, totaux 1 385,75 dollars puis conditions générales et conditions de paiement 30 jours" style="max-width:80%; height:auto;"/>
+                    <figcaption>Numéros, images, sections, note, colonne Rem.% et conditions générales.</figcaption>
+                </figure>
+                <p>Les colonnes du PDF dépendent du contenu, pas d'un réglage : <strong>Rem.%</strong> n'apparaît
+                    que si au moins une ligne porte une remise (S00001 n'en avait pas), <strong>TVA</strong> que si
+                    au moins une ligne porte une taxe. La numérotation compte aussi les sections et les notes (la
+                    note est la ligne 4). Sur le PDF du devis, les colonnes Description et Quantité n'ont pas
+                    d'intitulé en Odoo 20 ; la facture, elle, les affiche.</p>
+                <p>Pour vendre un ensemble sans en détailler le prix, choisissez <strong>Masquer les prix</strong>
+                    dans le menu de la section, puis enregistrez : les lignes de la section gardent leur quantité,
+                    mais seul le sous-total de la section est imprimé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Extrait du PDF du devis S00082 dans Odoo 20 après Masquer les prix : section Postes de travail 1 065 dollars, lignes Écrans anti-bruit et Lampe de bureau sans prix unitaire, remise ni montant, section Sièges inchangée avec Chaise de bureau 70 et 140 dollars" style="max-width:80%; height:auto;"/>
+                    <figcaption>Masquer les prix : la section Postes de travail n'affiche que son total.</figcaption>
+                </figure>
+                <p><strong>Masquer la structure</strong> va plus loin : la section s'imprime comme un article unique
+                    (quantité 1, prix et taxe du total de la section), sans ses lignes ;
+                    <strong>Rendre optionnel</strong> transforme la section en option que le client coche en ligne.
+                    Les modèles de devis reprennent sections et notes : voir l'article sur les modèles cité plus
+                    haut.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ajouter une page de présentation au devis</h2>
+                <p>Le <strong>Générateur de devis PDF</strong> (module inclus dans la Community, coché à l'étape 5)
+                    ajoute des pages PDF entières avant ou après le chiffrage : présentation de l'entreprise,
+                    références, conditions détaillées. Préparez la page dans un traitement de texte et
+                    exportez-la en PDF. Ouvrez <strong>Ventes › Configuration › En-têtes/Pieds de page</strong>,
+                    cliquez sur <strong>Charger</strong> et choisissez le fichier. Ouvrez la carte créée, renommez-la
+                    et vérifiez le <strong>Type de document</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fiche d'en-tête PDF dans Odoo 20 : nom Page de présentation, Type de document En-tête, Contenu du fichier, Modèles de devis vide, case Ajouter par défaut décochée" style="max-width:70%; height:auto;"/>
+                    <figcaption>Une page d'en-tête : type, modèles de devis associés, ajout par défaut.</figcaption>
+                </figure>
+                <p><strong>En-tête</strong> place la page avant le devis, <strong>Pied de page</strong> après.
+                    <strong>Modèles de devis</strong> limite la page aux devis créés depuis ces modèles ;
+                    <strong>Ajouter par défaut</strong> la coche d'office sur chaque nouveau devis. Seuls les
+                    fichiers PDF sont acceptés. Sur le devis, l'onglet <strong>Générateur de devis</strong> liste
+                    les pages disponibles ; cliquez sur celle à joindre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Onglet Générateur de devis du devis S00082 dans Odoo 20 : rubrique En-tête avec Page de présentation sélectionnée et About Us, rubrique du produit Écrans anti-bruit avec Acoustic Bloc Screens Document" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'onglet Générateur de devis : la page de présentation est sélectionnée.</figcaption>
+                </figure>
+                <p>Les autres boutons sont des documents de démonstration : About Us (page d'en-tête sans modèle)
+                    et une fiche produit rattachée à l'article Écrans anti-bruit, que le générateur sait insérer
+                    dans le même PDF. Le PDF téléchargé commence désormais par la page de présentation :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="PDF du devis S00082 d'Odoo 20 en deux pages côte à côte : page 1 de présentation Votre projet d'aménagement, Notre démarche, Ce que contient ce devis ; page 2 le devis chiffré avec agencement Wave, sections, images et conditions générales" style="max-width:100%; height:auto;"/>
+                    <figcaption>Page 1 : la présentation chargée. Page 2 : le devis généré par Odoo.</figcaption>
+                </figure>
+                <p>Le pied du devis indique « Page 1 / 1 » sur la seconde page : la numérotation d'Odoo ignore les
+                    pages ajoutées. Le générateur ne concerne que les devis ; les factures n'en bénéficient pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Vérifier la facture</h2>
+                <p>La facture hérite de la mise en page et des conditions générales. Une facture pour Acme
+                    Corporation (deux Chaises de bureau, remise de 5 %), confirmée puis imprimée par le bouton
+                    <strong>Imprimer</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Extrait du PDF de la facture FAC/2026/00015 dans Odoo 20 : titre bleu, intitulés orange Description, Quantité, Prix unitaire, Rem.%, Taxes, Montant, Chaise de bureau 2 à 70 avec 5 % de remise 133 dollars, conditions de paiement 30 jours, communication de paiement et compte, total 152,95 dollars, conditions générales en gris" style="max-width:80%; height:auto;"/>
+                    <figcaption>La facture : même cadre, intitulés de colonnes complets, conditions générales.</figcaption>
+                </figure>
+                <p>La phrase « devis valable jusqu'à la date d'échéance » y figure aussi, comme annoncé à
+                    l'étape 4. Le compte bancaire imprimé est celui de la société (ici le compte fictif de la
+                    démonstration) ; le configurateur l'affiche sur sa ligne <strong>Compte bancaire</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FRONTIÈRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et au-delà ?</h2>
+                <p>Tout ce qui précède se fait sans développement. Déplacer un bloc, ajouter un champ au PDF ou
+                    créer un document entièrement nouveau suppose de modifier les gabarits QWeb des rapports : en
+                    mode développeur, <strong>Paramètres › Technique › Actions › Rapports</strong> donne accès aux
+                    rapports et à leurs vues. C'est un travail de développeur, qui sort du cadre de cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Configurateur de mise en page, styles de tableau, conditions
+                        générales, numéros de ligne, images de produits, sections et notes, générateur de devis PDF
+                        avec pages d'en-tête et de pied : tout est inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un pied de page trop long coupe le numéro de page</h4>
+                    <p>Avec l'agencement Wave et un pied de page de deux lignes, la facture ajoute une troisième
+                        ligne : son numéro. Ce numéro vient de la localisation française, installée sur la base de
+                        démonstration. Résultat : « Page 1 / 1 » est coupé en bas de la feuille.</p>
+                </div>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_16" alt="Bas du PDF de la facture FAC/2026/00015 dans Odoo 20 avec agencement Wave : téléphone, e-mail et site, ligne Du lundi au vendredi 9 h - 18 h, numéro FAC/2026/00015, mention Page 1 / 1 coupée par le bord de la page" style="max-width:80%; height:auto;"/>
+                    <figcaption>Pied de facture : la mention de page est rognée.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <p>Gardez le pied de page court et contrôlez toujours une <strong>facture</strong>, pas seulement
+                        un devis : c'est elle qui porte la ligne supplémentaire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'aperçu n'est pas le PDF</h4>
+                    <p>L'aperçu du configurateur montre une facture d'exemple et ignore le format de papier. Le
+                        style de tableau peut y apparaître sans être appliqué (étape 2). Validez chaque réglage
+                        sur un vrai PDF : bouton Télécharger d'un devis, bouton Imprimer d'une facture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les réglages valent par société</h4>
+                    <p>En multi-société, chaque société a sa propre mise en page, ses conditions générales et ses
+                        réglages d'affichage : refaites les étapes après avoir changé de société dans le sélecteur
+                        en haut à droite.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> obtenir un devis au style « Encadré » avec l'adresse tenue à jour.</p>
+                    <p><strong>Indication :</strong> dans le configurateur, choisissez l'agencement Light, le style
+                        de tableau Encadré, videz le champ Adresse, cliquez sur Continuer, puis rouvrez le
+                        configurateur et cliquez de nouveau sur Continuer. Téléchargez le devis S00001.</p>
+                    <p><strong>Critère de réussite :</strong> le PDF affiche « My Company (San Francisco) » au-dessus
+                        de l'adresse, des intitulés de colonnes en majuscules séparés par des filets, et une ligne
+                        Total sur fond de la première couleur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le cadre des documents se règle dans Paramètres généraux › Configurer la mise en page du
+                        document ; en 20, agencement et style de tableau sont deux choix séparés.</li>
+                    <li>Après un changement de style de tableau, cliquez deux fois sur Continuer (deux
+                        ouvertures) avant de juger le PDF.</li>
+                    <li>Un champ Adresse rempli est une copie figée ; vide, il suit la fiche société.</li>
+                    <li>Les conditions générales par défaut partent sur les nouveaux devis et les nouvelles
+                        factures, avec le même texte.</li>
+                    <li>Numéros de ligne et images de produits sont deux réglages Ventes nouveaux en 20 ; les
+                        colonnes Rem.% et TVA suivent le contenu du document.</li>
+                    <li>Le générateur de devis PDF ajoute des pages entières avant ou après le devis.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Créer, envoyer et confirmer un devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/modeles-devis-signature-ventes-odoo-204">Modèles de devis et signature</a></h5>
+                            <p class="small text-muted mb-0">Sections optionnelles, validité, signature en ligne.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Créer, confirmer et corriger une facture.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

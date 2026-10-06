@@ -1,0 +1,560 @@
+<!--
+Article — Stock prévisionnel Odoo 20 : disponible, réservé, prévu
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : stock-previsionnel-disponible-reserve-odoo
+Mot-clé cible : odoo stock prévisionnel (forecasted quantity)
+Tags : debutant, stock, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b2 (copie de vs20_func : démonstration,
+  Inventaire, Achats, Ventes, Fabrication, PdV), port 9044. Entrepôt YourCompany : réception en 2 étapes (état de
+  vs20_func), livraison passée de 3 étapes à 1 étape pour l'article (delivery_steps = ship_only).
+  Calcul : stock/models/product.py:50-102 (champs qty_available, virtual_available, free_qty, incoming_qty,
+  outgoing_qty), :219-220 (mouvements comptés : états waiting/confirmed/assigned/partially_available), :223 (quants :
+  quantité et quantité réservée), :266-272 (qty_available = quants ; free_qty = qty_available − réservé ;
+  virtual_available = qty_available + incoming − outgoing) ; :208-215 (dates seulement si le contexte le donne).
+  Libellés fr : stock/i18n/fr.po:6833-6834 (On Hand → Disponible), :4306-4307 (Free to Use → Virtuellement
+  disponible), :4196-4197 (Forecasted → Prévu), :8279-8280 (Quantity On Hand → Quantité disponible), :4274-4275
+  (Forecasted with Pending → Prévue en attente) ; mêmes traductions en 19 (odoo19-dev stock/i18n/fr.po:6405, 4059).
+  Liste Inventaire › Analyse › Stock : stock/views/product_views.xml:549-579 (Prévu optional="hide"), :603-611, :639.
+  Bouton Prévu de la fiche : stock/views/product_views.xml:315-340 (action_product_tmpl_forecast_report).
+  Rapport : stock/static/src/stock_forecasted/forecasted_header.xml:22-50 (Disponible + Entrant − Sortant = Prévu) ;
+  forecasted_details.xml:51-61 (Stock en transit, Stock disponible en transit, Stock à réserver), :84-99 (Annuler la
+  réservation / Réserver), :100-112 (liens Assign / Unassign, nouveau en 20), :154 (Prévue en attente) ;
+  forecasted_details.js:187-209 (displayAllocation, stock.allocation.report action_assign / action_unassign) ;
+  stock/report/stock_allocation_report.py:207-317 (action_assign : scinde la livraison, partie liée en
+  make_to_order à la réception). purchase_stock/static/src/purchase_stock_forecasted/forecasted_details.xml:5-19
+  (ligne Demandes de prix).
+  Réservation à la confirmation : stock/models/stock_picking_type.py:98-101 (défaut at_confirm, « À la confirmation »),
+  stock/models/stock_move.py:1812-1813.
+  Odoo 19 (odoo19-dev/odoo, lecture seule) : stock/models/product.py:51-82 (mêmes champs et même formule) ;
+  forecasted_details.xml sans assign_link (grep -c = 0) ; pas de stock/report/stock_allocation_report.py
+  (affectation dans report_stock_reception.py) ; product/models/product_product.py sans qty_available.
+  Odoo 20 : product/models/product_product.py:94-106 (qty_available company_dependent, virtual/incoming/outgoing/
+  free_qty dans le module product), :496-521 (calcul simple sans Inventaire).
+  Parcours joué (Espace de travail individuel FURN_0789, 16 en stock, aucun mouvement ouvert) :
+  départ 16/16/0/0/16 ; S00082 Azure Interior 10 confirmée → WH/OUT/00086 réservé 10 → 16/6/0/10/6 ;
+  S00083 Ready Mat 12 → WH/OUT/00087 réservé 6 → 16/0/0/22/−6, bouton « 16 Unité(s) / −6 Prévu(e) » ;
+  P00034 Acme Corporation 20 confirmée (prévue le 09/10/2026) → 16/0/20/22/14, Prévue en attente 17 (RFQ démo P00005 : 3) ;
+  WH/IN/00027 validée (20 en WH/Entrée, réservées par WH/STOR/00005) → 36/0/0/22/14, Stock en transit 6,
+  Stock disponible en transit 14 ; WH/STOR/00005 validé → réservation automatique de 6 sur WH/OUT/00087 →
+  36/14/0/22/14 ; WH/OUT/00086 validé → 26/14/0/12/14 ; Annuler la réservation WH/OUT/00087 → 26/26/0/12/14,
+  bouton « Réserver (12,00 Unité(s)) » ; Réserver → 26/14/0/12/14.
+  Assigner prouvé en shell (rollback) : vente 20 + achat 10, action_assign 6 → ligne scindée 14 réservées +
+  6 « waiting » make_to_order liées à WH/IN/00028 ; la réception validée crée WH/STOR/00006 → WH/OUT.
+  Exercice joué (rollback) : vente 20 Acme Corporation → 26/0/0/32/−6, 14 réservées.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Stock prévisionnel Odoo 20 : disponible, réservé, prévu</h1>
+                <p class="lead mt-3 text-white">Un article affiche 16 unités en stock, et pourtant aucune n'est libre
+                    pour la commande qui arrive. Odoo 20 donne cinq nombres pour chaque article : Disponible,
+                    Virtuellement disponible, Entrant, Sortant et Prévu. Les lire correctement, c'est savoir ce qui
+                    est sur l'étagère, ce qui est déjà promis et ce qui restera.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau débutant · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Inventaire, Achats et Ventes installés. Ce module existe aussi dans l'édition
+                        Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Cinq nombres, trois écrans</h2>
+                <p>Le stock prévisionnel (<em>forecasted quantity</em> dans la version anglaise) se lit à trois
+                    endroits : la liste <strong>Inventaire › Analyse › Stock</strong>, le bouton
+                    <strong>Prévu(e)</strong> en haut de la fiche article, et le rapport <strong>Prévision de
+                    Stock</strong> que ce bouton ouvre. Les libellés français ne disent pas tous ce qu'ils
+                    semblent dire : le tableau suivant les relie à leur définition.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Libellé à l'écran</th><th>Ce qu'il compte</th><th>Calcul</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Disponible</strong> (liste et rapport) ; « Quantité disponible » sur la fiche</td>
+                            <td>Tout ce qui est physiquement dans les emplacements internes de l'entrepôt, réservé ou
+                                non (le <em>On Hand</em> anglais)</td><td>Somme des quantités en stock</td></tr>
+                        <tr><td><strong>Virtuellement disponible</strong> (liste)</td><td>La part du stock que
+                            personne n'a réservée : ce qu'une nouvelle livraison peut encore prendre (le <em>Free to
+                            Use</em> anglais)</td><td>Disponible − réservé</td></tr>
+                        <tr><td><strong>Entrant</strong></td><td>Les entrées confirmées et pas encore faites :
+                            réceptions fournisseur, fabrications</td><td>Mouvements en attente vers l'entrepôt</td></tr>
+                        <tr><td><strong>Sortant</strong></td><td>Les sorties confirmées et pas encore faites :
+                            livraisons client, consommations</td><td>Mouvements en attente hors de l'entrepôt</td></tr>
+                        <tr><td><strong>Prévu</strong></td><td>Ce qui restera quand tout ce qui est confirmé aura
+                            eu lieu</td><td>Disponible + Entrant − Sortant</td></tr>
+                    </tbody>
+                </table>
+                <p>La « réservation » n'a pas de colonne propre : elle se lit par différence entre Disponible et
+                    Virtuellement disponible, et ligne par ligne dans le rapport Prévision de Stock.</p>
+                <p>La prise en main des livraisons et des réceptions fait l'objet des articles
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer ses
+                    ventes dans Odoo 20</a> et
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à
+                    la facture</a>. La présente page suit un seul article de démonstration, du stock de départ à la
+                    livraison, et montre comment chaque nombre bouge à chaque étape.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>distinguer Disponible, Virtuellement disponible et Prévu, et ne plus confondre les deux premiers ;</li>
+                    <li>prévoir l'effet d'une vente, d'un achat et d'une réception sur chacun des cinq nombres ;</li>
+                    <li>lire le rapport Prévision de Stock ligne par ligne : stock réservé, manque, réception attendue ;</li>
+                    <li>réserver ou libérer du stock depuis ce rapport, et savoir ce que cela change.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le point de départ</h2>
+                <p>L'article suivi est <strong>Espace de travail individuel</strong> (référence FURN_0789) de la base
+                    de démonstration : 16 unités en stock, aucune livraison ni réception en cours. Ouvrez
+                    <strong>Inventaire › Analyse › Stock</strong> et cherchez FURN_0789. La colonne
+                    <strong>Prévu</strong> est masquée par défaut : ajoutez-la par le bouton de réglage des
+                    colonnes, en bout d'en-tête (les colonnes Coût unitaire et Valeur totale, inutiles ici, ont été
+                    retirées de la même façon).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste Stock d'Odoo 20 pour l'Espace de travail individuel FURN_0789 : Disponible 16, Virtuellement disponible 16, Entrant 0, Sortant 0, Prévu 16" style="max-width:100%; height:auto;"/>
+                    <figcaption>Au départ, les cinq nombres racontent la même chose : 16 unités, toutes libres.</figcaption>
+                </figure>
+                <p>Sans mouvement en attente, Disponible, Virtuellement disponible et Prévu sont égaux. Toute la
+                    suite consiste à les voir se séparer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Une vente confirmée réserve le stock</h2>
+                <p>Dans <strong>Ventes › Commandes › Devis</strong>, créez un devis pour Azure Interior :
+                    10 Espace de travail individuel, puis <strong>Confirmer</strong>. La commande S00082 crée la
+                    livraison WH/OUT/00086. Revenez à la liste Stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste Stock d'Odoo 20 après une vente de 10 : Disponible 16, Virtuellement disponible 6, Entrant 0, Sortant 10, Prévu 6" style="max-width:100%; height:auto;"/>
+                    <figcaption>Rien n'a quitté l'entrepôt, mais 10 unités sont déjà promises.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Disponible</strong> ne bouge pas : 16. Les unités sont toujours sur l'étagère.</li>
+                    <li><strong>Sortant</strong> passe à 10 : la livraison est confirmée, pas encore faite.</li>
+                    <li><strong>Prévu</strong> = 16 + 0 − 10 = <strong>6</strong>.</li>
+                    <li><strong>Virtuellement disponible</strong> tombe aussi à 6 : la livraison a été
+                        <strong>réservée</strong> dès la confirmation, et les 10 unités ne sont plus libres.</li>
+                </ul>
+                <p>Cette réservation immédiate vient du type d'opération : dans <strong>Inventaire › Configuration ›
+                    Types d'opérations</strong>, le type <strong>Bons de livraison</strong> porte une
+                    <strong>Méthode de réservation</strong> réglée par défaut sur <strong>À la confirmation</strong>.
+                    Les deux autres choix, <strong>Manuellement</strong> et <strong>Avant la date prévue</strong>,
+                    laissent le stock libre plus longtemps : Virtuellement disponible resterait alors à 16, tandis
+                    que Prévu descendrait quand même à 6.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Une deuxième vente fait passer le prévu sous zéro</h2>
+                <p>Créez et confirmez un second devis, pour Ready Mat : 12 unités (commande S00083, livraison
+                    WH/OUT/00087). Il ne reste que 6 unités libres : Odoo en réserve 6 et laisse le reste en
+                    attente. La liste Stock affiche maintenant Disponible 16, Virtuellement disponible 0, Sortant
+                    22 et Prévu −6. Ouvrez la fiche de l'article : le bouton en haut à droite résume la situation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Bouton de la fiche article d'Odoo 20 : 16 Unité(s) sur la première ligne, -6 Prévu(e) en rouge sur la seconde" style="max-width:30%; height:auto;"/>
+                    <figcaption>En haut, le stock physique ; en dessous, le prévu, en rouge quand il est négatif.</figcaption>
+                </figure>
+                <p>Cliquez sur ce bouton : le rapport <strong>Prévision de Stock</strong> s'ouvre. Son en-tête
+                    pose l'addition.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="En-tête du rapport Prévision de Stock d'Odoo 20 : 16,00 Disponible plus 0,00 Entrant moins 22,00 Sortant égale -6,00 Unité(s) Prévu, en rouge" style="max-width:70%; height:auto;"/>
+                    <figcaption>Disponible + Entrant − Sortant = Prévu : 16 + 0 − 22 = −6.</figcaption>
+                </figure>
+                <p>Sous le graphique d'évolution du stock, le tableau détaille qui consomme quoi.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Tableau du rapport Prévision de Stock d'Odoo 20 : Stock à réserver 16,00 Unité(s) partagé entre S00082 Azure Interior WH/OUT/00086 (10, Annuler la réservation) et S00083 Ready Mat WH/OUT/00087 (6, Annuler la réservation) ; Pas disponible 6,00 pour S00083 Ready Mat sur fond rouge ; Inventaire planifié -6,00 ; Demandes de prix P00005 3,00 ; Prévue en attente -3,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>16 unités réservées entre les deux livraisons, 6 qui manquent, et une demande de prix en brouillon.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Ligne du rapport</th><th>Lecture</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Stock à réserver : 16,00</strong></td><td>Le stock physique, et à qui il est
+                            réservé : 10 à WH/OUT/00086, 6 à WH/OUT/00087. Chaque ligne porte un lien
+                            <strong>Annuler la réservation</strong>.</td></tr>
+                        <tr><td><strong>Pas disponible</strong> (fond rouge)</td><td>Les 6 unités de S00083 que
+                            rien ne couvre : ni stock, ni réception attendue.</td></tr>
+                        <tr><td><strong>Inventaire planifié</strong></td><td>Le Prévu de l'en-tête : −6.</td></tr>
+                        <tr><td><strong>Demandes de prix : P00005</strong></td><td>Une demande de prix de la
+                            démonstration, encore en brouillon, qui contient 3 unités de l'article. Elle ne compte
+                            pas dans Entrant.</td></tr>
+                        <tr><td><strong>Prévue en attente</strong></td><td>Le prévu si ces brouillons étaient
+                            confirmés : −6 + 3 = −3.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Une commande fournisseur remplit l'entrant</h2>
+                <p>Dans <strong>Achats › Commandes › Demandes de prix</strong>, créez une demande de prix pour
+                    Acme Corporation (fournisseur de l'article dans la démonstration) : 20 Espace de travail
+                    individuel, puis <strong>Confirmer la commande</strong>. La commande P00034 crée la réception
+                    WH/IN/00027, prévue trois jours plus tard, le 09/10/2026. Rouvrez le rapport.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Tableau du rapport Prévision de Stock d'Odoo 20 après la commande fournisseur : Stock à réserver 16,00 pour WH/OUT/00086 et WH/OUT/00087 ; ligne P00034 20,00 Unité(s) prévu le 09/10/2026 sur fond jaune couvrant 6,00 pour S00083 Ready Mat avec un lien Assigner, puis 14,00 Unité(s) sans destinataire ; Inventaire planifié 14,00 ; Demandes de prix P00005 3,00 ; Prévue en attente 17,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La réception attendue couvre le manque de Ready Mat ; 14 unités resteront libres.</figcaption>
+                </figure>
+                <p>L'en-tête affiche maintenant 16 + 20 − 22 = <strong>14</strong>, et la liste Stock donne
+                    Entrant 20 et Prévu 14. Disponible (16) et Virtuellement disponible (0) ne bougent pas : une
+                    commande fournisseur ne met rien sur l'étagère.</p>
+                <p>Le rapport rapproche la réception et la livraison en attente : les 6 unités qui manquaient
+                    sont couvertes par P00034. La ligne est sur fond jaune, car la marchandise arrive le 09/10 alors
+                    que la livraison était prévue le 06/10 : le retard se voit avant d'arriver. Les 14 unités
+                    restantes de la réception n'ont pas de destinataire. La ligne « Prévue en attente » passe à
+                    14 + 3 = 17.</p>
+                <p>Le lien <strong>Assigner</strong> est nouveau dans le rapport d'Odoo 20 : il rattache
+                    d'avance une partie de la réception à cette livraison. La ligne de livraison est alors scindée,
+                    et les 6 unités assignées attendent cette réception précise au lieu de puiser dans le stock
+                    général. Sans clic, rien n'est rattaché : la réception alimentera le stock, et la réservation
+                    se fera à l'arrivée, comme dans la suite de cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. La réception validée : plus de stock, pas encore livrable</h2>
+                <p>Ouvrez la réception WH/IN/00027 (bouton Réception de la commande P00034) et validez-la avec
+                    ses 20 unités. La base de démonstration utilisée ici reçoit en <strong>deux étapes</strong> :
+                    la marchandise arrive dans l'emplacement WH/Entrée, et un transfert de rangement WH/STOR/00005
+                    la conduit ensuite dans WH/Stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste Stock d'Odoo 20 après la réception : Disponible 36, Virtuellement disponible 0, Entrant 0, Sortant 22, Prévu 14" style="max-width:100%; height:auto;"/>
+                    <figcaption>36 unités dans l'entrepôt, et toujours zéro de libre.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Disponible</strong> monte à 36 : WH/Entrée fait partie de l'entrepôt.</li>
+                    <li><strong>Entrant</strong> retombe à 0 : le rangement d'Entrée vers Stock reste interne
+                        à l'entrepôt, il n'est ni entrant ni sortant.</li>
+                    <li><strong>Prévu</strong> ne change pas : 36 + 0 − 22 = 14. Le prévu avait déjà compté ces
+                        20 unités la veille.</li>
+                    <li><strong>Virtuellement disponible</strong> reste à 0 : les 20 unités sont réservées par le
+                        transfert de rangement, pas par la livraison de Ready Mat.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Tableau du rapport Prévision de Stock d'Odoo 20 : Stock à réserver 16,00 pour WH/OUT/00086 et WH/OUT/00087 ; Stock en transit 6,00 pour S00083 Ready Mat ; Stock disponible en transit 14,00 ; Inventaire planifié 14,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le rapport nomme cette situation : la marchandise est « en transit » dans l'entrepôt.</figcaption>
+                </figure>
+                <p>Le rapport distingue <strong>Stock en transit</strong> (6 unités déjà promises à Ready Mat) et
+                    <strong>Stock disponible en transit</strong> (14 unités sans destinataire). Tant que le
+                    rangement n'est pas validé, la livraison WH/OUT/00087 ne peut pas partir complète.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le rangement déclenche la réservation</h2>
+                <p>Validez le transfert WH/STOR/00005. Aucune autre action n'est nécessaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Liste Stock d'Odoo 20 après le rangement : Disponible 36, Virtuellement disponible 14, Entrant 0, Sortant 22, Prévu 14" style="max-width:100%; height:auto;"/>
+                    <figcaption>Dès l'arrivée en stock, Odoo complète la livraison en attente.</figcaption>
+                </figure>
+                <p>À l'arrivée des 20 unités dans WH/Stock, Odoo a réservé automatiquement les 6 qui manquaient
+                    à WH/OUT/00087 : les deux livraisons sont prêtes, 22 unités réservées sur 36.
+                    Virtuellement disponible = 36 − 22 = <strong>14</strong>, égal au Prévu : il n'y a plus
+                    d'écart entre ce qui est libre aujourd'hui et ce qui restera.</p>
+                <p>Validez enfin la livraison WH/OUT/00086 d'Azure Interior (10 unités). La liste donne
+                    Disponible 26, Virtuellement disponible 14, Entrant 0, Sortant 12, Prévu 14 : livrer fait
+                    baisser Disponible et Sortant du même nombre, et ne change ni le libre ni le prévu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Réserver et libérer depuis le rapport</h2>
+                <p>Le rapport Prévision de Stock sert aussi à agir. Sur la ligne de WH/OUT/00087, cliquez sur
+                    <strong>Annuler la réservation</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Tableau du rapport Prévision de Stock d'Odoo 20 après annulation de la réservation : Stock à réserver 12,00 Unité(s), ligne S00083 Ready Mat sortant 12,00 avec un bouton Réserver (12,00 Unité(s)) ; Disponible en stock 14,00 ; Inventaire planifié 14,00 ; Prévue en attente 17,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison n'est plus servie : un bouton propose de réserver à nouveau les 12 unités.</figcaption>
+                </figure>
+                <p>La liste Stock affiche alors Disponible 26, <strong>Virtuellement disponible 26</strong>,
+                    Sortant 12, <strong>Prévu 14</strong>. Les 12 unités sont redevenues libres : une autre
+                    livraison confirmée maintenant pourrait les prendre, alors que le prévu, lui, sait qu'elles
+                    sont dues à Ready Mat. Cliquez sur <strong>Réserver (12,00 Unité(s))</strong> : la réservation
+                    revient, et Virtuellement disponible retombe à 14.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Étape</th><th>Disponible</th><th>Virtuellement disponible</th><th>Entrant</th><th>Sortant</th><th>Prévu</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Départ</td><td>16</td><td>16</td><td>0</td><td>0</td><td>16</td></tr>
+                        <tr><td>Vente de 10 confirmée</td><td>16</td><td>6</td><td>0</td><td>10</td><td>6</td></tr>
+                        <tr><td>Vente de 12 confirmée</td><td>16</td><td>0</td><td>0</td><td>22</td><td>−6</td></tr>
+                        <tr><td>Achat de 20 confirmé</td><td>16</td><td>0</td><td>20</td><td>22</td><td>14</td></tr>
+                        <tr><td>Réception validée (WH/Entrée)</td><td>36</td><td>0</td><td>0</td><td>22</td><td>14</td></tr>
+                        <tr><td>Rangement validé</td><td>36</td><td>14</td><td>0</td><td>22</td><td>14</td></tr>
+                        <tr><td>Livraison de 10 validée</td><td>26</td><td>14</td><td>0</td><td>12</td><td>14</td></tr>
+                        <tr><td>Réservation annulée</td><td>26</td><td>26</td><td>0</td><td>12</td><td>14</td></tr>
+                    </tbody>
+                </table>
+                <p>Le tableau montre la règle : <strong>Prévu ne bouge qu'avec une confirmation</strong> (vente,
+                    achat), <strong>Disponible ne bouge qu'avec une validation</strong> (réception, livraison),
+                    et <strong>Virtuellement disponible bouge avec les réservations</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DIFFÉRENCE AVEC 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change par rapport à Odoo 19</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th></th><th>Odoo 19</th><th>Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Calcul des cinq nombres</td><td colspan="2">Identique : Prévu = Disponible + Entrant −
+                            Sortant, Virtuellement disponible = Disponible − réservé. Les libellés français sont
+                            aussi les mêmes.</td></tr>
+                        <tr><td>Rattacher une réception à une livraison</td><td>Depuis le rapport de réception</td>
+                            <td>Aussi depuis le rapport Prévision de Stock, lien Assigner, et un lien inverse pour défaire le rattachement</td></tr>
+                        <tr><td>Où vivent ces quantités</td><td>Dans l'application Inventaire seulement</td>
+                            <td>Déclarées dès le module Produits, avec un calcul simple quand Inventaire n'est pas
+                            installé ; Inventaire le remplace par le calcul décrit ici</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour un utilisateur d'Odoo 19, la lecture du stock prévisionnel ne change donc pas : seul le
+                    rapport gagne un moyen d'affecter une arrivée à une commande précise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Liste Stock, bouton Prévu(e), rapport Prévision de Stock,
+                        réservation et lien Assigner : tout est dans le module Inventaire d'Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Disponible » ne veut pas dire libre</h4>
+                    <p>Dans la traduction française, « Disponible » désigne le stock physique, réservé compris, et
+                        « Virtuellement disponible » le stock libre. Pour savoir ce qu'un commercial peut encore
+                        promettre aujourd'hui, regardez Virtuellement disponible ; pour savoir ce qui restera,
+                        regardez Prévu. À l'étape 3, Disponible affichait 16 quand aucune unité n'était libre.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une réception en deux étapes gonfle Disponible avant l'heure</h4>
+                    <p>Entre la réception et le rangement, Disponible comptait 36 unités alors que la livraison de
+                        Ready Mat ne pouvait pas partir. Avec une réception en plusieurs étapes, validez le
+                        rangement avant de conclure qu'une livraison est servie.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Annuler une réservation, c'est céder le stock</h4>
+                    <p>Après « Annuler la réservation », les 12 unités de Ready Mat apparaissaient libres
+                        (Virtuellement disponible 26). La prochaine livraison confirmée les aurait réservées, et
+                        Ready Mat aurait attendu. Une réservation ne se reprend pas toute seule.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les demandes de prix en brouillon ne comptent pas</h4>
+                    <p>La demande P00005 (3 unités) n'entrait ni dans Entrant ni dans Prévu : seule la ligne
+                        « Prévue en attente » du rapport en tient compte. Une demande de prix oubliée en brouillon ne
+                        protège pas d'une rupture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le Prévu de la liste n'a pas d'horizon</h4>
+                    <p>La liste et le bouton additionnent toutes les entrées et sorties confirmées, quelle que soit
+                        leur date. Une réception prévue dans deux mois remonte le Prévu dès aujourd'hui : pour voir
+                        <em>quand</em> le stock manque, lisez les dates du rapport et son graphique, pas le seul
+                        total.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> prévoir les cinq nombres avant de les voir.</p>
+                    <p><strong>Indication :</strong> partez de l'état final de l'article (Disponible 26,
+                        Virtuellement disponible 14, Sortant 12, Prévu 14). Confirmez une vente de 20 Espace de
+                        travail individuel pour Acme Corporation, en notant d'abord vos prévisions.</p>
+                    <p><strong>Critère de réussite :</strong> la liste Stock affiche Disponible 26, Virtuellement
+                        disponible 0, Entrant 0, Sortant 32 et Prévu −6 ; la nouvelle livraison a réservé 14 unités
+                        et le rapport en montre 6 « Pas disponible ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Disponible = stock physique ; Virtuellement disponible = stock non réservé ; Prévu =
+                        Disponible + Entrant − Sortant.</li>
+                    <li>Une confirmation (vente, achat) fait bouger Prévu ; une validation (réception, livraison) fait
+                        bouger Disponible.</li>
+                    <li>Les livraisons sont réservées dès la confirmation par défaut, et complétées automatiquement à
+                        l'arrivée du stock.</li>
+                    <li>Le rapport Prévision de Stock détaille qui consomme quoi, signale les retards et permet de
+                        réserver, libérer ou, nouveauté 20, assigner une réception.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer ses ventes</a></h5>
+                            <p class="small text-muted mb-0">Le bon de livraison, sa validation et ses reliquats.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Pourquoi une réception passe par WH/Entrée avant le stock.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Laisser le Prévu déclencher les commandes fournisseur.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,564 @@
+<!--
+Article — Importer ses produits dans Odoo 20 : variantes et stock
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : importer-produits-odoo (jumeau v19 : importer-catalogue-articles-odoo)
+Meta : Importer ses produits dans Odoo 20 Community : le nouveau modèle de fichier, les variantes en une colonne, le stock, la mise à jour par ID externe et les erreurs courantes.
+Mot-clé cible : odoo import produits ; importer articles odoo ; import variantes odoo
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, ventes, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base de démonstration (Ventes, Achats, Inventaire installés),
+  utilisateur Mitchell Admin en français, société My Company (San Francisco).
+  Modèle : product/models/product_template.py:1803-1807 (« Template for Products » → /product/static/xls/products_import_template.xlsx,
+  colonnes Name*, Product Type*, Track Inventory, Product Values, Quantity on Hand, Sales Price, Cost, Internal Reference,
+  Description, Image ; 4 articles dont Odoo Polo en 5 lignes). v19 : odoo19 product/models/product_template.py:1433-1437
+  (« Import Template for Products » → product_template.xls, colonnes External ID, Name, Product Type, Internal Reference,
+  Barcode, Sales Price, Cost, Weight, Sales Description ; aucune colonne variantes ni stock).
+  Variantes à l'import (NOUVEAU 20, absent de odoo19 product/) : champ import_attribute_values « Valeurs du produit »
+  (product/models/product_template.py:176-180, product/models/product_product.py:73-77) ; product.template.load sépare
+  lignes avec / sans valeurs (product_template.py:763-812) ; product.product._load_records_create (product_product.py:677-871) :
+  format Attribut:Valeur séparés par virgule, attribut cherché par nom, créé sinon en « Dynamique » / « Radio » (:729-737),
+  messages d'erreur :712-716 ; cellule vide ou 0 → valeur reprise de la première variante du modèle (:861-868).
+  Prix de variante stocké et modifiable (NOUVEAU 20) : product_product.py:35-42, recalcul sur list_price :454-457 ;
+  v19 : lst_price calculé non stocké (odoo19 product_product.py:27-30).
+  Quantité à l'import : stock/models/product.py:276-298 (inverse qty_available → ajustement vers l'emplacement de stock du
+  premier entrepôt, référence « Quantité de produit mise à jour »).
+  Image par URL : base_import/models/base_import.py:1477-1517 ; odoo/tools/config.py:234-236 (10 Mo, 3 s, http/https).
+  Export : web/static/src/views/view_dialogs/export_data_dialog.xml:37 (interrupteur « Updatable fields only ») ;
+  v19 : case « I want to update data (import-compatible export) » (odoo19 même fichier :37).
+  Menu Variantes de produits retiré de Ventes en 20 (odoo19 sale/views/sale_menus.xml:61-64 ; absent en 20).
+  Quantités comptées : stock/models/stock_quant.py:313-315 (à l'import, aucune recherche de la ligne existante → nouvelle
+  ligne) ; _load_records_write en mode inventaire + _get_forbidden_fields_write :380-383 (« L'édition de quant n'est pas
+  autorisée ») ; idem 19 (odoo19 stock_quant.py:280-281). Modèle stock/static/xlsx/stock_quant.xlsx identique à 19 :
+  en-têtes « Counted Quantity » / « Quantity » non reconnus (libellé du champ : Counted / Compté).
+  Parcours joué : modèle officiel testé puis importé (4 articles, Polo 5 variantes à 30/30/25/25/28 $, 380 unités en stock,
+  image téléchargée pour la certification ; attributs Sleeves et Size créés à côté de Taille) ; export « Updatable fields
+  only » des 4 articles ; fichier d'erreurs (Pièce, Jeux, code-barres en double, 15 %) ; fichier corrigé avec Biens,
+  2000000000015 / 2000000000022, taxe par ID externe account.1_sale_tax_template, fournisseur Wood Corner 9 / 10 $ ;
+  ligne Sleeves:Long, Size:L à 30 $ et 0 → 6 variantes toutes à 30 $, POLOLL 20 en stock (mouvement de 20) ; prix corrigés
+  dans la liste des variantes ; comptage sans ID (POLOLM compté 18 → ligne Disponible 0, Différence +18 ; appliqué en essai
+  shell annulé : stock 38) ; comptage par ID (POLOLL 0, POLOLM 18) appliqué avec le motif « Reprise du catalogue ».
+  Essais shell annulés : réimport sans ID → second Odoo Mug ; réimport de la colonne fournisseur → deux lignes Wood Corner ;
+  ligne de variante sans colonnes prix ni quantité → nouvelle variante à 0, prix des autres conservés.
+  vs20_func_i2 : livraison repassée en 1 étape ; réception laissée en 2 étapes (WH/Entrée non vide).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Importer ses produits dans Odoo 20 : variantes et stock</h1>
+                <p class="lead mt-3 text-white">Un catalogue de plusieurs centaines d'articles ne se saisit pas fiche
+                    par fiche. Odoo 20 fournit un nouveau modèle de fichier qui charge en une fois les articles, leurs
+                    variantes et leur stock de départ. Encore faut-il savoir ce que chaque colonne déclenche, et
+                    comment remettre le fichier à jour sans créer de doublons.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Achats et Inventaire installés. L'import de fichiers
+                        fait partie de la Community ; il existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Un import d'articles part d'un tableur (.xlsx ou .csv) : une ligne par article, une colonne par
+                    information. Odoo rapproche chaque colonne d'un champ, signale ce qu'il ne comprend pas, puis crée
+                    ou met à jour les fiches. Le bouton <strong>Tester</strong> fait tout le travail sans rien
+                    enregistrer : c'est lui qui permet de corriger le fichier avant l'import réel.</p>
+                <p>Pour la prise en main des fiches articles et l'emplacement du menu d'import, voir
+                    <a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles dans Odoo 20 :
+                    les données de départ</a>. Le présent article porte sur ce qui est propre au catalogue : le modèle
+                    fourni par Odoo, les variantes, les quantités en stock et la mise à jour d'un catalogue déjà importé.</p>
+                <p>Les exemples utilisent exclusivement les lignes du modèle officiel d'Odoo (Odoo Mug, Odoo Polo…) et
+                    les données de la base de démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire le modèle d'import des produits d'Odoo 20 et ses colonnes nouvelles ;</li>
+                    <li>créer des variantes et leur stock de départ depuis le même fichier ;</li>
+                    <li>compléter un catalogue existant (catégorie, code-barres, taxes, fournisseur) sans doublon,
+                        grâce à l'ID externe ;</li>
+                    <li>reconnaître les erreurs courantes et leur correction ;</li>
+                    <li>importer des quantités comptées sur des articles déjà en stock.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Télécharger le modèle d'Odoo</h2>
+                <p>Ouvrez <strong>Inventaire › Produits › Produits</strong>, cliquez
+                    sur l'icône d'engrenage à côté du titre, puis sur <strong>Importer</strong>. L'écran d'import
+                    propose le lien <strong>Modèle pour les produits</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Écran d'import des produits d'Odoo 20 : bouton Charger ou glissez-déposez un fichier, lien Modèle pour les produits et lien Documentation" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le modèle de fichier se télécharge depuis l'écran d'import lui-même.</figcaption>
+                </figure>
+                <p>Ce modèle est nouveau en Odoo 20. Celui d'Odoo 19 ne connaissait que les champs simples (nom, type,
+                    référence, code-barres, prix, coût, poids). Celui d'Odoo 20 contient quatre articles d'exemple et dix
+                    colonnes, dont deux qui changent la façon de reprendre un catalogue :</p>
+                <table class="tmc">
+                    <thead><tr><th>Colonne du modèle</th><th>Champ Odoo</th><th>Ce qu'elle fait</th></tr></thead>
+                    <tbody>
+                        <tr><td>Name*</td><td>Nom</td><td>Obligatoire. Pour un article à variantes, répété sur chaque ligne.</td></tr>
+                        <tr><td>Product Type*</td><td>Type de produit</td><td>Goods (Biens), Service ou Combo.</td></tr>
+                        <tr><td>Track Inventory</td><td>Suivre l'inventaire</td><td>Vrai : l'article est stocké ; la fiche affiche ensuite <strong>Suivi : Par quantité</strong>.</td></tr>
+                        <tr><td>Product Values</td><td>Valeurs du produit</td><td><strong>Nouveau.</strong> Les valeurs d'attributs d'une variante, au format <code>Attribut:Valeur</code> séparés par des virgules.</td></tr>
+                        <tr><td>Quantity on Hand</td><td>Quantité disponible</td><td>Stock de départ, posé dans l'emplacement de stock de l'entrepôt.</td></tr>
+                        <tr><td>Sales Price / Cost</td><td>Prix de vente / Coût</td><td>Par ligne, donc par variante.</td></tr>
+                        <tr><td>Internal Reference</td><td>Référence interne</td><td>Le code article ; par ligne également.</td></tr>
+                        <tr><td>Description</td><td>Description</td><td>Arrive dans les <strong>Notes internes</strong> de la fiche.</td></tr>
+                        <tr><td>Image</td><td>Image</td><td>Une adresse http(s) : Odoo télécharge l'image pendant l'import.</td></tr>
+                    </tbody>
+                </table>
+                <p>Les en-têtes sont en anglais, mais Odoo les reconnaît même pour un utilisateur en français. Pour
+                    l'image, le serveur doit pouvoir joindre l'adresse : par défaut, Odoo abandonne au-delà de 3 secondes
+                    ou de 10 Mo par fichier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Tester, puis importer</h2>
+                <p>Chargez le fichier par <strong>Charger</strong>. Odoo affiche chaque colonne du fichier, un exemple
+                    de valeur et le champ retenu. Cliquez sur <strong>Tester</strong> : sur le modèle tel quel, le
+                    bandeau répond <strong>Tout semble correct.</strong></p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Test d'import du modèle officiel dans Odoo 20 : bandeau Tout semble correct, colonnes Name*, Product Type*, Track Inventory, Product Values, Quantity on Hand, Sales Price, Cost, Internal Reference, Description, Image reliées aux champs Nom, Type de produit, Suivre l'inventaire, Valeurs du produit, Quantité disponible, Prix de vente, Coût, Référence interne, Description, Image" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le test du modèle officiel : chaque colonne trouve son champ.</figcaption>
+                </figure>
+                <p>Un clic sur <strong>Importer</strong> crée les articles et ouvre la liste des
+                    <strong>Enregistrements importés</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Enregistrements importés dans Odoo 20 : Odoo Functional Certification 200 dollars avec image, Odoo Mug 14,50 dollars 200 unités, Odoo Polo 5 variantes 28 dollars 180 unités, Scale-Up! Business Game 18 dollars 100 unités" style="max-width:100%; height:auto;"/>
+                    <figcaption>Quatre articles, dont un à cinq variantes, et leur stock de départ.</figcaption>
+                </figure>
+                <p>Ce que l'import a réellement produit :</p>
+                <ul>
+                    <li>le service <strong>Odoo Functional Certification</strong>, avec l'image téléchargée depuis son
+                        adresse ;</li>
+                    <li>trois articles stockés, dont <strong>Odoo Polo</strong> et ses cinq variantes, chacune avec sa
+                        référence (POLOLS, POLOLM…) et son prix (30, 30, 25, 25 et 28 $) ;</li>
+                    <li>le stock : un mouvement terminé par article ou variante vers <strong>WH/Stock</strong>, sous la
+                        référence « Quantité de produit mise à jour (Mitchell Admin) ». C'est un ajustement
+                        d'inventaire ordinaire, visible dans l'historique des mouvements.</li>
+                </ul>
+                <p>La catégorie n'étant pas dans le fichier, les quatre fiches restent sans catégorie. La section 4
+                    montre comment la compléter.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 : VARIANTES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les variantes : une ligne par combinaison</h2>
+                <p>Dans le modèle, Odoo Polo occupe cinq lignes de même nom. Chacune porte, dans <strong>Product
+                    Values</strong>, la combinaison de la variante : <code>Sleeves:Long, Size:S</code>,
+                    <code>Sleeves:Short, Size:M</code>, etc. Odoo en déduit l'article, ses attributs, leurs valeurs et
+                    les variantes, sans passer par l'onglet de configuration :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche Odoo Polo dans Odoo 20, onglet Attributs et Variantes : attribut Sleeves avec les valeurs Long et Short, attribut Size avec les valeurs S, M et L" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les attributs et valeurs ont été déduits de la colonne Product Values.</figcaption>
+                </figure>
+                <p>Seules les combinaisons présentes dans le fichier existent : le modèle ne contient pas de polo à
+                    manches longues en L, il n'y a donc que cinq variantes sur les six possibles.</p>
+                <p>Odoo cherche chaque attribut <strong>par son nom</strong>. S'il ne le trouve pas, il le crée, en mode
+                    de création de variante <strong>Dynamique</strong> et affichage <strong>Radio</strong>. La recherche
+                    se fait dans la langue de l'utilisateur qui importe : sur la démonstration en français, l'attribut
+                    existant s'appelle « Taille » (« Size » en anglais), et l'import a créé un second attribut « Size » :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste des attributs d'Odoo 20 : Marque, Taille en boutons carrés et création instantanée, Pointure, puis Sleeves et Size en Radio et création Dynamique créés par l'import" style="max-width:100%; height:auto;"/>
+                    <figcaption>Ventes › Produits › Attributs : « Taille » de la démonstration et « Size » créé par l'import.</figcaption>
+                </figure>
+                <p>Avant d'importer, relevez donc dans <strong>Ventes › Produits › Attributs</strong> les noms exacts,
+                    tels qu'ils s'affichent, et écrivez-les dans le fichier. Un attribut créé par l'import peut ensuite
+                    être passé en création <strong>Instantanément</strong> sur sa fiche.</p>
+                <p>Le format est strict. Une valeur sans nom d'attribut, par exemple <code>Sleeves Long, Size:L</code>
+                    (deux-points oubliés), bloque le test avec ce message :</p>
+                <p><em>« Erreur à la ligne 0: "Erreur inconnue lors de l'import : &lt;class 'ValueError'&gt; :
+                    Impossible d'importer des produits avec une valeur d'attribut sans nom d'attribut (défini sous la
+                    forme : attribut:valeur) : Sleeves Long, Size:L" »</em></p>
+                <p>Deux valeurs pour le même attribut sur une ligne (<code>Size:S, Size:M</code>) sont aussi refusées :
+                    une ligne décrit une seule variante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 : MISE À JOUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Compléter le catalogue sans doublon : l'ID externe</h2>
+                <p>Le modèle ne contient ni catégorie, ni code-barres, ni taxe, ni fournisseur. Pour les ajouter à des
+                    articles déjà créés, il ne faut pas réimporter le même fichier : sans identifiant, Odoo crée une
+                    seconde fiche « Odoo Mug ». Il faut partir d'un <strong>export</strong> qui porte l'identifiant de
+                    chaque fiche.</p>
+                <p>Dans la liste des produits, cochez les articles, puis <strong>Actions › Exporter</strong>. Activez
+                    l'interrupteur <strong>Updatable fields only</strong> (en Odoo 19 : la case « Je veux mettre à jour les
+                    données (export compatible avec l'import) »).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Exporter les données d'Odoo 20 : interrupteur Updatable fields only activé, champs à exporter Favori, Nom, Référence interne, Prix de vente, Coût, Quantité disponible, Quantité prévue, Unité, format Excel Workbook xlsx" style="max-width:75%; height:auto;"/>
+                    <figcaption>L'interrupteur Updatable fields only rend l'export réimportable.</figcaption>
+                </figure>
+                <p>Le fichier obtenu commence par une colonne <code>id</code>, par exemple
+                    <code>__export__.product_template_192_613117ba</code> pour Odoo Mug, et ses en-têtes sont les noms
+                    techniques des champs (<code>name</code>, <code>list_price</code>…). À l'import, une ligne dont
+                    l'<code>id</code> existe <strong>met à jour</strong> la fiche au lieu d'en créer une. Supprimez du
+                    fichier les colonnes calculées (Quantité prévue, Favori) et les lignes à ne pas toucher, puis ajoutez
+                    les colonnes voulues. Un en-tête égal au libellé du champ en français est reconnu :</p>
+                <table class="tmc">
+                    <thead><tr><th>En-tête ajouté</th><th>Odoo Mug</th><th>Scale-Up! Business Game</th></tr></thead>
+                    <tbody>
+                        <tr><td>Catégorie de produits</td><td>Biens</td><td>Biens</td></tr>
+                        <tr><td>Code-barres</td><td>2000000000015</td><td>2000000000022</td></tr>
+                        <tr><td>Taxes de vente/ID externe</td><td>account.1_sale_tax_template</td><td>account.1_sale_tax_template</td></tr>
+                        <tr><td>Fournisseurs/Fournisseur</td><td>Wood Corner</td><td>Wood Corner</td></tr>
+                        <tr><td>Fournisseurs/Prix unitaire</td><td>9</td><td>10</td></tr>
+                    </tbody>
+                </table>
+                <p>Les codes-barres de l'exemple commencent par 2, plage réservée aux codes internes à l'entreprise. Le
+                    nom <code>Fournisseurs/Fournisseur</code> désigne le champ Fournisseur d'une ligne de l'onglet
+                    Achats.</p>
+
+                <h3>Les erreurs du premier essai</h3>
+                <p>Un premier fichier, volontairement fautif, montre les messages les plus courants. Il désigne l'unité
+                    par « Pièce », la catégorie par « Jeux », reprend le même code-barres sur les deux lignes et désigne
+                    la taxe par son nom, « 15% » :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Test d'import d'Odoo 20 en erreur : bandeau Code(s)-barres déjà attribué(s) Barcode 2000000000015 already assigned to product Odoo Mug, et sur la colonne uom_id le message Aucun enregistrement trouvé pour nom Pièce dans le champ Unité avec le choix Empêcher l'importation" style="max-width:85%; height:auto;"/>
+                    <figcaption>Code-barres en double et unité inconnue : le test s'arrête avant toute écriture.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Suite du test d'import d'Odoo 20 : Aucun enregistrement trouvé pour nom Jeux dans le champ Catégorie de produits, et pour la colonne Taxes de vente le message Plusieurs résultats ont été trouvés pour la valeur 15% dans le champ Taxes de vente (2 résultats)" style="max-width:85%; height:auto;"/>
+                    <figcaption>Catégorie inconnue et taxe ambiguë.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Message</th><th>Cause</th><th>Correction</th></tr></thead>
+                    <tbody>
+                        <tr><td>Code(s)-barres déjà attribué(s) : - Barcode "2000000000015" already assigned to product: Odoo Mug</td>
+                            <td>Un code-barres est unique dans la base.</td><td>Un code par article ou variante.</td></tr>
+                        <tr><td>Aucun enregistrement trouvé pour nom 'Pièce' dans le champ 'Unité'</td>
+                            <td>L'unité se désigne par son nom exact.</td><td>« Unité(s) » sur la démonstration ; voir la liste par <strong>Voir les valeurs possibles</strong>.</td></tr>
+                        <tr><td>Aucun enregistrement trouvé pour nom 'Jeux' dans le champ 'Catégorie de produits'</td>
+                            <td>Catégorie absente de la base.</td><td>Une catégorie existante (« Biens »), ou le choix <strong>Créer de nouvelles valeurs</strong> sous le message.</td></tr>
+                        <tr><td>Plusieurs résultats ont été trouvés pour la valeur "15%" dans le champ "Taxes de vente" (2 résultats)</td>
+                            <td>La démonstration a une taxe « 15% » de vente et une « 15% » d'achat.</td><td>Désigner la taxe par son ID externe (colonne <code>Taxes de vente/ID externe</code>).</td></tr>
+                    </tbody>
+                </table>
+                <p>Sous chaque message, la liste <strong>Lorsqu'une valeur ne peut pas être mise en correspondance</strong>
+                    propose Empêcher l'importation (par défaut), Définir la valeur comme vide, Ignorer l'enregistrement ou
+                    Créer de nouvelles valeurs. Pour l'unité, champ obligatoire, seules la première et la dernière sont
+                    proposées. L'ID externe d'une taxe s'obtient comme celui d'un article : export de la liste des taxes
+                    (Facturation › Configuration › Comptabilité › Taxes) avec Updatable fields only.</p>
+
+                <h3>Le fichier corrigé</h3>
+                <p>Le second fichier, celui du tableau ci-dessus, passe le test. Après import, Odoo Mug est toujours
+                    seul de son nom, et sa fiche est complétée :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fiche Odoo Mug dans Odoo 20 après import : type Biens, suivi Par quantité, quantité disponible 200, prix de vente 14,50 dollars, taxe de vente 15%, coût 9 dollars, catégorie Biens, référence KEEPITSIMPLE, code-barres 2000000000015, notes internes reprenant la description du modèle" style="max-width:100%; height:auto;"/>
+                    <figcaption>Catégorie, code-barres et taxe ajoutés à la fiche existante.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Onglet Achats de la fiche Odoo Mug dans Odoo 20 : fournisseur Wood Corner, quantité 1, unité Unité(s), prix unitaire 9 dollars, délai 1" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le fournisseur et son prix, dans l'onglet Achats.</figcaption>
+                </figure>
+                <p>La taxe d'achat 15 % n'était pas dans le fichier : c'est la taxe par défaut de la société, posée à la
+                    création de l'article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 : AJOUTER UNE VARIANTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ajouter une variante à un article existant</h2>
+                <p>La colonne Product Values sert aussi plus tard, pour ajouter une combinaison : il suffit d'importer
+                    une ligne au nom de l'article avec la nouvelle combinaison. Odoo retrouve Odoo Polo par son nom et
+                    lui ajoute la variante. Mais le contenu des autres colonnes compte.</p>
+                <p>Essai avec une ligne complète, sur le modèle des lignes officielles : Odoo Polo,
+                    <code>Sleeves:Long, Size:L</code>, Quantity on Hand <strong>0</strong>, Sales Price
+                    <strong>30</strong>, référence POLOLL. Le résultat :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Résultat de l'import dans Odoo 20 : Odoo Polo, 6 variantes, 30 dollars, 200 unités disponibles" style="max-width:55%; height:auto;"/>
+                    <figcaption>Six variantes, mais 200 unités en stock au lieu de 180.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Le stock :</strong> la quantité 0 n'a pas été retenue. Pour une variante ajoutée, une
+                        cellule vide ou à zéro reprend la valeur de la première variante de l'article : la nouvelle
+                        variante a reçu 20 unités, par un mouvement d'ajustement.</li>
+                    <li><strong>Les prix :</strong> le prix de 30 $ s'est appliqué à toutes les variantes, y compris
+                        celles importées à 25 et 28 $.</li>
+                </ul>
+                <p>Pour ajouter une variante sans effet de bord, ne gardez que trois colonnes : Name*, Product Values et
+                    Internal Reference. La variante est créée sans stock et les prix des autres restent intacts.</p>
+                <p>Les prix se corrigent dans la liste des variantes, ouverte par le bouton <strong>Variantes</strong> de
+                    la fiche : en Odoo 20, la colonne <strong>Prix de vente</strong> y est modifiable variante par
+                    variante (en Odoo 19, le prix d'une variante était toujours le prix de l'article plus les suppléments
+                    de ses valeurs). Le stock en trop se corrige par un comptage, objet de la section suivante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste des variantes d'Odoo Polo dans Odoo 20 : Long L 30 dollars disponible 0, Long M 30 dollars 18, Long S 30 dollars 10, Short L 28 dollars 60, Short M 25 dollars 50, Short S 25 dollars 40, total 178" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les six variantes après correction des prix et du stock.</figcaption>
+                </figure>
+                <p>Odoo 20 n'a plus de menu « Variantes de produits » dans Ventes ni dans Achats : cette liste n'est
+                    accessible que par le bouton de la fiche, et elle ne propose pas d'import.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 : QUANTITÉS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Importer des quantités comptées</h2>
+                <p>La colonne Quantity on Hand convient au stock de départ d'articles nouveaux. Pour des articles déjà en
+                    stock, la reprise d'un comptage passe par <strong>Inventaire › Opérations › Inventaire
+                    physique</strong>, qui a son propre import (engrenage › Importer) et son lien
+                    <strong>Modèle pour les ajustements d'inventaire</strong>. Ce modèle, inchangé depuis Odoo 19, ne
+                    s'utilise pas tel quel : ses en-têtes « Counted Quantity » et « Quantity » ne sont rattachés à aucun
+                    champ, et ses articles d'exemple ne figurent plus dans la démonstration.</p>
+
+                <h3>Sans identifiant : une ligne de plus, pas un comptage</h3>
+                <p>Essai avec un fichier à trois colonnes, <strong>Produit</strong>, <strong>Emplacement</strong>,
+                    <strong>Compté</strong> : « [POLOLM] Odoo Polo (Long, M) », « WH/Stock », 18, alors que la variante a
+                    20 unités. Le test est correct, l'import aussi, mais :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Inventaire physique d'Odoo 20 après import sans identifiant : une ligne WH/Stock [POLOLM] Odoo Polo, planifiée 6 octobre, Mitchell Admin, disponible 0, compté 18, différence plus 18 en vert" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une nouvelle ligne à 0, avec une différence de +18.</figcaption>
+                </figure>
+                <p>À l'import, Odoo ne recherche pas la ligne de stock existante : il en crée une nouvelle, disponible 0,
+                    comptée 18. Appliquée, cette différence de +18 porte le stock à 38 au lieu de 18 (vérifié sur la base
+                    de démonstration, puis annulé). Si l'écran Inventaire physique est rouvert avant, les deux lignes sont
+                    fusionnées et le comptage n'est plus marqué à appliquer. Dans les deux cas, le résultat est faux.
+                    Ce fonctionnement est le même en Odoo 19.</p>
+
+                <h3>Avec l'identifiant de la ligne</h3>
+                <p>La bonne méthode reprend celle de la section 4 :</p>
+                <ol>
+                    <li>dans Inventaire physique, cochez les lignes à compter, puis <strong>Actions › Exporter</strong>
+                        avec <strong>Updatable fields only</strong> ;</li>
+                    <li>dans le fichier, ne gardez que les colonnes <code>id</code> et <code>inventory_quantity</code>
+                        (Compté), et saisissez les quantités comptées : ici 0 pour POLOLL, 18 pour POLOLM ;</li>
+                    <li>importez depuis Inventaire physique.</li>
+                </ol>
+                <p>Toute autre colonne de l'export (Produit, Emplacement…) fait échouer le test : <em>« L'édition de quant
+                    n'est pas autorisée, vous ne pouvez pas réaliser cette opération. »</em> Avec les deux colonnes, les
+                    comptages arrivent sur les bonnes lignes :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Enregistrements importés dans l'inventaire physique d'Odoo 20 : POLOLL disponible 20 compté 0 différence moins 20, POLOLM disponible 20 compté 18 différence moins 2, boutons Appliquer et Appliquer à tout" style="max-width:100%; height:auto;"/>
+                    <figcaption>Comptages importés par identifiant : −20 et −2, prêts à appliquer.</figcaption>
+                </figure>
+                <p>Il reste à appliquer : <strong>Appliquer à tout</strong>, motif « Reprise du catalogue »,
+                    <strong>Mettre à jour les quantités</strong>. POLOLL revient à 0 et POLOLM à 18, comme le montre la
+                    liste des variantes de la section 5. Le motif, les conflits et la planification des comptages sont
+                    ceux de l'inventaire physique habituel.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Import et export de fichiers, modèle des produits, variantes et
+                        quantités à l'import sont inclus dans Odoo 20 Community. Par rapport à Odoo 19 : nouveau modèle
+                        de fichier, colonne Product Values (variantes à l'import), prix modifiable par variante,
+                        interrupteur Updatable fields only à l'export, et plus de menu Variantes de produits.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Réimporter un fichier sans colonne id crée des doublons</h4>
+                    <p>Pour un article simple, le test répond « Tout semble correct » et l'import crée une seconde fiche
+                        du même nom. Pour un article à variantes, le test échoue sur un message technique :
+                        <em>duplicate key value violates unique constraint "product_product_combination_unique"</em>,
+                        avec des numéros de ligne (« ligne 0 », « ligne 1 »…) comptés parmi les seules lignes de
+                        variantes, pas dans le fichier entier.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une colonne de fournisseur ajoute une ligne à chaque import</h4>
+                    <p>Réimporter le fichier corrigé de la section 4 donne deux lignes « Wood Corner » dans l'onglet
+                        Achats d'Odoo Mug. Une fois les fournisseurs chargés, retirez ces colonnes des imports de mise à
+                        jour.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les noms d'attributs dépendent de la langue</h4>
+                    <p>« Size » dans un fichier importé par un utilisateur en français crée un nouvel attribut au lieu
+                        de reprendre « Taille ». Écrivez les noms tels qu'ils s'affichent.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La liste des produits d'Inventaire masque les services</h4>
+                    <p>Elle s'ouvre filtrée sur <strong>Biens</strong>. Pour exporter ou vérifier un service importé
+                        (la certification du modèle), retirez ce filtre de la recherche.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> ajouter une taille à Odoo Polo par import, sans toucher aux prix ni au
+                        stock des autres variantes.</p>
+                    <p><strong>Indication :</strong> après l'import du modèle officiel, préparez un fichier de trois
+                        colonnes, Name*, Product Values, Internal Reference, et une ligne : Odoo Polo,
+                        <code>Sleeves:Short, Size:XL</code>, POLOSXL. Testez, puis importez.</p>
+                    <p><strong>Critère de réussite :</strong> la valeur XL apparaît sur l'attribut Size de l'article ; la
+                        liste des variantes montre POLOSXL à 0 en stock, et les prix des autres variantes sont inchangés.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le modèle d'Odoo 20 charge articles, variantes, prix et stock de départ dans un seul fichier.</li>
+                    <li>Une variante = une ligne, avec <code>Attribut:Valeur</code> dans Product Values ; les noms
+                        d'attributs sont cherchés dans la langue de l'utilisateur.</li>
+                    <li>Pour mettre à jour, partir d'un export avec Updatable fields only : la colonne id évite les
+                        doublons.</li>
+                    <li>Pour ajouter une variante, n'importer que nom, valeurs et référence.</li>
+                    <li>Des quantités comptées s'importent par l'id de la ligne d'inventaire, puis s'appliquent.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La fiche article, ses types, prix et taxes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et péremption</a></h5>
+                            <p class="small text-muted mb-0">Le suivi par lots, au-delà du suivi par quantité.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Les fournisseurs importés servent aux commandes de réassort.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

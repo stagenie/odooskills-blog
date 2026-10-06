@@ -1,0 +1,544 @@
+<!--
+Article — Odoo 20 en Algérie : ce que couvre la localisation Community
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : localisation-algerie-odoo
+Meta : Odoo 20 en Algérie : plan comptable SCF, TVA 19 % et 9 %, positions fiscales, NIF, facture en dinars ; ce que la localisation Community contient et ne contient pas.
+Mot-clé cible : odoo algérie · odoo plan comptable algérien · odoo tva algérie
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, comptabilite, guide, community
+Temps de lecture : ~10 minutes
+Jumeau v19 (cité « version Odoo 19 ») : post 47 la-comptabilite-dans-odoo-19-plan-comptable-algerien-taxes-et-journaux-47.
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_d3 (copie de vs20_func, démonstration). Livraison
+3 étapes de vs20_func laissée telle quelle (sujet sans stock). Société « Société DZ » (id 4) créée à l'écran.
+  Install auto : base/models/res_company.py:301-312 (install_l10n_modules → button_immediate_install) ; account/models/
+  company.py:1117-1131 (try_loading du modèle du pays en precommit). Prouvé sur copie jetable vs20_func_d3b (crons
+  coupés) : Société DZ → chart_template dz. Sur vs20_func_d3, une collision avec un cron (SERIALIZATION_FAILURE, retry
+  → « Le nom de la société doit être unique ») a laissé la société sans plan : chargé en shell try_loading('dz').
+  Démo : l10n_dz/demo/demo_company.xml:3-34 crée « DZ Company » (vat 000000000000000, plan dz) sur base avec démo.
+  Devise : base/data/res_currency_data.xml:1253-1262 (DZD, symbole DA, « Dinar »). Pays dz sans vat_label
+  (res_country_data.xml:429-434).
+  Identifiants : base/views/res_company_views.xml:43-48 (additional_identifiers, nouveau 20) ; res_partner.py:330,
+  1632-1647 ; pour l'Algérie : DUNS, ID de la société (écran, fig. 1) ; aucun identifiant 'DZ' (shell, 58 métadonnées).
+  NIF : res_partner.py:1473-1477 (_check_vat_number → stdnum.util.get_cc_module('dz','vat') = stdnum.dz.nif,
+  python-stdnum 1.19, 15 ou 20 chiffres) ; shell : 12345 et ABC refusés, 15 et 20 chiffres acceptés ; écran fig. 9.
+  « Tax ID » : account/models/account_move.py:8324-8334 (f-string non traduite si pas de vat_label) ; v19
+  account/views/report_invoice.xml:23 « Tax ID » traduit « N° TVA » (account/i18n/fr.po:17123). Vat_label NIF saisi à
+  l'écran (Contacts › Configuration › Localisation › Pays, fig. 8) → PDF « NIF: » (fig. 12).
+  Menus : account/views/account_menuitem.xml:49 (Plan comptable groups account.group_account_readonly) ; droit
+  « Montrer les fonctions de comptabilité complètes » (account_security.xml:67-70, fr.po:17834) coché à l'écran.
+  Template : l10n_dz/models/template_dz.py:10 (code_digits 6), :13-37 (DZD 512/53/58, taxes défaut 19% B Prod. / 19%,
+  600/700, receivable 413, payable 401, stock 31, display_invoice_amount_total_words), :39-46 (31 → 601/603).
+  Shell : 299 comptes ; 42 taxes dont 16 actives (10 vente, 6 achat), tax_exigibility on_invoice partout ; 4 positions
+  (séquences 10/20/30/40, auto) ; 7 journaux FAC, FACTURE, BNK1, OD, EXCH, CABA, STJ (account/models/chart_template.py:
+  1147-1197, pas de journal caisse) ; Acme Corporation (US) et Azure Interior → Exonération ; DZ Company → Régime National.
+  Données : l10n_dz/data/template/account.tax-dz.csv (9% Immo description@fr « 19% Opérations immobilières ») ;
+  tax_report.xml (lignes E3B…, root account.generic_tax_report) ; account_reports absent de odoo/addons.
+  Timbre : grep -i "timbre|stamp" odoo/addons/l10n_dz → vide.
+  Diff 19→20 (odoo19-dev/odoo/addons/l10n_dz) : manifeste sans base_vat ni version ; account.group-dz.csv supprimé ;
+  template : receivable/payable passés en receivable_account_id/payable_account_id, account_stock_valuation_id 31 + compte
+  31 → 601/603 ; i18n/ar.po ajouté ; demo sans is_company ; account/tax/fiscal.position/tax.group CSV et tax_report.xml
+  identiques.
+  Parcours joué : FAC/2026/00001 (id 138) DZ Company, 2 × 85 000 (19% B Prod.) + 10 × 1 500 (9% B) = HT 185 000,
+  TVA 1 350 + 32 300, TTC 218 650 DA ; écritures 700000 / 445700 / 413000 ; PDF wkhtmltopdf 0.12.5 « Deux Cent Dix-Huit
+  Mille Six Cent Cinquante Dinar ». Exercice simulé en shell (rollback) : Acme → Exonération, 0% B Prod., 85 000 = 85 000.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Odoo 20 en Algérie : ce que couvre la localisation Community</h1>
+                <p class="lead mt-3 text-white">Plan comptable SCF, TVA à 19 % et 9 %, positions fiscales, facture
+                    en dinars : le paquet comptable algérien d'Odoo 20 Community s'installe tout seul dès qu'une
+                    société est déclarée en Algérie. Reste à savoir ce qu'il contient vraiment, et ce qu'il ne
+                    contient pas.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec l'application Facturation. Le module « Algeria - Accounting » (<code>l10n_dz</code>)
+                        fait partie de la Community ; il existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une <strong>localisation fiscale</strong> est un paquet de données comptables propre à un pays :
+                    plan comptable, taxes, positions fiscales, structure de la déclaration de taxes. Pour l'Algérie,
+                    Odoo 20 Community fournit le module <code>l10n_dz</code>, nommé « Algeria - Accounting ». Il ne
+                    contient aucun écran ni aucun champ nouveau : uniquement des données, chargées dans la société au
+                    moment où elle reçoit son plan comptable.</p>
+                <p>Le présent article installe ce paquet sur une société créée pour l'occasion, « Société DZ »,
+                    dans la base de démonstration, puis en fait l'inventaire et émet une facture en dinars. La version
+                    Odoo 19 de ce sujet reste en ligne :
+                    <a href="/blog/fonctionnel-odoo-1/la-comptabilite-dans-odoo-19-plan-comptable-algerien-taxes-et-journaux-47">La
+                    comptabilité dans Odoo 19 : plan comptable algérien, taxes et journaux</a>. La saisie des
+                    factures elle-même est décrite dans
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs
+                    dans Odoo 20</a>.</p>
+                <p>Un point de méthode : cet article décrit ce que <em>contient</em> Odoo, pas ce qu'exige la loi.
+                    Le choix des taxes, des comptes et des mentions obligatoires se valide avec un expert-comptable.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une société algérienne et vérifier que son plan comptable est chargé ;</li>
+                    <li>lire ce que la localisation fournit : comptes SCF, 42 taxes dont 16 actives, 4 positions
+                        fiscales, 7 journaux ;</li>
+                    <li>saisir l'identifiant fiscal d'un client et le faire imprimer sous le libellé « NIF » ;</li>
+                    <li>émettre une facture en dinars avec TVA à 19 % et 9 %, et contrôler ses écritures ;</li>
+                    <li>repérer ce que la Community ne fournit pas : NIS, RC, AI, timbre fiscal, écran de
+                        déclaration.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer la société algérienne</h2>
+                <p>Ouvrez <strong>Paramètres › Utilisateurs &amp; Sociétés › Sociétés</strong>, puis
+                    <strong>Nouveau</strong>. Saisissez le nom, la ville et surtout le pays :
+                    <strong>Algérie</strong>. Dès que le pays est choisi, le champ <strong>Devise</strong> passe à
+                    <strong>DZD</strong> (le dinar, symbole « DA »).</p>
+                <p>À l'enregistrement, Odoo fait deux choses de lui-même : il installe le module
+                    « Algeria - Accounting » s'il ne l'est pas encore, puis charge le plan comptable algérien dans la
+                    nouvelle société. L'opération prend quelques secondes, le temps de recharger l'application.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fiche de la société Société DZ dans Odoo 20 : ville Alger, pays Algérie, champ N° TVA vide avec un bouton plus ouvrant la liste DUNS et ID de la société, devise DZD" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche société : pays Algérie, devise DZD, et le bouton « + » des identifiants supplémentaires.</figcaption>
+                </figure>
+                <p>Sous l'adresse, le champ <strong>N° TVA</strong> est suivi d'un bouton <strong>+</strong>,
+                    nouveau en Odoo 20 : il ajoute des identifiants supplémentaires à une société ou à un contact.
+                    Pour l'Algérie, la liste ne propose que <strong>DUNS</strong> et <strong>ID de la
+                    société</strong>, des identifiants génériques. Il n'existe dans Odoo 20 Community aucun champ
+                    dédié au NIS, au registre de commerce (RC) ou à l'article d'imposition (AI) : le module algérien
+                    n'en définit pas.</p>
+                <p>Ouvrez ensuite <strong>Facturation › Configuration › Paramètres</strong> avec la société
+                    « Société DZ » sélectionnée en haut à droite. Le bloc <strong>Localisation fiscale</strong> affiche
+                    <strong>Algérie</strong> : le plan est chargé. Les <strong>Taxes par défaut</strong> sont déjà
+                    réglées : <strong>19% B Prod.</strong> en vente, <strong>19%</strong> en achat.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Paramètres de Facturation d'Odoo 20 pour Société DZ : Localisation fiscale Algérie avec bouton Recharger, taxe de vente par défaut 19% B Prod., taxe d'achat 19%, prix hors taxes" style="max-width:100%; height:auto;"/>
+                    <figcaption>Localisation fiscale « Algérie » et taxes par défaut posées par le paquet.</figcaption>
+                </figure>
+                <p>Sur une base créée avec les données de démonstration, l'installation du module ajoute aussi une
+                    société de démonstration, <strong>DZ Company</strong>, déjà dotée du plan algérien. Elle sert plus
+                    bas de client pour la facture d'exemple.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le plan comptable SCF</h2>
+                <p>Le menu <strong>Facturation › Configuration › Plan comptable</strong> n'apparaît qu'avec le
+                    droit « Montrer les fonctions de comptabilité complètes ». Un administrateur ne l'a pas d'office :
+                    activez le mode développeur, ouvrez votre fiche utilisateur et cochez ce droit dans la rubrique
+                    <strong>Droits supplémentaires</strong>. Le même droit fait apparaître le menu
+                    <strong>Multinormes comptables</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Plan comptable de Société DZ dans Odoo 20 : comptes 101000 Capital émis, 103000 Primes liées au capital social, 106000 Réserves, 110000 Report à nouveau, 120000 Résultat de l'exercice, 131000 Subventions d'équipements, type Capitaux propres" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le début de la classe 1 : les comptes du SCF, codés sur six chiffres.</figcaption>
+                </figure>
+                <p>La société compte 299 comptes, libellés en français, de la classe 1 (capitaux) à la classe 7
+                    (produits). Les codes sont complétés à six chiffres : le compte 700 du SCF devient
+                    <strong>700000 Ventes de marchandises</strong>, le 4457 devient <strong>445700 TVA
+                    collectée</strong>. Quelques comptes servent de défaut à toute la société :</p>
+                <table class="tmc">
+                    <thead><tr><th>Rôle</th><th>Compte</th></tr></thead>
+                    <tbody>
+                        <tr><td>Produits (ventes)</td><td>700000 Ventes de marchandises</td></tr>
+                        <tr><td>Charges (achats)</td><td>600000 Achats de marchandises vendues</td></tr>
+                        <tr><td>Créances clients</td><td>413000 Clients : effets à recevoir</td></tr>
+                        <tr><td>Dettes fournisseurs</td><td>401000</td></tr>
+                        <tr><td>TVA collectée / récupérable</td><td>445700 / 445600</td></tr>
+                        <tr><td>Banque</td><td>512001 Banque</td></tr>
+                        <tr><td>Stock (valorisation)</td><td>31, avec 601 et 603 pour la variation</td></tr>
+                    </tbody>
+                </table>
+                <p>Le compte de créances clients mérite un regard : c'est le <strong>413000</strong>, pas un
+                    compte 411. La section « Points de vigilance » y revient.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les taxes : 19 %, 9 % et 0 %</h2>
+                <p>Ouvrez <strong>Facturation › Configuration › Taxes</strong>. La liste d'Odoo 20 affiche aussi
+                    les taxes archivées, avec leur interrupteur <strong>Actif</strong> éteint.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des taxes de Société DZ dans Odoo 20 : 19% B Prod., 0% B Prod., 9% B, 0% B, 9% S, 0% S actives ; 9% Immo, 9% Med, 9% C&amp;C, 9% En archivées ; 19% B Revente et 0% B Revente actives ; 19% Immo, 19% PL, 19% BA, 19% Tel archivées ; 19% AS et 0% AS actives" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les taxes de vente : actives en noir, archivées en gris.</figcaption>
+                </figure>
+                <p>Le paquet crée 42 taxes, toutes de TVA, à trois taux seulement : 19 %, 9 % et 0 %. Seize sont
+                    actives :</p>
+                <table class="tmc">
+                    <thead><tr><th>Usage</th><th>Taxes actives</th></tr></thead>
+                    <tbody>
+                        <tr><td>Vente de biens produits</td><td>19% B Prod. · 0% B Prod.</td></tr>
+                        <tr><td>Vente de biens, produits et denrées à taux réduit</td><td>9% B · 0% B</td></tr>
+                        <tr><td>Services à taux réduit</td><td>9% S · 0% S</td></tr>
+                        <tr><td>Revente en l'état</td><td>19% B Revente · 0% B Revente</td></tr>
+                        <tr><td>Autres services</td><td>19% AS · 0% AS</td></tr>
+                        <tr><td>Achats de biens, matières et services</td><td>19% · 9% · 0%</td></tr>
+                        <tr><td>Achats de biens amortissables</td><td>19% G · 9% G · 0% G</td></tr>
+                    </tbody>
+                </table>
+                <p>Les 26 autres, archivées, couvrent des activités particulières : opérations immobilières, actes
+                    médicaux, commissionnaires et courtiers, fourniture d'énergie, professions libérales, banques et
+                    assurances, téléphone, débits de boissons, tabacs et allumettes, divertissements, consommation sur
+                    place. Une entreprise concernée les réactive d'un clic sur l'interrupteur, après validation de son
+                    expert-comptable.</p>
+                <p>Ouvrez <strong>19% B Prod.</strong> : l'onglet <strong>Définition</strong> montre où va la taxe.
+                    La base de la vente porte la grille <strong>E3B21_taxable_turnover</strong>, la TVA va au compte
+                    <strong>445700 TVA collectée</strong> avec la grille <strong>E3B21_balance</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fiche de la taxe 19% B Prod. dans Odoo 20 : calcul pourcentage 19, positions fiscales Régime National et Accord de libre échange, répartition base avec grille E3B21_taxable_turnover et 100 % de la taxe au compte 445700 TVA collectée avec grille E3B21_balance" style="max-width:100%; height:auto;"/>
+                    <figcaption>La taxe 19% B Prod. : compte de TVA collectée et grilles de la déclaration.</figcaption>
+                </figure>
+                <p>Ces grilles alimentent le rapport de taxes livré par le module, dont les lignes portent les
+                    codes E3B11, E3B12, E3B21… Ce rapport est une structure de données : la Community n'a pas d'écran
+                    pour l'afficher (le module <code>account_reports</code> n'est pas inclus dans la Community). Les
+                    grilles restent toutefois visibles sur chaque écriture, comme le montre l'étape 6.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Positions fiscales et journaux</h2>
+                <p>Le menu <strong>Facturation › Configuration › Positions fiscales</strong> liste quatre
+                    positions, toutes en détection automatique : <strong>Régime National</strong> (partenaires
+                    situés en Algérie), <strong>Accord de libre échange avec l'Union Européenne</strong> (pays de
+                    l'Union), <strong>Exonération</strong> et <strong>Export/Import</strong> (sans pays).</p>
+                <p>En Odoo 20, la correspondance entre taxes se lit sur la taxe de remplacement elle-même. La fiche
+                    de <strong>0% B Prod.</strong> indique les positions où elle s'applique et la taxe qu'elle
+                    remplace.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fiche de la taxe 0% B Prod. dans Odoo 20 : positions fiscales Accord de libre échange avec l'Union, Exonération et Export/Import ; champ Remplace : 19% B Prod." style="max-width:100%; height:auto;"/>
+                    <figcaption>0% B Prod. remplace 19% B Prod. sous trois positions fiscales.</figcaption>
+                </figure>
+                <p>Le menu <strong>Facturation › Configuration › Journaux</strong> montre les sept journaux
+                    créés pour la société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste des journaux de Société DZ dans Odoo 20 : Ventes FAC 700000, Achats FACTURE 600000, Banque BNK1 512001, Opérations diverses OD, Différence de change EXCH, TVA sur encaissements CABA, Valorisation d'inventaire STJ" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sept journaux, dont aucun journal de caisse.</figcaption>
+                </figure>
+                <p>Les factures clients sont numérotées <strong>FAC/</strong>, les factures fournisseurs
+                    <strong>FACTURE/</strong>. Aucun journal de caisse n'est créé : une entreprise qui encaisse en
+                    espèces l'ajoute elle-même. Le réglage <strong>Comptabilité de trésorerie</strong> est
+                    coché d'office, avec le journal <strong>TVA sur encaissements</strong> ; il permet de configurer
+                    une taxe exigible au paiement, mais aucune des taxes livrées ne l'est.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. L'identifiant fiscal : le champ N° TVA contrôle un NIF</h2>
+                <p>Faute de champ dédié, l'identifiant fiscal d'un client ou d'un fournisseur algérien se saisit
+                    dans <strong>N° TVA</strong>. Pour un contact situé en Algérie, Odoo contrôle ce numéro avec la
+                    règle du NIF algérien de la bibliothèque <code>python-stdnum</code> : 15 ou 20 chiffres. Un
+                    numéro d'une autre longueur bloque l'enregistrement.</p>
+                <p>Le libellé du champ, lui, dépend du pays. L'Algérie n'en a pas : Odoo écrit « N° TVA » à l'écran
+                    et, sur la facture PDF, le libellé anglais <strong>« Tax ID »</strong>, devant le numéro du
+                    client. Pour obtenir « NIF », ouvrez <strong>Contacts › Configuration › Localisation ›
+                    Pays</strong>, puis <strong>Algérie</strong>, et saisissez <strong>NIF</strong> dans
+                    <strong>Libellé TVA</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche du pays Algérie dans Odoo 20 : devise DZD, code du pays DZ, code d'appel 213, Libellé TVA renseigné NIF" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le libellé « NIF » saisi sur la fiche du pays Algérie.</figcaption>
+                </figure>
+                <p>Le libellé vaut ensuite partout : fiche des contacts algériens, message d'erreur, facture PDF.
+                    Essai sur un contact situé en Algérie avec le numéro « 12345 » :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fiche contact Odoo 20 avec pays Algérie et champ NIF 12345 ; fenêtre Erreur de validation : The NIF number [12345] for partner [Contact d'essai] does not seem to be valid" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un NIF de cinq chiffres est refusé à l'enregistrement.</figcaption>
+                </figure>
+                <p>Le message reste en anglais : « The NIF number [12345] … does not seem to be valid ». Le contrôle
+                    ne porte que sur la forme du numéro ; il ne vérifie pas que le NIF existe auprès de
+                    l'administration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Une facture en dinars, TVA à 19 % et 9 %</h2>
+                <p>Avec « Société DZ » sélectionnée, créez une facture client (<strong>Facturation › Clients ›
+                    Factures › Nouveau</strong>) pour <strong>DZ Company</strong>, la société de démonstration
+                    algérienne. Sa position fiscale <strong>Régime National</strong> est détectée seule. Deux lignes :
+                    2 Bureau personnalisable à 85 000,00 avec la taxe 19% B Prod., et 10 Boîte de rangement à
+                    1 500,00 avec la taxe 9% B, choisie à la main sur la ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Facture client FAC/2026/00001 de Société DZ dans Odoo 20 : client DZ Company, devise DZD, 2 Bureau personnalisable à 85 000,00 taxe 19% B Prod. 170 000,00 DA, 10 Boîte de rangement à 1 500,00 taxe 9% B 15 000,00 DA ; hors taxes 185 000,00 DA, TVA 9% 1 350,00 DA, TVA 19% 32 300,00 DA, total 218 650,00 DA" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture confirmée : un total de TVA par taux.</figcaption>
+                </figure>
+                <p>Le calcul se vérifie : 2 × 85 000 = 170 000 DA, dont 19 % = 32 300 DA ; 10 × 1 500 =
+                    15 000 DA, dont 9 % = 1 350 DA. Total hors taxes 185 000,00 DA, TVA 33 650,00 DA, total
+                    218 650,00 DA. L'onglet <strong>Écritures comptables</strong> montre la pièce passée à la
+                    confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Onglet Écritures comptables de la facture FAC/2026/00001 : 700000 crédit 170 000,00 DA grille E3B21_taxable_turnover, 700000 crédit 15 000,00 DA grille E3B11_taxable_turnover, 445700 TVA collectée crédit 32 300,00 et 1 350,00 DA grilles E3B21_balance et E3B11_balance, 413000 Clients effets à recevoir débit 218 650,00 DA" style="max-width:100%; height:auto;"/>
+                    <figcaption>Ventes au 700000, TVA au 445700, créance au 413000, grilles E3B sur chaque ligne.</figcaption>
+                </figure>
+                <p>Le PDF de la facture porte deux marques de la localisation : le libellé <strong>NIF</strong>
+                    devant le numéro du client (après le réglage de l'étape 5) et le <strong>montant total en toutes
+                    lettres</strong>, activé par le module pour les sociétés algériennes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="PDF de la facture FAC/2026/00001 : client DZ Company, NIF 000000000000000, lignes à 19% et 9%, TVA 9% sur 15 000,00 DA 1 350,00 DA, TVA 19% sur 170 000,00 DA 32 300,00 DA, total 218 650,00 DA, montant total en toutes lettres Deux Cent Dix-Huit Mille Six Cent Cinquante Dinar" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le PDF : NIF du client, TVA par taux et total en lettres.</figcaption>
+                </figure>
+                <p>Le numéro 000000000000000 est celui de la société de démonstration DZ Company, fourni par
+                    Odoo ; il passe le contrôle de forme du NIF sans correspondre à aucune entreprise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE DEPUIS LA 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change depuis Odoo 19</h2>
+                <p>Le contenu fiscal du module est identique : mêmes comptes, mêmes 42 taxes, mêmes quatre
+                    positions fiscales, même rapport de taxes. Les différences tiennent au socle d'Odoo 20 :</p>
+                <ul>
+                    <li><strong>Plus de groupes de comptes.</strong> Le fichier des groupes (classes et
+                        sous-classes du SCF) a disparu du module, comme le modèle des groupes de comptes dans Odoo 20 :
+                        le plan s'affiche en liste simple, sans regroupement par classe.</li>
+                    <li><strong>Contrôle du NIF sans module supplémentaire.</strong> En 19, le module algérien
+                        dépendait du module de contrôle des numéros de TVA ; en 20, ce contrôle fait partie du socle.</li>
+                    <li><strong>Identifiants supplémentaires.</strong> Le bouton « + » du champ N° TVA est nouveau,
+                        mais n'apporte rien de propre à l'Algérie.</li>
+                    <li><strong>Comptes de stock.</strong> Le module déclare désormais le compte 31 comme compte de
+                        valorisation, avec 601 et 603 pour la variation.</li>
+                    <li><strong>« Tax ID » non traduit sur le PDF.</strong> En 19, l'étiquette était traduite
+                        « N° TVA » ; en 20, sans libellé de pays, elle sort en anglais. D'où le réglage de l'étape 5.</li>
+                    <li><strong>Fichier de traduction arabe.</strong> Le module est livré avec un fichier de
+                        traduction arabe, absent en 19.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI N'EST PAS DANS LA COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>Ce que la localisation Community ne contient pas</h4>
+                    <ul class="mb-0">
+                        <li><strong>Timbre fiscal</strong> : aucune taxe, aucun compte ni aucun réglage de droit de
+                            timbre dans le module ; ses 42 taxes sont toutes de la TVA. Si votre activité y est
+                            soumise, la manière de l'enregistrer se décide avec votre expert-comptable.</li>
+                        <li><strong>NIS, RC, AI</strong> : pas de champ dédié ; seul le NIF a un contrôle, dans le
+                            champ N° TVA.</li>
+                        <li><strong>Écran de déclaration</strong> : le rapport de taxes existe en données, sans écran
+                            dans la Community.</li>
+                        <li><strong>Journal de caisse</strong> : à créer soi-même.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un client étranger tombe en « Exonération », pas en « Export/Import »</h4>
+                    <p>Exonération et Export/Import sont toutes deux en détection automatique et sans pays ;
+                        Exonération passe avant (séquence 30 contre 40). Sur la base de démonstration, un client des
+                        États-Unis comme Acme Corporation reçoit donc la position <strong>Exonération</strong>. Les
+                        deux remplacent la TVA par 0 % sur les mêmes taxes, mais si la distinction compte pour vos
+                        états, choisissez la position à la main sur la fiche du client (onglet Ventes &amp; Achats, champ Position fiscale) ou
+                        revoyez l'ordre des positions.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les créances clients vont au 413, pas au 411</h4>
+                    <p>Le compte client par défaut de la société est <strong>413000 Clients : effets à
+                        recevoir</strong>. S'il ne correspond pas à votre pratique, changez le compte à recevoir
+                        dans l'onglet Facturation des contacts concernés (visible avec le droit « Montrer les fonctions de comptabilité complètes »), après accord de votre expert-comptable.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La taxe à 9 % ne se pose pas seule</h4>
+                    <p>La taxe de vente par défaut est 19% B Prod. : tout nouvel article la reçoit. Un article
+                        vendu à 9 % doit recevoir sa taxe sur sa fiche, sinon chaque ligne de facture est à corriger.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une description de taxe erronée</h4>
+                    <p>La taxe archivée <strong>9% Immo</strong> porte la description « 19% Opérations
+                        immobilières » : c'est une coquille des données du module, son taux est bien 9 %. À
+                        corriger avant de la réactiver.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> facturer un client étranger depuis la société algérienne et
+                        constater le passage de la TVA à 0 %.</p>
+                    <p><strong>Indication :</strong> avec « Société DZ » sélectionnée, créez une facture pour Acme
+                        Corporation, une ligne Bureau personnalisable à 85 000,00, puis regardez la position fiscale
+                        proposée et la taxe de la ligne.</p>
+                    <p><strong>Critère de réussite :</strong> la position fiscale affichée est Exonération, la ligne
+                        porte 0% B Prod. au lieu de 19% B Prod., et le total est égal au hors taxes, 85 000,00 DA.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une société créée avec le pays Algérie reçoit seule le module « Algeria - Accounting » et
+                        son plan comptable, en dinars.</li>
+                    <li>Le paquet apporte des données : 299 comptes SCF, 42 taxes de TVA (16 actives), 4 positions
+                        fiscales, 7 journaux, un rapport de taxes sans écran en Community.</li>
+                    <li>Le NIF se saisit dans N° TVA, contrôlé sur 15 ou 20 chiffres ; le libellé « NIF » se règle
+                        sur la fiche du pays.</li>
+                    <li>Pas de timbre fiscal, pas de champs NIS, RC ou AI.</li>
+                    <li>Toute configuration fiscale se valide avec un expert-comptable.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture client, de la saisie à l'avoir.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaissements, paiements partiels et crédits à imputer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/creer-base-odoo-community-199">Créer sa base Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Partir d'une base neuve, avec ou sans données de démonstration.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

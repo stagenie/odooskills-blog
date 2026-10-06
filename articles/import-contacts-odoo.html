@@ -1,0 +1,578 @@
+<!--
+Article — Importer ses clients et fournisseurs dans Odoo 20
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : import-contacts-odoo
+Meta : Import de contacts dans Odoo 20 Community : modèle officiel, préparation du fichier, Tester, erreurs typiques, puis mise à jour par export et ID externe.
+Mot-clé cible : odoo import contacts · importer clients odoo · importer fournisseurs odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~11 minutes
+Jumeau v19 : post 172 importer-clients-fournisseurs-odoo (en ligne).
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_i1 (copie de vs20_func, démonstration, interface fr_FR).
+  odoo/addons/base/models/res_partner.py:1329-1333 (get_import_templates « Template for Contacts » → /base/static/xls/
+  contacts_import_template.xlsx ; v19 :1188-1193 « Import Template for Contacts ») ; base/i18n/fr.po:18525-18526 (msgstr vide).
+  Modèle v20 lu par openpyxl : 15 colonnes, 4 lignes (Timberloom, Modulo Interiors, Julian Becker, Elena Varga) ; plus de
+  colonne « Company Type* » (présente dans le modèle 19, 16 colonnes) ; Zip en cellules TEXTE « 10,407 », « 1,000 »,
+  « 94,109 » (v19 : nombres 10407…) ; base_import/models/base_import.py:500 (str(cell.value)) → import réel du modèle brut
+  (ids 178-181, supprimés ensuite) : zip « 10,407 », « 1,000 », « 94,109 ».
+  base/models/res_partner.py:366 (is_company calculé, stocké), :946-955 (_compute_is_company = sans société parente ET TVA
+  renseignée) ; base_import.py:324 (champs readonly exclus de l'import) → Timberloom/Modulo importés is_company False (RPC).
+  base_import/static/src/import_action/import_action.xml:54-74 (écran vide : Charger / glissez-déposez, lien modèle,
+  Documentation), :6-28 (Tester / Importer / Charger à nouveau) ; import_data_sidepanel.xml:19-24 (« Suivre les
+  modifications dans le chatter », nouveau), import_model.js:127-129 (tracking_disable true par défaut, déjà en 19 mais
+  sans case) ; base_import.py:485,532-572 (cellules xlsx riches → HTML pour les champs html, nouveau) → Notes de Timberloom
+  « <span style="font-size:12px"><p>Very <b>important</b> customer</p></span> ».
+  base/models/res_partner.py:235 (res.partner.category name translate=True) → « Vendor », « Desk Manufacturers »,
+  « Consulting Services » introuvables en interface française (Tester, fig. 03) ; « Services » trouvé (même mot).
+  base/models/res_country.py:57,126-127 (pays cherché par nom ou par code à 2 lettres) → « DE », « BE », « US » acceptés,
+  « Germany », « USA » refusés (fig. 04), « Belgique » accepté.
+  Correspondance approchée : « Code client » proposé sur « Commande client » (fig. 05).
+  base/models/ir_fields.py:546-555 (plusieurs résultats → ImportWarning, premier résultat retenu) : réimport du modèle sans ID
+  → 4 doublons créés, Julian Becker rattaché au nouveau Modulo Interiors (id 180 → 179) malgré l'avertissement (fig. 09-10).
+  :580-582 (« No matching record found for … ») ; étiquette exportée « Fournisseur / Fabricants de bureaux » (catégorie 7,
+  parent 1) refusée au réimport (fig. 12).
+  Import depuis Achats › Fournisseurs (/odoo/vendors/import) : supplier_rank reste 0 (RPC), malgré
+  account/views/partner_view.xml:336 (default_supplier_rank dans l'action) → colonnes Classement client / Rang des
+  fournisseurs (account/i18n/fr.po:7432-7433, 18378-18379). Comptes 121000 / 211000 posés par défaut (RPC).
+  web/static/src/views/view_dialogs/export_data_dialog.xml:37 (« Updatable fields only », v19 : « I want to update data
+  (import-compatible export) ») ; fichier exporté : en-têtes id, name, parent_id, street2, property_supplier_payment_term_id,
+  category_id ; id = __export__.res_partner_171_b6c6f1c5.
+  Réimport modifié : Modulo Interiors 45 jours + Fournisseur,Services ; 113 contacts avant et après (aucun doublon) ;
+  cellule Étiquettes vide de Julian Becker → étiquettes effacées ; account/models/partner.py:770-773 (conditions de
+  paiement = champ commercial) → la ligne Julian Becker réécrit « Fin du mois suivant » après la synchro de la société.
+  Aucun message de suivi sur ces champs (aucun tracking sur les conditions ni les étiquettes ; mail/models/res_partner.py:22-30).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Importer ses clients et fournisseurs dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un fichier de clients et de fournisseurs existe presque toujours avant
+                    Odoo : un tableur, un export de l'ancien logiciel. L'import le fait entrer en une fois, à condition
+                    de partir du bon modèle, de parler la langue de l'interface, de tester avant d'écrire, et de garder
+                    une clé pour les mises à jour suivantes.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau débutant · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        interface en français, avec Contacts, Ventes, Achats et Facturation installés. L'import de
+                        fichiers fait partie du socle d'Odoo ; il existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Clients, fournisseurs, personnes de contact et adresses vivent tous dans le même modèle : le
+                    <strong>contact</strong>. Importer ses clients et ses fournisseurs revient donc à importer des
+                    contacts, puis à leur donner le rôle voulu. La fiche contact elle-même, et la règle d'Odoo 20 qui
+                    distingue une entreprise d'une personne, sont présentées dans
+                    <a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles : les données
+                    de départ dans Odoo 20</a>. La version Odoo 19 de cet article reste en ligne :
+                    <a href="/blog/fonctionnel-odoo-1/importer-clients-fournisseurs-odoo-172">Importer clients et
+                    fournisseurs dans Odoo 19</a>.</p>
+                <p>Le présent article suit le parcours complet sur la base de démonstration : le modèle de fichier fourni
+                    par Odoo 20, sa préparation, le bouton Tester, les erreurs qu'il signale, l'import, puis la mise à
+                    jour d'un contact déjà importé. Les données sont celles du modèle officiel d'Odoo, telles quelles
+                    ou retouchées colonne par colonne ; aucun numéro de TVA n'est saisi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>télécharger le modèle d'import de contacts et savoir ce qu'il contient en Odoo 20 ;</li>
+                    <li>préparer un fichier : sociétés et personnes rattachées, pays, étiquettes, conditions de
+                        paiement, rôle client ou fournisseur ;</li>
+                    <li>lire les messages du bouton Tester et corriger les erreurs les plus fréquentes ;</li>
+                    <li>éviter les doublons au réimport ;</li>
+                    <li>mettre à jour des contacts existants par un export, une retouche et un réimport.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir l'import et télécharger le modèle</h2>
+                <p>Ouvrez l'application <strong>Contacts</strong> en vue liste. À droite du titre, l'icône
+                    <strong>⋮</strong> (Actions) propose <strong>Importer</strong> et <strong>Exporter</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste Contacts d'Odoo 20 avec le menu Actions ouvert à côté du titre : entrées Importer et Exporter" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le menu Actions de la liste des contacts.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Importer</strong>. L'écran d'import est une page à part, à l'adresse
+                    <code>/odoo/contacts/import</code>. Il propose le bouton <strong>Charger</strong> (ou le
+                    glisser-déposer d'un fichier), un lien vers la documentation et le lien <strong>Template for
+                    Contacts</strong>, resté en anglais : c'est le modèle de fichier préparé par Odoo.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Écran d'import vide d'Odoo 20 : bouton Charger ou glissez-déposez un fichier, lien Template for Contacts, lien Documentation" style="max-width:70%; height:auto;"/>
+                    <figcaption>L'écran d'import : Charger, le modèle de fichier et la documentation.</figcaption>
+                </figure>
+                <p>Le modèle (<code>contacts_import_template.xlsx</code>) a changé depuis la version 19. Il compte
+                    15 colonnes et 4 lignes d'exemple :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Name*</th><th>Related Company</th><th>Zip</th><th>Country</th><th>Tags</th><th>Reference</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Timberloom</td><td></td><td>10,407</td><td>DE</td><td>Vendor,Services</td><td>CUST112358</td></tr>
+                        <tr><td>Modulo Interiors</td><td></td><td>1,000</td><td>BE</td><td>Vendor</td><td>CUST314159</td></tr>
+                        <tr><td>Julian Becker</td><td>Modulo Interiors</td><td>1,000</td><td>BE</td><td>Desk Manufacturers</td><td></td></tr>
+                        <tr><td>Elena Varga</td><td></td><td>94,109</td><td>US</td><td>Consulting Services</td><td></td></tr>
+                    </tbody>
+                </table>
+                <p>Les autres colonnes sont Email, Phone, Street, Street2, City, State, Tax ID, Website et Notes. Trois
+                    différences avec le modèle de la version 19 :</p>
+                <ul>
+                    <li><strong>la colonne « Company Type* » a disparu.</strong> En Odoo 20, le type « Société » ou
+                        « Personne » ne se choisit plus : un contact est une entreprise quand il n'a pas de société
+                        parente <em>et</em> qu'il porte un numéro de TVA. Le champ est calculé, l'import ne peut pas
+                        le remplir. Sans colonne Tax ID, Timberloom et Modulo Interiors arrivent donc comme des
+                        contacts sans TVA, que la base ne compte pas comme des entreprises tant que leur numéro n'est pas
+                        saisi ; leurs adresses, leurs conditions et leurs contacts rattachés fonctionnent
+                        normalement ;</li>
+                    <li><strong>les codes postaux sont du texte avec une virgule</strong> : « 10,407 » au lieu de
+                        10407. Odoo importe une cellule texte telle quelle : un import du modèle sans retouche a donné
+                        le code postal « 10,407 » à Timberloom. Corrigez la colonne avant tout import réel ;</li>
+                    <li><strong>la mise en forme de la colonne Notes est conservée</strong> : le gras, l'italique ou la
+                        taille de police d'une cellule Excel passent dans le champ Notes de la fiche.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le premier test : le modèle tel quel ne passe pas</h2>
+                <p>Chargez le modèle sans le modifier. Odoo lit la première ligne comme en-tête et propose un champ pour
+                    chaque colonne : Name* devient Nom, Related Company devient Société associée, Country devient Pays,
+                    et ainsi de suite. Cliquez sur <strong>Tester</strong> : l'import est joué en entier puis annulé,
+                    rien n'est écrit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Ligne Tags de l'écran d'import d'Odoo 20 après Tester : champ Étiquettes, message Aucun enregistrement correspondant trouvé pour le nom suivant dans le champ Étiquettes, Vendor sur plusieurs lignes, Desk Manufacturers à la ligne 3, Consulting Services à la ligne 4, liste Lorsqu'une valeur ne peut pas être mise en correspondance réglée sur Empêcher l'importation" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le modèle officiel, testé dans une interface en français : les étiquettes anglaises ne
+                        sont pas trouvées.</figcaption>
+                </figure>
+                <p>Le test échoue sur la colonne Tags : « Aucun enregistrement correspondant trouvé pour le nom suivant
+                    dans le champ Étiquettes ». Les étiquettes de la démonstration existent bien, mais leur nom est
+                    traduit : dans une interface en français, « Vendor » s'appelle « Fournisseur », « Desk
+                    Manufacturers » « Fabricants de bureaux », « Consulting Services » « Services de conseil ». Odoo
+                    cherche le nom dans la langue de l'utilisateur. Seul « Services », identique dans les deux langues,
+                    est trouvé.</p>
+                <p>La liste <strong>Lorsqu'une valeur ne peut pas être mise en correspondance</strong> propose
+                    Empêcher l'importation, Définir la valeur comme vide, Ignorer l'enregistrement et Créer de nouvelles
+                    valeurs. Ici, « Créer de nouvelles valeurs » créerait une seconde étiquette « Vendor » à côté de
+                    « Fournisseur » : la bonne correction est dans le fichier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Préparer le fichier</h2>
+                <p>Le fichier préparé reprend les quatre lignes du modèle, avec les retouches suivantes.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Colonne</th><th>Ce qu'Odoo attend</th><th>Dans le fichier préparé</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Name*</td><td>Seule colonne obligatoire.</td><td>Inchangée.</td></tr>
+                        <tr><td>Related Company</td><td>Le nom exact d'une société déjà présente dans la base ou placée
+                            plus haut dans le fichier. La ligne devient un contact rattaché.</td>
+                            <td>Julian Becker rattaché à Modulo Interiors, deux lignes plus haut.</td></tr>
+                        <tr><td>Country</td><td>Le code pays à deux lettres (DE, BE, US) ou le nom du pays dans la langue
+                            de l'interface (Allemagne, Belgique).</td><td>Codes du modèle conservés.</td></tr>
+                        <tr><td>Zip</td><td>Le code postal tel qu'il doit s'afficher.</td>
+                            <td>10407, 1000, 94109 (virgules retirées).</td></tr>
+                        <tr><td>Tags</td><td>Noms d'étiquettes existantes dans la langue de l'interface, séparés par
+                            une virgule.</td><td>Fournisseur,Services · Fournisseur · Fabricants de bureaux · Services de
+                            conseil.</td></tr>
+                        <tr><td>Conditions de paiement client</td><td>Nom d'une condition existante.</td>
+                            <td>15 jours pour Elena Varga.</td></tr>
+                        <tr><td>Conditions de paiement fournisseur</td><td>Nom d'une condition existante.</td>
+                            <td>30 jours pour Timberloom, Fin du mois suivant pour Modulo Interiors.</td></tr>
+                        <tr><td>Classement client / Rang des fournisseurs</td><td>Un entier ; 1 suffit pour que le
+                            contact soit compté comme client ou comme fournisseur.</td>
+                            <td>1 pour Elena Varga en client ; 1 pour Timberloom et Modulo Interiors en
+                            fournisseurs.</td></tr>
+                    </tbody>
+                </table>
+                <p>Les deux dernières lignes du tableau méritent une explication. Les listes <strong>Ventes ›
+                    Commandes › Clients</strong> et <strong>Achats › Commandes › Fournisseurs</strong> filtrent les
+                    contacts sur ces deux rangs, qu'Odoo augmente à chaque facture confirmée. Un contact importé sans ces colonnes
+                    n'apparaît dans aucune des deux listes avant sa première pièce. Importer depuis la liste des
+                    Fournisseurs ne suffit pas : essai fait, le fichier importé depuis <strong>Achats ›
+                    Fournisseurs</strong> a donné des contacts au rang fournisseur 0. Les colonnes explicites sont la
+                    seule voie sûre.</p>
+                <p>Les comptes comptables ne demandent pas de colonne : chaque contact importé reçoit les comptes client
+                    et fournisseur par défaut de la société (ici 121000 et 211000 sur le plan de démonstration). Une
+                    colonne Compte client ou Compte fournisseur ne sert que pour un compte particulier.</p>
+                <p>Deux erreurs fréquentes surgissent à ce stade. La première : un pays écrit en anglais dans une
+                    interface française.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Ligne Country de l'écran d'import d'Odoo 20 : valeur Germany, champ Pays, message Aucun enregistrement correspondant trouvé pour le nom suivant dans le champ Pays, Germany à la ligne 1 (Timberloom), USA à la ligne 4 (Elena Varga)" style="max-width:100%; height:auto;"/>
+                    <figcaption>« Germany » et « USA » refusés, « Belgique » accepté.</figcaption>
+                </figure>
+                <p>Dans ce fichier d'essai, « Germany », « Belgique » et « USA » remplacent les codes. Le test refuse
+                    « Germany » et « USA » et accepte « Belgique ». Le code à deux lettres évite la question de la
+                    langue : c'est la forme la plus sûre.</p>
+                <p>La seconde : une colonne propre à l'ancien logiciel, sans équivalent dans Odoo. Odoo cherche alors
+                    le champ au nom le plus proche, et peut se tromper.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Ligne Code client de l'écran d'import d'Odoo 20 : la colonne est associée automatiquement au champ Commande client, message Aucun enregistrement correspondant trouvé pour le nom suivant dans le champ Commande client, F001, F002, C001" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une colonne « Code client » associée d'office au champ Commande client.</figcaption>
+                </figure>
+                <p>Une colonne « Code client » ajoutée au fichier est associée d'office au champ <strong>Commande
+                    client</strong>, et le test cherche des commandes nommées F001 ou C001. Deux corrections possibles :
+                    cliquer sur la croix du champ pour ignorer la colonne (« Pour importer, sélectionnez un champ… »),
+                    ou choisir dans la liste le bon champ, ici <strong>Référence</strong>. Relisez toujours la colonne
+                    Champ Odoo avant de tester : une association fausse ne produit pas toujours d'erreur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Tester, puis importer</h2>
+                <p>Chargez le fichier préparé et cliquez sur <strong>Tester</strong>. Le bandeau « Tout semble
+                    correct. » s'affiche et <strong>Importer</strong> devient le bouton principal.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Écran d'import d'Odoo 20 après Tester sur le fichier préparé : bandeau Tout semble correct, boutons Importer, Tester et Charger à nouveau, cases Utiliser la première ligne comme en-tête cochée et Suivre les modifications dans le chatter décochée, colonnes Name*, Related Company, Email, Phone, Street, Street2 associées à Nom, Société associée, E-mail, Téléphone, Rue, Rue 2" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le test réussi : rien n'est encore écrit dans la base.</figcaption>
+                </figure>
+                <p>Le panneau de gauche porte une case nouvelle en Odoo 20 : <strong>Suivre les modifications dans le
+                    chatter</strong>, décochée par défaut. Décochée, l'import ne laisse aucune trace dans l'historique des
+                    fiches, ce qui l'accélère ; cochée, les modifications des champs suivis (nom, e-mail, téléphone,
+                    adresse, société associée…) sont notées dans le chatter et peuvent notifier les abonnés. Pour un
+                    premier chargement, laissez-la décochée.</p>
+                <p>Cliquez sur <strong>Importer</strong>. Odoo affiche la liste <strong>Enregistrements
+                    importés</strong> : les quatre contacts, Julian Becker sous la forme « Modulo Interiors, Julian
+                    Becker ». Les numéros de téléphone ont été mis au format international.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste Enregistrements importés d'Odoo 20 : Elena Varga (États-Unis), Modulo Interiors (Belgique), Modulo Interiors, Julian Becker (Belgique), Timberloom (Allemagne) avec leurs e-mails et téléphones" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les quatre contacts importés.</figcaption>
+                </figure>
+                <p>Ouvrez Timberloom, onglet <strong>Ventes &amp; Achats</strong> : la condition de paiement
+                    fournisseur est 30 jours et la référence CUST112358 est reprise dans la rubrique Divers. Les
+                    étiquettes Fournisseur et Services figurent en tête de fiche.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Onglet Ventes et Achats de la fiche Timberloom dans Odoo 20 : rubrique Achats avec Conditions de paiement 30 jours, rubrique Ventes sans condition, rubrique Divers avec la référence CUST112358" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le fournisseur importé, avec ses conditions de paiement.</figcaption>
+                </figure>
+                <p>Julian Becker affiche lui aussi « Fin du mois suivant » en conditions fournisseur sans que le fichier
+                    le précise : les conditions de paiement, comme les comptes comptables, sont des données de la
+                    société, recopiées sur ses contacts rattachés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le piège du réimport : les doublons</h2>
+                <p>Un fichier sans identifiant ne fait que créer. Relancer le même fichier après une correction crée
+                    une deuxième série de contacts : Odoo ne compare ni les noms ni les e-mails. Le seul signal arrive
+                    par la colonne Société associée, quand le nom cherché existe désormais deux fois.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Ligne Related Company de l'écran d'import d'Odoo 20 : message Plusieurs résultats ont été trouvés pour la valeur Modulo Interiors dans le champ Société associée (2 résultats)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le seul indice de doublon : deux sociétés portent le même nom.</figcaption>
+                </figure>
+                <p>Le message « Plusieurs résultats ont été trouvés pour la valeur "Modulo Interiors" dans le champ
+                    "Société associée" (2 résultats) » s'affiche en rouge, mais c'est un avertissement : il
+                    n'empêche pas l'import. Essai fait avec le modèle relancé tel quel : quatre nouveaux contacts ont été
+                    créés, et le nouveau Julian Becker a été rattaché à l'un des deux Modulo Interiors, choisi par
+                    Odoo.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Liste des contacts d'Odoo 20 filtrée sur Modulo Interiors : deux fiches Modulo Interiors et deux fiches Modulo Interiors, Julian Becker, avec les mêmes e-mails" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après un second import du même fichier : chaque contact existe en double.</figcaption>
+                </figure>
+                <p>Les doublons se traitent depuis la liste : sélection, puis Actions › <strong>Supprimer</strong>, ou
+                    <strong>Fusionner</strong> pour regrouper deux fiches en une. Pour ne pas en
+                    arriver là, toute correction d'un contact déjà importé passe par l'ID externe, objet de l'étape
+                    suivante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Mettre à jour : exporter, modifier, réimporter</h2>
+                <p>L'ID externe est une étiquette permanente attachée à chaque fiche. Quand une ligne du fichier porte
+                    un ID externe déjà connu, Odoo met la fiche à jour au lieu d'en créer une nouvelle. Les contacts
+                    importés plus haut n'en ont pas encore : l'export leur en donne un.</p>
+                <p>Dans la liste des contacts, recherchez « Modulo Interiors », cochez les deux lignes (la société et
+                    Julian Becker), puis <strong>Actions › Exporter</strong>. Activez l'interrupteur <strong>Updatable
+                    fields only</strong> (l'ancienne case « Je veux mettre à jour les données (export compatible avec l'import) » de la version 19,
+                    restée en anglais), retirez les champs proposés d'office par la corbeille, puis ajoutez par le
+                    bouton <strong>+</strong> les champs à retoucher : Nom, Société associée, Rue 2, Conditions de
+                    paiement du fournisseur, Étiquettes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Exporter les données d'Odoo 20 : interrupteur Updatable fields only activé, Champs à exporter Nom, Société associée, Rue 2, Conditions de paiement du fournisseur, Étiquettes, format Excel Workbook (.xlsx)" style="max-width:80%; height:auto;"/>
+                    <figcaption>Un export pensé pour revenir : Updatable fields only.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Exporter</strong>. Le fichier obtenu commence par une colonne <code>id</code>,
+                    remplie d'identifiants créés à l'instant (<code>__export__.res_partner_171_b6c6f1c5</code>), et ses
+                    en-têtes sont les noms techniques des champs : <code>name</code>, <code>parent_id</code>,
+                    <code>street2</code>, <code>property_supplier_payment_term_id</code>, <code>category_id</code>. Ne
+                    touchez pas à la colonne <code>id</code> : c'est elle qui relie chaque ligne à sa fiche.</p>
+                <p>Avant toute modification, un test du fichier exporté signale déjà une erreur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Ligne category_id de l'écran d'import d'Odoo 20 : message Aucun enregistrement trouvé pour nom 'Fournisseur / Fabricants de bureaux' dans le champ 'Étiquettes'" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une étiquette exportée avec son chemin n'est pas relue au réimport.</figcaption>
+                </figure>
+                <p>L'étiquette « Fabricants de bureaux » est rangée sous « Fournisseur » ; l'export l'écrit avec son
+                    chemin complet, « Fournisseur / Fabricants de bureaux », et l'import ne retrouve pas ce nom. Dans le
+                    fichier, n'écrivez que le nom de l'étiquette elle-même.</p>
+                <p>Retouchez ensuite le fichier. Pour l'exemple, la ligne Modulo Interiors reçoit « 45 jours » en
+                    conditions fournisseur et les étiquettes « Fournisseur,Services ». Rechargez-le dans l'écran
+                    d'import et testez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Écran d'import d'Odoo 20 sur le fichier exporté et modifié : Tout semble correct, colonne id associée à ID externe, name à Nom, parent_id à Société associée, street2 à Rue 2, property_supplier_payment_term_id 45 jours à Conditions de paiement du fournisseur, category_id Fournisseur,Services à Étiquettes, case Suivre les modifications dans le chatter cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le réimport : la colonne id est reconnue comme ID externe.</figcaption>
+                </figure>
+                <p>Les noms techniques sont reconnus d'office, la colonne <code>id</code> devient <strong>ID
+                    externe</strong>. Pour garder la trace d'une mise à jour qui toucherait des champs suivis,
+                    cochez cette fois <strong>Suivre les modifications dans le chatter</strong>. Cliquez sur
+                    <strong>Importer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Onglet Ventes et Achats de la fiche Modulo Interiors dans Odoo 20 après le réimport : rubrique Achats avec Conditions de paiement 45 jours, liste de prix Benelux (EUR), référence CUST314159" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche existante est mise à jour : 45 jours.</figcaption>
+                </figure>
+                <p>Modulo Interiors porte désormais 45 jours et les deux étiquettes ; la base compte toujours le même
+                    nombre de contacts (113 avant et après) : aucune fiche n'a été créée. Le même fichier peut être
+                    corrigé et relancé autant de fois que nécessaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change par rapport à Odoo 19</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Point</th><th>Odoo 19</th><th>Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Modèle de fichier</td><td>16 colonnes, dont « Company Type* »</td>
+                            <td>15 colonnes, plus de type ; codes postaux en texte « 10,407 »</td></tr>
+                        <tr><td>Entreprise ou personne</td><td>Choix importable (Company Type / Est une société)</td>
+                            <td>Calculé : sans société parente et avec TVA ; non importable</td></tr>
+                        <tr><td>Suivi dans le chatter</td><td>Toujours désactivé, sans réglage</td>
+                            <td>Case « Suivre les modifications dans le chatter »</td></tr>
+                        <tr><td>Mise en forme Excel</td><td>Texte brut</td>
+                            <td>Gras, italique, couleur et taille conservés dans les champs HTML (Notes)</td></tr>
+                        <tr><td>Export pour mise à jour</td><td>Case « Je veux mettre à jour les données (export compatible avec l'import) »</td>
+                            <td>Interrupteur « Updatable fields only »</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> L'import et l'export de fichiers, le modèle de contacts, le test
+                        avant import, les ID externes et le suivi dans le chatter sont inclus dans Odoo 20
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une cellule vide efface</h4>
+                    <p>Au réimport, une cellule vide n'est pas « sans changement » : elle vide le champ. Essai fait :
+                        la cellule Étiquettes de Julian Becker laissée vide a retiré son étiquette. Ne gardez dans le
+                        fichier de mise à jour que les colonnes à modifier, complètes.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les lignes des contacts rattachés réécrivent les données de la société</h4>
+                    <p>Dans le même fichier, la ligne Julian Becker contenait encore l'ancienne condition « Fin du mois
+                        suivant ». Importée après la ligne de la société, elle l'a remise sur sa propre fiche, alors que
+                        Modulo Interiors était passé à 45 jours. Pour changer une condition de paiement ou un compte,
+                        ne mettez à jour que la ligne de la société, ou retirez la colonne des lignes rattachées.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les noms sont lus dans la langue de l'interface</h4>
+                    <p>Étiquettes, pays, conditions de paiement : un fichier préparé en anglais échoue dans une
+                        interface française, et inversement. Préférez les codes pays à deux lettres et vérifiez les
+                        noms par le lien « Voir les valeurs possibles » du message d'erreur.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'avertissement de doublon n'arrête rien</h4>
+                    <p>« Plusieurs résultats ont été trouvés » laisse l'import se faire et rattache le contact à l'une
+                        des fiches. Cherchez les doublons avant d'importer, et n'importez jamais deux fois un fichier
+                        sans colonne d'ID externe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> importer le modèle officiel sans erreur, puis mettre à jour un
+                        contact sans créer de doublon.</p>
+                    <p><strong>Indication :</strong> téléchargez Template for Contacts, traduisez les étiquettes en
+                        français, retirez les virgules des codes postaux, ajoutez une colonne « Classement client »
+                        avec 1 pour Elena Varga, testez puis importez. Exportez ensuite Elena Varga avec Updatable fields
+                        only et le champ Conditions de paiement du client, mettez « 30 jours », réimportez.</p>
+                    <p><strong>Critère de réussite :</strong> Elena Varga apparaît dans Ventes › Commandes › Clients,
+                        sa fiche affiche 30 jours en conditions de paiement client, et une recherche « Elena Varga »
+                        dans Contacts ne renvoie qu'une fiche.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'import se lance depuis Contacts › ⋮ › Importer ; le lien Template for Contacts donne le
+                        modèle Odoo 20, sans colonne de type et avec des codes postaux à corriger.</li>
+                    <li>Les valeurs liées (étiquettes, pays, conditions) se cherchent par leur nom dans la langue de
+                        l'interface ; le code pays à deux lettres marche partout.</li>
+                    <li>Classement client et Rang des fournisseurs à 1 rangent les contacts dans les listes Clients et
+                        Fournisseurs.</li>
+                    <li>Tester joue l'import sans rien écrire ; relisez aussi les colonnes associées d'office.</li>
+                    <li>Un fichier sans ID externe crée toujours : pour mettre à jour, exportez avec Updatable fields
+                        only, modifiez, réimportez.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles : les données de départ</a></h5>
+                            <p class="small text-muted mb-0">La fiche contact d'Odoo 20 et la règle entreprise ou personne.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/importer-clients-fournisseurs-odoo-172">Importer clients et fournisseurs dans Odoo 19</a></h5>
+                            <p class="small text-muted mb-0">La version 19 de cet article : ID externe et adresses rattachées.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

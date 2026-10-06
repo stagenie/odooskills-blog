@@ -1,0 +1,477 @@
+<!--
+Article — Escompte pour paiement anticipé et devis TTC dans Odoo 20
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : escompte-paiement-anticipe-devis-ttc-odoo
+Meta : Escompte pour paiement anticipé dans Odoo 20 (2 % à 10 jours) : réglage, montant sur la facture, TVA, paiement dans et hors délai ; devis et factures TTC.
+Mot-clé cible : odoo escompte
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, comptabilite, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_c4 (copie de vs20_func, démonstration,
+  société My Company (San Francisco), plan comptable générique de la démo, taxe de vente 15 %, USD).
+  Escompte : account/models/account_payment_term.py:37-44 (champs Escompte 2 % / 10 jours par défaut, choix
+  Sur paiement anticipé / Jamais / Toujours (à la facturation)), :62-77 (montant escompté : TTC × % en
+  « Sur paiement anticipé », HT × % sinon), :80-88 (défaut : Toujours en Belgique, Jamais aux Pays-Bas, Sur
+  paiement anticipé ailleurs), :155-167 (escompte réservé aux conditions à une seule ligne de 100 %) ;
+  account/views/account_payment_term_views.xml:46-62 ; account/views/report_invoice.xml:416-421 (mention
+  « dû si payé avant » sur le PDF) ; account/models/account_move.py:3063-3078 (éligibilité : même devise, date de
+  paiement ≤ date d'escompte, aucun paiement déjà lettré), :5207-5272 (contrepartie : compte Perte d'escompte
+  pour une facture client, Gain d'escompte pour une facture fournisseur ; lignes de taxe seulement en « Sur
+  paiement anticipé ») ; account/wizard/account_payment_register.py:854-907 (assistant : montant escompté,
+  écart lettré, section d'écart masquée) ; account/views/res_config_settings_views.xml:294,337-347 (bloc
+  Escomptes réservé à « Montrer les fonctions de comptabilité complètes ») ; account/views/account_move_views.xml:467
+  (filtre Escompte). Comparaison 19.0 : seul changement fonctionnel = arrondi d'espèces et devise passés au calcul
+  du montant affiché (report_invoice.xml:419 ; v19 :432).
+  Parcours joué : condition « 30 jours, 2 % à 10 jours » créée à l'écran (aperçu : 980 $ si payé avant le
+  16/10/2026) ; FAC/2026/00015 Wood Corner, 1 Stratifié en plastique 1 000 $ + 15 % = 1 150 $ ; PDF « $ 1 127,00 dû
+  si payé avant 16/10/2026 » ; Payer le 06/10 → « Remise escompte de $ 23,00 a été appliqué. », 1 127 $,
+  PBNK1/2026/00012 : 101403 1 127 D, 121000 1 150 C, 643000 Perte d'escompte 20 D, 251000 Escompte (15%) 3 D ;
+  FAC/2026/00016 payée le 20/10 → 1 150 $, aucun escompte ; FAC/2026/00017 (Toujours) : taxe 147, total 1 147,
+  lignes Escompte (2.0%) ±20 sur 400000, paiement 1 127 avec 20 en 643000 sans ligne de taxe ; FAC/2026/00018
+  (Jamais) : total 1 150, paiement 1 130, 20 en 643000 sans ligne de taxe.
+  TTC : document_tax_mode nouveau en 20 (absent de odoo19 : grep vide) — sale/models/sale_order.py:191-198,
+  :1252-1256 (défaut = réglage société), :1884 (repris sur la facture) ; account/models/account_move.py:641-649,
+  :2558-2564 ; sale/views/sale_order_views.xml:532-538,860-883 ; account/views/account_move_views.xml:1258-1267 ;
+  sale/models/sale_order_line.py:755-786 (prix unitaire recalculé sur article / unité / quantité seulement, pas sur
+  le mode) et :812-826 (conversion du prix catalogue) ; account/models/product.py:450-480 ; account/models/company.py:294-300
+  (« Prix » société, modifiable même après facturation : la contrainte v19 odoo19 company.py:334-337 et le
+  readonly v19 res_config_settings_views.xml:61 ont disparu ; essai : write tax_included puis retour, accepté) ;
+  account/models/account_tax.py:127-132,881-901 (Inclus dans le prix prime sur le mode du document) ;
+  sale/report/ir_actions_report_templates.xml:145 (PDF du devis : colonne Montant selon le réglage société,
+  pas selon le document) contre account/views/report_invoice.xml:232-233 (PDF facture : selon le document).
+  Parcours joué : S00083 Joel Willis, ligne ajoutée en Hors taxes puis bascule en Toutes taxes comprises → prix
+  1 000 conservé, total 1 000 (HT 869,57) ; S00084 en Toutes taxes comprises avant la ligne → 1 150 TTC ; PDF
+  S00084 : prix unitaire 1 150, Montant 1 000 ; facture brouillon issue de S00084 : badge « Taxes Incl. »,
+  ligne 1 150, PDF 1 150. Liste de prix prix fixe 1 150 : 1 150 HT en Hors taxes, 1 322,50 en Toutes taxes comprises.
+  Société passée en Prix Toutes taxes comprises (essai, puis retour) : nouveau devis en TTC, Stratifié 1 000 TTC (HT 869,57).
+  Droit « Montrer les fonctions de comptabilité complètes » coché sur Mitchell Admin pour les figures 04 et 06.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Escompte pour paiement anticipé et devis TTC dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">« 2 % de remise si vous payez sous 10 jours » : Odoo 20 sait
+                    l'écrire sur la facture, le calculer au paiement et passer l'écriture, TVA comprise. Et quand
+                    le client raisonne en prix toutes taxes comprises, chaque devis et chaque facture peut
+                    désormais s'afficher en TTC, d'un clic.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec Ventes et Facturation installés. Escompte, conditions de paiement et affichage
+                        TTC font partie de la Facturation, incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>L'escompte pour paiement anticipé est une remise accordée après coup : la facture est émise
+                    pour son montant plein, et le client qui paie avant une date limite règle un peu moins. Odoo le
+                    porte par les <strong>conditions de paiement</strong> : il suffit qu'une condition prévoie un
+                    escompte pour que chaque facture qui l'utilise affiche le montant réduit et que le paiement
+                    le calcule seul.</p>
+                <p>La base de démonstration travaille avec le plan comptable générique d'Odoo, en dollars, et une
+                    taxe de vente de 15 % : les comptes et la taxe des exemples sont ceux-là, pas ceux d'une
+                    comptabilité française. Le mécanisme, lui, est identique quel que soit le pays. Pour la prise en
+                    main des factures et des encaissements, voir
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs
+                    dans Odoo 20</a> et <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et
+                    relances dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une condition de paiement « 30 jours, 2 % à 10 jours » ;</li>
+                    <li>choisir le traitement de la TVA sur l'escompte, et en prévoir les montants ;</li>
+                    <li>encaisser dans le délai et hors délai, et lire les écritures produites ;</li>
+                    <li>présenter un devis et une facture en TTC, sans fausser les prix.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer la condition de paiement avec escompte</h2>
+                <p>Ouvrez <strong>Facturation › Configuration › Conditions de paiement</strong>, puis
+                    <strong>Nouveau</strong>. Nommez la condition « 30 jours, 2 % à 10 jours », cochez
+                    <strong>Escompte</strong> : Odoo propose d'emblée 2,00 % et 10 jours. Sur la ligne
+                    d'échéance, portez <strong>Après</strong> à 30 jours après la date de facturation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Condition de paiement 30 jours, 2 % à 10 jours dans Odoo 20 : case Escompte cochée, 2,00 % si payé endéans les 10 jours, Taxes réduites Sur paiement anticipé, échéance 100 % à 30 jours, aperçu Escompte 980 dollars si le paiement est effectué avant le 16/10/2026" style="max-width:100%; height:auto;"/>
+                    <figcaption>La condition « 30 jours, 2 % à 10 jours » et son aperçu sur un exemple de 1 000.</figcaption>
+                </figure>
+                <p>L'<strong>Aperçu</strong> calcule l'effet sur un exemple de 1 000 : escompte à 980 si le
+                    paiement arrive avant le 16/10/2026, sinon 1 000 dus le 05/11/2026. L'escompte n'accepte
+                    qu'une seule ligne d'échéance à 100 % : une condition en plusieurs versements (30 % maintenant,
+                    le solde à 60 jours) refuse la case.</p>
+                <p>La liste <strong>Taxes réduites</strong> règle le sort de la TVA ; sa valeur par défaut dépend
+                    du pays de la société (Toujours en Belgique, Jamais aux Pays-Bas, Sur paiement anticipé
+                    ailleurs). Les trois valeurs sont comparées à l'étape 4.</p>
+                <p>Les comptes qui recevront l'escompte sont déjà réglés dans <strong>Facturation ›
+                    Configuration › Paramètres</strong>, bloc <strong>Escomptes</strong> : Perte d'escompte
+                    anticipé (643000) pour les factures clients, Gain d'escompte anticipé (443000) pour les
+                    factures fournisseurs. Ce bloc n'apparaît qu'avec le droit <strong>Montrer les fonctions de
+                    comptabilité complètes</strong>, qui se coche en mode développeur sur la fiche de
+                    l'utilisateur, onglet Droits d'accès ; ce même droit fait apparaître l'onglet
+                    <strong>Écritures comptables</strong> des factures et des paiements, utilisé plus bas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Facturer : ce que le client voit</h2>
+                <p>Une facture pour Wood Corner porte un Stratifié en plastique à 1 000 $ hors taxes, avec la
+                    condition « 30 jours, 2 % à 10 jours ». Confirmée le 06/10/2026, elle totalise 1 150 $
+                    (150 $ de taxe). À l'écran, rien ne change : le montant dû reste 1 150 $. L'escompte apparaît
+                    sur le document envoyé (bouton <strong>Imprimer</strong> ou <strong>Envoyer</strong>), sous les
+                    lignes :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Facture FAC/2026/00015 d'Odoo 20 au format PDF : Stratifié en plastique 1 000 dollars, taxe 15 % 150 dollars, total 1 150 dollars, mention 1 127,00 dollars dû si payé avant 16/10/2026, échéance 05/11/2026" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le PDF de la facture : total 1 150 $, et 1 127 $ si le paiement arrive avant le 16/10/2026.</figcaption>
+                </figure>
+                <p>1 127 $, c'est 1 150 $ moins 2 % de 1 150 $ (23 $) : avec le réglage Sur paiement anticipé,
+                    l'escompte se calcule sur le TTC. La date limite est la date de facture plus 10 jours. Pour
+                    retrouver les factures dont l'escompte court encore, la liste des factures offre un filtre
+                    <strong>Escompte</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Encaisser dans le délai, puis hors délai</h2>
+                <p>Le client paie le jour même. Sur la facture, <strong>Payer</strong> : l'assistant a déjà fait
+                    le calcul.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Assistant Payer d'Odoo 20 sur FAC/2026/00015 : bandeau Remise escompte de 23,00 dollars a été appliqué, journal Banque, montant 1 127,00 dollars, date de règlement 6 octobre, mémo FAC/2026/00015" style="max-width:100%; height:auto;"/>
+                    <figcaption>Paiement dans le délai : 1 127 $ proposés, escompte de 23 $ annoncé.</figcaption>
+                </figure>
+                <p><strong>Créer un paiement</strong> : la facture passe à <strong>Payé</strong>, montant dû
+                    0 $, alors que la banque n'a reçu que 1 127 $. La différence est passée dans l'écriture du
+                    paiement, visible par l'onglet Écritures comptables de celui-ci (PBNK1/2026/00012) :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écritures comptables du paiement PBNK1/2026/00012 dans Odoo 20 : 101403 Paiements entrants en suspens débit 1 127, 121000 Accounts Receivable crédit 1 150, 643000 Perte d'escompte débit 20, 251000 Tax Received Escompte (15%) débit 3" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'escompte de 23 $ se partage entre 20 $ de perte d'escompte et 3 $ de taxe reprise.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <tr><th>Compte</th><th>Débit</th><th>Crédit</th><th>Rôle</th></tr>
+                    <tr><td>101403 Paiements entrants en suspens</td><td>1 127</td><td></td><td>l'argent reçu, en attente du relevé bancaire</td></tr>
+                    <tr><td>121000 Accounts Receivable</td><td></td><td>1 150</td><td>la créance soldée en entier</td></tr>
+                    <tr><td>643000 Perte d'escompte</td><td>20</td><td></td><td>2 % du hors taxes</td></tr>
+                    <tr><td>251000 Tax Received</td><td>3</td><td></td><td>15 % de 20 : la taxe collectée diminue d'autant</td></tr>
+                </table>
+                <p>Second cas : une facture identique (FAC/2026/00016) est réglée le 20/10/2026. Dans
+                    l'assistant, changez la <strong>Date de règlement</strong> : le bandeau disparaît et le montant
+                    remonte à 1 150 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Assistant Payer d'Odoo 20 sur FAC/2026/00016 avec date de règlement 20 octobre : montant 1 150,00 dollars, aucun bandeau d'escompte" style="max-width:100%; height:auto;"/>
+                    <figcaption>Paiement hors délai : plus d'escompte, le montant plein est proposé.</figcaption>
+                </figure>
+                <p>L'écriture ne compte alors que deux lignes, banque et client, pour 1 150 $. Odoo compare la
+                    date de règlement à la date limite, jour compris : un paiement daté du 16/10/2026 aurait encore
+                    bénéficié de l'escompte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Choisir le traitement de la TVA</h2>
+                <p>Le même article, la même date, avec chacune des trois valeurs de <strong>Taxes réduites</strong>
+                    (deux copies de la condition, réglées sur Toujours et sur Jamais) donne trois résultats
+                    différents :</p>
+                <table class="tmc">
+                    <tr><th>Taxes réduites</th><th>Facture</th><th>Payé dans le délai</th><th>Écriture du paiement</th></tr>
+                    <tr><td><strong>Sur paiement anticipé</strong> (défaut)</td><td>1 000 + 150 = 1 150</td><td>1 127 (2 % du TTC)</td><td>20 en perte d'escompte + 3 de taxe reprise</td></tr>
+                    <tr><td><strong>Toujours (à la facturation)</strong></td><td>1 000 + 147 = 1 147</td><td>1 127 (1 147 − 2 % du HT)</td><td>20 en perte d'escompte, sans taxe</td></tr>
+                    <tr><td><strong>Jamais</strong></td><td>1 000 + 150 = 1 150</td><td>1 130 (2 % du HT)</td><td>20 en perte d'escompte, sans taxe</td></tr>
+                </table>
+                <p><strong>Toujours</strong> calcule la taxe dès la facture sur la base escomptée (980 $), que le
+                    client profite ou non de l'escompte : 147 $ au lieu de 150 $. Odoo l'inscrit par deux lignes
+                    « Escompte (2.0%) » de 20 $ qui s'annulent, l'une au débit, l'autre au crédit du compte de
+                    produit, et qui ne servent qu'à réduire la base de la taxe :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Écritures comptables de la facture FAC/2026/00017 en mode Toujours dans Odoo 20 : 400000 Product Sales crédit 1 000, deux lignes Escompte (2.0%) de 20 au débit et au crédit, 251000 Tax Received 15 % crédit 147, 121000 Accounts Receivable débit 1 147" style="max-width:100%; height:auto;"/>
+                    <figcaption>En mode Toujours, la facture elle-même porte la taxe réduite : 147 $ au lieu de 150 $.</figcaption>
+                </figure>
+                <p>Payée hors délai, cette facture est due pour 1 147 $ : la taxe déclarée reste de 147 $, quoi qu'il
+                    arrive. C'est la valeur par défaut d'une société belge. <strong>Jamais</strong> ne touche
+                    jamais la taxe : l'escompte, calculé sur le HT, réduit seulement le produit. Le choix dépend
+                    des règles fiscales qui s'appliquent à la société ; la documentation de la localisation ou
+                    l'expert-comptable tranche, Odoo se contente d'appliquer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Présenter un devis en TTC</h2>
+                <p>Odoo 20 ajoute un sélecteur à chaque devis et à chaque facture : deux badges,
+                    <strong>Hors taxes</strong> et <strong>Toutes taxes comprises</strong>, au-dessus des lignes.
+                    Le choix par défaut vient de <strong>Facturation › Configuration › Paramètres</strong>, bloc
+                    <strong>Taxes par défaut</strong>, ligne <strong>Prix</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Réglage Taxes par défaut d'Odoo 20 : taxe de vente 15 %, taxe d'achat 15 %, Prix Toutes taxes comprises ou Hors taxes, Hors taxes sélectionné" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le réglage société : les prix des articles s'entendent hors taxes.</figcaption>
+                </figure>
+                <p>Ce réglage dit comment lire le prix de vente saisi sur la fiche article (ici, 1 000 $ hors
+                    taxes) et sert de mode par défaut aux nouveaux documents. En 19, il se figeait dès que la société
+                    avait commencé à facturer ; en 20, il reste modifiable, mais le changer ne réécrit pas les prix des articles :
+                    1 000 $ deviendraient 1 000 $ TTC.</p>
+                <p>Pour un client particulier, ici le contact de démonstration Joel Willis, créez le devis, cliquez
+                    sur <strong>Toutes taxes comprises</strong>, <strong>puis</strong> ajoutez le Stratifié en
+                    plastique. Odoo convertit le prix catalogue : 1 150,00 $ en prix unitaire, et la colonne
+                    <strong>Montant</strong> affiche le TTC.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Devis S00084 d'Odoo 20 pour Joel Willis en mode Toutes taxes comprises : Stratifié en plastique prix unitaire 1 150,00, taxe 15 %, montant 1 150 dollars, montant hors taxes 1 000, taxe 150, total 1 150" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis en TTC : prix unitaire et montant toutes taxes comprises, totaux inchangés.</figcaption>
+                </figure>
+                <p>Le total ne change pas : 1 000 $ hors taxes, 150 $ de taxe, 1 150 $. Seule la présentation
+                    bascule. La facture créée depuis ce devis (<strong>Créer une facture</strong>) reprend le mode :
+                    son sélecteur, libellé ici <strong>Taxes Incl.</strong>, est actif, et la ligne affiche
+                    1 150,00.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Facture brouillon issue du devis S00084 dans Odoo 20 : badge Taxes Incl. actif, Stratifié en plastique compte 400000 Product Sales, prix 1 150,00, montant 1 150 dollars, total 1 150" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture hérite du mode TTC du devis.</figcaption>
+                </figure>
+                <p>Sur le PDF de cette facture, la colonne Montant suit le document : 1 150,00 $. Le PDF du
+                    devis, lui, se comporte autrement (voir les points de vigilance).</p>
+                <h3>Taxe incluse dans le prix et listes de prix</h3>
+                <p>Le sélecteur ne change que la lecture du document. Une taxe peut, elle, être toujours incluse
+                    dans le prix, quel que soit le document : champ <strong>Inclus dans le prix</strong>, onglet
+                    <strong>Options avancées</strong> de la taxe (Facturation › Configuration, rubrique Comptabilité, Taxes). Laissé sur
+                    « Par défaut », il suit le mode du document ; réglé sur Toutes taxes comprises, il l'emporte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Onglet Options avancées de la taxe 15 % dans Odoo 20 : Libellé sur les factures, Portée de la taxe, Groupe de taxes Tax 15%, Société My Company (San Francisco), Pays États-Unis, Inclus dans le prix Par défaut, Impacter la base des taxes ultérieures, Actif" style="max-width:100%; height:auto;"/>
+                    <figcaption>Inclus dans le prix : « Par défaut » suit le document.</figcaption>
+                </figure>
+                <p>Une liste de prix « particuliers » ne permet pas, en revanche, de saisir des prix TTC quand la
+                    société travaille hors taxes : un prix fixe de 1 150 $ y est lu hors taxes. Sur la base de
+                    démonstration, il donne 1 150 $ HT sur un devis Hors taxes, et 1 322,50 $ sur un devis Toutes
+                    taxes comprises. Saisissez donc les prix des listes en hors taxes, et laissez le sélecteur
+                    afficher le TTC. Les listes de prix elles-mêmes sont présentées dans
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises
+                    dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Escompte pour paiement anticipé, trois traitements de la
+                        TVA, comptes d'escompte, sélecteur Hors taxes / Toutes taxes comprises des devis et des
+                        factures, taxes incluses dans le prix : tout est inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Basculer en TTC après avoir saisi les lignes</h4>
+                    <p>Le sélecteur ne recalcule pas les prix déjà saisis : il les relit. Sur un devis dont la
+                        ligne a été ajoutée en Hors taxes (1 000 $), un clic sur Toutes taxes comprises garde 1 000
+                        en prix unitaire, désormais lu TTC : le total tombe à 1 000 $, dont 869,57 $ hors taxes.</p>
+                </div>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Devis d'Odoo 20 basculé en Toutes taxes comprises après saisie de la ligne : Stratifié en plastique prix unitaire 1 000,00, montant 1 000 dollars, montant hors taxes 869,57, taxe 130,43, total 1 000" style="max-width:100%; height:auto;"/>
+                    <figcaption>Bascule après la ligne : le client paierait 150 $ de moins que prévu.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <p>Choisissez le mode avant d'ajouter les lignes ; si c'est trop tard, supprimez les lignes et
+                        ajoutez-les de nouveau. Le sélecteur ne se modifie que sur un devis pas encore envoyé ni confirmé, ou sur une facture en brouillon.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le PDF du devis ignore le mode TTC</h4>
+                    <p>Sur le devis S00084 en Toutes taxes comprises, le PDF affiche le prix unitaire TTC
+                        (1 150,00) mais une colonne Montant hors taxes (1 000,00) : la colonne suit le réglage de la
+                        société, pas celui du devis. Le total reste juste ; la facture, elle, s'imprime en TTC.
+                        Avant d'envoyer un devis TTC, relisez le PDF.</p>
+                </div>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="PDF du devis S00084 d'Odoo 20 : Stratifié en plastique prix unitaire 1 150,00, TVA 15 %, montant 1 000,00 dollars, montant hors taxes 1 000, taxe 150, total 1 150" style="max-width:100%; height:auto;"/>
+                    <figcaption>PDF du devis TTC : prix unitaire 1 150, montant 1 000.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Un règlement partiel supprime l'escompte</h4>
+                    <p>Odoo ne propose l'escompte que si aucun paiement n'est encore rapproché de la facture, et
+                        si le paiement est dans la devise de la facture. Un premier règlement partiel, même dans
+                        le délai, fait perdre l'escompte sur le solde.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La date du paiement fait foi</h4>
+                    <p>L'assistant compare la <strong>Date de règlement</strong> saisie à la date limite, pas la
+                        date du jour. Un virement arrivé le 15 mais saisi avec la date du relevé du 18 perd
+                        l'escompte : saisissez la date réelle de réception.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> mesurer l'effet du réglage Jamais.</p>
+                    <p><strong>Indication :</strong> dupliquez la condition « 30 jours, 2 % à 10 jours », réglez
+                        Taxes réduites sur Jamais, facturez un Stratifié en plastique (1 000 $, taxe 15 %) avec
+                        cette condition, puis payez-le le jour même.</p>
+                    <p><strong>Critère de réussite :</strong> la facture totalise 1 150 $ ; l'assistant annonce une
+                        remise de 20 $ et propose 1 130 $ ; l'écriture du paiement porte 20 $ en Perte d'escompte
+                        et aucune ligne de taxe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'escompte se règle sur la condition de paiement, une seule échéance à 100 %.</li>
+                    <li>Le PDF de la facture annonce le montant réduit et la date limite ; l'assistant Payer
+                        l'applique seul si la date de règlement est dans le délai.</li>
+                    <li>Taxes réduites : Sur paiement anticipé (taxe reprise au paiement), Toujours (taxe réduite
+                        dès la facture), Jamais (taxe intacte).</li>
+                    <li>Odoo 20 affiche chaque devis et chaque facture en Hors taxes ou Toutes taxes comprises ;
+                        choisir le mode avant de saisir les lignes.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaisser, écart de paiement et suivi des retards.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Créer, confirmer et corriger une facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Le devis, avant de choisir son affichage TTC.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

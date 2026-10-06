@@ -1,0 +1,527 @@
+<!--
+Article — Ouverture et fermeture de caisse dans Odoo 20
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : ouverture-fermeture-caisse-odoo
+Mot-clé cible : odoo fermeture caisse · odoo ouverture caisse · écart de caisse odoo · rapport z odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, pos, guide, community
+Temps de lecture : ~11 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_p1 (copie de vs20_func, démonstration, Point de Vente
+  installé). Sessions laissées ouvertes par la démo et les travaux antérieurs (Magasin de meubles en contrôle d'ouverture,
+  Restaurant OpenSession/0003 avec 4 brouillons, Kiosque/00002) fermées en shell sur la copie avant le parcours ; session
+  propre jouée de bout en bout dans le navigateur (Playwright), aucune vente du 27/09 montrée.
+  Ouverture : prérempli = pos_config._get_opening_balance (journal.current_statement_balance, point_of_sale/models/pos_config.py:1461-1467)
+  = 258,49 (dernière fermeture). Fenêtre Pièces/Notes (money_details_popup.xml) : 2×100 + 1×20 + 2×10 + 1×5 + 5×1 = 250,00.
+  Écart à l'ouverture comptabilisé (NOUVEAU 20) : _set_opening_control_data → _handle_cash_statement_entries
+  (pos_session.py:671-683, 889-931) → ligne de relevé « Cash correction from Magasin de meubles/00003 » −8,49,
+  pièce CSH1/2026/00006 101501 / 642000 « Perte de change » (loss_account_id du journal Espèces de la démo,
+  pos_payment_method.py:510-513). odoo19 pos_session.py:1680-1696 : message chatter seulement.
+  Ventes : 2615-1-000001 = 2 Boîte de rangement 36,34 + Lampe de bureau 46,00 = 82,34, espèces 100, monnaie 17,66 ;
+  000002 = Support d'écran + Bac à courrier 9,19 par Card ; 000003 = Chaise de bureau 80,50 = 50 espèces + 30,50 Card.
+  Cash entrant/sortant : try_cash_in_out (pos_session.py:752-770), contrepartie suspense_account_id (101402 « Compte d'attente
+  de la banque ») ; droits res_users.py:24-30 ; bouton showCashMoveButton (pos_store.js:1500-1502).
+  Fermeture : get_closing_control_data (pos_session.py:564-605) ; attendu 302,34 = 250 + 132,34 − 100 + 20 ; compté 297,34 ;
+  dialogue « Écart de règlement » / Poursuivre (closing_popup.js:87-110, fr.po « Payments Difference », « Proceed Anyway »),
+  non-manager au-delà de « Écart autorisé » : message closing_popup.js:104-110 ; réglage res_config_settings_views.xml:117-121.
+  Détail du popup : ligne « Ouverture » 250,00 + « Cash correction » −8,49 dans Cash entrant/sortant → somme affichée
+  293,85 ≠ 302,34 (vu à l'écran). Note de clôture non envoyée : closeSession n'envoie que les montants
+  (closing_popup.js:204-232) ; odoo19 closing_popup.js:217 update_closing_control_state_session ; chatter de la session sans note.
+  Clôture : close_session_from_ui (pos_session.py:477-534) ; écart −5,00 → « Cash correction from … » CSH1/2026/00010 642000 ;
+  espèces CSH1/2026/00009 132,34 (101501/101300) ; carte = paiement PBNK1/2026/00012 39,69 lettré ; facture de clôture
+  POSC/2026/00009 Odoo POS 149,59 HT + 22,44 = 172,03, Payé. « Caisse fermée » seulement si l'utilisateur a un e-mail
+  (pos_session.py:525-526). Brouillons : message « Vous ne pouvez pas fermer le PdV tant qu'il reste des commandes en
+  brouillon pour la journée. » (pos_session.py:483-489, vu en shell FR).
+  Ticket Z : printSaleDetailsReceipt({download:true}) (closing_popup.js:235, pos_ticket_printer_plugin.js:263-272),
+  receipt/pos_sale_details_receipt.xml:17-20 (X Report / Z Report) ; téléchargé en PNG sans imprimante.
+  Rapport de session : menu Analyse › Rapport de session (point_of_sale_view.xml:29-33, wizard pos_daily_sales_reports.xml) ;
+  « Prévu » espèces = total + opening_balance, sans les mouvements (report_sale_details.py:193) → 390,83 / 297,34 / −93,49 ;
+  odoo19 report_sale_details.py:184 ajoutait cash_real_transaction. Opening Balance de la session = balance_start du relevé
+  (pos_session.py:76-79) = 258,49.
+  Fiche session : bouton Factures réservé à account.group_account_readonly (pos_session_view.xml:31-40).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Ouverture et fermeture de caisse dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Compter le fond de caisse le matin, sortir des espèces pour la banque,
+                    recompter le tiroir le soir et expliquer l'écart : la journée de caisse du point de vente
+                    d'Odoo 20, jouée pas à pas sur la base de démonstration, avec ce que la clôture laisse en
+                    comptabilité et dans les rapports.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau débutant · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, sur la base de démonstration avec le Point de Vente installé. Le contrôle de caisse fait
+                        partie de l'application Point de Vente, incluse dans la Community ; elle existe aussi dans
+                        l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une journée de caisse dans Odoo s'appelle une <strong>session</strong>. Elle s'ouvre par le
+                    comptage du fond de caisse, enregistre les ventes et les mouvements d'espèces, et se ferme par un
+                    second comptage. Entre les deux, Odoo calcule ce que le tiroir devrait contenir ; la différence
+                    avec ce que le caissier compte est l'<strong>écart de caisse</strong>, que la clôture passe en
+                    comptabilité.</p>
+                <p>La prise en main de l'application (installation, première vente, ticket, facture de clôture,
+                    libre-service) est présentée dans
+                    <a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et
+                    commande en libre-service dans Odoo 20</a>. Le présent article suit une seule session en détail :
+                    fond de caisse compté pièce par pièce, ventes en espèces, par carte et mixte, sortie et entrée
+                    d'espèces, écart volontaire à la fermeture, puis tout ce que la clôture produit.</p>
+                <p>Les exemples utilisent le point de vente <strong>Magasin de meubles</strong> de la démonstration,
+                    en dollars, avec ses trois modes de paiement : <strong>Espèces</strong>, <strong>Card</strong>
+                    (libellé resté tel quel dans la démo) et <strong>Compte client</strong>. Odoo 20 change plusieurs
+                    choses sur ce parcours par rapport à la version 19 : elles sont signalées au fil des étapes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>ouvrir une session en comptant le fond de caisse par pièces et billets ;</li>
+                    <li>enregistrer une sortie ou une entrée d'espèces en cours de journée ;</li>
+                    <li>fermer la caisse, lire le montant attendu et traiter un écart de caisse ;</li>
+                    <li>retrouver ce que produit la clôture : ticket Z, session fermée, écritures, rapport de session ;</li>
+                    <li>repérer les chiffres d'Odoo 20 qui ne s'additionnent pas comme on l'attend.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir la session et compter le fond de caisse</h2>
+                <p>Ouvrez <strong>Point de Vente › Tableau de bord</strong>. La carte du point de vente rappelle la
+                    date de la dernière fermeture et le <strong>Solde</strong> d'espèces laissé ce jour-là dans le
+                    tiroir.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Carte Magasin de meubles du tableau de bord Point de Vente d'Odoo 20 : bouton Ouvrir la caisse, Fermeture 27 sept., Solde 258,49 dollars" style="max-width:70%; height:auto;"/>
+                    <figcaption>La carte du point de vente : dernière fermeture et solde d'espèces.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Ouvrir la caisse</strong>. L'interface de caisse s'affiche avec la fenêtre
+                    <strong>Contrôle à l'ouverture</strong>. Le champ <strong>Espèces à l'ouverture</strong> est
+                    prérempli avec ce solde de la dernière fermeture, ici 258,49 $ : c'est ce que le tiroir devrait
+                    contenir.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Contrôle à l'ouverture d'Odoo 20 : Espèces à l'ouverture 258,49, bouton de comptage par pièces et billets, Note d'ouverture vide, boutons Ouvrir la caisse et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le contrôle à l'ouverture, prérempli avec le solde de la veille.</figcaption>
+                </figure>
+                <p>Le caissier ne recopie pas ce montant : il compte le tiroir. Le bouton à droite du montant ouvre
+                    la fenêtre <strong>Pièces/Notes</strong>, une ligne par pièce et par billet de la devise, de
+                    0,05 $ à 200 $. Saisissez le nombre de chaque coupure ; le total se calcule en bas à droite.
+                    Dans l'exemple, le tiroir contient 2 billets de 100, 1 de 20, 2 de 10, 1 de 5 et 5 pièces de
+                    1 dollar, soit 250,00 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Pièces/Notes d'Odoo 20 : 2 billets de 100 dollars, 1 de 20, 2 de 10, 1 de 5, 5 pièces de 1 dollar, Total 250,00 dollars, bouton Confirmer" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le comptage par coupures : 250,00 $ dans le tiroir.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Confirmer</strong> : le total remplace le montant prérempli. Ajoutez au besoin
+                    une <strong>Note d'ouverture</strong>, puis cliquez sur <strong>Ouvrir la caisse</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Contrôle à l'ouverture d'Odoo 20 après comptage : Espèces à l'ouverture 250,00, Note d'ouverture Fond de caisse compté à l'ouverture" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le fond de caisse compté, avec sa note.</figcaption>
+                </figure>
+                <p>Le comptage (250,00 $) diffère ici du solde attendu (258,49 $) : il manque 8,49 $. Dans Odoo 20,
+                    cet écart d'ouverture est <strong>comptabilisé immédiatement</strong> : une ligne « Cash
+                    correction from Magasin de meubles/00003 » de −8,49 $ entre dans le relevé d'espèces de la
+                    session, avec pour contrepartie le compte de perte du journal Espèces. En version 19, l'écart
+                    d'ouverture n'était qu'un message dans l'historique de la session ; la correction comptable
+                    n'intervenait qu'à la fermeture. La note d'ouverture, elle, reste un message dans l'historique de
+                    la session.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Encaisser en espèces, par carte, ou les deux</h2>
+                <p>La session comporte trois ventes, encaissées comme dans
+                    <a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">l'article de prise en
+                    main</a> : produits touchés à droite, bouton <strong>Paiement</strong>, mode de paiement,
+                    <strong>Valider</strong>.</p>
+                <table class="tmc">
+                    <thead><tr><th>Vente</th><th>Articles</th><th>Total</th><th>Règlement</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>2 Boîte de rangement, 1 Lampe de bureau</td><td>82,34 $</td><td>billet de 100 $ en espèces, monnaie rendue 17,66 $</td></tr>
+                        <tr><td>2</td><td>1 Support d'écran, 1 Bac à courrier</td><td>9,19 $</td><td>Card</td></tr>
+                        <tr><td>3</td><td>1 Chaise de bureau</td><td>80,50 $</td><td>50,00 $ en espèces + 30,50 $ par Card</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour le paiement mixte, touchez <strong>Espèces</strong>, effacez le montant proposé avec la
+                    touche ⌫ et tapez 50 ; touchez ensuite <strong>Card</strong> : Odoo propose le reste, 30,50 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Écran de paiement du point de vente Odoo 20 : total 80,50 dollars, lignes Espèces 50,00 et Card 30,50, modes Espèces, Card, Compte client à gauche" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un paiement réparti entre espèces et carte.</figcaption>
+                </figure>
+                <p>Pour la caisse, seule compte la part en espèces : 100,00 $ reçus moins 17,66 $ rendus, plus
+                    50,00 $, soit <strong>132,34 $</strong> entrés dans le tiroir. Les 39,69 $ payés par carte
+                    (9,19 + 30,50) sont encaissés sur le terminal bancaire, à côté de la caisse.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Sortir ou ajouter des espèces en cours de journée</h2>
+                <p>Toute sortie d'espèces qui n'est pas une vente (dépôt à la banque, petite dépense payée avec la
+                    caisse) et tout apport (monnaie ajoutée au tiroir) doivent être enregistrés, sinon le comptage du
+                    soir ne tombera pas juste. Ouvrez le menu ☰ en haut à droite de la caisse et choisissez
+                    <strong>Cash entrant/sortant</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Cash entrant/sortant d'Odoo 20 : bouton Cash sortant sélectionné en rouge, montant 100,00 dollars, Motif Dépôt en banque, boutons Confirmer, Ignorer, Détails" style="max-width:85%; height:auto;"/>
+                    <figcaption>Une sortie d'espèces de 100 $ pour le dépôt en banque.</figcaption>
+                </figure>
+                <p>Choisissez <strong>Cash sortant</strong> ou <strong>Cash entrant</strong>, saisissez le montant
+                    et le <strong>Motif</strong>, puis <strong>Confirmer</strong>. Dans l'exemple : 100,00 $ sortis
+                    pour un « Dépôt en banque », puis 20,00 $ entrés en « Apport de monnaie ». Le bouton
+                    <strong>Détails</strong> liste les mouvements déjà saisis.</p>
+                <p>Chaque mouvement devient une ligne du relevé d'espèces, nommée
+                    « Magasin de meubles/00003-out-Dépôt en banque », et laisse dans l'historique de la session un
+                    message « Tiroir-caisse ouvert (Espèces out - Montant: $ 100,00) ». Sa contrepartie comptable est
+                    le <strong>compte d'attente</strong> du journal Espèces : le comptable reclasse ensuite la
+                    somme (versement en banque, dépense). Le bouton n'apparaît qu'aux responsables du point de vente
+                    et aux utilisateurs ayant un droit de Facturation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Fermer la caisse : compter et constater l'écart</h2>
+                <p>En fin de journée, ouvrez le menu ☰ et choisissez <strong>Fermer la caisse</strong>. La fenêtre
+                    <strong>Fermeture de la caisse</strong> récapitule la session : 3 commandes pour 172,03 $, puis,
+                    pour chaque mode de paiement, le montant attendu, le montant compté et la différence.</p>
+                <p>Pour les espèces, le montant attendu est de <strong>302,34 $</strong> :</p>
+                <table class="tmc">
+                    <tbody>
+                        <tr><td>Fond de caisse compté à l'ouverture</td><td>250,00 $</td></tr>
+                        <tr><td>Paiements en espèces (vente 1 et part espèces de la vente 3)</td><td>+ 132,34 $</td></tr>
+                        <tr><td>Dépôt en banque</td><td>− 100,00 $</td></tr>
+                        <tr><td>Apport de monnaie</td><td>+ 20,00 $</td></tr>
+                        <tr><th>Espèces attendues dans le tiroir</th><th>302,34 $</th></tr>
+                    </tbody>
+                </table>
+                <p>Le caissier compte le tiroir, avec le bouton de comptage par coupures ou directement dans
+                    <strong>Comptage de caisse</strong>. Pour l'exemple, il trouve 297,34 $ : un écart volontaire de
+                    5,00 $. La ligne <strong>Différence</strong> passe en rouge, à −5,00 $. Les paiements par carte
+                    se contrôlent de la même façon dans le champ <strong>Card Nombre</strong> (le montant total du
+                    relevé du terminal), prérempli avec le montant attendu, 39,69 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Fermeture de la caisse d'Odoo 20 : 3 commandes 172,03 dollars ; Espèces 302,34 avec Ouverture 250,00, Paiement en Espèces 132,34, Cash entrant/sortant moins 88,49 détaillé en Cash correction moins 8,49, Dépôt en banque moins 100,00, Apport de monnaie plus 20,00, Compté 297,34, Différence moins 5,00 en rouge ; Card 39,69 compté 39,69 ; Comptage de caisse 297,34 ; Note de clôture ; boutons Fermer la caisse, Ignorer, Cash entrant/sortant, Ventes du jour" style="max-width:85%; height:auto;"/>
+                    <figcaption>La fermeture : 302,34 $ attendus, 297,34 $ comptés, 5,00 $ d'écart.</figcaption>
+                </figure>
+                <p>En cliquant sur <strong>Cash entrant/sortant</strong> dans le récapitulatif, le détail des
+                    mouvements se déplie. Il contient aussi la correction de l'ouverture (−8,49 $), alors que la ligne
+                    <strong>Ouverture</strong> affiche déjà le fond compté, 250,00 $ : additionnées, les lignes du
+                    détail donnent 293,85 $, pas 302,34 $. Le total attendu en tête est le bon ; ne refaites pas
+                    l'addition des lignes (voir les points de vigilance).</p>
+                <p>Deux boutons restent disponibles avant de fermer : <strong>Cash entrant/sortant</strong>, pour
+                    saisir un mouvement oublié, et <strong>Ventes du jour</strong>, qui télécharge le rapport de la
+                    session encore ouverte (intitulé « Récapitulatif quotidien des ventes X »).</p>
+                <p>Cliquez sur <strong>Fermer la caisse</strong>. Puisqu'il y a un écart, Odoo demande une
+                    confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Écart de règlement d'Odoo 20 : L'argent comptabilisé ne correspond pas à ce qui était prévu. Voulez-vous enregistrer la différence dans la comptabilité ? Boutons Poursuivre et Ignorer" style="max-width:65%; height:auto;"/>
+                    <figcaption>Le message affiché quand le comptage ne correspond pas.</figcaption>
+                </figure>
+                <p><strong>Ignorer</strong> ramène à la fenêtre de fermeture pour recompter ;
+                    <strong>Poursuivre</strong> ferme la session et enregistre l'écart. Ce choix est réservé au
+                    responsable du point de vente, ou à tout caissier tant qu'aucun plafond n'est fixé. Pour en
+                    poser un, cochez <strong>Fixer l'écart maximum</strong> dans
+                    <strong>Point de Vente › Configuration › Paramètres</strong>, section Paiement, et saisissez
+                    l'<strong>Écart autorisé</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Réglage Fixer l'écart maximum d'Odoo 20, coché, avec l'aide Fixer l'écart maximum autorisé entre le montant attendu et compté à la fermeture de la session, et le champ Écart autorisé 0,00" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le plafond d'écart accepté sans le responsable.</figcaption>
+                </figure>
+                <p>Au-delà de ce plafond, un caissier qui n'est pas responsable ne peut plus fermer : Odoo affiche
+                    « L'écart maximum autorisé s'élève à … Veuillez contacter votre manager pour accepter l'écart à la
+                    fermeture. ». Une dernière condition bloque la fermeture : une commande restée en brouillon dans
+                    la session. Odoo répond alors « Vous ne pouvez pas fermer le PdV tant qu'il reste des commandes
+                    en brouillon pour la journée. » ; payez ou annulez ces commandes d'abord.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce que produit la clôture</h2>
+                <h3>Le ticket Z</h3>
+                <p>Dès la fermeture, la caisse imprime le <strong>ticket Z</strong>, le récapitulatif de la session :
+                    articles vendus par catégorie, paiements par mode, taxes, total. Sans imprimante de tickets
+                    connectée, le navigateur le télécharge sous forme d'image. La caisse revient ensuite à son écran
+                    d'accueil, prête pour la session suivante.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Ticket Z Report d'Odoo 20 : vendu 1 Chaises 70,00 dollars, 5 Divers 79,59 dollars, paiements Espèces 132,34 et Card 39,69, taxe 15 % 22,44, Total payé 172,03 dollars" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le ticket Z de la session, montants hors taxes par article.</figcaption>
+                </figure>
+                <h3>La session fermée et comptabilisée</h3>
+                <p>Dans <strong>Point de Vente › Commandes › Sessions</strong>, la session passe à l'état
+                    <strong>Fermée &amp; Comptabilisée</strong>. Les boutons du haut mènent aux 3 commandes, aux
+                    3 transferts de stock et aux paiements (172,03 $). L'historique garde la note d'ouverture, chaque
+                    mouvement d'espèces et le message « Caisse fermée ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fiche de session Magasin de meubles/00003 d'Odoo 20 à l'état Fermée et Comptabilisée : boutons Commandes 3, Transferts 3, Paiements 172,03 ; Opening Balance 258,49, Closing Balance 297,34 ; historique : Caisse fermée, deux messages Tiroir-caisse ouvert, message de contrôle d'ouverture" style="max-width:100%; height:auto;"/>
+                    <figcaption>La session fermée : soldes d'ouverture et de clôture, historique.</figcaption>
+                </figure>
+                <p>Lisez les deux soldes avec soin. <strong>Opening Balance</strong> (258,49 $) est le solde
+                    théorique hérité de la veille, pas le fond compté le matin ; <strong>Closing Balance</strong>
+                    (297,34 $) est le montant compté le soir, qui devient le solde de départ de la prochaine
+                    session. Ni l'un ni l'autre n'affiche l'écart.</p>
+                <h3>Les écritures</h3>
+                <p>La clôture produit trois sortes de pièces :</p>
+                <ul>
+                    <li>la <strong>facture de clôture</strong> POSC/2026/00009, au nom du client par défaut
+                        « Odoo POS », dans le journal Point of Sale Closing : 149,59 $ hors taxes, 22,44 $ de taxe,
+                        172,03 $, déjà <strong>Payée</strong> (voir l'article de prise en main pour sa lecture) ;
+                        elle se trouve dans <strong>Facturation › Clients › Factures</strong> ;</li>
+                    <li>l'<strong>encaissement</strong> de chaque mode : une ligne de relevé de 132,34 $ dans le
+                        journal Espèces, un paiement de 39,69 $ dans le journal Banque pour la carte, tous deux
+                        lettrés avec la facture de clôture ;</li>
+                    <li>les <strong>corrections de caisse</strong> : « Cash correction from Magasin de
+                        meubles/00003 », −8,49 $ à l'ouverture et −5,00 $ à la fermeture, passées dans le journal
+                        Espèces avec pour contrepartie le compte de perte du journal (un écart positif irait au
+                        compte de profit).</li>
+                </ul>
+                <p>Sur la base de démonstration, les comptes de perte et de profit du journal Espèces sont ceux du
+                    plan générique, « Perte de change » et « Gain de change » ; une société réelle les remplace par
+                    ses comptes d'écarts de caisse dans la configuration du journal. Sans le droit de comptabilité
+                    complète, la fiche de session n'affiche aucun bouton vers ces écritures : le chemin reste
+                    Facturation.</p>
+                <h3>Le rapport de session</h3>
+                <p>Le rapport PDF de la session se réimprime à tout moment depuis
+                    <strong>Point de Vente › Analyse › Rapport de session</strong> : choisissez la session et
+                    cliquez sur <strong>Imprimer</strong>. Une fois la session fermée, il s'intitule
+                    « Récapitulatif quotidien des ventes Z ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fenêtre Rapport de session d'Odoo 20 : avertissement Impossible de générer un rapport par employé, un seul employé connecté durant cette session ; Session du PdV Magasin de meubles/00003 ; case Ajouter un rapport par employé ; boutons Imprimer et Ignorer" style="max-width:85%; height:auto;"/>
+                    <figcaption>Réimprimer le rapport d'une session fermée.</figcaption>
+                </figure>
+                <p>Le rapport reprend les ventes par catégorie et par article, les taxes, les paiements, puis une
+                    section <strong>Contrôle de session</strong> avec, pour chaque mode, les colonnes Prévu, Compté et
+                    Différence.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Section Contrôle de session du rapport PDF d'Odoo 20 : Total 172,03 dollars, 3 transactions ; Espèces Prévu 390,83, Compté 297,34, Différence moins 93,49 ; détail Espèces à l'ouverture 258,49, Cash correction moins 8,49, Dépôt en banque moins 100,00, Apport de monnaie 20,00, Espèces POS session 132,34, Cash correction moins 5,00 ; Card 39,69 compté 39,69 différence 0,00" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le contrôle de session du rapport : la colonne Prévu ignore les mouvements d'espèces.</figcaption>
+                </figure>
+                <p>Pour les espèces, le rapport d'Odoo 20 affiche un écart de −93,49 $ au lieu de −5,00 $ : sa colonne
+                    <strong>Prévu</strong> (390,83 $) additionne le solde théorique de la veille (258,49 $) et les
+                    paiements en espèces (132,34 $), sans la correction d'ouverture, le dépôt en banque ni l'apport
+                    de monnaie. La version 19 les incluait. Le détail sous la ligne, lui, est juste : ses six
+                    montants totalisent bien les 297,34 $ comptés, et le véritable écart de fermeture est la dernière
+                    ligne « Cash correction », −5,00 $.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Tout le parcours de cet article (comptage par coupures, mouvements d'espèces, écart maximum,
+                        ticket Z, rapport de session, écritures de clôture) fonctionne en Community, sans module
+                        complémentaire. La société de démonstration étant en France, la certification française des
+                        caisses est installée avec le Point de Vente ; elle ajoute au menu Analyse la rubrique Relevés
+                        français, avec Clôtures de ventes et Vérification d'inaltérabilité de la caisse.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un écart à l'ouverture part en comptabilité tout de suite</h4>
+                    <p>Ne tapez pas un fond de caisse approximatif « pour ouvrir vite » : en Odoo 20, la différence
+                        avec le solde de la veille est passée en perte ou en profit dès l'ouverture. Comptez le
+                        tiroir, ou gardez le montant prérempli s'il est exact.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le détail de la fermeture et le rapport ne s'additionnent pas</h4>
+                    <p>Dans la fenêtre de fermeture, la correction d'ouverture figure à la fois dans
+                        « Ouverture » et dans « Cash entrant/sortant ». Dans le rapport de session, la colonne Prévu
+                        des espèces oublie les mouvements d'espèces. Fiez-vous au montant attendu en tête de la
+                        fenêtre de fermeture et, dans le rapport, à la dernière ligne « Cash correction ».</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La note de clôture n'est pas enregistrée</h4>
+                    <p>Le champ <strong>Note de clôture</strong> de la fenêtre de fermeture se remplit, mais Odoo 20
+                        ne l'envoie pas au serveur : elle n'apparaît ni dans l'historique de la session ni dans le
+                        rapport (la note d'ouverture, elle, est conservée). Pour expliquer un écart, écrivez un
+                        message dans l'historique de la session après la fermeture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une sortie d'espèces reste sur un compte d'attente</h4>
+                    <p>Le dépôt en banque saisi en Cash sortant ne crédite pas le compte bancaire : il attend sur le
+                        compte d'attente du journal Espèces que le comptable le rapproche du versement réel. Un motif
+                        clair (« Dépôt en banque », « Fournitures ») facilite ce travail.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> fermer une session avec un excédent de caisse.</p>
+                    <p><strong>Indication :</strong> ouvrez une session du Magasin de meubles en gardant le montant
+                        prérempli, vendez 1 Lampe de bureau payée en espèces, enregistrez une sortie de 20 $
+                        « Fournitures », puis fermez la caisse en saisissant dans Comptage de caisse 2 $ de plus que
+                        le montant attendu.</p>
+                    <p><strong>Critère de réussite :</strong> la fenêtre de fermeture affiche une Différence de
+                        +2,00 $, la fenêtre Écart de règlement s'ouvre, et après Poursuivre le rapport de session de
+                        cette session se termine par une ligne « Cash correction » de +2,00 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une session de caisse s'ouvre et se ferme par un comptage ; le bouton de coupures évite les
+                        erreurs de saisie.</li>
+                    <li>Espèces attendues = fond compté + paiements en espèces + entrées − sorties.</li>
+                    <li>En Odoo 20, un écart se comptabilise dès l'ouverture, et à la fermeture après
+                        « Poursuivre », en perte ou en profit du journal Espèces.</li>
+                    <li>La clôture produit le ticket Z, la facture de clôture payée et les corrections de caisse.</li>
+                    <li>Dans le rapport de session, l'écart réel est la dernière ligne « Cash correction », pas la
+                        colonne Différence.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et libre-service</a></h5>
+                            <p class="small text-muted mb-0">Installer la caisse, vendre, ticket et facture de clôture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture, utile pour lire la facture de clôture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Paiements, lettrage et suivi des encaissements.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

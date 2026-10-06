@@ -1,0 +1,509 @@
+<!--
+Article — Achetez 2, le 3e offert (buy X get Y) dans Odoo 20
+Série « Remises et promotions avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : achetez-2-le-3e-offert-odoo
+Meta : Créer un programme « Achetez X Recevez Y » dans Odoo 20 Community, l'appliquer à un devis et à la boutique en ligne, savoir combien d'articles sont offerts.
+Mot-clé cible : odoo buy x get y / achetez 2 le 3e offert odoo
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, ventes, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_a5 (copie de vs20_func, démonstration native),
+  case « Promotions, Fidélité & Cartes-Cadeaux » cochée à l'écran (Ventes › Configuration › Paramètres).
+  Type : loyalty/models/loyalty_program.py:107 (buy_x_get_y), valeurs par défaut :464-487 (règle 2 unités, 1 crédit par unité,
+  récompense produit gratuit contre 2 crédits) ; texte d'aide relevé à l'écran.
+  Montant minimum caché : le type par défaut Promotions crée une règle « minimum_amount 50 » (loyalty_program.py:338-349) ; après
+  passage au type Achetez X Recevez Y la règle affiche encore « Si minimum 50,00 dépensé » (capture 01) ; libellé masqué pour ce type
+  (loyalty/views/loyalty_rule_views.xml:20, idem 19). Seuil vérifié : sale_loyalty/models/sale_order.py:1508-1515 ; essai shell :
+  10 Marqueurs (13,80 $) → aucune récompense avec 50, récompense proposée avec 0.
+  Ligne offerte : sale_loyalty/models/sale_order.py:334-372 (même article, discount 100, quantité = reward_product_qty × arrondi
+  inférieur(crédits / crédits requis)) ; identique en 19 (odoo19 sale_loyalty/models/sale_order.py:254-280).
+  Bouton Récompense : sale_order.py:285-299 (une seule récompense éligible → appliquée sans fenêtre).
+  Joué à l'écran (Ventes, devis S00104 Lumber Inc, S00106 Ready Mat, Boîtier pour cables 100 $, taxe 15 %) : 2 achetés → 1 offert,
+  Total Advantage 115 $, Margin -5 % (coût 70 $) ; quantité passée à 6 et enregistrée → ligne offerte reste à 1 ; Récompense → 3 ;
+  3 achetés → 1 offert ; 4 achetés sans recliquer puis Confirmer → 2 offerts (action_confirm appelle _update_programs_and_rewards,
+  sale_order.py:196-222). Shell : 1→0, 2→1, 3→1, 4→2, 5→2, 6→3.
+  Deux programmes (S00107 Ready Mat) : fenêtre Récompenses disponibles, puis second clic applique l'autre ; Total Advantage 117,28 $.
+  Deux récompenses dans un même programme (shell) : la première choisie consomme tous les crédits (6 crédits → 3 offerts, cost 6),
+  la seconde n'est plus proposée.
+  Variante « produit le moins cher » 100 % (shell, règle 3 unités, 3 crédits) : 3 achetés → -100 $ ; 6 achetés → -100 $ (une unité).
+  Boutique : website_sale_loyalty/controllers/cart.py:12-13, models/sale_order.py:70-100 (application automatique si une seule
+  récompense, non multi-produits) ; à l'écran panier Mitchell Admin 2 → 1 offert, 6 → 3 offerts.
+  Programme de démo « Achetez 3 grands meubles de rangement… » : récompense « Grande armoire » E-COM07 archivée (product.product 6,
+  active False) → filtrée (sale_order.py:1175-1178, _get_active_products_domain) ; jamais proposé dans les essais.
+  Fenêtre avec « Programme de fidelité - Produit gratuit - Stylo simple » pour Acme Corporation après une commande confirmée (écran).
+Captures : content/blog/screenshots/achetez-2-le-3e-offert-odoo/ (01-11, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Achetez 2, le 3e offert (buy X get Y) dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">« Deux achetés, le troisième offert » : Odoo 20 sait le faire sans
+                    module, avec le programme Achetez X Recevez Y. Encore faut-il savoir ce qu'il fait vraiment : le
+                    troisième article s'ajoute à la commande, il ne remplace pas l'un des trois que le client a
+                    commandés. Cet article configure le programme, l'applique à un devis et à la boutique, et compte
+                    les articles offerts.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Remises et promotions avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Site Web et eCommerce installés. Les programmes
+                        de promotion existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Le « 2 achetés, 1 offert » (en anglais <em>buy X get Y</em>) est un programme de promotion
+                    parmi d'autres. Il s'active dans <strong>Ventes › Configuration › Paramètres</strong>, bloc
+                    <strong>Tarif</strong>, case <strong>Promotions, Fidélité &amp; Cartes-Cadeaux</strong>, puis
+                    <strong>Enregistrer</strong>. Le menu <strong>Ventes › Promotions › Remise &amp; Fidélité</strong>
+                    apparaît alors. Les listes de prix et le bouton Remise du devis, qui fixent un prix plutôt
+                    qu'un cadeau, sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises
+                    dans Odoo 20</a>.</p>
+                <p>Le mécanisme tient en une phrase, affichée par Odoo sous le type : chaque article acheté rapporte
+                    un <strong>crédit</strong> ; un nombre X de crédits s'échange contre Y articles offerts.
+                    L'exemple de cet article utilise l'article de démonstration <strong>Boîtier pour cables</strong>,
+                    vendu 100 $, taxe 15 %.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un programme « Achetez 2, le 3e offert » sur un article précis ;</li>
+                    <li>l'appliquer à un devis et lire la ligne offerte ;</li>
+                    <li>prévoir combien d'articles Odoo offre pour 2, 3 ou 6 achetés ;</li>
+                    <li>offrir un article différent, ou cumuler deux programmes ;</li>
+                    <li>vérifier que la boutique en ligne applique le programme seule.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer le programme</h2>
+                <p>Ouvrez <strong>Ventes › Promotions › Remise &amp; Fidélité</strong> et cliquez sur
+                    <strong>Nouveau</strong>. Nommez le programme « Achetez 2, le 3e offert », puis choisissez le type
+                    <strong>Achetez X Recevez Y</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Nouveau programme Odoo 20 de type Achetez X Recevez Y : texte d'aide sur les crédits, règle Si minimum 2 article(s) acheté(s) et Si minimum 50,00 dépensé parmi Marqueur pour tableau blanc, récompense Produit gratuit en échange de 2,00 Crédit(s)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le type pré-remplit une règle et une récompense d'exemple.</figcaption>
+                </figure>
+                <p>Odoo pré-remplit le programme avec le premier article vendable du catalogue (ici
+                    « Marqueur pour tableau blanc ») : une règle « Si minimum 2 article(s) acheté(s) » qui délivre
+                    1 crédit par unité payée, et une récompense « Produit gratuit » en échange de 2 crédits. C'est
+                    déjà un « 2 achetés, 1 offert » ; il reste à le poser sur le bon article.</p>
+                <p>Une ligne doit retenir l'attention : <strong>« Si minimum 50,00 dépensé »</strong>. Ce minimum
+                    d'achat vient du type proposé par défaut (Promotions) et survit au changement de type. La
+                    section suivante le remet à zéro.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La règle : ce qui rapporte des crédits</h2>
+                <p>Cliquez sur la règle. Dans la fenêtre <strong>Règles conditionnelles</strong>, retirez le
+                    marqueur du champ <strong>Produits</strong> et choisissez « Boîtier pour cables ». Sous la
+                    <strong>Quantité minimale</strong>, un champ sans libellé contient 50,00 : c'est le montant
+                    minimum, suivi de son mode de taxe. Saisissez 0.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Règles conditionnelles d'Odoo 20 : Quantité minimale 2, montant 0 avec sélecteur de taxe, Produits Boîtier pour cables, Délivrer 1,00 Crédit(s) par unité payée" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle : 1 crédit par boîtier payé, dès 2 boîtiers.</figcaption>
+                </figure>
+                <p>La colonne <strong>Point(s)</strong> fixe ce que la règle rapporte : <strong>1,00 Crédit(s)
+                    par unité payée</strong>. Laissez ce mode : les deux autres (par commande, par $ dépensé) ne comptent pas les articles. Les champs <strong>Catégories</strong> et <strong>Étiquette de
+                    produit</strong> permettent de viser une famille entière au lieu d'un article ; les quantités
+                    de tous les articles concernés s'additionnent alors. Cliquez sur
+                    <strong>Enregistrer &amp; Fermer</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La récompense : ce que coûte l'article offert</h2>
+                <p>Cliquez sur la récompense « Produit gratuit » et remplacez le produit par « Boîtier pour
+                    cables ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Récompenses d'Odoo 20 : Type de récompense Produit gratuit, Quantité récompensée 1, Produit Boîtier pour cables, En échange de 2,00 Crédit(s), Description sur la commande Produit gratuit - Boîtier pour cables" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un boîtier offert contre 2 crédits.</figcaption>
+                </figure>
+                <p>Trois champs suffisent à lire la promotion : <strong>Quantité récompensée</strong> (Y, ici 1),
+                    <strong>En échange de</strong> (X, ici 2 crédits) et <strong>Description sur la
+                    commande</strong>, le libellé que verra le client. Le champ <strong>Étiquette de produit</strong>
+                    laisse le client choisir l'article offert parmi plusieurs. Cliquez sur
+                    <strong>Enregistrer &amp; Fermer</strong>, puis enregistrez le programme.</p>
+                <p>Pour un « Achetez 3, recevez-en 1 », la règle et la récompense changent ensemble : quantité
+                    minimale 3 et 3 crédits en échange.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Appliquer le programme à un devis</h2>
+                <p>Créez un devis, par exemple pour Ready Mat, avec <strong>2</strong> Boîtier pour cables, et
+                    enregistrez. Rien ne change : sur un devis, une promotion ne s'applique pas seule. Cliquez sur
+                    <strong>Récompense</strong>, sous les lignes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Devis Odoo 20 : 2 Boîtier pour cables à 100 dollars, ligne Produit gratuit - Boîtier pour cables quantité 1 avec Rem.% 100 et montant 0, total 230 dollars, Total Advantage 115 dollars, Margin -5 %" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux boîtiers payés, un troisième ajouté gratuitement.</figcaption>
+                </figure>
+                <p>Le programme étant la seule récompense possible, Odoo l'applique directement, sans fenêtre de
+                    choix. Une ligne s'ajoute : le même article, quantité 1, au prix normal de 100,00 avec une
+                    remise (<strong>Rem.%</strong>) de 100, soit 0,00 $. Le total reste celui des deux boîtiers
+                    payés : 230,00 $.</p>
+                <p>Sous le total, <strong>Total Advantage</strong> (nouveau en Odoo 20) chiffre le cadeau taxes
+                    comprises : 115,00 $. La ligne <strong>Margin</strong>, elle, passe à −10,00 $ : le boîtier
+                    offert est livré, son coût (70 $ dans la démonstration) est donc compté. Une promotion
+                    « 1 offert » se vérifie aussi à la marge.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Combien d'articles offerts ?</h2>
+                <p>Odoo divise les crédits gagnés par les crédits requis, arrondit à l'entier inférieur, et
+                    multiplie par la quantité récompensée. Pour le programme créé ici, les essais donnent :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Boîtiers saisis sur le devis</th><th>Crédits</th><th>Boîtiers offerts</th><th>Boîtiers livrés</th><th>Payé (HT)</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>1</td><td>1</td><td>0 (minimum non atteint)</td><td>1</td><td>100 $</td></tr>
+                        <tr><td>2</td><td>2</td><td>1</td><td>3</td><td>200 $</td></tr>
+                        <tr><td>3</td><td>3</td><td>1</td><td>4</td><td>300 $</td></tr>
+                        <tr><td>4</td><td>4</td><td>2</td><td>6</td><td>400 $</td></tr>
+                        <tr><td>5</td><td>5</td><td>2</td><td>7</td><td>500 $</td></tr>
+                        <tr><td>6</td><td>6</td><td>3</td><td>9</td><td>600 $</td></tr>
+                    </tbody>
+                </table>
+                <p>Avec 6 boîtiers, la ligne offerte passe à 3 :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Devis Odoo 20 : 6 Boîtier pour cables 600 dollars, ligne Produit gratuit quantité 3 Rem.% 100, total 690 dollars, Total Advantage 345 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>6 achetés : 3 offerts, 9 boîtiers livrés.</figcaption>
+                </figure>
+                <p>Le cas qui surprend est celui du client qui veut trois boîtiers « dont un offert » :
+                    saisir 3 donne 3 crédits, donc un boîtier offert <em>en plus</em>, et 4 boîtiers livrés pour
+                    300 $. Le crédit restant est perdu.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Devis Odoo 20 : 3 Boîtier pour cables 300 dollars et 1 Produit gratuit, total 345 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>3 saisis : le cadeau s'ajoute, il ne remplace pas le troisième.</figcaption>
+                </figure>
+                <p>La règle pratique pour le commercial : avec « 2 achetés, 1 offert », saisissez les articles
+                    <strong>payés</strong>, jamais le total à livrer. Pour 6 boîtiers livrés, saisissez 4.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Quand la quantité change après coup</h2>
+                <p>Sur le devis de l'étape 4 (2 boîtiers, 1 offert), passez la quantité à 6 et enregistrez sans
+                    cliquer sur Récompense :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Devis Odoo 20 : 6 Boîtier pour cables mais ligne Produit gratuit restée à 1, total 690 dollars, Total Advantage 115 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Quantité modifiée : la ligne offerte n'a pas suivi.</figcaption>
+                </figure>
+                <p>La ligne offerte reste à 1. Elle se recalcule à deux moments : au clic sur
+                    <strong>Récompense</strong> (le devis passe alors aux 3 offerts vus à la section 5) et à la
+                    <strong>confirmation</strong>. Pour le vérifier, passez la quantité à 4, enregistrez, puis
+                    cliquez directement sur <strong>Confirmer</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Bon de commande Odoo 20 confirmé : 4 Boîtier pour cables 400 dollars, ligne Produit gratuit quantité 2, colonnes Délivré et Facturé, Total Advantage 230 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>À la confirmation, Odoo remet la ligne offerte à 2.</figcaption>
+                </figure>
+                <p>La commande confirmée est juste : 4 payés, 2 offerts. Le devis envoyé avant la confirmation, en
+                    revanche, montrait encore l'ancienne quantité offerte. Cliquez sur Récompense après chaque
+                    changement de quantité, avant d'envoyer le devis.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Offrir un autre article, cumuler deux offres</h2>
+                <p>L'article offert n'a pas à être celui qui est acheté. Créez un second programme du même type,
+                    « Sous-main offert dès 2 boîtiers » : même règle (2 Boîtier pour cables, montant 0), récompense
+                    Produit gratuit « Sous-main » contre 2 crédits. Sur un nouveau devis de 2 boîtiers, le bouton
+                    Récompense ouvre cette fois une fenêtre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Récompenses disponibles d'Odoo 20 : Achetez 2, le 3e offert - Produit gratuit - Boîtier pour cables ; Sous-main offert dès 2 boîtiers - Produit gratuit - Sous-main ; boutons Appliquer et Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux programmes éligibles : Odoo demande lequel appliquer.</figcaption>
+                </figure>
+                <p>Choisissez le premier et cliquez sur <strong>Appliquer</strong>. Un second clic sur Récompense
+                    applique l'autre programme, sans fenêtre puisqu'il est le seul restant :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Devis Odoo 20 : 2 Boîtier pour cables, ligne Produit gratuit Boîtier pour cables quantité 1, ligne Produit gratuit Sous-main quantité 1, total 230 dollars, Total Advantage 117,28 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux programmes, deux cadeaux pour les mêmes boîtiers.</figcaption>
+                </figure>
+                <p>Chaque programme compte ses propres crédits : les deux boîtiers ouvrent droit aux deux
+                    cadeaux. Le Sous-main offert porte une icône de prévision rouge : l'article n'a pas de stock
+                    suffisant dans la démonstration, et un article offert se livre comme les autres.</p>
+                <p>Il en va autrement de deux récompenses placées <strong>dans le même programme</strong>
+                    (« 2 crédits → 1 boîtier » et « 3 crédits → 1 sous-main », par exemple) : elles partagent les
+                    mêmes crédits. Sur 6 boîtiers, la première récompense choisie en prend 6 (3 boîtiers offerts)
+                    et la seconde n'est plus proposée. Pour des paliers qui se cumulent, faites deux programmes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Sur la boutique en ligne : automatique</h2>
+                <p>L'onglet <strong>Settings</strong> du programme coche par défaut les canaux où il s'applique,
+                    dont <strong>Site Web</strong>. Sur la boutique, ajoutez 2 Boîtier pour cables au panier : la
+                    ligne offerte apparaît sans aucune action du client. Passez la quantité à 6 dans le panier :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Panier de la boutique Odoo 20 : Boîtier pour cables quantité 6 600 dollars, ligne Produit gratuit - Boîtier pour cables quantité 3 à 0 dollar, total 690 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Dans le panier, la ligne offerte suit la quantité.</figcaption>
+                </figure>
+                <p>Le panier recalcule les récompenses à chaque modification et applique d'office celles qui ne
+                    demandent pas de choix : un programme à une seule récompense, avec un seul article offert
+                    possible. Une récompense à choisir parmi plusieurs articles (champ Étiquette de produit), ou un
+                    programme à plusieurs récompenses, n'est pas appliqué automatiquement. Le comptage est le même
+                    que sur le devis : 6 achetés, 3 offerts.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VARIANTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et le « 3 pour le prix de 2 » ?</h2>
+                <p>Quand l'offre doit s'appliquer aux trois articles que le client a pris, une autre récompense
+                    existe : <strong>Remise</strong> de 100 % sur le <strong>Produit le moins cher</strong>, avec
+                    une règle de 3 unités et 3 crédits en échange. Sur 3 boîtiers, Odoo ajoute une ligne « Remise
+                    100% sur le produit le moins cher » de −100 $ : 3 livrés, 2 payés.</p>
+                <p>Cette remise ne porte que sur <strong>une</strong> unité, quelle que soit la quantité : sur
+                    6 boîtiers, la ligne reste à −100 $. Elle convient à une offre « un article offert par
+                    commande », pas à un « 1 sur 3 » répété ; pour ce dernier, gardez Achetez X Recevez Y et faites
+                    saisir les articles payés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Le type Achetez X Recevez Y, son application aux devis et
+                        son application automatique dans le panier de la boutique en ligne sont inclus dans Odoo 20
+                        Community. Le calcul de l'article offert est le même qu'en Odoo 19 ; la ligne Total
+                        Advantage, qui chiffre le cadeau sous le total du devis, est nouvelle.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un minimum de 50 caché dans la règle</h4>
+                    <p>Un programme créé avec le type par défaut puis passé en Achetez X Recevez Y garde un montant
+                        minimum de 50, taxes comprises, dont le libellé est masqué. Sur des articles peu chers,
+                        la promotion ne se déclenche jamais : 10 marqueurs à 1,20 $ (13,80 $ TTC) n'ont reçu aucune
+                        récompense avec ce minimum, et en ont reçu une avec 0. Lisez la règle sur la fiche du
+                        programme : « Si minimum 50,00 dépensé » doit avoir disparu.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le cadeau s'ajoute aux articles saisis</h4>
+                    <p>Saisir 3 articles pour un « 2 + 1 » en fait livrer 4. Le commercial saisit les articles
+                        payés ; le stock doit couvrir les articles offerts en plus.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les programmes de démonstration s'invitent</h4>
+                    <p>Dès qu'un client a une commande confirmée, le programme de fidélité de la démonstration lui
+                        donne des points, et la fenêtre Récompenses disponibles propose aussi « Programme de
+                        fidelité - Produit gratuit - Stylo simple ». Le programme d'exemple « Achetez 3 grands
+                        meubles de rangement, recevez-en un gratuitement » ne propose, lui, jamais rien : son article
+                        offert, Grande armoire, est archivé dans la base de démonstration. Archivez les programmes
+                        d'exemple avant de travailler sur une vraie base.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> créer un « Achetez 3, recevez-en 1 » et prévoir le nombre
+                        d'articles offerts avant de cliquer.</p>
+                    <p><strong>Indication :</strong> programme de type Achetez X Recevez Y sur l'article « Tiroir
+                        noir » : quantité minimale 3, montant minimum 0, 1 crédit par unité payée ; récompense
+                        Produit gratuit « Tiroir noir », quantité 1, en échange de 3 crédits. Sur un devis pour Wood
+                        Corner, saisissez 7 Tiroir noir, enregistrez, puis cliquez sur Récompense.</p>
+                    <p><strong>Critère de réussite :</strong> le devis porte une ligne « Produit gratuit - Tiroir
+                        noir » de quantité 2 (7 crédits ÷ 3, arrondi à 2), Rem.% 100, montant 0,00 ; 9 tiroirs seront
+                        livrés pour 7 payés.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Achetez X Recevez Y : 1 crédit par article acheté, X crédits contre Y articles offerts.</li>
+                    <li>L'article offert est une ligne de plus (Rem.% 100), ajoutée aux articles saisis : 2 → 1
+                        offert, 3 → 1, 6 → 3.</li>
+                    <li>Sur un devis, le bouton Récompense applique et recalcule la ligne offerte ; la confirmation la
+                        recalcule aussi.</li>
+                    <li>Un autre article peut être offert ; deux programmes se cumulent, deux récompenses d'un même
+                        programme se partagent les crédits.</li>
+                    <li>Sur la boutique en ligne, le programme s'applique seul et suit la quantité du panier.</li>
+                    <li>Vérifiez que la règle n'a pas gardé le minimum de 50 du type par défaut.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Le prix par client et le bouton Remise du devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Le devis sur lequel s'appliquent les récompenses.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne</a></h5>
+                            <p class="small text-muted mb-0">Le panier où la promotion s'applique seule.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
