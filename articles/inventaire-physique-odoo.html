@@ -1,0 +1,493 @@
+<!--
+Article — Inventaire physique et comptages réguliers dans Odoo 20
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : inventaire-physique-odoo
+Meta : Inventaire physique dans Odoo 20 Community : saisir les quantités comptées, appliquer avec un motif, demander un comptage, programmer des comptages cycliques.
+Mot-clé cible : odoo inventaire physique ; odoo inventaire tournant / comptage cyclique
+Catégorie : Fonctionnel Odoo
+Tags : intermediaire, stock, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base de démonstration (Inventaire, Achats, Fabrication installés,
+  emplacements de stockage actifs, lots actifs).
+  Menu : stock/views/stock_quant_views.xml:361 (Opérations › Ajustements › Inventaire physique) ; liste :291-327
+  (Planifié, Utilisateur, Disponible, Compté, Différence ; boutons de ligne Historique / Appliquer / Effacer) ;
+  en-tête :279-287 (Appliquer à tout ; Appliquer ; Effacer et « Demander un inventaire » réservés à group_stock_manager) ;
+  filtres :34-42 (Mes comptages = user_id, À compter = Planifié <= aujourd'hui, À appliquer, Conflits = is_outdated).
+  stock/models/stock_quant.py:435-443 (un utilisateur Inventaire non administrateur ouvre l'écran filtré sur Mes comptages) ;
+  :465-483 (Appliquer : assistant de conflit si is_outdated, sinon _apply_inventory) ; :550-561 (Appliquer à tout =
+  assistant Motif sur toute la recherche) ; :1028-1067 (un mouvement par ligne vers / depuis l'emplacement d'ajustement
+  property_stock_inventory, date du dernier inventaire de l'emplacement, nouvelle date Planifié, comptage effacé) ;
+  :1321-1322 + stock/models/stock_move.py:381-390 (référence = motif, sinon « Quantité de produit mise à jour /
+  confirmée (utilisateur) »).
+  stock/wizard/stock_inventory_adjustment_name.py (Motif de l'inventaire, défaut « Inventaire physique », Date de comptage ;
+  seules les lignes comptées sont appliquées) ; stock/wizard/stock_request_count.py (Attribuer à, Planifié le/à, Afficher
+  la quantité prévue = paramètre stock.show_expected_quantity_count ; produit suivi par lot : tous les lots de
+  l'emplacement) ; stock/report/report_stockinventory.xml:38-39 (feuille de comptage sans quantité si case décochée) ;
+  stock/wizard/stock_inventory_conflict.py (Garder la quantité comptée / Garder la différence).
+  Fréquences : stock/models/res_company.py:28-47 (Date d'inventaire annuelle, défaut 31 décembre) ;
+  stock/models/stock_location.py:82-84, 145-162, 374-405 (Fréquence d'inventaire en jours, Dernier inventaire, Prochain
+  prévu ; date retenue = la plus proche des deux) ; aucune réécriture des dates Planifié existantes au changement de
+  réglage (stock_location.py write, res_company.py : rien sur inventory_date).
+  Valorisation : account/models/product.py:30-38 (Periodic (at closing) / Perpetual (at invoicing)) ;
+  stock_account/models/stock_move.py:756-764 (écriture seulement en perpétuel avec compte sur l'emplacement).
+  Écarts 19 → 20 : assistants et logique d'inventaire identiques (diff stock/wizard, stock_quant.py) ; menu Analyse
+  « Locations » renommé « Stock by Location » (stock_quant_views.xml:362).
+  Parcours joué sur la démonstration : Bureau personnalisable FURN_0096 45 → compté 43, FURN_0097 50 → 50, FURN_0098
+  55 → 56, appliqués avec le motif « Comptage tournant des bureaux » (3 mouvements, dont un à 0, aucune pièce comptable
+  créée : 0 account.move après application) ; Chaise de conférence Acier / Aluminium : Demander un inventaire, Mitchell
+  Admin, 15 oct. ; Bureau pour quatre personnes FURN_8220 compté 20, livraison WH/OUT/00020 (4) validée ensuite → ligne en
+  conflit, Garder la différence → compté 16, mouvement « Quantité de produit confirmée (Mitchell Admin) » à 0 ;
+  WH/Stock/Shelf 2 : Fréquence 30 jours (Dernier inventaire 24 sept., Prochain prévu 24 oct.), Planifié resté au 31 déc.
+  jusqu'au comptage appliqué (« Comptage cyclique Shelf 2 »), puis 5 nov. Exercice vérifié par shell puis annulé :
+  Boîte de rangement 110 → 108, motif « Casse constatée », mouvement de 2 vers Inventory adjustment, Planifié 31 déc.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Inventaire physique et comptages réguliers dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Le stock affiché par Odoo n'est juste que s'il est recompté. Casse,
+                    erreur de préparation, réception mal saisie : l'écart se creuse sans bruit. L'écran Inventaire
+                    physique sert aussi bien au grand inventaire de fin d'année qu'aux comptages tournants, quelques
+                    articles ou un emplacement à la fois.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Inventaire installé. L'inventaire physique et les comptages
+                        cycliques font partie de l'application Inventaire, incluse dans la Community ; elle existe aussi
+                        dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Odoo ne crée pas de « document d'inventaire » à ouvrir et à clôturer. Il travaille directement sur
+                    les <strong>quantités en stock</strong> : une ligne par article, par emplacement et, le cas échéant,
+                    par lot. Compter, c'est saisir sur ces lignes la quantité trouvée en rayon ; appliquer, c'est
+                    laisser Odoo corriger le stock par un mouvement. Un grand inventaire annuel et un comptage
+                    tournant de dix articles passent donc par le même écran ; seule change la sélection des lignes.</p>
+                <p>Pour la prise en main de l'application Inventaire, voir
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande dans Odoo 20</a>. La saisie du stock de départ, qui passe par le même écran, est
+                    traitée dans <a href="/blog/fonctionnel-odoo-1/charger-stock-initial-odoo-174">Charger son stock
+                    initial</a> (écrit sur Odoo 19, l'écran est le même en 20). Le présent article porte sur ce qui
+                    vient ensuite : recompter, tracer les écarts, organiser des comptages réguliers.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>saisir des quantités comptées et lire les écarts avant de les appliquer ;</li>
+                    <li>appliquer un comptage avec un motif, et retrouver la trace de chaque correction ;</li>
+                    <li>demander un comptage à un magasinier, pour une date donnée ;</li>
+                    <li>régler une date d'inventaire annuelle et une fréquence par emplacement ;</li>
+                    <li>trancher un conflit quand le stock a bougé pendant le comptage.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir l'écran Inventaire physique</h2>
+                <p>Le menu est <strong>Inventaire › Opérations › Inventaire physique</strong> (rubrique
+                    Ajustements). La liste montre toutes les quantités des emplacements internes : emplacement,
+                    article, lot, date <strong>Planifié</strong> du prochain comptage, <strong>Utilisateur</strong>
+                    chargé de compter, quantité <strong>Disponible</strong> selon Odoo, puis les deux colonnes du
+                    comptage, <strong>Compté</strong> et <strong>Différence</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Écran Inventaire physique d'Odoo 20 : boutons Nouveau et Appliquer à tout, colonnes Emplacement, Produit, Lot, Planifié, Utilisateur, Disponible, Compté, Différence, Unité ; lignes Lampe de bureau, Chaise de conférence Acier et Aluminium planifiées au 15 octobre pour Mitchell Admin, Bureau personnalisable planifié au 31 décembre" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'écran Inventaire physique : une ligne par article et par emplacement.</figcaption>
+                </figure>
+                <p>Sur la base de démonstration, presque toutes les lignes sont planifiées au <strong>31 déc.</strong> :
+                    c'est la date d'inventaire annuelle par défaut (section 6). Les deux chaises de conférence planifiées
+                    au 15 oct. pour Mitchell Admin sont le résultat de la section 4.</p>
+                <p>Le panneau de recherche apporte les filtres utiles au comptage : <strong>Mes comptages</strong>
+                    (lignes attribuées à l'utilisateur connecté), <strong>À compter</strong> (date Planifié atteinte),
+                    <strong>À appliquer</strong> (quantité comptée saisie), <strong>Conflits</strong> (section 5) et
+                    <strong>Stock négatif</strong>. Un magasinier qui n'est pas administrateur d'Inventaire ouvre
+                    d'ailleurs l'écran directement filtré sur Mes comptages.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Saisir les quantités comptées et appliquer</h2>
+                <p>Recherchez « Bureau personnalisable », puis cliquez dans la colonne <strong>Compté</strong> de
+                    chaque ligne pour y porter la quantité trouvée en rayon. L'exemple compte trois variantes : 43 au
+                    lieu de 45, 50 comme prévu, 56 au lieu de 55. Enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Inventaire physique d'Odoo 20 filtré sur Bureau personnalisable : FURN_0096 disponible 45 compté 43 différence -2 en rouge, FURN_0097 disponible 50 compté 50 différence 0, FURN_0098 disponible 55 compté 56 différence 1 en vert, boutons Historique, Appliquer, Effacer sur les lignes comptées" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois lignes comptées : un manque, une confirmation, un surplus.</figcaption>
+                </figure>
+                <p>La <strong>Différence</strong> apparaît aussitôt, en rouge pour un manque, en vert pour un
+                    surplus. Rien n'est encore modifié : le stock disponible reste 45, 50 et 55 tant que le comptage
+                    n'est pas appliqué. Une saisie erronée s'annule par le bouton <strong>Effacer</strong> de la
+                    ligne. La ligne à 50, sans écart, mérite d'être comptée aussi : l'appliquer enregistre que
+                    l'article a été vérifié.</p>
+                <p>Pour appliquer, deux chemins :</p>
+                <ul>
+                    <li>le bouton <strong>Appliquer</strong> d'une ligne corrige cette ligne seule, sans demander de
+                        motif ;</li>
+                    <li>cochez les lignes puis cliquez sur <strong>Appliquer</strong> dans la barre du haut, ou sur
+                        <strong>Appliquer à tout</strong> (toutes les lignes comptées de la recherche en cours) :
+                        Odoo demande alors un motif.</li>
+                </ul>
+                <p>Le second chemin est préférable : le <strong>Motif de l'inventaire</strong> devient la
+                    référence des mouvements créés. Il vaut « Inventaire physique » par défaut ; remplacez-le par un
+                    texte qui dira quelque chose dans six mois, ici « Comptage tournant des bureaux ». La
+                    <strong>Date de comptage</strong> date les mouvements.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Inventaire physique d'Odoo 20 : Motif de l'inventaire Comptage tournant des bureaux, Date de comptage 6 octobre 14:48, boutons Mettre à jour les quantités et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le motif saisi ici devient la référence des mouvements de correction.</figcaption>
+                </figure>
+                <p>Après <strong>Mettre à jour les quantités</strong>, le stock disponible vaut 43, 50 et 56, et les
+                    colonnes du comptage se vident.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 : TRACE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Retrouver la trace des écarts</h2>
+                <p>Chaque ligne appliquée produit un mouvement de stock terminé, entre l'emplacement compté et un
+                    emplacement virtuel, <strong>Inventory adjustment</strong> (libellé de la démonstration) : un
+                    manque part vers lui, un surplus en vient. Dans <strong>Inventaire › Analyse › Historique des
+                    mouvements</strong>, une recherche sur la référence retrouve le comptage entier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Historique des mouvements d'Odoo 20 filtré sur la référence Comptage tournant : trois lignes Comptage tournant des bureaux, FURN_0098 de Inventory adjustment vers WH/Stock 1, FURN_0097 de WH/Stock vers Inventory adjustment 0, FURN_0096 de WH/Stock vers Inventory adjustment 2, statut Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois mouvements, un par ligne comptée, y compris la confirmation à 0.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Historique</strong> d'une ligne de l'écran Inventaire physique ouvre la même
+                    liste, limitée à l'article et à l'emplacement. Une correction appliquée ligne par ligne, sans
+                    motif, porte la référence « Quantité de produit mise à jour » (ou « … confirmée » quand l'écart
+                    est nul), suivie du nom de l'utilisateur.</p>
+                <p><strong>Et la comptabilité ?</strong> Dans la démonstration, les catégories d'articles sont en
+                    valorisation <strong>Periodic (at closing)</strong>, libellé resté en anglais : appliquer
+                    l'inventaire ne crée aucune pièce comptable (vérifié : aucune pièce créée par ces trois
+                    mouvements). La valeur du stock se lit dans <strong>Inventaire › Analyse › Stock</strong>, colonne
+                    Valeur totale, calculée sur la quantité disponible et le coût unitaire. Les écritures au fil de
+                    l'eau ne concernent que la valorisation <strong>Perpetual (at invoicing)</strong> avec un compte
+                    de valorisation posé sur l'emplacement d'ajustement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 : DEMANDER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Demander un comptage à un magasinier</h2>
+                <p>Le responsable d'inventaire ne compte pas forcément lui-même. Il coche les lignes à recompter (ici
+                    les deux « Chaise de conférence ») et clique sur <strong>Demander un inventaire</strong>, bouton
+                    réservé aux administrateurs d'Inventaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Demande d'inventaire d'Odoo 20 : Attribuer à Mitchell Admin, Planifié le/à 15 octobre, case Afficher la quantité prévue décochée, boutons Confirmer et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Demander un inventaire : qui compte, et pour quand.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Attribuer à</strong> : l'utilisateur qui comptera (vide : n'importe qui) ;</li>
+                    <li><strong>Planifié le/à</strong> : la date à laquelle les lignes passent dans le filtre
+                        À compter ;</li>
+                    <li><strong>Afficher la quantité prévue</strong> : décochée, la feuille de comptage imprimée
+                        (bouton Imprimer, « Feuille de comptage ») laisse la colonne quantité vide. Le magasinier
+                        compte sans connaître le chiffre attendu, ce qui évite de « trouver » ce qu'Odoo annonce. Ce
+                        réglage vaut pour toutes les demandes suivantes.</li>
+                </ul>
+                <p>Après <strong>Confirmer</strong>, les lignes portent l'utilisateur et la nouvelle date :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Inventaire physique d'Odoo 20 : Chaise de conférence Acier disponible 34 et Chaise de conférence Aluminium disponible 30, planifiées au 15 octobre, utilisateur Mitchell Admin" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le comptage demandé apparaît dans Mes comptages de l'utilisateur désigné.</figcaption>
+                </figure>
+                <p>Le magasinier ouvre Inventaire physique, voit ses lignes, saisit ses quantités ; le responsable
+                    contrôle les écarts avec le filtre À appliquer et applique. Une fois appliquée, la ligne perd son
+                    utilisateur et reprend la date de comptage suivante. Pour un article suivi par lots, la demande
+                    porte sur tous les lots de l'article dans l'emplacement : chaque lot se compte sur sa propre
+                    ligne (voir <a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de
+                    série et dates de péremption dans Odoo 20</a>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 : CONFLIT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Quand le stock bouge pendant le comptage</h2>
+                <p>Un comptage dure, et l'entrepôt ne s'arrête pas. Le « Bureau pour quatre personnes » est compté
+                    à 20, conforme au stock. Avant l'application, la livraison WH/OUT/00020 de 4 bureaux est validée :
+                    le disponible tombe à 16, la quantité comptée reste à 20. Odoo signale la ligne en orange.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Ligne d'inventaire physique d'Odoo 20 en orange : Bureau pour quatre personnes, disponible 16, compté 20, différence 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Disponible 16, compté 20, différence 0 : la ligne est en conflit.</figcaption>
+                </figure>
+                <p>La différence affichée est toujours 0 : elle a été calculée à la saisie. Au clic sur
+                    <strong>Appliquer</strong>, Odoo ne tranche pas seul :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Conflit dans l'ajustement d'inventaire d'Odoo 20 : explication des mouvements survenus depuis la saisie, Bureau pour quatre personnes quantité 16, quantité comptée 20, différence 0, boutons Garder la quantité comptée, Garder la différence, Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le conflit d'inventaire : garder le chiffre compté ou l'écart constaté.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Garder la quantité comptée</strong> : le stock repasse à 20. Juste si le comptage a
+                        eu lieu <em>après</em> le départ de la marchandise (la livraison avait été validée en retard) ;</li>
+                    <li><strong>Garder la différence</strong> : l'écart constaté (ici 0) est appliqué au stock
+                        actuel, qui reste à 16. Juste si le comptage a eu lieu <em>avant</em> la sortie ;</li>
+                    <li><strong>Ignorer</strong> : rien n'est appliqué, la ligne reste en conflit, à recompter.</li>
+                </ul>
+                <p>Ici les bureaux ont été comptés avant leur départ : <strong>Garder la différence</strong>. Le stock
+                    reste à 16 et un mouvement à 0, « Quantité de produit confirmée (Mitchell Admin) », trace la
+                    vérification. Le filtre <strong>Conflits</strong> de l'écran rassemble toutes les lignes dans ce
+                    cas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 : FRÉQUENCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Programmer les comptages : date annuelle et fréquence par emplacement</h2>
+                <p>La date <strong>Planifié</strong> de chaque ligne vient de deux réglages.</p>
+                <p><strong>La date d'inventaire annuelle</strong>, dans <strong>Inventaire › Configuration ›
+                    Paramètres</strong>, section Opérations : un jour et un mois, 31 décembre par défaut. Toute ligne
+                    sans autre règle est planifiée à la prochaine occurrence de cette date.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Réglage Date d'inventaire annuelle d'Odoo 20 : Par défaut, le prochain inventaire physique sera planifié à cette date, jour 31, mois Décembre" style="max-width:60%; height:auto;"/>
+                    <figcaption>La date d'inventaire annuelle de la société.</figcaption>
+                </figure>
+                <p><strong>La fréquence par emplacement</strong>, pour l'inventaire tournant (comptage cyclique). Elle
+                    se règle sur la fiche de l'emplacement, ce qui suppose l'option <strong>Emplacements de
+                    stockage</strong> (Paramètres, section Entrepôt) ; la mise en place des emplacements est décrite
+                    dans <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                    et livraisons en plusieurs étapes dans Odoo 20</a>. Ouvrez <strong>Inventaire › Configuration ›
+                    Emplacements</strong>, puis « WH/Stock/Shelf 2 » : bloc <strong>Comptage cyclique</strong>,
+                    <strong>Fréquence d'inventaire</strong> 30 jours.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fiche de l'emplacement Shelf 2 dans Odoo 20 : emplacement parent WH/Stock, type Interne, bloc Comptage cyclique avec Fréquence d'inventaire 30 jours, Dernier inventaire 24 septembre, Prochain prévu 24 octobre" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un emplacement compté tous les 30 jours.</figcaption>
+                </figure>
+                <p><strong>Prochain prévu</strong> se calcule à partir du <strong>Dernier inventaire</strong> de
+                    l'emplacement (ici le 24 sept., d'où le 24 oct.). Pour une ligne de l'emplacement, Odoo retient la
+                    plus proche des deux dates : fréquence ou date annuelle.</p>
+                <p>Mais les lignes déjà présentes dans Shelf 2 restent planifiées au 31 déc. : le nouveau réglage ne
+                    réécrit pas les dates existantes. Il prend effet au premier comptage appliqué sur l'emplacement.
+                    Les deux lots de « Boîtier pour câbles » de Shelf 2 sont comptés (50 et 40, conformes) puis
+                    appliqués avec Appliquer à tout : leur date Planifié passe au 5 nov., soit le jour du comptage
+                    plus 30 jours.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Inventaire physique d'Odoo 20 filtré sur WH/Stock/Shelf 2 : Boîtier pour cables lots CM-BOX-00001 disponible 50 et CM-BOX-00002 disponible 40, planifiés au 5 novembre" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le comptage appliqué, la fréquence de 30 jours planifie le suivant.</figcaption>
+                </figure>
+                <p>Le cycle tourne alors tout seul : le 5 nov., les deux lignes entrent dans le filtre À compter.
+                    Une pratique courante consiste à donner une fréquence courte aux emplacements des articles chers
+                    ou très mouvementés, et à laisser le reste à la date annuelle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Écran Inventaire physique, motif d'ajustement, demande de
+                        comptage, feuille de comptage, conflits, date annuelle et fréquence par emplacement sont inclus
+                        dans Odoo 20 Community. Par rapport à Odoo 19, ce fonctionnement est inchangé ; seul le menu
+                        Analyse « Emplacements » devient « Stock by Location ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un réglage de fréquence n'est pas rétroactif</h4>
+                    <p>Changer la date annuelle ou la fréquence d'un emplacement ne déplace pas les dates Planifié
+                        déjà posées. Après un changement, appliquez un premier comptage sur l'emplacement, ou utilisez
+                        Demander un inventaire pour fixer vous-même la date des lignes concernées.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le bouton Appliquer d'une ligne ne demande pas de motif</h4>
+                    <p>Il corrige le stock sous la référence générique « Quantité de produit mise à jour ». Pour un
+                        historique lisible, sélectionnez les lignes et passez par Appliquer dans la barre du haut, ou
+                        par Appliquer à tout.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Appliquer à tout s'arrête à la recherche en cours</h4>
+                    <p>Il applique les lignes comptées de la recherche affichée, pas celles masquées par un filtre.
+                        Vérifiez avec le filtre À appliquer qu'aucun comptage ne reste en attente, sans quoi la
+                        différence saisie attend indéfiniment, et risque le conflit au prochain mouvement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Compter avant de livrer, ou noter l'heure</h4>
+                    <p>Le conflit ne dit pas qui a raison. Pour choisir entre quantité comptée et différence, il faut
+                        savoir si la marchandise était en rayon au moment du comptage. Un comptage d'emplacement mené
+                        hors des heures de préparation évite la question.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> enregistrer une casse découverte en rayon, avec sa trace.</p>
+                    <p><strong>Indication :</strong> dans Inventaire physique, recherchez « Boîte de rangement »
+                        (110 en stock dans WH/Stock sur la démonstration). Demandez un inventaire attribué à
+                        vous-même pour aujourd'hui, saisissez 108 dans Compté, puis sélectionnez la ligne et cliquez
+                        sur Appliquer avec le motif « Casse constatée ».</p>
+                    <p><strong>Critère de réussite :</strong> le disponible vaut 108 ; l'Historique des mouvements
+                        montre une ligne « Casse constatée » de 2 unités, de WH/Stock vers Inventory adjustment ; la
+                        ligne d'inventaire n'a plus d'utilisateur et revient au 31 déc.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Compter, c'est saisir la colonne Compté ; rien ne change avant l'application.</li>
+                    <li>Chaque correction est un mouvement vers ou depuis l'emplacement d'ajustement d'inventaire,
+                        référencé par le motif saisi.</li>
+                    <li>Demander un inventaire attribue des lignes à un utilisateur pour une date ; la feuille de
+                        comptage peut masquer la quantité attendue.</li>
+                    <li>Date annuelle et fréquence par emplacement planifient les comptages, à partir du prochain
+                        comptage appliqué.</li>
+                    <li>Un stock qui bouge pendant le comptage ouvre un conflit : garder le chiffre compté ou
+                        l'écart.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/charger-stock-initial-odoo-174">Charger son stock initial</a></h5>
+                            <p class="small text-muted mb-0">Le premier inventaire, et l'import des quantités par fichier.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et péremption</a></h5>
+                            <p class="small text-muted mb-0">Compter un article suivi, lot par lot.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Un stock juste, c'est aussi des commandes fournisseurs justes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,458 @@
+<!--
+Article — Facture d'acompte dans Odoo 20, pas à pas
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : facture-acompte-odoo
+Meta : Facturer un acompte dans Odoo 20 Community : pourcentage ou montant fixe, TVA, compte d'acompte, paiement avant livraison, annulation et facture finale.
+Mot-clé cible : odoo facture acompte
+Catégorie : Fonctionnel Odoo
+Tags : debutant, comptabilite, guide, community
+Temps de lecture : ~9 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_c2 (copie de vs20_func, démonstration, Ventes + Inventaire).
+  sale/wizard/sale_make_invoice_advance.py:14-23 (trois choix, défaut Facture normale), :40 (deduct_down_payments
+  défaut vrai, absent de la vue → déduction d'office), :55-58 (Déjà facturé : acomptes confirmés seulement),
+  :135-142 (montant ≤ 0 refusé), :166-231 (création : section + lignes d'acompte sur la commande, une ligne par taxe),
+  :211 et :279-287 (compte : compte d'acompte de la société, sinon compte de revenus de l'article — 🆕 v20 :
+  _get_down_payment_account absent du fichier 19, grep -c = 0), :243-245 (compte d'acompte converti par la position
+  fiscale, nouveau en 20), :271 (« Acompte de 30,00% ») ;
+  sale/views/sale_order_views.xml:288-295 (bouton secondaire = assistant ouvert sur Acompte (pourcentage)) ;
+  sale/models/sale_order.py:2590-2605 (ligne d'acompte sans article, is_downpayment) ;
+  sale/models/sale_order_line.py:612-640 (libellés brouillon / Annulé / réf), :2036-2038 (déduction sur le même compte
+  que la facture d'acompte) ; sale/models/account_move.py:36-43 (suppression d'un brouillon → ligne retirée de la
+  commande), :142-160 (annulation → ligne à 0) ; sale/models/res_company.py:70-76 + sale/wizard/res_config_settings_views.xml:243-244
+  (Compte d'acompte, placeholder « Compte le plus utilisé du client ») ; account/views/res_config_settings_views.xml:294-295
+  (bloc Comptes par défaut réservé au groupe « Montrer les fonctions de comptabilité complètes ») ;
+  l10n_fr_account/models/template_fr_comp.py:41 (plan FR : 4191).
+  Parcours joué : S00082 Acme Corporation, 10 Tiroir × 110,50 $ (taxe 15 %, plan générique de la démo) = 1 105 $ HT,
+  1 270,75 $ TTC ; acompte 30 % → FAC/2026/00015 331,50 + 49,73 = 381,23 $, compte 400000 Product Sales (pas de compte
+  d'acompte sur la société de démo), payée (Payer → Créer un paiement) avant livraison ; acompte fixe 200 $ → brouillon
+  173,91 + 26,09 = 200 $, annulé → ligne « Acompte (Annulé) » à 0 ; livraison WH/PICK/00018, WH/PACK/00002,
+  WH/OUT/00085 ; facture finale FAC/2026/00016 : 1 105 − 331,50 = 773,50 + 116,02 = 889,52 $.
+  Tests complémentaires (S00083, Wood Corner) : lignes à 15 % et 0 % → acompte de 50 % en deux lignes (110,50 et 50) ;
+  avoir de l'acompte → ligne de commande à 0, montant facturé 0 ; brouillon d'acompte supprimé → lignes retirées.
+  Groupe « Montrer les fonctions de comptabilité complètes » coché sur Mitchell Admin (mode développeur) pour la capture 08.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Facture d'acompte dans Odoo 20, pas à pas</h1>
+                <p class="lead mt-3 text-white">Une commande est confirmée, la marchandise n'est pas encore partie,
+                    et l'entreprise veut encaisser une partie du prix dès maintenant. Odoo 20 facture cet acompte
+                    depuis la commande, en pourcentage ou en montant fixe, puis le déduit tout seul de la facture
+                    finale.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau débutant · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec Ventes et Inventaire installés. La facture d'acompte fait partie de l'application
+                        Ventes, incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Un acompte est une facture qui porte sur une partie d'une commande, émise avant que la commande
+                    soit livrée ou terminée. Dans Odoo, il ne se saisit pas à la main dans Facturation : il naît
+                    de la commande de vente, qui garde la trace de chaque acompte et le retire de la facture
+                    finale.</p>
+                <p>L'exemple suit la commande S00082 de la base de démonstration : Acme Corporation, 10 « Tiroir »
+                    à 110,50 $, soit 1 105 $ hors taxes et 1 270,75 $ toutes taxes comprises. La démonstration
+                    installe un plan comptable générique en dollars, avec une taxe de 15 % : les montants et les
+                    numéros de compte des captures en découlent, le mécanisme est le même avec un plan français.
+                    La création de la commande, la livraison et la facturation ordinaire sont décrites dans
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande dans Odoo 20</a> ; le présent article part d'une commande déjà confirmée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>facturer un acompte en pourcentage ou en montant fixe ;</li>
+                    <li>lire ce que l'acompte laisse sur la commande, et sur quel compte il est enregistré ;</li>
+                    <li>prévoir le traitement de la taxe ;</li>
+                    <li>annuler ou corriger un acompte ;</li>
+                    <li>émettre la facture finale qui déduit l'acompte déjà payé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Facturer un acompte en pourcentage</h2>
+                <p>Sur la commande confirmée, cliquez sur <strong>Créer une facture</strong>. Tant que rien n'est
+                    livré, le bouton est gris : les Tiroirs se facturent sur les quantités livrées, il n'y a donc
+                    rien à facturer « normalement », et l'assistant s'ouvre directement sur <strong>Acompte
+                    (pourcentage)</strong>. Saisissez 30 dans <strong>Acompte</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Assistant Créer facture(s) d'Odoo 20 : Facture normale, Acompte (pourcentage) sélectionné, Acompte (montant fixe), champ Acompte à 30,00 %, boutons Créer brouillon et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'assistant de facturation, réglé sur un acompte de 30 %.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer brouillon</strong>. Odoo ouvre une facture en brouillon d'une seule
+                    ligne, « Acompte de 30,00% », puis vous la validez par <strong>Confirmer</strong> : elle prend
+                    le numéro FAC/2026/00015.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Facture client FAC/2026/00015 d'Odoo 20 pour Acme Corporation : une ligne Acompte de 30,00% quantité 1 prix 331,50 taxe 15 %, montant hors taxes 331,50 dollars, Tax 15% 49,73 dollars, total 381,23 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture d'acompte confirmée : 30 % du hors taxes, taxe recalculée.</figcaption>
+                </figure>
+                <p>Le pourcentage s'applique au hors taxes de la commande : 30 % de 1 105 $ donnent 331,50 $, et
+                    la taxe de 15 % s'y ajoute, soit 381,23 $, exactement 30 % du total de la commande. Une
+                    valeur nulle ou négative est refusée par le message « La valeur du montant de l'acompte doit
+                    être positive. »</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que l'acompte laisse sur la commande</h2>
+                <p>Revenez sur S00082. Odoo a ajouté une section <strong>Acomptes</strong> et, dessous, une ligne
+                    « Acompte (réf : FAC/2026/00015 le 06/10/2026) ». Avant la confirmation de la facture, la même
+                    ligne s'intitulait « Acompte : 06/10/2026 (brouillon) ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Lignes de la commande S00082 dans Odoo 20 : Tiroir 10 unités 1 105 dollars non livré, section Acomptes, ligne Acompte réf FAC/2026/00015 le 06/10/2026, quantité 0, facturé 1, prix 331,50, taxe 15 %" style="max-width:100%; height:auto;"/>
+                    <figcaption>La ligne d'acompte : quantité 0, facturée 1, sans article.</figcaption>
+                </figure>
+                <p>Trois détails comptent :</p>
+                <ul>
+                    <li><strong>aucun article « Acompte » n'est créé</strong> : la ligne n'a pas d'article, elle est
+                        simplement marquée comme acompte. Inutile de chercher un produit d'acompte dans le
+                        catalogue ou dans les réglages de Ventes ;</li>
+                    <li>la quantité commandée vaut 0 et la quantité facturée 1 : le <strong>total de la commande ne
+                        change pas</strong> (1 270,75 $), l'acompte n'est pas une vente de plus ;</li>
+                    <li>la ligne garde le prix hors taxes et la taxe de l'acompte, ce qui servira à la déduction
+                        finale.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le compte de l'acompte</h2>
+                <p>Le compte comptable de la ligne d'acompte se choisit dans <strong>Facturation › Configuration
+                    › Paramètres</strong>, bloc <strong>Comptes par défaut</strong>, champ <strong>Compte
+                    d'acompte</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Réglages Comptes produits d'Odoo 20 : Compte des revenus 400000 Product Sales, Compte de charges 600000 Charges, Compte d'acompte vide avec le texte indicatif Compte le plus utilisé du client" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le champ Compte d'acompte, vide sur la société de démonstration.</figcaption>
+                </figure>
+                <p>Ce champ est rempli d'office par le plan comptable français d'Odoo : compte 4191 « Clients
+                    créditeurs - Avances et acomptes reçus sur commandes », un compte de passif. Le plan générique
+                    de la démonstration, lui, le laisse vide. Dans ce cas, Odoo 20 enregistre l'acompte sur le
+                    <strong>compte de revenus des articles commandés</strong> : FAC/2026/00015 est passée au
+                    crédit de 400000 Product Sales. C'est une nouveauté de la version 20 ; la version 19 ne
+                    regardait que le compte d'acompte de la société. Odoo 20 applique aussi au compte d'acompte
+                    la correspondance de comptes de la position fiscale de la commande.</p>
+                <p>Le bloc Comptes par défaut n'apparaît que pour un utilisateur doté du droit
+                    <strong>Montrer les fonctions de comptabilité complètes</strong>. Ce droit se coche en mode
+                    développeur, sur la fiche de l'utilisateur, onglet <strong>Droits d'accès</strong>, rubrique
+                    <strong>Droits supplémentaires</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Encaisser l'acompte avant la livraison</h2>
+                <p>Sur FAC/2026/00015, le bouton <strong>Payer</strong> ouvre l'assistant de paiement ;
+                    <strong>Créer un paiement</strong> enregistre 381,23 $ et la facture passe au ruban PAYÉ. Le
+                    fil de discussion de la commande note « Facture FAC/2026/00015 payée ».</p>
+                <p>Le paiement de l'acompte reste une affaire de facture : il ne déclenche ni ne bloque la
+                    livraison. S00082 garde son étiquette « Non livré » et son bon de livraison suit son propre
+                    cours ; le magasinier le valide quand la marchandise part, que l'acompte soit réglé ou non.
+                    Le suivi des règlements et des retards est détaillé dans
+                    <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Facturer un acompte en montant fixe</h2>
+                <p>Un second acompte de 200 $ est demandé. Rouvrez <strong>Créer une facture</strong>, choisissez
+                    <strong>Acompte (montant fixe)</strong> et saisissez 200 dans <strong>Montant de l'acompte
+                    (fixe)</strong>. Un nouveau champ, <strong>Déjà facturé</strong>, rappelle les acomptes
+                    précédents (seuls les acomptes confirmés sont comptés).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Assistant Créer facture(s) d'Odoo 20 sur Acompte (montant fixe) : Montant de l'acompte (fixe) 200 dollars, Déjà facturé 381,23 dollars" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le montant fixe, avec le rappel des acomptes déjà facturés.</figcaption>
+                </figure>
+                <p>Le brouillon obtenu montre que <strong>le montant fixe s'entend taxes comprises</strong> : la
+                    ligne « Acompte » vaut 173,91 $ hors taxes, la taxe 26,09 $, le total 200 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Facture client en brouillon d'Odoo 20 pour Acme Corporation : ligne Acompte prix 173,913043 taxe 15 %, montant hors taxes 173,91 dollars, Tax 15% 26,09 dollars, total 200 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un acompte fixe de 200 $ : Odoo en déduit le hors taxes.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La taxe sur un acompte</h2>
+                <p>L'acompte reprend les taxes des lignes de la commande. Avec une seule taxe, comme ici, il tient
+                    en une ligne. Quand la commande mélange plusieurs taux, Odoo répartit l'acompte au prorata et
+                    crée <strong>une ligne d'acompte par taxe</strong> : sur une commande de 2 Tiroirs à 15 % et
+                    d'un Boîtier pour câbles à 0 %, un acompte de 50 % a produit deux lignes, 110,50 $ à 15 % et
+                    50 $ à 0 %.</p>
+                <p>La taxe est donc facturée au moment de l'acompte, puis reprise en négatif sur la facture finale
+                    (étape 8) : au bout du compte, la taxe facturée correspond à celle de la commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Annuler ou corriger un acompte</h2>
+                <p>Le second acompte n'était finalement pas voulu. Trois cas se présentent.</p>
+                <ul>
+                    <li><strong>Facture en brouillon, à annuler</strong> : bouton <strong>Annuler</strong> de la
+                        facture. Sur la commande, la ligne devient « Acompte (Annulé) », à 0, et reste
+                        visible.</li>
+                    <li><strong>Facture en brouillon, à supprimer</strong> : la suppression de la facture retire
+                        aussi la ligne d'acompte de la commande.</li>
+                    <li><strong>Facture déjà confirmée</strong> : elle ne s'annule plus, elle se corrige par un
+                        <strong>Avoir</strong>. Une fois l'avoir confirmé, la ligne d'acompte de la commande
+                        retombe à 0 et l'acompte n'est plus déduit de la facture finale.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Lignes de la commande S00082 dans Odoo 20 : Tiroir, section Acomptes, Acompte réf FAC/2026/00015 facturé 1 à 331,50, et Acompte (Annulé) à 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'acompte annulé reste sur la commande, à zéro.</figcaption>
+                </figure>
+                <p>Le fonctionnement des avoirs eux-mêmes est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                    avoirs dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. La facture finale déduit l'acompte</h2>
+                <p>Les 10 Tiroirs sont livrés. Le bouton <strong>Créer une facture</strong> redevient le bouton
+                    principal ; l'assistant s'ouvre sur <strong>Facture normale</strong> et affiche
+                    <strong>Déjà facturé</strong> : 381,23 $. Aucune case n'est à cocher : Odoo déduit d'office
+                    tous les acomptes confirmés. Cliquez sur <strong>Créer brouillon</strong>, puis
+                    <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Facture client FAC/2026/00016 d'Odoo 20 pour Acme Corporation : Tiroir 10 unités 1 105 dollars, section Acomptes moins 331,50 dollars, ligne Acompte réf FAC/2026/00015 quantité moins 1 prix 331,50, montant hors taxes 773,50 dollars, Tax 15% 116,02 dollars, total 889,52 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture finale : la commande entière, moins l'acompte.</figcaption>
+                </figure>
+                <p>FAC/2026/00016 reprend toute la commande, puis une section Acomptes dont la ligne, en quantité
+                    −1, retire les 331,50 $ hors taxes et leur taxe, sur le même compte que la facture d'acompte. Le
+                    client doit 889,52 $ : avec les 381,23 $ déjà encaissés, le total payé fait bien 1 270,75 $.
+                    L'acompte annulé, à 0, n'apparaît pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Acomptes en pourcentage et en montant fixe, compte d'acompte,
+                        annulation, avoir et déduction sur la facture finale sont inclus dans Odoo 20
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sans compte d'acompte, l'acompte part en chiffre d'affaires</h4>
+                    <p>Si le champ Compte d'acompte est vide, l'acompte est crédité sur le compte de revenus des
+                        articles. Le texte indicatif du champ, « Compte le plus utilisé du client », ne décrit pas
+                        ce qui s'est passé sur la démonstration : c'est le compte de l'article qui a été pris.
+                        Vérifiez ce réglage avant le premier acompte, avec l'expert-comptable.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le montant fixe est taxes comprises</h4>
+                    <p>Un acompte fixe de 200 $ donne une facture de 200 $ au total, pas 200 $ hors taxes. Pour
+                        un montant hors taxes rond, passez par le pourcentage.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le bouton gris crée un acompte</h4>
+                    <p>Avant la livraison, le bouton gris « Créer une facture » ouvre l'assistant sur Acompte
+                        (pourcentage). C'est le bon chemin pour un acompte ; ce n'est pas une facture de la
+                        commande.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> corriger un acompte déjà confirmé.</p>
+                    <p><strong>Indication :</strong> sur une nouvelle commande confirmée pour Wood Corner (2
+                        Tiroir), facturez un acompte de 50 %, confirmez-le, puis émettez un avoir depuis le bouton
+                        Avoir de la facture et confirmez-le.</p>
+                    <p><strong>Critère de réussite :</strong> sur la commande, la ligne d'acompte affiche un prix
+                        unitaire de 0 ; une facture normale émise après livraison ne contient plus de section
+                        Acomptes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'acompte se facture depuis la commande, bouton Créer une facture ; aucun article
+                        d'acompte n'est créé.</li>
+                    <li>Le pourcentage porte sur le hors taxes ; le montant fixe s'entend taxes comprises ; une
+                        ligne par taxe.</li>
+                    <li>Le compte vient du réglage Compte d'acompte, sinon du compte de revenus de l'article.</li>
+                    <li>Brouillon : annuler ou supprimer ; facture confirmée : avoir.</li>
+                    <li>La facture finale déduit d'office tous les acomptes confirmés.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Politiques de facturation, livraisons et reliquats.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">L'avoir qui corrige un acompte confirmé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaisser l'acompte et suivre les retards.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

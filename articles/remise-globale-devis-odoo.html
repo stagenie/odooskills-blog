@@ -1,0 +1,391 @@
+<!--
+Article — Remise globale sur un devis Odoo 20, sans module
+Série « Remises et promotions avec Odoo 20 » (blog Fonctionnel) — satellite
+Date : 2026-10-06
+Slug : remise-globale-devis-odoo
+Meta : Remise globale sur un devis Odoo 20 Community sans module : bouton Remise, pourcentage ou montant fixe, une ligne par taxe, effet sur la facture.
+Mot-clé cible : odoo remise globale
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~7 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_a1 (copie de vs20_func, démonstration native).
+  Prérequis : sale/wizard/res_config_settings_views.xml:34-35 (réglage « Remises » = group_discount_per_so_line) ;
+  sale/views/sale_order_views.xml:992-1014 (bouton Remise réservé à ce groupe, masqué si commande verrouillée ou annulée).
+  Assistant : sale/wizard/sale_order_discount.py:20-27 (3 modes, défaut « Sur toutes les lignes »), :31-38 (> 100 % refusé),
+  :57-98 (une ligne par combinaison de taxes ; libellé « Remise x% » ; libellé avec les taxes seulement si plusieurs
+  combinaisons NON vides), :105-128 (article « Remise » créé à la première utilisation : service, facturé à la commande,
+  sans taxe, catégorie Services ; stocké dans company.sale_discount_product_id), :166-172 (sol_discount écrit Rem.% ;
+  les deux autres ajoutent des lignes).
+  Montant fixe = TTC : account/models/account_tax.py:3612-3615 (cible = total taxes comprises), identique en 19
+  (odoo19 account_tax.py:3577-3580).
+  Ligne figée : sale/models/sale_order_line.py:768 (prix d'une ligne de remise globale jamais recalculé), :1049-1053.
+  Total Advantage (nouveau 20, absent de odoo19 sale_order.py) : sale/models/sale_order.py:955-1005, :1194-1203.
+  Facturation : sale/models/sale_order_line.py:1405-1413 + sale_order.py:893-902 (remise seule non facturable).
+  Compte : account/views/product_view.xml:70-74 (onglet Comptabilité, groupe account.group_account_readonly ;
+  « Compte des revenus » account/i18n/fr.po:11074-11075).
+  Parcours joué (écran) : réglage Remises coché ; S00085 Acme Corporation, 2 Dessus de table 380 $ (15 %) + 20 Petite étagère
+  2,83 $ (sans taxe) → Remise globale 10 % → lignes -76,00 $ (15 %) et -5,66 $ (sans taxe), total 837,54 $, Total Advantage
+  93,06 $ ; confirmée, facture FAC/2026/00015 comptabilisée, mêmes lignes, remises au compte Product Sales (shell).
+  S00086 mêmes lignes → Montant fixe 100 $ → -81,67 $ (15 %) et -6,08 $, total 930,60 → 830,60 $, Total Advantage 100,00 $.
+  Shell (annulé) : ligne ajoutée après la remise → lignes de remise inchangées ; commande 10 Chaise de bureau + Garantie,
+  remise 10 % puis livraison de 8 → première facture = 560 $ de chaises et toute la remise (-72 $) ; exercice : S00086 sans
+  remises + 4 Chaise de bureau + 10 % → -104,00 $ et -5,66 $, Total Advantage 125,26 $.
+Captures : content/blog/screenshots/remise-globale-devis-odoo/ (01-06, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Remise globale sur un devis Odoo 20, sans module</h1>
+                <p class="lead mt-3 text-white">« 10 % sur l'ensemble », « 100 $ de geste commercial » : pour
+                    accorder une remise sur tout un devis, inutile d'acheter un module. Le bouton Remise d'Odoo 20
+                    Community le fait en trois clics, calcule une ligne par taux de taxe et la reporte sur la
+                    facture. Il reste à connaître ses trois comportements cachés.</p>
+                <p class="small text-light mt-2">~7 minutes de lecture · niveau débutant · série <strong>Remises et promotions avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes et Facturation. Le bouton Remise fait partie de
+                        l'application Ventes ; il existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une remise globale porte sur le devis entier, et non sur un article. Odoo 20 la traduit en
+                    <strong>lignes négatives</strong> ajoutées sous les articles, avec l'article « Remise ». Ce
+                    choix a une conséquence utile : la remise apparaît telle quelle sur le devis envoyé, sur la
+                    commande et sur la facture, et la TVA se calcule sur le montant remisé.</p>
+                <p>La création du devis est décrite dans <a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du
+                    devis à la commande dans Odoo 20</a> ; les remises par ligne et par liste de prix dans
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises
+                    dans Odoo 20</a>. Le présent article se concentre sur la remise de tout le devis : ce qu'elle
+                    calcule quand les taxes diffèrent, le montant fixe, la facture, et les cas où elle se trompe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer le bouton Remise des devis ;</li>
+                    <li>accorder un pourcentage sur tout le devis, et lire les lignes produites par taux de taxe ;</li>
+                    <li>accorder un montant fixe, en sachant qu'il est taxes comprises ;</li>
+                    <li>retrouver la remise sur la facture ;</li>
+                    <li>choisir entre remise globale, remise par ligne, liste de prix et promotion.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les remises</h2>
+                <p>Le bouton n'existe que pour les utilisateurs qui ont droit aux remises. Ouvrez
+                    <strong>Ventes › Configuration › Paramètres</strong>, cochez <strong>Remises</strong>
+                    (« Accorder des remises sur les lignes de commande. »), puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres de Ventes dans Odoo 20 : case Remises cochée, Accorder des remises sur les lignes de commande, à côté de Promotions, Fidélité et Cartes-Cadeaux décochée et de Listes de prix cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le réglage Remises : il ouvre la colonne Rem.% des lignes et le bouton Remise du devis.</figcaption>
+                </figure>
+                <p>Ce seul réglage suffit : ni Listes de prix ni Promotions ne sont nécessaires (cocher Remises
+                    ne coche d'ailleurs pas Listes de prix). Le bouton <strong>Remise</strong> apparaît alors
+                    sous les lignes du devis. Sur une commande verrouillée ou annulée, il reste affiché mais
+                    grisé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Accorder 10 % sur tout le devis</h2>
+                <p>Le devis de démonstration S00085, pour Acme Corporation, porte deux articles soumis à des
+                    taxes différentes : 2 « Dessus de table » à 380 $ (taxe 15 %) et 20 « Petite étagère » à
+                    2,83 $, sans taxe dans la démonstration. Cliquez sur <strong>Remise</strong>, choisissez
+                    <strong>Remise globale</strong>, saisissez <code>10</code> puis <strong>Appliquer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Remise d'un devis Odoo 20 : 10 %, trois modes Sur toutes les lignes de commande, Remise globale sélectionnée, Montant fixe, boutons Appliquer et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>La fenêtre Remise s'ouvre sur « Sur toutes les lignes de commande » : choisissez Remise globale.</figcaption>
+                </figure>
+                <p>Odoo ajoute <strong>deux</strong> lignes « Remise », et non une : −76,00 $ avec la taxe 15 %
+                    (10 % des 760 $ de dessus de table) et −5,66 $ sans taxe (10 % des 56,60 $ d'étagères). Une
+                    ligne par combinaison de taxes, c'est ce qui permet à la TVA de baisser exactement
+                    d'autant : 102,60 $ au lieu de 114,00 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Lignes du devis S00085 dans Odoo 20 : Dessus de table 760 dollars taxe 15 %, Petite étagère 56,60 dollars sans taxe, deux lignes Remise 10.00% de -76 dollars avec taxe 15 % et de -5,66 dollars sans taxe ; boutons Remise et Shipping ; total hors taxes 734,94, taxe 102,60, total 837,54, Total Advantage 93,06 et marge" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une ligne de remise par taux de taxe, et le Total Advantage sous le total.</figcaption>
+                </figure>
+                <p>Sous le total, la ligne <strong>Total Advantage</strong>, nouvelle en Odoo 20, donne
+                    l'avantage consenti au client taxes comprises : 93,06 $ (76 $ + 15 % de taxe, plus 5,66 $).
+                    Elle cumule les remises par ligne et les remises globales. La marge affichée juste dessous
+                    (le module Marge est installé sur la base de démonstration) tient compte de la remise.</p>
+                <p>Les deux lignes portent ici le même libellé « Remise 10.00% » : seule la colonne Taxes les
+                    distingue. Quand le devis mélange plusieurs taux de taxe, le libellé précise les taxes
+                    concernées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Accorder un montant fixe</h2>
+                <p>Sur un devis identique (S00086), choisissez cette fois <strong>Montant fixe</strong> et
+                    saisissez <code>100</code>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Remise d'Odoo 20 en mode Montant fixe : remise de 100,00 dollars, boutons Appliquer et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>En mode Montant fixe, le champ passe en devise.</figcaption>
+                </figure>
+                <p>Odoo répartit les 100 $ entre les taux de taxe au prorata des montants, et le fait
+                    <strong>taxes comprises</strong> : −81,67 $ hors taxes avec la taxe 15 % (93,92 $ TTC) et
+                    −6,08 $ sans taxe. Le total passe de 930,60 $ à 830,60 $ : le client paie exactement
+                    100 $ de moins, et le Total Advantage affiche 100,00 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Devis S00086 dans Odoo 20 après une remise en montant fixe : lignes Remise de -81,67 dollars avec taxe 15 % et de -6,08 dollars sans taxe, prix unitaires à six décimales, total 830,60 dollars, Total Advantage 100,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un montant fixe de 100 $ : 100 $ de moins sur le total TTC.</figcaption>
+                </figure>
+                <p>Les prix unitaires des lignes de remise s'affichent avec six décimales (−81,667741) : c'est
+                    le prix exact qui donne le bon total après taxe, les montants restent arrondis au centime.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Retrouver la remise sur la facture</h2>
+                <p>Confirmez S00085, puis <strong>Créer une facture</strong> : laissez <strong>Facture normale</strong>,
+                    cliquez sur <strong>Créer brouillon</strong>, puis confirmez la facture.
+                    La facture FAC/2026/00015 reprend les lignes du devis, remises comprises, avec le même total
+                    de 837,54 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Facture FAC/2026/00015 d'Odoo 20 : Dessus de table, Petite étagère, deux lignes Remise 10.00% de -76 dollars avec taxe 15 % et -5,66 dollars, montant hors taxes 734,94, taxe 102,60, total 837,54 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture porte les lignes de remise : la TVA facturée est déjà réduite.</figcaption>
+                </figure>
+                <p>Comptablement, les lignes de remise sont des lignes de vente négatives. Elles vont au compte de
+                    revenus de l'article « Remise », qu'Odoo a créé à la première utilisation du bouton (un service
+                    sans taxe, facturé à la commande, catégorie Services) : sur la démonstration, le même compte de
+                    ventes que les articles. Pour isoler les remises accordées sur un compte dédié, renseignez le
+                    <strong>Compte des revenus</strong> de l'article Remise, onglet <strong>Comptabilité</strong> de
+                    sa fiche (visible seulement avec l'option « Montrer les fonctions de comptabilité complètes »
+                    des paramètres de Facturation).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMPARATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Remise globale, par ligne, liste de prix ou promotion ?</h2>
+                <div class="table-responsive">
+                    <table class="tmc">
+                        <thead><tr><th>Outil</th><th>Où</th><th>Effet</th><th>Quand l'utiliser</th></tr></thead>
+                        <tbody>
+                            <tr><td>Remise par ligne</td><td>Colonne Rem.% du devis</td><td>Baisse le prix d'une ligne ; pas de ligne ajoutée</td><td>Un geste sur un article précis</td></tr>
+                            <tr><td>Bouton Remise, « Sur toutes les lignes de commande »</td><td>Sous les lignes</td><td>Écrit le même % dans Rem.% de chaque ligne, en <strong>remplaçant</strong> les remises déjà saisies</td><td>Un % uniforme sur un devis sans autre remise</td></tr>
+                            <tr><td>Bouton Remise, « Remise globale »</td><td>Sous les lignes</td><td>Ajoute une ligne négative par taux de taxe ; les remises existantes restent</td><td>Un % sur le total, visible en tant que tel</td></tr>
+                            <tr><td>Bouton Remise, « Montant fixe »</td><td>Sous les lignes</td><td>Idem, pour un montant taxes comprises</td><td>Un geste commercial chiffré</td></tr>
+                            <tr><td>Liste de prix</td><td>Fiche client, champ Liste de prix du devis</td><td>Calcule le prix de chaque ligne selon le client et la quantité</td><td>Un tarif permanent (grossiste, revendeur)</td></tr>
+                            <tr><td>Promotion</td><td>Ventes › Promotions (réglage Promotions, Fidélité &amp; Cartes-Cadeaux)</td><td>Ligne de remise quand une condition est remplie</td><td>Une offre qui se répète, sans décision du commercial</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>La remise globale est une décision du commercial, devis par devis. Si la même remise doit
+                    s'appliquer à tous les devis qui atteignent un montant, une promotion sans code, présentée
+                    dans un prochain article de cette série, évite de la refaire à la main.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Le réglage Remises, le bouton Remise et ses trois modes, la
+                        ligne Total Advantage et le report sur la facture sont inclus dans Odoo 20 Community, sans
+                        module complémentaire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La remise ne suit pas les modifications du devis</h4>
+                    <p>Les lignes de remise sont calculées une fois, au clic sur Appliquer. Un article ajouté ou
+                        une quantité changée ensuite ne les modifie pas : sur la base de démonstration, quatre
+                        chaises ajoutées après la remise de 10 % sont restées sans remise. Finalisez les lignes
+                        d'abord ; en cas de changement, supprimez les lignes Remise et appliquez de nouveau.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le montant fixe est taxes comprises</h4>
+                    <p>Un montant fixe de 100 $ retire 100 $ du total TTC, soit 87,75 $ hors taxes sur ce
+                        devis. Pour une remise de 100 $ hors taxes, saisissez le montant majoré de la taxe, ou
+                        passez par un pourcentage.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Livraison partielle : toute la remise part sur la première facture</h4>
+                    <p>L'article Remise est facturé à la commande. Sur une commande de dix chaises livrée en deux
+                        fois, la facture des huit premières chaises a repris la remise entière (−72 $, 10 % de
+                        toute la commande). À l'inverse, tant que seule la remise reste à facturer, la commande
+                        n'est pas « à facturer ». Si la remise doit suivre les livraisons, préférez la colonne Rem.%
+                        des lignes (ou le mode « Sur toutes les lignes de commande ») : elle est reportée sur chaque
+                        ligne facturée.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> refaire une remise globale après avoir modifié un devis.</p>
+                    <p><strong>Indication :</strong> sur un devis pour Acme Corporation avec 2 « Dessus de table »,
+                        20 « Petite étagère » et une remise de 100 $ en montant fixe, supprimez les deux lignes
+                        Remise, ajoutez 4 « Chaise de bureau », puis appliquez une Remise globale de 10 %.</p>
+                    <p><strong>Critère de réussite :</strong> deux lignes « Remise 10.00% » de −104,00 $ (taxe
+                        15 %) et −5,66 $ (sans taxe) ; le Total Advantage affiche 125,26 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une remise globale ne demande aucun module : le réglage Remises de Ventes suffit.</li>
+                    <li>« Remise globale » et « Montant fixe » ajoutent une ligne négative par taux de taxe ; la
+                        TVA baisse d'autant, sur le devis comme sur la facture.</li>
+                    <li>Le montant fixe s'entend taxes comprises.</li>
+                    <li>La remise est figée au moment où elle est appliquée : à refaire après toute modification.</li>
+                    <li>Nouveau en Odoo 20 : le Total Advantage, avantage TTC consenti, sous le total du devis.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Le prix par client et la remise par ligne.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Créer, envoyer et confirmer le devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">La suite de la commande remisée.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

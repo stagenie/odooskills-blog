@@ -1,0 +1,520 @@
+<!--
+Article — Unités de mesure et conditionnements dans Odoo 20
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : unite-mesure-conditionnement-odoo
+Mot-clé cible : odoo unité de mesure (+ odoo conditionnement / packaging)
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b8 (copie de vs20_func : démonstration,
+  Inventaire, Achats, Ventes, Fabrication, Feuilles de temps), port 9038.
+  Modèle des unités : uom/models/uom_uom.py:31-40 (name, relative_factor « Contient », relative_uom_id « Unité de
+  référence », factor calculé par la chaîne des références, parent_store) ; :54-60 (factor = relative_factor ×
+  factor de la référence) ; :78-82 (unité sans référence ≠ 1 → « Reference unit of measure is missing. ») ;
+  :62-76 (avertissement si on modifie le facteur d'une unité système de plus d'un jour : données existantes non mises
+  à jour) ; :84-91 + :21-29 (unités du module uom non supprimables sauf Heures, Douzaines, Pack de 6 → archiver) ;
+  :124-154 (_compute_quantity : qty × factor / factor cible, arrondi « Product Unit ») ; :170-177 (_compute_price).
+  Aucun modèle de catégorie d'unités ni de conditionnement : ls odoo/addons/uom/models (uom_uom.py seul),
+  ls odoo/addons/product/models (aucun product_packaging.py) — même chose en 19 (odoo19-dev).
+  uom/data/uom_data.xml:16-26 (Pack de 6 actif, Douzaines archivée).
+  Réglage : product/models/res_config_settings.py:9 (group_uom « Unités de mesure et emballages ») ;
+  stock/views/res_config_settings_views.xml:120-127 et purchase/views/res_config_settings_views.xml:58-67 (case +
+  lien « Unités et conditionnements ») ; stock/views/stock_menu_views.xml:30-32 (menu Configuration › Unités et
+  conditionnements, groupe uom.group_uom) ; sale_timesheet/data/sale_service_data.xml:14-16 (Feuilles de temps +
+  Ventes : group_uom impliqué pour tous les utilisateurs internes → case cochée d'office sur la base).
+  Article : product/models/product_template.py:156-160 (uom_id « Unité », uom_ids « Conditionnements ») ;
+  product/views/product_views.xml:183-197 (Conditionnements, onglet Ventes) ; product/models/product_product.py:81-83
+  (extra_uom_ids « Emballages supplémentaires » par variante — absent en 19) ; :1425-1430 + product_template.py:1851-1858
+  (unités proposées = unité + conditionnements, si le réglage est actif) ; sale/models/sale_order_line.py:166,697-699
+  (domaine de l'unité d'une ligne de vente) ; purchase/models/purchase_order_line.py:48,533-538 (achat : + unités des
+  tarifs fournisseurs).
+  Tarifs fournisseurs : product/models/product_supplierinfo.py:26-29 (uom_id « Unité »), :71-75 (prix ramené à l'unité
+  de l'article pour comparer, (product_id or product_tmpl_id).uom_id) ; product_product.py:1247-1294 (_get_filtered_sellers :
+  quantité convertie dans l'unité du tarif puis comparée à sa quantité minimale ; tri par prix ramené) ;
+  Odoo 19 : odoo19-dev product_supplierinfo.py:71-73 (conversion vers product_id.uom_id seulement : vide pour un
+  tarif saisi sur le modèle → prix comparé tel quel).
+  Mouvements : stock/models/stock_move.py:213-216 (unité du mouvement = unité de l'article), :198-199 + :766-769
+  (packaging_uom_id « Conditionnement », packaging_uom_qty « Qté de conditionnements ») ;
+  stock/views/stock_picking_views.xml:377-378 (colonnes optionnelles).
+  Réappro : stock/models/stock_orderpoint.py:88-92 (replenishment_uom_id « Multiple », arrondi au multiple supérieur),
+  :248-253 (conditionnements + unités des tarifs si route Acheter), :843-850 (_get_multiple_rounded_qty, UP) ;
+  purchase_stock/models/stock.py:334-350 (sans Multiple : unité du tarif fournisseur retenu, affichée en grisé).
+  Liste de prix : product/models/product_pricelist_item.py:88 (uom_id « Packaging ») + product_pricelist_item_views.xml:176-186
+  (à côté de la quantité minimale). Liste des règles : stock/views/stock_orderpoint_views.xml:49 (colonne Multiple
+  optionnelle), :194 (action_orderpoint, sans menu propre : bouton Min / Max de l'article, écran Réassort, menu 251).
+  Unité absente des commandes sans le réglage : purchase/views/purchase_views.xml:302 (groups uom.group_uom).
+  Changement d'unité : product_template.py:682-695 + product_product.py:601-614 (fenêtre « À quoi s'attendre ? »,
+  conversion 1 = 1), :833-835 (write → _update_uom) ; stock/models/product.py:769-793, purchase/models/product.py:169-184,
+  sale/models/product_product.py:139-155 (refus si une autre unité a servi, sinon renommage des lignes existantes).
+  Parcours joué (écran) : réglage coché ; Carton de 12 = 12 Unité(s) ; Boîte de rangement [E-COM08] : conditionnement
+  Carton de 12, tarif Wood Corner 1 Carton de 12 à 150 $ (en plus de 13 $ l'unité) ; P00036 : 3 → Unité(s) 13 $
+  proposé (39 $), passé en Carton de 12 → 150 $, 450 $ HT ; WH/IN/00028 : Demande 36 Unité(s), Qté de
+  conditionnements 3, Conditionnement Carton de 12, validé ; S00083 Acme Corporation 2 Carton de 12 à 189,60 $ =
+  379,20 $ HT → WH/PICK/00019 24 Unité(s) ; règle OP/00006 Min 120 Max 150, prévision 100 → Multiple « Carton de 12 »
+  grisé, À commander 60 → Commander → P00037 : 5 Carton de 12 à 150 $, 750 $ ; changement d'unité vers Pack de 6 :
+  fenêtre « À quoi s'attendre ? » puis « Opération invalide ».
+  Shell (annulé) : Poubelle à pédale (mouvements en Unité(s) seulement) passée en Pack de 6 → accepté, mouvements
+  renommés Pack de 6 sans conversion des quantités. Exercice (annulé) : Pack de 6 ajouté à la boîte, 3 Pack de 6 pour
+  Wood Corner → 94,80 $ le pack, 284,40 $ HT ; mouvement 18 Unité(s), Qté de conditionnements 3, Pack de 6.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Unités de mesure et conditionnements dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Le fournisseur facture au carton, le client commande à la douzaine,
+                    l'entrepôt compte à la pièce. Odoo 20 tient le stock dans une seule unité et convertit tout le
+                    reste : il suffit de lui dire combien de pièces contient un carton, et à quels articles ce
+                    carton s'applique.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Inventaire, Achats et Ventes installés. Ces fonctions existent aussi dans l'édition
+                        Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Dans Odoo 20, une unité de mesure tient en trois informations : un nom, une quantité et une
+                    <strong>unité de référence</strong>. « m » contient 100 « cm », « kg » contient 1 000 « g ».
+                    Il n'y a pas de catégories d'unités à gérer : la parenté passe par l'unité de référence, et
+                    Odoo calcule la conversion en remontant la chaîne.</p>
+                <p>Un <strong>conditionnement</strong> n'est pas un objet à part : c'est une unité comme une autre
+                    (« Carton de 12 », « Pack de 6 »), que l'on rattache aux articles concernés. Chaque article garde
+                    une unité principale, dans laquelle le stock est tenu ; les conditionnements servent à acheter
+                    et à vendre.</p>
+                <p>L'exemple suit la « Boîte de rangement » de la démonstration, achetée à Wood Corner 13 $
+                    l'unité. Le fournisseur accorde 150 $ le carton de 12. Pour le cycle d'achat lui-même, voir
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la
+                    demande de prix à la facture dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une unité de conditionnement liée à l'unité de base ;</li>
+                    <li>acheter et vendre un article par cartons, avec le bon prix ;</li>
+                    <li>lire la conversion sur les réceptions et les livraisons ;</li>
+                    <li>arrondir le réapprovisionnement au carton entier ;</li>
+                    <li>savoir quand Odoo refuse de changer l'unité d'un article.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les unités et conditionnements</h2>
+                <p>Ouvrez <strong>Inventaire › Configuration › Paramètres</strong>, bloc Produits, et cochez
+                    <strong>Unités de mesure et emballages</strong>, puis enregistrez. La même case figure dans les
+                    paramètres d'Achats. Le lien <strong>Unités et conditionnements</strong> apparaît sous la case,
+                    ainsi que le menu <strong>Inventaire › Configuration › Unités et conditionnements</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20, bloc Produits : cases Variantes et Unités de mesure et emballages cochées, description Vendre et acheter des produits dans différentes unités de mesure ou conditionnements, lien Unités et conditionnements" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le réglage, dans les paramètres d'Inventaire.</figcaption>
+                </figure>
+                <p>Sans ce réglage, chaque article n'a que son unité principale : la colonne Unité disparaît des
+                    commandes. Sur une base où Ventes et Feuilles de temps sont installées, la case est déjà cochée :
+                    le module qui facture les feuilles de temps l'active pour tous les utilisateurs internes, afin de
+                    vendre des heures.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer le « Carton de 12 »</h2>
+                <p>Dans <strong>Inventaire › Configuration › Unités et conditionnements</strong>, cliquez sur
+                    <strong>Nouveau</strong>. Nom de l'unité : Carton de 12 ; <strong>Quantité</strong> : 12, puis
+                    choisissez l'unité de référence <strong>Unité(s)</strong>. Enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche d'unité d'Odoo 20 : Nom de l'unité Carton de 12, Code UN/ECE vide, Quantité 12,00000 Unité(s)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un carton contient 12 unités : c'est toute la définition.</figcaption>
+                </figure>
+                <p>La liste montre ensuite chaque unité avec ce qu'elle <strong>Contient</strong> et son
+                    <strong>Unité de référence</strong>. Les unités de base (Unité(s), Heures, mm, g, ml…) n'ont pas
+                    de référence et valent 1. La démonstration fournit déjà « Pack de 6 » ; « Douzaines » existe
+                    aussi, mais archivée (filtre Archivé de la recherche).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste Unités et conditionnements d'Odoo 20 : Minutes 0,017 Heures, Unité(s), Heures, mm, m², ml, g, KWH sans référence, Pack de 6 6,000 Unité(s), Jours 8,000 Heures, m 100,000 cm, km 1 000,000 m, L 1 000,000 ml, kg 1 000,000 g, t 1 000,000 kg, Carton de 12 12,000 Unité(s)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Unités et conditionnements : une seule liste, reliée par les unités de référence.</figcaption>
+                </figure>
+                <p>Une unité peut s'appuyer sur une autre qui n'est pas de base : « km » contient 1 000 « m », qui
+                    contient 100 « cm ». Une palette de 10 cartons peut donc se définir comme 10 « Carton de 12 » :
+                    Odoo en déduit 120 unités.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Rattacher le conditionnement à l'article</h2>
+                <p>Une unité créée n'est pas proposée partout : sur une ligne de vente, Odoo ne propose que l'unité
+                    de l'article et ses conditionnements. Ouvrez la fiche « Boîte de rangement », onglet
+                    <strong>Ventes</strong>, et ajoutez « Carton de 12 » dans le champ
+                    <strong>Conditionnements</strong>. Enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Onglet Ventes de la fiche Boîte de rangement dans Odoo 20, section Ventes incitatives et croisées : Conditionnements Carton de 12, lien Codes-barres, produits optionnels, accessoires et alternatifs vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le carton rattaché à l'article, onglet Ventes.</figcaption>
+                </figure>
+                <p>Le lien <strong>Codes-barres</strong> enregistre un code-barres par conditionnement, distinct de
+                    celui de l'article. Pour un article à variantes, le champ <strong>Emballages
+                    supplémentaires</strong> de chaque variante (nouveau en Odoo 20) ajoute un conditionnement
+                    réservé à cette variante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Acheter au carton</h2>
+                <p>Le prix du carton se déclare dans l'onglet <strong>Achats</strong> de l'article : ajoutez une
+                    ligne Wood Corner, <strong>Unité</strong> Carton de 12, <strong>Quantité</strong> 1,
+                    <strong>Prix unitaire</strong> 150 $. La ligne à 13 $ l'unité reste en place.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Tarifs fournisseurs de la Boîte de rangement dans Odoo 20 : Wood Corner 1,00 Unité(s) 13,00 dollars délai 3, Ready Mat 1,00 Unité(s) 14,40 dollars délai 3, Wood Corner 1,00 Carton de 12 150,00 dollars délai 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux tarifs chez le même fournisseur : à l'unité et au carton.</figcaption>
+                </figure>
+                <p>La <strong>Quantité</strong> d'un tarif est un minimum exprimé dans son unité : le tarif carton
+                    vaut à partir de 12 boîtes. Pour choisir, Odoo ramène chaque prix à l'unité de l'article
+                    (150 $ ÷ 12 = 12,50 $) et retient le moins cher parmi les tarifs dont le minimum est atteint.</p>
+                <p>Créez une demande de prix pour Wood Corner et ajoutez 3 « Boîte de rangement ». Odoo propose
+                    d'abord 3 Unité(s) à 13 $ : 3 boîtes n'atteignent pas un carton. Passez la colonne
+                    <strong>Unité</strong> à Carton de 12 : le prix devient 150 $, le montant 450 $. Confirmez la
+                    commande (ici P00036).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Ligne de commande fournisseur P00036 dans Odoo 20 : Boîte de rangement, quantité 3,00, reçu 0,00, facturé 0,00, unité Carton de 12, prix unitaire 150,00, taxe 15 %, montant 450,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande parle en cartons, au prix du carton.</figcaption>
+                </figure>
+                <p>Ouvrez la réception par le bouton intelligent. Elle parle en pièces : <strong>Demande</strong>
+                    36 Unité(s). Les colonnes optionnelles <strong>Qté de conditionnements</strong> et
+                    <strong>Conditionnement</strong> (icône de réglage à droite de l'en-tête) rappellent les 3
+                    cartons d'origine, ce qui aide le magasinier à contrôler le colis.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Réception WH/IN/00028 dans Odoo 20 : Boîte de rangement, Qté de conditionnements 3,00, Conditionnement Carton de 12, Demande 36,00, Quantité 36,00, Unité(s)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois cartons commandés, 36 boîtes attendues à l'entrepôt.</figcaption>
+                </figure>
+                <p>Validée, la réception ajoute 36 boîtes au stock : le stock, les inventaires et les règles de
+                    réapprovisionnement restent dans l'unité de l'article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Vendre au carton</h2>
+                <p>Sur un devis pour Acme Corporation, ajoutez 2 « Boîte de rangement » et choisissez l'unité
+                    Carton de 12. Odoo convertit le prix de vente de l'article, 15,80 $ l'unité, en 189,60 $ le
+                    carton (15,80 × 12) : aucun prix de carton n'est à saisir côté vente.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Ligne de commande client S00083 dans Odoo 20 : Boîte de rangement, quantité 2,00, unité Carton de 12, délivré 0,00, facturé 0,00, prix unitaire 189,60, taxe 15 %, montant 379,20 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux cartons à 189,60 $ : le prix unitaire de l'article multiplié par 12.</figcaption>
+                </figure>
+                <p>À la confirmation (S00083), le transfert de sortie porte 24 Unité(s). Dans la base de
+                    démonstration, l'entrepôt livre en trois étapes : le premier transfert est une préparation,
+                    WH/PICK/00019.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Préparation WH/PICK/00019 dans Odoo 20 : Boîte de rangement, Disponible, Demande 24,00, Quantité 24,00, Unité(s)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Côté entrepôt, deux cartons vendus font 24 boîtes à préparer.</figcaption>
+                </figure>
+                <p>Pour un tarif propre au carton (une remise au volume, par exemple), une règle de liste de prix
+                    accepte un conditionnement à côté de sa quantité minimale : voir
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et
+                    remises dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Réapprovisionner par cartons entiers</h2>
+                <p>Une règle de réapprovisionnement calcule en pièces, mais le fournisseur ne vend que des cartons.
+                    La colonne optionnelle <strong>Multiple</strong> de la liste des règles (bouton intelligent
+                    <strong>Min / Max</strong> de la fiche article, ou écran Opérations › Approvisionnement ›
+                    Réassort) arrondit la quantité à commander au conditionnement supérieur.</p>
+                <p>Sur la règle de la boîte, passez le Min à 120 et le Max à 150. Avec une prévision de 100, il
+                    manque 50 boîtes pour atteindre le Max ; la colonne <strong>À commander</strong> affiche 60, soit
+                    5 cartons.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Règle de réapprovisionnement d'Odoo 20 pour [E-COM08] Boîte de rangement : WH/Stock, disponible 110,00, prévision 100,00, route Acheter, déclencheur Automatique, Min 120,00, Max 150,00, Multiple Carton de 12 en grisé, À commander 60,00, Unité(s), bouton Commander" style="max-width:100%; height:auto;"/>
+                    <figcaption>50 boîtes manquent, 60 seront commandées : le Multiple proposé est le carton.</figcaption>
+                </figure>
+                <p>Le Multiple est ici en grisé : personne ne l'a saisi, Odoo propose l'unité du tarif fournisseur
+                    qu'il retiendrait, le carton à 12,50 $ la boîte. Pour imposer un multiple, quel que soit le
+                    fournisseur, choisissez-le dans la colonne : la liste propose les conditionnements de l'article
+                    et les unités de ses tarifs d'achat. Sans multiple saisi ni tarif dans une autre unité,
+                    aucun arrondi n'a lieu.</p>
+                <p>Le bouton <strong>Commander</strong> crée la demande de prix P00037, directement en cartons :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Demande de prix P00037 dans Odoo 20 créée par la règle : Boîte de rangement, quantité 5,00, unité Carton de 12, prix unitaire 150,00, taxe 15 %, montant 750,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle commande 5 cartons au prix du carton.</figcaption>
+                </figure>
+                <p>Le mécanisme des règles elles-mêmes (Min, Max, déclenchement) est décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Changer l'unité d'un article déjà utilisé</h2>
+                <p>L'unité principale se trouve sur l'onglet Informations générales, à droite du prix de vente
+                    (« par Unité(s) »). Dès que l'article figure sur un mouvement de stock, une commande ou un
+                    devis, la modifier ouvre une fenêtre d'avertissement :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fenêtre À quoi s'attendre ? d'Odoo 20 : la modification de l'unité de mesure de votre produit appliquera une conversion 1 Unité(s) = 1 Pack de 6 ; tous les enregistrements existants seront mis à jour avec le nouveau nom de l'unité" style="max-width:100%; height:auto;"/>
+                    <figcaption>Changer l'unité, c'est la renommer partout, sans convertir.</figcaption>
+                </figure>
+                <p>À l'enregistrement, deux cas se présentent :</p>
+                <ul>
+                    <li>l'article n'a jamais été acheté, vendu ni déplacé dans une autre unité que la sienne :
+                        Odoo accepte et remplace le nom de l'unité sur tous les documents, <strong>sans toucher aux
+                        quantités</strong> ;</li>
+                    <li>une autre unité a déjà servi (ici, les cartons de l'étape 4) : Odoo refuse.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Fenêtre Opération invalide d'Odoo 20 : comme d'autres unités de mesure (ex : Carton de 12) que Unité(s) ont déjà été utilisées pour ce produit, le changement d'unité de mesure ne peut pas être effectué ; archiver le produit et créer un nouveau produit" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le refus : un carton a déjà été acheté et vendu.</figcaption>
+                </figure>
+                <p>Le message donne la seule issue : archiver l'article et en créer un nouveau, avec la bonne
+                    unité, puis transférer le stock par un inventaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DIFFÉRENCE AVEC 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change par rapport à Odoo 19</h2>
+                <p>Le modèle est celui d'Odoo 19 : unités reliées par une unité de référence, conditionnements
+                    sous forme d'unités, Multiple sur les règles. Deux différences visibles :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th></th><th>Odoo 19</th><th>Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Conditionnement propre à une variante</td><td>Non : conditionnements du modèle
+                            d'article seulement</td><td>Champ Emballages supplémentaires sur chaque variante</td></tr>
+                        <tr><td>Comparaison d'un tarif fournisseur au carton</td><td>Un tarif saisi sur le modèle
+                            d'article est comparé tel quel (150 $ contre 13 $)</td><td>Prix ramené à l'unité de
+                            l'article (12,50 $ contre 13 $)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Unités, conditionnements, tarifs fournisseurs par
+                        conditionnement, conversion sur les transferts et arrondi des règles de réapprovisionnement
+                        sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un changement d'unité accepté ne convertit rien</h4>
+                    <p>Sur un article mouvementé uniquement à l'unité, passer à « Pack de 6 » est accepté : les
+                        lignes existantes affichent alors « Pack de 6 » avec les mêmes chiffres. Un stock de 40
+                        unités devient un stock de 40 packs, soit 240 pièces sur le papier. Décidez de l'unité
+                        avant le premier mouvement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Modifier la quantité d'une unité existante</h4>
+                    <p>Changer le nombre de pièces d'un « Carton de 12 » déjà utilisé ne recalcule pas les
+                        documents passés. Pour la plupart des unités livrées avec Odoo, une fenêtre le rappelle ; pour une
+                        unité créée par l'entreprise, rien ne prévient. Créez plutôt un « Carton de 10 » et archivez l'ancien.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'arrondi peut dépasser le Max</h4>
+                    <p>Le Multiple arrondit toujours au carton supérieur : 60 boîtes commandées pour un manque de
+                        50, la prévision monte à 160 pour un Max de 150. Choisissez un Max cohérent avec la taille
+                        du carton.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les unités de base ne se suppriment pas</h4>
+                    <p>Unité(s), kg, m et les autres unités livrées par Odoo refusent la suppression (Douzaines
+                        et Pack de 6 exceptés) : archivez celles qui ne servent pas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> vendre la boîte par packs de 6.</p>
+                    <p><strong>Indication :</strong> ajoutez « Pack de 6 » aux Conditionnements de la Boîte de
+                        rangement, puis créez un devis pour Wood Corner : 3 boîtes, unité Pack de 6. Confirmez.</p>
+                    <p><strong>Critère de réussite :</strong> la ligne affiche 94,80 $ le pack et 284,40 $ hors
+                        taxes ; le transfert de sortie demande 18 Unité(s), avec 3 en Qté de conditionnements et
+                        Pack de 6 en Conditionnement.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une unité = un nom, une quantité, une unité de référence ; un conditionnement est une unité
+                        rattachée à l'article.</li>
+                    <li>Le stock reste dans l'unité de l'article ; commandes et devis convertissent quantités et
+                        prix.</li>
+                    <li>Un tarif fournisseur peut être exprimé au carton ; Odoo le compare aux autres ramené à
+                        l'unité.</li>
+                    <li>Le Multiple d'une règle arrondit la commande au conditionnement supérieur.</li>
+                    <li>L'unité d'un article se choisit avant son premier mouvement.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">Le cycle d'achat complet, réception et facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Règles minimum / maximum et écran Réassort.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Préparation, colisage, expédition : les transferts de l'entrepôt.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

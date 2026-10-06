@@ -1,0 +1,518 @@
+<!--
+Article — Réapprovisionnement Odoo 20 : des min/max tirés des ventes (pilier)
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : reapprovisionnement-min-max-calcules-odoo
+Mot-clé cible : odoo réapprovisionnement (reordering rules)
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b1 (copie de vs20_func : démonstration,
+  Inventaire, Achats, Ventes, Fabrication), port 9031.
+  Nouveauté 20 — demande calculée stockée sur la règle :
+  stock/models/stock_orderpoint.py:68-69 (daily_demand), :70-86 (min_max_based_on, 9 valeurs, défaut one_month
+  « 30 derniers jours »), :87 (min_max_based_on_factor 100 %) ; :363-377 (bouton i = action_stock_replenishment_info,
+  reprend période et facteur de la règle) ; :860-884 (_get_period_of_time : 7 j, 30 j, 3 mois, 12 mois, ou mois / mois
+  suivant / mois d'après / trimestre de l'an dernier) ; :886-906 (_get_daily_demand : quantités des mouvements
+  assigned/confirmed/partially_available/done datés dans la période, destination client OU production, moins retours
+  clients, divisé par le nombre de jours, × facteur / 100).
+  stock/wizard/stock_replenishment_info.py:121-129 (saisir la demande à la main → Basé sur = Custom Demand ; Min =
+  demande × jours de couverture, Max = Min + demande × jours de fréquence, arrondis à l'unité), :131-161 (jours
+  recalculés quand Min ou Max change), :163-177 (couleur : vert > délai, orange =, rouge <) ;
+  sale_stock/wizard/stock_replenishment_info.py:8-20 (seuil = délai − Sales Availability Time) ;
+  stock/static/src/widgets/json_widget.js:46-66 (bouton Actualiser → get_daily_demand) ;
+  stock/wizard/stock_orderpoint_suggest.py:29-41 (Suggérer : nouvelle demande, mêmes jours de couverture et de
+  fréquence ; règle à demande 0 → Min 0 Max 0) ; stock/static/src/views/stock_orderpoint_list_controller.js:37-43 +
+  stock_orderpoint_list_view.xml (bouton Suggérer sur sélection) ; stock/static/src/widgets/max_qty_to_order_field.js:5-10
+  (ligne sélectionnée : À commander affiche la quantité jusqu'au Max).
+  Aucun recalcul automatique : daily_demand n'est écrit que par l'assistant et le bouton (grep -rn daily_demand odoo/addons).
+  Odoo 19 (odoo19-dev/odoo) : stock/wizard/stock_replenishment_info.py:29 (based_on seulement dans la fenêtre),
+  :151-177 (demande calculée pour un graphique, mouvements 'done' vers clients seulement) ; aucun champ daily_demand ni
+  min_max_based_on sur stock.warehouse.orderpoint, pas d'assistant stock.orderpoint.suggest.
+  Logique d'ensemble (inchangée, cf. article 219) : stock/views/stock_orderpoint_views.xml:194-214 (Réassort),
+  stock/data/stock_sequence_data.xml:55-65 (planificateur quotidien), stock/views/stock_rule_views.xml:119-121
+  (menu du planificateur réservé au mode développeur), stock/models/res_company.py:48 (horizon 365 jours par défaut).
+  Parcours joué : Chaise de bureau OP/00003 (Min 3, Max 5, demande 0,5, délai fournisseur 6 j) → 3 derniers mois :
+  117 chaises en 92 jours (dont 96 sur des livraisons confirmées non faites) = 1,27/j → Min 8 (6 j), Max 13 (4 j) ;
+  couverture 8 j → Min 10, Max 15, vert ; liste : prévision 5, À commander 10 ; aucune demande de prix créée à
+  l'enregistrement. Suggérer (3 derniers mois) sur Lampe de bureau (demande 1, Min 5, Max 10) → 2,2/j → Min 11, Max 22 ;
+  Boîte de rangement (demande 0, Min 50, Max 100) → Min 0, Max 0. Exercice joué : Min 50, Max 100 → 152 jours.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Réapprovisionnement Odoo 20 : des min/max tirés des ventes</h1>
+                <p class="lead mt-3 text-white">Un minimum trop bas provoque des ruptures, un maximum trop haut
+                    immobilise de la trésorerie. Odoo 20 ne laisse plus ces deux chiffres à l'intuition : il mesure
+                    la demande moyenne d'un article sur la période choisie et en déduit le Min et le Max de sa règle
+                    de réapprovisionnement.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Inventaire, Achats, Ventes et Fabrication installés. Ce module existe aussi dans
+                        l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La planification du stock en quatre pièces</h2>
+                <p>Le réapprovisionnement d'Odoo 20 Community (les <em>reordering rules</em> de la version anglaise)
+                    repose sur quatre pièces, toutes dans l'application Inventaire.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Pièce</th><th>Rôle</th><th>Où la voir</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Prévision</strong></td><td>Stock disponible, plus les entrées attendues,
+                            moins les sorties promises, jusqu'à une date planifiée (délai de l'article plus un horizon
+                            de 365 jours par défaut).</td><td>Colonne Prévision ; fenêtre Information de réassort</td></tr>
+                        <tr><td><strong>Règle de réapprovisionnement</strong></td><td>Un Min, seuil sous lequel la
+                            prévision déclenche une commande, et un Max, niveau visé par cette commande.</td>
+                            <td>Colonnes Min et Max</td></tr>
+                        <tr><td><strong>Déclencheur</strong></td><td>Automatique : Odoo commande seul, à la
+                            confirmation d'un transfert ou au passage quotidien du planificateur. Manuel : il propose,
+                            l'acheteur décide.</td><td>Colonne Déclencheur</td></tr>
+                        <tr><td><strong>Écran Réassort</strong></td><td>La liste de travail : règles à servir et
+                            manques détectés par Odoo, avec les boutons Commander, Automatiser, Reporter.</td>
+                            <td>Opérations › Approvisionnement › Réassort</td></tr>
+                    </tbody>
+                </table>
+                <p>La prise en main de ces pièces (créer une règle, laisser une vente déclencher un achat, traiter
+                    l'écran Réassort) fait l'objet de l'article
+                    <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans
+                    Odoo 20</a>. La présente page traite de la question qu'il laisse ouverte : <strong>quels chiffres
+                    mettre dans Min et Max</strong>. C'est là qu'Odoo 20 apporte du nouveau.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire la fenêtre Information de réassort d'une règle : délai, demande, couverture ;</li>
+                    <li>choisir la période sur laquelle Odoo mesure la demande, et savoir ce qu'il compte ;</li>
+                    <li>faire calculer le Min et le Max à partir de jours de couverture et de fréquence ;</li>
+                    <li>mettre à jour plusieurs règles d'un coup avec le bouton Suggérer, sans remettre une règle à zéro.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Afficher toutes les règles</h2>
+                <p>Ouvrez <strong>Inventaire › Opérations › Approvisionnement › Réassort</strong>. L'écran s'ouvre
+                    sur les seules règles manuelles à servir : dans le panneau de gauche, cliquez sur
+                    <strong>Tous</strong> sous Déclencheur, puis retirez les filtres À réapprovisionner et Non
+                    reporté de la barre de recherche. La colonne <strong>Déclencheur</strong>, masquée par défaut,
+                    s'ajoute par le bouton de réglage des colonnes, en bout d'en-tête.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste Réassort d'Odoo 20 avec toutes les règles : Lampe de bureau, Flipover et Chaise de bureau en déclencheur automatique, Chaise de bureau prévision 5, Min 3, Max 5 ; Rangement de bureau manuel Min 75 Max 225 à commander 227 ; lignes manuelles à Min 0 et Max 0 avec boutons Commander, Automatiser, Reporter" style="max-width:100%; height:auto;"/>
+                    <figcaption>Toutes les règles de la base de démonstration, automatiques et manuelles.</figcaption>
+                </figure>
+                <p>Les règles de la démonstration ont été saisies à la main : Chaise de bureau Min 3, Max 5. Les
+                    lignes à Min 0 et Max 0 sont les manques qu'Odoo a détectés lui-même (prévision négative). Le
+                    bouton <strong>i</strong> de chaque ligne ouvre la fenêtre qui fait le lien entre ces chiffres et
+                    l'activité réelle de l'article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Lire la fenêtre Information de réassort</h2>
+                <p>Cliquez sur le <strong>i</strong> de la ligne « Chaise de bureau ». La fenêtre
+                    <strong>Information de réassort</strong> comporte deux colonnes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Information de réassort d'Odoo 20 pour la Chaise de bureau : Replenishment Time 6 days, délai fournisseur 6 jours, horizon temporel 365 jours, date planifiée 12/10/2027 ; Min - Max Suggestion basé sur 30 derniers jours x 100 %, Demand is 0,50 unité par jour, Min 3 (6 jours en orange), Max 5 (4 jours)" style="max-width:100%; height:auto;"/>
+                    <figcaption>À gauche le délai de réapprovisionnement, à droite la demande et ce que Min et Max représentent en jours.</figcaption>
+                </figure>
+                <p>À gauche, <strong>Replenishment Time</strong> détaille le délai : ici 6 jours de délai
+                    fournisseur, auxquels s'ajoute l'horizon temporel pour fixer la date planifiée jusqu'à laquelle la
+                    prévision est calculée.</p>
+                <p>À droite, le bloc <strong>Min - Max Suggestion</strong> est la nouveauté :</p>
+                <ul>
+                    <li><strong>Basé sur</strong> : la période de référence et un facteur en pourcentage ;</li>
+                    <li><strong>Demand is</strong> : la demande moyenne par jour, enregistrée sur la règle (0,50 pour la
+                        chaise, valeur de la démonstration) ;</li>
+                    <li>à côté du <strong>Min</strong>, la <strong>couverture</strong> : le nombre de jours de demande
+                        que le minimum couvre (3 ÷ 0,5 = 6 jours) ;</li>
+                    <li>à côté du <strong>Max</strong>, la <strong>fréquence</strong> : le nombre de jours entre deux
+                        commandes ((5 − 3) ÷ 0,5 = 4 jours).</li>
+                </ul>
+                <p>La couverture est colorée : <strong>vert</strong> si elle dépasse le délai de réapprovisionnement
+                    (diminué du <em>Sales Availability Time</em> de l'article), <strong>orange</strong> si elle
+                    l'égale, <strong>rouge</strong> si elle est plus courte. Ici 6 jours de couverture pour 6 jours
+                    de délai : le minimum tient tout juste le temps que la commande arrive, sans marge.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Choisir la période de référence</h2>
+                <p>Ouvrez la liste <strong>Basé sur</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste déroulante Basé sur d'Odoo 20 : 7 derniers jours, 30 derniers jours, 3 derniers mois, 12 derniers mois, octobre 2025, Mois suivant de l'an dernier, Après le mois suivant l'année dernière, oct.-déc. 2025, Custom Demand" style="max-width:100%; height:auto;"/>
+                    <figcaption>Neuf choix : des périodes glissantes, des périodes de l'an dernier, ou une demande saisie.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Choix</th><th>Période mesurée</th><th>Pour quel article</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>7 derniers jours, 30 derniers jours, 3 derniers mois, 12 derniers mois</td>
+                            <td>Jusqu'à aujourd'hui</td><td>Ventes régulières ; 3 mois lissent les à-coups</td></tr>
+                        <tr><td>Mois en cours de l'an dernier (ici octobre 2025), mois suivant, mois d'après</td>
+                            <td>Un mois civil de l'année précédente</td><td>Ventes saisonnières : préparer le mois qui vient</td></tr>
+                        <tr><td>Trimestre de l'an dernier (ici oct.-déc. 2025)</td><td>Les trois mois civils
+                            correspondants</td><td>Saisonnalité sur un trimestre</td></tr>
+                        <tr><td>Custom Demand</td><td>Aucune : la demande est saisie</td><td>Nouveauté sans
+                            historique, lancement, promotion</td></tr>
+                    </tbody>
+                </table>
+                <p>Odoo calcule alors :</p>
+                <p><strong>demande par jour = (sorties de la période − retours clients) ÷ nombre de jours de la
+                    période × facteur %</strong></p>
+                <p>Les sorties comptées sont les mouvements vers un client <strong>et</strong> les consommations
+                    en fabrication, dès qu'ils sont confirmés : une livraison prévue dans la période compte, qu'elle
+                    soit faite ou non. Le facteur (100 % par défaut) corrige la tendance : 120 % pour une croissance
+                    attendue de 20 %, 80 % pour un ralentissement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Recalculer la demande, puis le Min et le Max</h2>
+                <p>Choisissez <strong>3 derniers mois</strong>, puis cliquez sur la flèche circulaire
+                    <strong>Actualiser</strong> à droite du pourcentage.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Bloc Min - Max Suggestion d'Odoo 20 après actualisation : basé sur 3 derniers mois x 100 %, Demand is 1,27 unité par jour, Min 8 (6 jours en orange), Max 13 (4 jours)" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande passe de 0,50 à 1,27 chaise par jour ; Min et Max suivent.</figcaption>
+                </figure>
+                <p>Sur les 92 derniers jours, la démonstration compte 117 chaises sorties ou à sortir :
+                    117 ÷ 92 = 1,27 par jour. Odoo garde les jours de couverture et de fréquence de la règle et
+                    recalcule les quantités :</p>
+                <ul>
+                    <li><strong>Min</strong> = demande × jours de couverture = 1,27 × 6 = 7,6, arrondi à
+                        <strong>8</strong> ;</li>
+                    <li><strong>Max</strong> = Min + demande × jours de fréquence = 7,6 + 1,27 × 4 = 12,7, arrondi à
+                        <strong>13</strong>.</li>
+                </ul>
+                <p>Le raisonnement change de nature : l'acheteur ne fixe plus des quantités, il fixe des
+                    <strong>durées</strong> (combien de jours tenir pendant que la commande arrive, tous les combien
+                    commander), et Odoo traduit ces durées en quantités selon le rythme réel des ventes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ajuster la couverture et enregistrer</h2>
+                <p>La couverture reste orange : aucun jour de sécurité. Cliquez sur le chiffre
+                    <strong>6</strong> à côté du Min, tapez <strong>8</strong> et validez par Tab.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Bloc Min - Max Suggestion d'Odoo 20 avec couverture portée à 8 jours en vert : Demand is 1,27, Min 10, Max 15 (4 jours)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux jours de sécurité : la couverture passe au vert, Min 10, Max 15.</figcaption>
+                </figure>
+                <p>Le Min devient 1,27 × 8 = 10 et le Max 10 + 1,27 × 4 = 15. L'inverse marche aussi : saisir
+                    un Min ou un Max recalcule les jours. Saisir directement une valeur dans <strong>Demand
+                    is</strong> fait basculer Basé sur sur Custom Demand, car la demande ne vient plus de
+                    l'historique.</p>
+                <p>Cliquez sur <strong>Enregistrer</strong>. La règle garde la période choisie, le facteur et la
+                    demande : la prochaine ouverture de la fenêtre les retrouve.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ce que la liste Réassort affiche ensuite</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Ligne Chaise de bureau dans la liste Réassort d'Odoo 20 après mise à jour : disponible -2, prévision 5, déclencheur automatique, Min 10, Max 15, à commander 10, bouton Commander" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avec le nouveau Min, la prévision de 5 chaises est sous le seuil : 10 à commander.</figcaption>
+                </figure>
+                <p>La prévision (5) est maintenant sous le Min (10) : la colonne <strong>À commander</strong>
+                    indique 10, de quoi remonter au Max de 15. Avec l'ancien Min de 3, rien n'était à commander :
+                    la règle laissait filer le stock d'un article qui se vend plus de deux fois plus vite que ne le
+                    supposait la démonstration.</p>
+                <p>L'enregistrement ne crée pas de demande de prix, même sur une règle automatique : la commande
+                    part au prochain passage du planificateur (une fois par jour) ou à la prochaine confirmation d'un
+                    transfert de l'article. Pour ne pas attendre, cliquez sur <strong>Commander</strong>. Le menu qui
+                    lance le planificateur à la demande n'apparaît qu'en mode développeur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Mettre à jour plusieurs règles d'un coup</h2>
+                <p>Ouvrir la fenêtre ligne par ligne ne tient pas sur un catalogue. Cochez les règles à revoir,
+                    ici « Lampe de bureau » et « Boîte de rangement » : la barre affiche les boutons
+                    <strong>Commander</strong>, <strong>Reporter</strong> et <strong>Suggérer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste Réassort d'Odoo 20 avec deux lignes cochées, Lampe de bureau et Boîte de rangement, barre 2 sélectionné(s) avec boutons Commander, Reporter, Suggérer ; la Boîte de rangement affiche 12 à commander une fois cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux règles sélectionnées ; le bouton Suggérer apparaît dans la barre.</figcaption>
+                </figure>
+                <p>Une ligne cochée montre, dans À commander, ce que le bouton Commander de la barre commanderait :
+                    de quoi remonter au Max. La Boîte de rangement affiche 12 (100 − 88) alors que sa prévision est au-dessus
+                    du Min.</p>
+                <p>Cliquez sur <strong>Suggérer</strong>. L'assistant <strong>Suggest Min-Max</strong> demande la
+                    période et le facteur ; choisissez 3 derniers mois, 100 %.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Assistant Suggest Min-Max d'Odoo 20 : Based on average daily demands from 3 derniers mois X 100 %, message Minimum days of coverage and order frequency to be achieved by Min and Max stock levels must first be defined for each product, boutons Update et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'assistant applique une période et un facteur à toutes les règles cochées.</figcaption>
+                </figure>
+                <p>Le bandeau bleu prévient : chaque règle doit déjà porter ses jours de couverture et de
+                    fréquence. L'assistant recalcule la demande de chaque règle, puis applique ses jours actuels.
+                    Cliquez sur <strong>Update</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Liste Réassort d'Odoo 20 après Suggérer : Lampe de bureau Min 11 Max 22, Boîte de rangement Min 0 Max 0, Chaise de bureau Min 10 Max 15 à commander 10" style="max-width:100%; height:auto;"/>
+                    <figcaption>La lampe passe à 11 / 22 ; la boîte de rangement tombe à 0 / 0.</figcaption>
+                </figure>
+                <p>La Lampe de bureau avait une demande de 1 par jour, un Min de 5 (5 jours) et un Max de 10
+                    (5 jours de fréquence). Sur 3 mois, sa demande mesurée est de 2,2 par jour : Min 2,2 × 5 = 11,
+                    Max 11 + 2,2 × 5 = 22. La Boîte de rangement, elle, perd sa règle : voir le premier point de
+                    vigilance.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DIFFÉRENCE AVEC 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change par rapport à Odoo 19</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th></th><th>Odoo 19</th><th>Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Période « Basé sur »</td><td>Choisie dans la fenêtre, oubliée à la fermeture</td>
+                            <td>Enregistrée sur la règle, avec le facteur et la demande par jour</td></tr>
+                        <tr><td>Demande calculée</td><td>Sert à tracer un graphique indicatif</td><td>Sert à calculer
+                            Min et Max</td></tr>
+                        <tr><td>Mouvements comptés</td><td>Livraisons faites, vers les clients</td><td>Livraisons
+                            confirmées ou faites, vers les clients et la fabrication</td></tr>
+                        <tr><td>Min et Max</td><td>Saisis en quantités</td><td>Saisis en quantités, ou déduits de jours
+                            de couverture et de fréquence</td></tr>
+                        <tr><td>Plusieurs règles à la fois</td><td>Non</td><td>Bouton Suggérer sur une sélection</td></tr>
+                    </tbody>
+                </table>
+                <p>Le reste de la mécanique ne change pas : comparaison de la prévision au Min, commande jusqu'au
+                    Max, déclencheur automatique ou manuel, planificateur quotidien.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Fenêtre Information de réassort, calcul de la demande, jours de
+                        couverture et de fréquence, bouton Suggérer : tout est dans le module Inventaire d'Odoo 20
+                        Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Suggérer remet à zéro une règle sans demande</h4>
+                    <p>La Boîte de rangement avait été créée avec un Min de 50 et un Max de 100, mais sans demande par
+                        jour (0). Faute de jours de couverture calculables, Suggérer lui a donné Min 0 et Max 0 :
+                        la règle ne commandera plus que si la prévision devient négative. Avant de cocher une règle, ouvrez sa fenêtre
+                        Information de réassort : si Min et Max n'affichent pas de jours, réglez-la d'abord à la main.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Rien ne se recalcule tout seul</h4>
+                    <p>La demande enregistrée sur la règle reste celle du dernier calcul. Aucune tâche planifiée ne
+                        la remet à jour : actualisez-la, ou passez Suggérer sur le catalogue, à un rythme fixe (chaque
+                        mois, chaque début de saison).</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les commandes non livrées comptent</h4>
+                    <p>Sur les 117 chaises comptées, 96 sont sur des livraisons confirmées mais pas encore faites,
+                        dont 62 sur une livraison en retard. Un gros devis ponctuel confirmé gonfle donc la demande
+                        de toute la période. Pour un article à ventes exceptionnelles, baissez le facteur ou passez
+                        en Custom Demand.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une période vide donne un Min nul</h4>
+                    <p>Sur la base de démonstration, aucune chaise n'est sortie dans les 7 derniers jours : cette
+                        période donne une demande de 0, donc un Min et un Max à 0. Choisissez une période assez
+                        longue pour contenir des ventes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> rétablir la règle de la Boîte de rangement et juger son
+                        dimensionnement.</p>
+                    <p><strong>Indication :</strong> dans Réassort, ouvrez le <strong>i</strong> de la ligne « Boîte de
+                        rangement », saisissez Min 50 puis Max 100, et enregistrez.</p>
+                    <p><strong>Critère de réussite :</strong> la liste affiche Min 50 et Max 100 ; la fenêtre indique
+                        152 jours de couverture et 152 jours de fréquence pour une demande de 0,33 par jour. Un
+                        minimum de cinq mois de ventes pour un article livré en 3 jours : la règle est
+                        surdimensionnée, et la couverture en jours le montre d'un coup d'œil.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 enregistre sur chaque règle une demande par jour, mesurée sur une période choisie.</li>
+                    <li>Min = demande × jours de couverture ; Max = Min + demande × jours de fréquence.</li>
+                    <li>La couverture doit dépasser le délai de réapprovisionnement : le vert le confirme.</li>
+                    <li>Suggérer met à jour une sélection de règles, à condition qu'elles portent déjà leurs jours.</li>
+                    <li>Le calcul est à relancer : rien ne le fait automatiquement.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Créer une règle, déclenchement par une vente, écran Réassort.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La suite des demandes de prix créées par les règles.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication</a></h5>
+                            <p class="small text-muted mb-0">Les consommations de fabrication, comptées dans la demande.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

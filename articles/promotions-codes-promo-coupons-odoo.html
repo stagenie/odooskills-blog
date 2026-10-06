@@ -1,0 +1,481 @@
+<!--
+Article — Promotions et codes promo : les 8 programmes d'Odoo 20
+Série « Remises et promotions avec Odoo 20 » (blog Fonctionnel) — pilier
+Date : 2026-10-06
+Slug : promotions-codes-promo-coupons-odoo
+Meta : Activer les promotions dans Odoo 20 Community, choisir parmi les 8 types de programmes, créer une promotion automatique, un code promo et des bons de réduction sur un devis.
+Mot-clé cible : odoo promotion / code promo odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_a2 (copie de vs20_func, démonstration native).
+  Activation : sale/wizard/res_config_settings_views.xml:37-39 (case « Promotions, Fidélité & Cartes-Cadeaux » = module_loyalty) ;
+  à l'écran, l'enregistrement installe loyalty + sale_loyalty, website_sale_loyalty, pos_loyalty, pos_sale_loyalty,
+  pos_restaurant_loyalty, sale_loyalty_delivery (259 → 266 modules) ; auto_install dans chaque __manifest__.py ;
+  menu Ventes › Promotions : sale_loyalty/views/sale_loyalty_menus.xml:4-20 (Remise & Fidélité, Cartes-cadeaux & e-wallet).
+  Types : loyalty/models/loyalty_program.py:99-111 (8 valeurs de program_type) ; loyalty/views/loyalty_program_views.xml:46
+  (gift_card et ewallet exclus de la liste Remise & Fidélité), :281 (seuls gift_card et ewallet dans Cartes-cadeaux & e-wallet) ;
+  textes d'aide relevés à l'écran ; déclenchement par défaut loyalty_program.py:318-512 (auto / with_code).
+  Règle : loyalty/models/loyalty_rule.py:77-81 (Achat minimum « taxes incluses » par défaut).
+  Une fois par client (nouveau 20, absent de odoo19 loyalty_program.py) : loyalty_program.py:122-123, vue :114 (Code de remise
+  seulement), sale_loyalty/models/sale_order.py:209-210 (blocage à la confirmation), :312-316 (client mémorisé), :1745-1754
+  (« This promo code can only be used once. »).
+  Validité des points (nouveau 20) : loyalty_program.py:167, vue :145-153 (« Points Validity », Cartes de fidélité),
+  loyalty/models/loyalty_history.py:80-83 (date d'expiration posée à l'attribution des points).
+  « Total Advantage » (nouveau 20, absent de odoo19) : sale/models/sale_order.py:1194-1203.
+  Confirmation avec récompense non appliquée : sale_loyalty/models/sale_order.py:223, :255-261 (notification), essai shell :
+  « Il existe des récompenses disponibles non ajoutées à cette commande. », commande confirmée sans la remise.
+  Bons : sale_loyalty/models/sale_order.py:1762-1773 (code inconnu, expiré, déjà utilisé) ; loyalty/wizard/loyalty_generate_wizard_views.xml.
+  Parcours joué : programme « 10 % dès 1 000 $ d'achat » (Promotions, Achat minimum 1000) ; S00082 Acme Corporation, Grand bureau
+  1 799 $ → bouton Récompense, choix entre « Livraison gratuite » (démo) et la promotion → ligne -179,90 $, Total Advantage 206,89 $.
+  Programme « Bienvenue : 15 % sur la première commande » (Code de remise BIENVENUE15, Once per user, Achat minimum 0) ; S00083
+  Azure Interior (liste Grossiste, 2 Combinaison de bureau Rem. 10 %) → ligne -121,50 $, confirmée ; S00084 même client →
+  « Erreur de validation — This promo code can only be used once. ». Bon de réduction de 10% (démo) : 3 bons générés, valides
+  jusqu'au 31/12/2026 ; 0444-52de-4a6a appliqué à S00084 → ligne « 10% on your order » -40,50 $, confirmée ; réemploi sur S00082 →
+  « Ce bon de réduction a déjà été utilisé. ». Confirmer S00083 a aussi créé une carte de fidélité et un bon « prochaine commande »
+  pour Azure Interior (programmes de démonstration actifs).
+Captures : content/blog/screenshots/promotions-codes-promo-coupons-odoo/ (01-14, Playwright)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Promotions et codes promo : les 8 programmes d'Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une remise dès un certain montant, un code à diffuser dans une
+                    campagne, des bons à usage unique à distribuer sur un salon : Odoo 20 traite ces trois besoins,
+                    et cinq autres, avec un seul moteur de programmes. Cet article les passe en revue, puis en met
+                    trois en œuvre sur un devis.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau débutant · série <strong>Remises et promotions avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Site Web, eCommerce et Point de vente installés. Les
+                        programmes de promotion existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une liste de prix fixe le prix d'un client ou d'une quantité ; un <strong>programme</strong>
+                    accorde une récompense quand une condition est remplie : un montant atteint, un article acheté,
+                    un code saisi. La récompense prend la forme d'une ligne négative sur le devis, ou d'un article
+                    offert. Les deux mécanismes se cumulent. Les listes de prix et le bouton Remise sont présentés
+                    dans <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et
+                    remises dans Odoo 20</a> ; le présent article ne traite que des programmes.</p>
+                <p>Tout programme se construit de la même façon : un <strong>type</strong>, une ou plusieurs
+                    <strong>règles conditionnelles</strong> (quand la récompense est-elle due ?) et une ou plusieurs
+                    <strong>récompenses</strong> (que reçoit le client ?).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les programmes de promotion depuis Ventes ;</li>
+                    <li>choisir le bon type parmi les huit proposés ;</li>
+                    <li>créer une promotion automatique et l'appliquer à un devis ;</li>
+                    <li>diffuser un code promo utilisable une seule fois par client ;</li>
+                    <li>générer des bons de réduction à usage unique.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les programmes</h2>
+                <p>Ouvrez <strong>Ventes › Configuration › Paramètres</strong>. Dans le bloc
+                    <strong>Tarif</strong>, cochez <strong>Promotions, Fidélité &amp; Cartes-Cadeaux</strong>, puis
+                    cliquez sur <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres Ventes d'Odoo 20, bloc Tarif : cases Remises, Promotions, Fidélité et Cartes-Cadeaux, Listes de prix cochées" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'option « Promotions, Fidélité &amp; Cartes-Cadeaux », à côté des remises et des listes de prix.</figcaption>
+                </figure>
+                <p>L'enregistrement installe le module des programmes, et avec lui un module de liaison pour
+                    chaque application déjà présente : Ventes, boutique en ligne, point de vente, frais de
+                    livraison. Sur la base de démonstration, sept modules s'ajoutent. Odoo revient ensuite sur
+                    Ventes, qui compte un nouveau menu <strong>Promotions</strong> à deux entrées :
+                    <strong>Remise &amp; Fidélité</strong> et <strong>Cartes-cadeaux &amp; e-wallet</strong>.</p>
+                <p>Avec la démonstration, la liste Remise &amp; Fidélité n'est pas vide : six programmes d'exemple
+                    y figurent (un code de 10 %, un « achetez 3, recevez-en un », des bons de 10 %, un bon pour la
+                    prochaine commande, un programme de fidélité, une livraison gratuite). Ils sont
+                    <strong>actifs</strong>, ce qui compte pour la suite.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les huit types de programmes</h2>
+                <p>Dans <strong>Ventes › Promotions › Remise &amp; Fidélité</strong>, cliquez sur
+                    <strong>Nouveau</strong>. Le champ <strong>Type</strong> propose six types ; les deux types
+                    qui servent à payer, carte-cadeau et e-wallet, se créent depuis l'autre entrée du menu.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Formulaire de programme d'Odoo 20, liste déroulante Type ouverte : Bons de réduction, Cartes de fidélité, Promotions, Code de remise, Achetez X Recevez Y, Bons de réduction pour la prochaine commande" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les six types de Remise &amp; Fidélité.</figcaption>
+                </figure>
+                <p>Changer de type pré-remplit une règle et une récompense d'exemple, et affiche sous le champ une
+                    phrase d'aide. Le tableau les résume.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Type</th><th>À quoi il sert</th><th>Déclenchement</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Promotions</strong></td><td>Une récompense dès qu'une condition est remplie sur la commande (montant, articles).</td><td>Automatique</td></tr>
+                        <tr><td><strong>Code de remise</strong></td><td>La même chose, réservée aux clients qui saisissent un code partagé.</td><td>Code</td></tr>
+                        <tr><td><strong>Bons de réduction</strong></td><td>Des codes uniques générés par lot, chacun utilisable une fois.</td><td>Code</td></tr>
+                        <tr><td><strong>Bons de réduction pour la prochaine commande</strong></td><td>Un achat génère un code unique, valable sur l'achat suivant.</td><td>Automatique</td></tr>
+                        <tr><td><strong>Cartes de fidélité</strong></td><td>Le client cumule des points à chaque commande et les échange contre des récompenses.</td><td>Automatique</td></tr>
+                        <tr><td><strong>Achetez X Recevez Y</strong></td><td>Un crédit par article acheté ; X crédits donnent Y articles offerts.</td><td>Automatique</td></tr>
+                        <tr><td><strong>Carte-cadeau</strong></td><td>Un montant prépayé, créé à la main ou à la vente d'un article carte-cadeau, qui sert à payer.</td><td>Menu Cartes-cadeaux &amp; e-wallet</td></tr>
+                        <tr><td><strong>e-wallet</strong></td><td>Un porte-monnaie électronique rechargé par l'achat d'un article e-wallet, proposé au paiement.</td><td>Menu Cartes-cadeaux &amp; e-wallet</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour une remise ponctuelle, trois types suffisent dans la plupart des cas : Promotions, Code de
+                    remise et Bons de réduction. Les sections suivantes les mettent en œuvre. La fidélité et les
+                    cartes-cadeaux, qui suivent un client dans le temps, relèvent d'un article à part.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Une promotion automatique : 10 % dès 1 000 $</h2>
+                <p>Toujours sur le nouveau programme, laissez le type <strong>Promotions</strong> et nommez-le
+                    « 10 % dès 1 000 $ d'achat ». La règle pré-remplie dit « Si minimum 50,00 dépensé » : cliquez
+                    dessus et passez l'<strong>Achat minimum</strong> à 1000.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Règles conditionnelles d'Odoo 20 : Quantité minimale 0, Achat minimum 1000 taxes incluses, filtres Produits, Catégories, Étiquette de produit" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle : un achat minimum de 1 000, taxes incluses.</figcaption>
+                </figure>
+                <p>La règle peut aussi exiger une quantité minimale, ou ne compter que certains produits, catégories
+                    ou étiquettes. Cliquez sur <strong>Enregistrer &amp; Fermer</strong>. La récompense pré-remplie,
+                    « 10,00% de remise sur votre commande », convient ; enregistrez le programme.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Programme Odoo 20 « 10 % dès 1 000 $ d'achat », type Promotions, onglet Règles et Récompenses : Si minimum 1 000,00 dépensé, 10,00% de remise sur votre commande" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le programme enregistré : une règle, une récompense.</figcaption>
+                </figure>
+                <p>Au-dessus des onglets, trois champs limitent le programme : <strong>Limite d'utilisation</strong>
+                    (un nombre maximal de commandes), <strong>Pour</strong> (certaines listes de prix seulement) et
+                    <strong>Availability Dates</strong> (une période de validité, dates incluses).</p>
+                <p>Créez ensuite un devis pour Acme Corporation avec un <strong>Grand bureau</strong> à 1 799 $, et
+                    enregistrez. Aucune remise n'apparaît : sur un devis, une promotion « automatique » ne
+                    s'applique pas seule. Sous les lignes, cliquez sur <strong>Récompense</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Récompenses disponibles d'Odoo 20 : choix entre Livraison gratuite et 10 % dès 1 000 $ d'achat, boutons Appliquer et Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux programmes sont éligibles : la livraison gratuite de la démonstration et la nouvelle promotion.</figcaption>
+                </figure>
+                <p>Odoo liste toutes les récompenses auxquelles le devis donne droit. Le programme de démonstration
+                    « Livraison gratuite » se déclenche lui aussi à partir de 1 000 $. Choisissez
+                    « 10 % dès 1 000 $ d'achat », puis <strong>Appliquer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Devis Odoo 20 pour Acme Corporation : Grand bureau 1 799 dollars, ligne 10% sur votre commande -179,90 dollars, total 1 861,97 dollars, Total Advantage 206,89 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La promotion devient une ligne négative de 179,90 $.</figcaption>
+                </figure>
+                <p>La remise prend la forme d'une ligne « 10% sur votre commande », soumise à la même taxe que
+                    l'article. Sous le total, une ligne nouvelle d'Odoo 20, <strong>Total Advantage</strong>,
+                    additionne les avantages accordés au client, taxes comprises : ici 179,90 $ + 15 % = 206,89 $.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un code promo, une seule fois par client</h2>
+                <p>Le code promo convient à une campagne : courriel, réseau social, flyer. Créez un programme de
+                    type <strong>Code de remise</strong> nommé « Bienvenue : 15 % sur la première commande ». Cliquez
+                    sur la règle pré-remplie (« Code de remise PROMO_CODE_… »), remplacez le code par
+                    <code>BIENVENUE15</code> et l'achat minimum par 0. Passez la récompense à 15 %.</p>
+                <p>Cochez enfin <strong>Once per user</strong> (« une fois par client »), une case qui apparaît en
+                    Odoo 20, réservée au type Code de remise.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Programme Odoo 20 Bienvenue 15 % sur la première commande, type Code de remise, case Once per user cochée, règle Code de remise BIENVENUE15, récompense 15,00% de remise sur votre commande" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un code de remise limité à une utilisation par client.</figcaption>
+                </figure>
+                <p>Sur un devis pour Azure Interior (deux « Combinaison de bureau »), cliquez sur
+                    <strong>Code promotionnel</strong> et saisissez le code.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Saisir le code de promotion ou de réduction d'Odoo 20, champ Code promotionnel rempli avec BIENVENUE15" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bouton Code promotionnel ouvre une fenêtre de saisie.</figcaption>
+                </figure>
+                <p><strong>Appliquer</strong> ouvre la fenêtre Récompenses disponibles, comme à l'étape 3 :
+                    sélectionnez la récompense du code et appliquez-la.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Devis Odoo 20 pour Azure Interior : 2 Combinaison de bureau à 450 dollars avec Rem.% 10, ligne 15% sur votre commande -121,50 dollars, total 791,78 dollars, Total Advantage 243,23 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le code s'ajoute à la remise de la liste de prix du client.</figcaption>
+                </figure>
+                <p>Azure Interior bénéficie déjà de la liste de prix « Grossiste » créée dans l'article sur les
+                    listes de prix : 10 % dans la colonne Rem.%. Le code ne la remplace pas, il s'y ajoute :
+                    15 % des 810 $ déjà remisés, soit −121,50 $. Total Advantage additionne les deux avantages.</p>
+                <p>Confirmez le devis. Odoo inscrit alors Azure Interior parmi les clients qui ont utilisé le
+                    code. Sur un nouveau devis pour le même client, le même code est refusé :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Erreur de validation d'Odoo 20 : This promo code can only be used once." style="max-width:100%; height:auto;"/>
+                    <figcaption>Deuxième tentative du même client : le code est refusé.</figcaption>
+                </figure>
+                <p>Le message est resté en anglais : « ce code promo ne peut être utilisé qu'une fois ». Le contrôle
+                    porte sur le client, pas sur le code : un autre client peut toujours l'utiliser. Sur la
+                    boutique en ligne, un visiteur non connecté doit d'abord se connecter pour utiliser un tel code.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Des bons de réduction à usage unique</h2>
+                <p>Un code partagé circule ; un bon de réduction, lui, est unique et ne sert qu'une fois. La
+                    démonstration contient le programme « Bon de réduction de 10% ». Ouvrez-le et cliquez sur
+                    <strong>Générer des bons de réduction</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Générer d'Odoo 20 : Pour Clients anonymes, Quantité à générer 3, Valide jusqu'au 31 déc., Description Bons remis lors d'un salon professionnel, bouton Générer Bons de réduction" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois bons anonymes, valables jusqu'au 31 décembre.</figcaption>
+                </figure>
+                <p>Deux modes : <strong>Clients anonymes</strong> produit le nombre de bons demandé, à distribuer
+                    librement ; <strong>Clients sélectionnés</strong> crée un bon par client choisi (ou par client
+                    portant une étiquette)  et, quand le programme prévoit un courriel à la
+                    création des bons (c'est le cas ici), l'envoie à chaque client. La <strong>Description</strong> est
+                    obligatoire. Saisissez 3 bons, une date de fin de validité, puis cliquez sur
+                    <strong>Générer Bons de réduction</strong>.</p>
+                <p>Le bouton intelligent <strong>Bons de réduction</strong> du programme liste les codes :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste des bons de réduction d'Odoo 20 : codes comme 0444-52de-4a6a, solde 1 Points de réduction, date d'expiration 31 déc. pour les trois nouveaux, programme Bon de réduction de 10%, boutons Envoyer et Partager" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les dix bons de la démonstration et les trois nouveaux, avec leur date d'expiration.</figcaption>
+                </figure>
+                <p>Chaque bon porte un solde d'un point, que la récompense consomme. Les boutons
+                    <strong>Envoyer</strong> et <strong>Partager</strong> le transmettent à un client. Saisissez
+                    l'un des codes (ici <code>0444-52de-4a6a</code>) avec le bouton Code promotionnel d'un devis,
+                    puis choisissez la récompense.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Devis Odoo 20 pour Azure Interior : 1 Combinaison de bureau 405 dollars, ligne 10% on your order -40,50 dollars, total 419,18 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon devient une ligne de remise de 10 %.</figcaption>
+                </figure>
+                <p>Après confirmation de la commande, le même code saisi sur un autre devis donne « Ce bon de
+                    réduction a déjà été utilisé. » Un bon expiré est refusé de la même façon.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les mêmes programmes en boutique et en caisse</h2>
+                <p>Un programme n'appartient pas aux Ventes : l'onglet <strong>Settings</strong> de chaque
+                    programme indique où il s'applique.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Onglet Settings d'un programme Odoo 20 : Disponible sur Point of sale, Ventes, Site Web cochés, Site Web Tous les sites web, Point de Vente Tous les PdV, Société" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un même programme pour les devis, la boutique en ligne et la caisse.</figcaption>
+                </figure>
+                <p>Les cases <strong>Disponible sur</strong> apparaissent avec les modules de liaison installés à
+                    l'étape 1 : <strong>Ventes</strong> pour les devis, <strong>Site Web</strong> pour la
+                    <a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">boutique en ligne</a>,
+                    <strong>Point of sale</strong> pour la caisse. Les champs du dessous restreignent le programme à
+                    un site ou à certains points de vente. Une promotion de fin de saison peut ainsi viser la seule
+                    boutique en ligne, un code « magasin » la seule caisse.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Les huit types de programmes, la génération de bons et leur
+                        usage dans les devis, la boutique en ligne et le point de vente sont inclus dans Odoo 20
+                        Community. Pour les cartes de fidélité, Odoo 20 ajoute aussi une durée de validité des
+                        points (<strong>Points Validity</strong>, en jours), présentée avec la fidélité.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une récompense oubliée n'arrête pas la confirmation</h4>
+                    <p>Sur un devis, rien ne s'applique tant que personne ne clique sur Récompense ou Code
+                        promotionnel. Si le commercial confirme un devis éligible sans le faire, Odoo affiche
+                        seulement « Il existe des récompenses disponibles non ajoutées à cette commande. » : la
+                        commande est confirmée, sans la remise.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le minimum d'achat est taxes comprises</h4>
+                    <p>L'Achat minimum d'une règle vaut <strong>taxes incluses</strong> par défaut. Un minimum de
+                        1 000 $ est donc atteint avec 870 $ hors taxes à 15 %. Pour un seuil hors taxes, choisissez
+                        « taxes exclues » à côté du montant.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les programmes de démonstration sont actifs</h4>
+                    <p>Sur une base de démonstration, la livraison gratuite, la fidélité et le bon « prochaine
+                        commande » réagissent à chaque devis : à la confirmation de la commande d'Azure Interior,
+                        Odoo a créé une carte de fidélité et un bon pour sa prochaine commande. Archivez les
+                        programmes d'exemple avant d'utiliser la base pour de vrai.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> retrouver et utiliser un code de la démonstration, puis vérifier
+                        que « Once per user » ne vise que le client qui a déjà utilisé le code.</p>
+                    <p><strong>Indication :</strong> ouvrez le programme « Code pour 10% de remise sur les
+                        commandes » et lisez le code de sa règle (<code>10pc</code>). Sur un devis pour Wood Corner
+                        avec deux « Combinaison de bureau », appliquez ce code avec le bouton Code promotionnel, puis
+                        saisissez aussi <code>BIENVENUE15</code>.</p>
+                    <p><strong>Critère de réussite :</strong> le devis porte une ligne « Remise 10% de réduction sur
+                        votre commande » de −90,00 $ (10 % de 900 $) ; le code BIENVENUE15, refusé à Azure
+                        Interior, est accepté pour Wood Corner.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les programmes s'activent dans Ventes › Configuration › Paramètres, bloc Tarif, et se gèrent
+                        dans Ventes › Promotions.</li>
+                    <li>Huit types : six dans Remise &amp; Fidélité, carte-cadeau et e-wallet dans l'autre menu.</li>
+                    <li>Un programme = un type, des règles, des récompenses ; la récompense devient une ligne négative
+                        du devis, qui s'ajoute aux remises de la liste de prix.</li>
+                    <li>Sur un devis, les boutons Récompense et Code promotionnel appliquent les programmes ; rien ne
+                        s'applique seul.</li>
+                    <li>Nouveau en Odoo 20 : « Once per user » pour les codes de remise et la ligne Total Advantage
+                        sous le total du devis.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Le prix par client et le bouton Remise du devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne</a></h5>
+                            <p class="small text-muted mb-0">Le canal où les codes promo se saisissent au panier.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande</a></h5>
+                            <p class="small text-muted mb-0">Le devis sur lequel s'appliquent les récompenses.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,491 @@
+<!--
+Article — Sur stock ou à la commande (MTO) dans Odoo 20
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : stock-ou-commande-mto-odoo
+Mots-clés cibles : odoo mto, odoo make to order, fabrication à la commande odoo
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b4 (copie de vs20_func : démonstration,
+  Inventaire, Achats, Ventes, Fabrication, Dropshipping ; réception en 2 étapes, livraison en 3 étapes), port 9040.
+  Route MTO archivée : stock/data/stock_data.xml:41-48 (route_warehouse0_mto, active False, sequence 5) ; constaté
+    en base avant réglage (route « Réapprovisionner sur commande (MTO) » active False, règle WH inactive).
+  Case : stock/models/res_config_settings.py:46,52-60 (replenish_on_order = route.active, inverse) ;
+    stock/views/res_config_settings_views.xml:191-194 (bloc Logistique) ; purchase_stock/views/res_config_settings_views.xml:17-21
+    (même case dans les paramètres d'Achats). Écran : Inventaire › Configuration › Paramètres, bloc Logistique, coché →
+    route active, règles « WH: Stock → Customers (MTO) », « WH: Stock → Production (MTO) »… réactivées
+    (stock/models/stock_location.py:559-561).
+  Onglet Inventaire de l'article : seules « Réapprovisionner sur commande (MTO) » et « Dropshipping » proposées ;
+    Acheter et Fabriquer product_selectable False, warehouse_selectable True (purchase_stock/data/purchase_stock_data.xml:10-16,
+    sequence 10 ; mrp/data/mrp_data.xml:10-16, sequence 5).
+  Choix achat / fabrication : stock/models/stock_rule.py:482-515 (routes de l'entrepôt filtrées, tri route_sequence) ;
+    mrp/models/stock_rule.py:75-80 (Fabriquer seulement si nomenclature normale) ; purchase_stock/models/stock_rule.py:165-170
+    (Acheter seulement si fournisseur ou achat confirmé). Shell (annulé) : Tiroir (nomenclature + fournisseur Wood Corner)
+    en MTO → WH/MO/00011, aucune demande de prix ; Boîtier pour cables (ni l'un ni l'autre) en MTO → confirmation refusée,
+    UserError « Aucune règle n'a été trouvée pour réapprovisionner "[FURN_5555] Boîtier pour cables" dans "WH/Stock".
+    Vérifiez la configuration des routes du produit. »
+  Méthode : stock/models/stock_rule.py:79-86 (procure_method : Prendre dans le stock / Déclencher une autre règle /
+    mts_else_mto) ; stock/models/stock_warehouse.py:421-446 (règle MTO make_to_order de WH/Stock vers la 1re étape de
+    livraison) ; stock/models/stock_move.py:2538-2542 (mouvement MTO sans mouvement d'origine → En attente) ;
+    fr.po stock:10348-10370.
+  Parcours joué : S00082 Acme Corporation 5 Chaise de conférence (Acier) (34 en stock) → P00034 Wood Corner 5 × 28 $,
+    Source S00082, boutons Achats / Ventes ; WH/PICK/00018 « En attente d'une autre opération », badge Disponible,
+    Réserver sans effet (shell : état waiting, quantité 0) ; P00034 confirmée → WH/IN/00027 (WH/Entrée) → WH/STOR/00005 →
+    WH/PICK/00018 Prêt, 5 réservées ; chaise : 39 en stock, 34 libres.
+    S00083 Acme Corporation 2 Table (3 en stock) → WH/MO/00010 confirmé, origine S00083, Pied de table « Pas disponible »,
+    aucune demande pour le composant ; bouton Fabrication / Ventes.
+    Règle « WH: Stock → Customers (MTO) » passée à « Prendre dans le stock, si pas disponible, déclencher une autre
+    règle. » (menu Configuration › Règles, groupe stock.group_adv_location, stock_rule_views.xml:116-117) :
+    S00084 Gemini Furniture 40 chaises → WH/PICK/00020 34 réservées sur 40, P00035 Wood Corner 6 chaises
+    (stock_move.py:1865-1897 : quantité = demande − quantité libre ; stock_rule.py:276-283) ; S00085 Azure Interior
+    2 Tables → prises en stock, aucun OF.
+  Exercice vérifié par shell (annulé), avec les deux méthodes : Écrans anti-bruit (Blanc) 0 en stock, MTO, vente de 3 →
+    demande de prix Wood Corner 3 × 287 $, Source = la vente.
+  Aucun écart 19 → 20 retenu : route, case, procure_method, _run_pull et filtres achat/fabrication identiques en 19
+    (seul ajout 20 : _has_confirmed_purchase, déjà traité ailleurs).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Sur stock ou à la commande (MTO) dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Servir le client depuis les rayons, ou n'acheter et ne fabriquer
+                    qu'une fois la commande signée : le choix se fait article par article, avec une seule case.
+                    Où la trouver dans Odoo 20, ce que la vente déclenche réellement, comment l'entrepôt attend
+                    la marchandise, et la variante qui ne commande que ce qui manque.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Ventes, Inventaire, Achats et Fabrication installés, sur la démonstration native. Ces
+                        fonctions existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Deux façons de servir une commande</h2>
+                <p>Par défaut, Odoo sert chaque vente <strong>sur stock</strong> (en anglais <em>make to stock</em>,
+                    MTS) : la livraison prend les articles en rayon, et le réapprovisionnement vit sa vie à part.
+                    L'autre stratégie, <strong>à la commande</strong> (<em>make to order</em>, MTO), lie un achat ou
+                    une fabrication à chaque vente : la confirmation du devis crée la demande de prix ou l'ordre de
+                    fabrication, à la quantité vendue, et la livraison attend ce qui en sortira.</p>
+                <p>Dans Odoo, la stratégie à la commande est une <strong>route</strong> posée sur l'article. Elle
+                    ne dit pas comment se procurer l'article : c'est l'entrepôt qui le décide, avec ses routes
+                    Acheter et Fabriquer. Odoo retient la fabrication si l'article a une nomenclature, sinon l'achat
+                    s'il a un fournisseur.</p>
+                <p>Le stock piloté par une règle minimum / maximum, troisième voie qui anticipe sans attendre la
+                    vente, est décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans
+                    Odoo 20</a>. Le présent article se concentre sur le lien direct entre une vente et son
+                    approvisionnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>rendre disponible la route « Réapprovisionner sur commande (MTO) », masquée par défaut ;</li>
+                    <li>faire qu'une vente crée elle-même sa demande de prix ou son ordre de fabrication ;</li>
+                    <li>suivre le lien entre la vente et l'approvisionnement, dans les deux sens ;</li>
+                    <li>ne commander que la part qui manque en stock ;</li>
+                    <li>choisir la stratégie adaptée à chaque famille d'articles.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Rendre la route à la commande disponible</h2>
+                <p>Sur une base neuve, la fiche article ne propose pas la stratégie à la commande : la route
+                    existe, mais Odoo la livre <strong>archivée</strong>. Pour la réactiver, ouvrez
+                    <strong>Inventaire › Configuration › Paramètres</strong>, descendez jusqu'au bloc
+                    <strong>Logistique</strong> et cochez <strong>Réapprovisionner sur commande (MTO)</strong>,
+                    puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Paramètres d'Inventaire d'Odoo 20, bloc Logistique : cases Dropshipping et Réapprovisionner sur commande (MTO) cochées, avec l'aide Autoriser la fabrication à la commande, ou automatiser le bon de commande lorsqu'un produit est vendu" style="max-width:100%; height:auto;"/>
+                    <figcaption>La case qui désarchive la route à la commande.</figcaption>
+                </figure>
+                <p>Cette case ne fait rien d'autre qu'activer la route et ses règles : aucun article ne change de
+                    stratégie à ce stade. La même case figure dans les paramètres d'Achats ; cocher l'une coche
+                    l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Passer un article à la commande</h2>
+                <p>Ouvrez la fiche de l'article, onglet <strong>Inventaire</strong>, section Opérations. Le champ
+                    <strong>Routes</strong> liste maintenant <strong>Réapprovisionner sur commande (MTO)</strong> :
+                    cochez-la, puis enregistrez. L'exemple prend la « Chaise de conférence » de la démonstration,
+                    fournie par Wood Corner à 28 $, dont la variante Acier compte 34 unités en stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Onglet Inventaire de la fiche article Chaise de conférence dans Odoo 20 : champ Routes avec Réapprovisionner sur commande (MTO) coché et Dropshipping décoché, lien Voir le diagramme" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une seule case : Acheter et Fabriquer n'apparaissent pas sur l'article.</figcaption>
+                </figure>
+                <p>Inutile de chercher une case Acheter ou Fabriquer à côté : ces routes appartiennent à l'entrepôt,
+                    et la fiche ne les propose pas. La route se pose sur le modèle d'article, donc sur toutes ses
+                    variantes (ici Acier et Aluminium).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Vendre un article acheté à la commande</h2>
+                <p>Un devis pour Acme Corporation porte sur 5 chaises Acier. À sa confirmation (S00082), deux
+                    boutons intelligents apparaissent en haut de la commande : <strong>Livraison</strong> et
+                    <strong>Achats</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Commande client S00082 d'Odoo 20 pour Acme Corporation, 5 Chaise de conférence (Acier) à 33 dollars, boutons intelligents Livraison 1 et Achats 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>La vente confirmée porte déjà son achat : bouton Achats.</figcaption>
+                </figure>
+                <p>Le bouton Achats ouvre la demande de prix P00034, créée chez Wood Corner pour exactement 5 chaises
+                    à 28 $. Les 34 chaises en rayon n'ont pas été touchées : en stratégie à la commande, Odoo ignore
+                    le stock existant et achète la quantité vendue. Dans l'autre sens, la demande de prix affiche un
+                    bouton <strong>Ventes</strong> qui ramène à la commande client, et le champ
+                    <strong>Source</strong> de l'onglet Autres informations indique S00082.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Demande de prix P00034 d'Odoo 20 chez Wood Corner, bouton intelligent Ventes 1, onglet Autres informations avec le champ Source S00082, livrer à YourCompany: Réceptions" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lien retour : bouton Ventes et Source de la demande de prix.</figcaption>
+                </figure>
+                <p>La demande suit ensuite le cycle d'achat habituel : l'acheteur l'envoie et la confirme. Son
+                    <strong>Échéance de commande</strong> s'affiche en rouge : l'arrivée est prévue le jour même de
+                    la vente, et Wood Corner demande 2 jours de délai ; il aurait fallu commander deux jours plus
+                    tôt.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que fait l'entrepôt pendant l'attente</h2>
+                <p>La base de démonstration utilisée ici reçoit en deux étapes et livre en trois (transfert, colisage,
+                    expédition). Le premier document créé par la vente n'est donc pas un bon de livraison mais le
+                    transfert WH/PICK/00018, de WH/Stock vers la zone de colisage. Son statut :
+                    <strong>En attente d'une autre opération</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Transfert WH/PICK/00018 d'Odoo 20, statut En attente d'une autre opération, de WH/Stock vers WH/Zone de colisage, document d'origine S00082, ligne Chaise de conférence (Acier) avec badge Disponible, demande 5, quantité 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le transfert attend l'achat, même si la ligne affiche « Disponible ».</figcaption>
+                </figure>
+                <p>La ligne porte pourtant un badge vert <strong>Disponible</strong>, puisque des chaises sont en
+                    rayon. Le bouton <strong>Réserver</strong> ne change rien : un mouvement à la commande ne se
+                    sert que de ce que son approvisionnement lui apporte. Une fois P00034 confirmée, la réception
+                    WH/IN/00027 dépose les 5 chaises à WH/Entrée, le rangement WH/STOR/00005 les monte en stock, et
+                    WH/PICK/00018 passe à <strong>Prêt</strong> avec ces 5 chaises réservées. La fiche article compte
+                    alors 39 chaises, dont 34 libres : les 5 achetées sont promises à Acme Corporation.</p>
+                <p>Avec une réception et une livraison en une étape, la chaîne est plus courte (une réception, un bon
+                    de livraison), le principe est le même. Les étapes de l'entrepôt sont présentées dans
+                    <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et
+                    livraisons en plusieurs étapes dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Fabriquer à la commande</h2>
+                <p>Avec Fabrication installée, la même case produit des ordres de fabrication. L'exemple prend la
+                    « Table » de la démonstration, qui a une nomenclature et 3 unités en stock. Après avoir coché la
+                    route à la commande sur sa fiche, une vente de 2 tables à Acme Corporation (S00083) affiche un
+                    bouton <strong>Fabrication</strong> au lieu du bouton Achats.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Commande client S00083 d'Odoo 20 pour Acme Corporation, 2 Table à 520 dollars, boutons intelligents Livraison 1 et Fabrication 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Fabriqué à la commande : la vente crée son ordre de fabrication.</figcaption>
+                </figure>
+                <p>L'ordre WH/MO/00010 est créé <strong>confirmé</strong>, pour 2 tables, malgré les 3 en rayon.
+                    Son bouton <strong>Ventes</strong> ramène à S00083, et le transfert de la vente attend la fin de
+                    la fabrication.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Ordre de fabrication WH/MO/00010 d'Odoo 20, Table quantité 2, statut Confirmé, bouton intelligent Ventes 1, statut des composants Pas disponible, composants Dessus de table, Boulon et Vis disponibles, Pied de table pas disponible" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'ordre de fabrication né de la vente : les composants ne suivent pas.</figcaption>
+                </figure>
+                <p>Les composants, eux, restent servis sur stock : le « Pied de table » manque, et la vente n'a
+                    déclenché aucun achat pour lui. Il relève de sa propre stratégie, règle minimum / maximum ou
+                    route à la commande posée sur le composant. Le déroulé complet d'un ordre de fabrication est
+                    décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                    ordres de fabrication dans Odoo 20</a>.</p>
+                <p>Un article qui a à la fois une nomenclature et un fournisseur est <strong>fabriqué</strong> : la
+                    route Fabriquer passe avant la route Acheter dans l'ordre des routes de l'entrepôt. Le « Tiroir »
+                    de la démonstration, dans ce cas, donne un ordre de fabrication et aucune demande de prix.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ne commander que ce qui manque</h2>
+                <p>Acheter 5 chaises quand 34 attendent en rayon a un sens pour un article personnalisé, beaucoup
+                    moins pour un article standard. Odoo propose une méthode intermédiaire : prendre dans le stock,
+                    et ne déclencher l'achat ou la fabrication que pour la part manquante. Elle se règle sur la
+                    <strong>règle</strong> de la route, pas sur l'article.</p>
+                <p>Ouvrez <strong>Inventaire › Configuration › Règles</strong> (menu présent quand la case <strong>Routes en plusieurs étapes</strong> des paramètres d'Inventaire est
+                    cochée, comme sur la base de démonstration utilisée ici). Ouvrez la règle <strong>WH: Stock → Customers (MTO)</strong> et passez
+                    <strong>Méthode d'approvisionnement</strong> de « Déclencher une autre règle » à
+                    <strong>« Prendre dans le stock, si pas disponible, déclencher une autre règle. »</strong>
+                    Le texte à droite du formulaire reformule aussitôt le comportement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Règle WH: Stock vers Customers (MTO) d'Odoo 20 : action Tirer depuis, type d'opération YourCompany: Transfert, de WH/Stock vers Customers, méthode d'approvisionnement Prendre dans le stock, si pas disponible, déclencher une autre règle, route Réapprovisionner sur commande (MTO)" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle de la route à la commande, passée en « stock d'abord ».</figcaption>
+                </figure>
+                <p>Une vente de 40 chaises Acier à Gemini Furniture (S00084), avec 34 chaises libres, donne alors un
+                    transfert qui réserve les 34 disponibles :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Transfert WH/PICK/00020 d'Odoo 20 pour Gemini Furniture, document d'origine S00084, Chaise de conférence (Acier) demande 40, quantité 34 réservée" style="max-width:100%; height:auto;"/>
+                    <figcaption>34 chaises prises en rayon sur les 40 vendues.</figcaption>
+                </figure>
+                <p>et une demande de prix P00035 chez Wood Corner pour les 6 manquantes seulement :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Demande de prix P00035 d'Odoo 20 chez Wood Corner, bouton intelligent Ventes 1, ligne Chaise de conférence (Acier) quantité 6 à 28 dollars, total 193,20 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'achat ne couvre que le manque : 6 chaises.</figcaption>
+                </figure>
+                <p>Côté fabrication, la même règle s'applique : une vente de 2 tables (S00085) quand 3 sont libres
+                    part entièrement du stock, sans ordre de fabrication.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== TABLEAU DE DÉCISION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Quand choisir quoi</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Situation</th><th>Stratégie</th><th>Réglage dans Odoo 20</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Article courant, demande régulière, client qui veut être livré tout de suite</td>
+                            <td>Sur stock, piloté par une règle minimum / maximum</td>
+                            <td>Aucune route sur l'article ; une règle de réapprovisionnement</td></tr>
+                        <tr><td>Article personnalisé, cher ou encombrant, que personne ne veut voir dormir en rayon</td>
+                            <td>À la commande</td>
+                            <td>Route « Réapprovisionner sur commande (MTO) » sur l'article</td></tr>
+                        <tr><td>Article fabriqué sur mesure, une fabrication par commande client</td>
+                            <td>Fabriqué à la commande</td>
+                            <td>Route MTO + une nomenclature ; Fabrication installée</td></tr>
+                        <tr><td>Article standard avec un peu de stock, des pics de vente imprévisibles</td>
+                            <td>Stock d'abord, commande pour le manque</td>
+                            <td>Route MTO + règle MTO en « Prendre dans le stock, si pas disponible… »</td></tr>
+                        <tr><td>Le fournisseur peut expédier directement chez le client</td>
+                            <td>Livraison directe</td>
+                            <td>Route Dropshipping, voir <a href="/blog/fonctionnel-odoo-1/livraison-directe-couts-logistiques-odoo-222">Livraison directe et coûts logistiques</a></td></tr>
+                    </tbody>
+                </table>
+                <p>Les stratégies se mélangent sans difficulté dans une même base : chaque article porte la sienne.
+                    Seul le réglage « stock d'abord » est collectif, puisqu'il touche la règle de l'entrepôt et donc
+                    tous les articles à la commande de cet entrepôt.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Route à la commande, achat et fabrication déclenchés par la
+                        vente, boutons de lien entre documents, méthode « Prendre dans le stock, si pas disponible,
+                        déclencher une autre règle » et livraison directe sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sans fournisseur ni nomenclature, la vente est bloquée</h4>
+                    <p>Un article à la commande qui n'a ni fournisseur dans son onglet Achats ni nomenclature ne
+                        peut être ni acheté ni fabriqué. La confirmation du devis échoue alors avec le message
+                        « Aucune règle n'a été trouvée pour réapprovisionner … dans "WH/Stock". Vérifiez la
+                        configuration des routes du produit. » Le correctif n'est pas dans les routes : ajoutez un
+                        fournisseur ou une nomenclature à l'article.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Disponible » ne veut pas dire livrable</h4>
+                    <p>Sur un transfert à la commande, le badge Disponible reflète le stock du rayon, pas ce qui est
+                        promis à la vente. Tant que l'achat ou la fabrication n'est pas arrivé, le transfert reste en
+                        attente, et Réserver n'y change rien. Pour livrer depuis le rayon, il faut une autre
+                        stratégie, ou la méthode « stock d'abord ».</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La route ne descend pas aux composants</h4>
+                    <p>Un article fabriqué à la commande déclenche son ordre de fabrication, pas l'achat de ses
+                        composants. Sans règle ni route sur eux, l'ordre reste au statut des composants « Pas disponible ».</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Annuler une vente ne nettoie pas tout</h4>
+                    <p>L'approvisionnement créé par la vente ne disparaît pas avec elle : annuler S00083 laisse
+                        l'ordre WH/MO/00010 au statut Confirmé. Avant d'annuler une commande client, ouvrez son bouton
+                        Achats ou Fabrication, et annulez à la main ce qui n'a plus d'objet.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire acheter un article par sa vente.</p>
+                    <p><strong>Indication :</strong> cochez la route « Réapprovisionner sur commande (MTO) » sur
+                        « Écrans anti-bruit (Blanc) » (aucun en stock, fournisseur Wood Corner), puis confirmez un
+                        devis de 3 écrans pour un client de démonstration.</p>
+                    <p><strong>Critère de réussite :</strong> la commande affiche un bouton Achats ; la demande de
+                        prix chez Wood Corner porte 3 « Écrans anti-bruit (Blanc) » à 287 $, et son champ Source
+                        donne le numéro de la vente.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La route à la commande est archivée par défaut : la case est dans Inventaire › Configuration
+                        › Paramètres, bloc Logistique.</li>
+                    <li>Sur l'article, une seule case ; l'entrepôt choisit la fabrication s'il y a une nomenclature,
+                        sinon l'achat s'il y a un fournisseur.</li>
+                    <li>À la commande, Odoo ignore le stock en rayon et lie l'achat ou la fabrication à la vente,
+                        boutons à l'appui dans les deux sens.</li>
+                    <li>La méthode « Prendre dans le stock, si pas disponible, déclencher une autre règle » ne
+                        commande que le manque, pour tous les articles à la commande de l'entrepôt.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">L'autre stratégie : un stock tenu par des règles minimum / maximum.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication</a></h5>
+                            <p class="small text-muted mb-0">La suite de l'ordre créé par la vente.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livraison-directe-couts-logistiques-odoo-222">Livraison directe</a></h5>
+                            <p class="small text-muted mb-0">Quand le fournisseur livre le client sans passer par l'entrepôt.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
