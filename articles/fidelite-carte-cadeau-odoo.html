@@ -1,0 +1,549 @@
+<!--
+Article — Programme de fidélité et carte cadeau dans Odoo 20
+Série « Remises et promotions avec Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : fidelite-carte-cadeau-odoo
+Meta : Odoo 20 Community : programme de fidélité avec validité des points, carte cadeau vendue puis dépensée en plusieurs fois, e-wallet, portail et boutique.
+Mot-clé cible : programme fidélité odoo / carte cadeau odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, ventes, guide, community
+Temps de lecture : ~12 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_a3 (copie de vs20_func, démonstration native).
+  Activation à l'écran (case Promotions, Fidélité & Cartes-Cadeaux) : 259 → 266 modules (loyalty, sale_loyalty, website_sale_loyalty,
+  pos_loyalty, pos_sale_loyalty, pos_restaurant_loyalty, sale_loyalty_delivery).
+  Programme démo « Programme de fidelité » archivé à l'écran. Création « Club fidélité » : formulaire relevé (règle pré-remplie
+  « Si minimum 50,00 dépensé », 1 point par $ dépensé ; récompenses 5 % / 200 pts, Expédition gratuite / 100 pts).
+  Points Validity : loyalty/models/loyalty_program.py:167, vue loyalty_program_views.xml:146-153 ; expiration par gain
+  loyalty/models/loyalty_history.py:74-83 ; solde calculé hors gains expirés :133-160 ; consommation FIFO :9, :165-186, :303-317.
+  v19 : loyalty_card.points = fields.Float stocké (odoo19 loyalty/models/loyalty_card.py:40), expiration_date sur la carte seule,
+  loyalty_history v19 sans expiration_date (28 lignes). Champ expiration_date de carte masqué pour la fidélité en 20 (loyalty_card_views.xml:13).
+  Points sur montant TTC : sale_loyalty/models/sale_order.py:1542-1558 (price_total).
+  Points Issued / Points Used (nouveau 20, extra_total_fields absent de odoo19 sale) : sale_loyalty/models/sale_order.py:51-79, 162-187.
+  Parcours : S00082 Joel Willis Combinaison de bureau 517,50 TTC → 517,50 pts + 1 pt bon prochaine commande (Points Issued 518.5),
+  expiration 06/10/2027. S00083 Chaise de bureau noire → Récompense 5 % → -6,03, Points Used 200, +138,58 pts ; solde 456,08.
+  Fiche contact › Plus › Cartes de fidélité (loyalty/models/res_partner.py:46-51). Solde cliquable → loyalty_card_views.xml:15-21,
+  wizard loyalty/wizard/loyalty_card_update_balance.py.
+  Carte cadeau : programme démo « Cartes-cadeaux », article Carte-cadeau 50 $ ; S00084 Acme Corporation 200 $ → carte 0443-6def-4267
+  200 $, sans partenaire ; mail.mail « Votre carte-cadeau chez My Company (San Francisco) » vers Acme Corporation.
+  S00085 Wood Corner Chaise 138,58 TTC → Code promotionnel → « Cartes-cadeaux - Carte-cadeau » → ligne Gift Card -138,58 sans taxe,
+  HT -18,08, total 0 ; solde carte 61,42. Plafond au total : sale_loyalty/models/sale_order.py:702.
+  e-wallet : programme créé (type e-wallet, produit Recharger le e-wallet proposé) ; S00086 Joel 100 $ ; S00087 Lampe de bureau 46 TTC
+  → e-wallet -46 → solde 54. Points de fidélité gagnés sur achat carte cadeau (Acme 200), recharge (Joel 100), commande payée par carte
+  (Wood Corner 138,58) : loyalty.history relevé en shell.
+  Portail : loyalty/controllers/portal.py:11-33 (loyalty + ewallet seulement), vignette « Une récompense vous attend »
+  loyalty/views/portal_templates.xml:33-40, fenêtre 5 derniers mouvements portal.py:118-135, lien historique
+  loyalty/static/src/js/portal/loyalty_card_dialog/loyalty_card_dialog.xml:52, page /my/loyalty_card/11/history capturée (portal/portal).
+  Boutique : panier /shop/cart en portal (website_sale_loyalty/views/website_sale_templates.xml:5 « Gift card or discount code... »).
+  Caisse (non exécutée) : pos_loyalty/static/src/app/screens/product_screen/control_buttons/control_buttons.xml:7-45 (eWallet,
+  Enter Code, Reward), partner_list_screen/partner_line/*.xml (points par client).
+  Dernier solde refusé (nouveau contrôle 20, absent de odoo19) : sale_loyalty/models/sale_order.py:237-245 ; carte = 61.41999999999999 ;
+  S00089 Gemini Furniture → « Erreur de validation — Vous n’avez pas suffisamment de points… » ; contournement à l'écran : Solde →
+  Nouveau solde 61,43 → supprimer la ligne, ressaisir le code → S00089 confirmée.
+  Exercice : S00091 Joel Willis, Chaise de bureau noire, e-wallet -54,00, total 84,58, portail e-wallet $ 0,00.
+Captures : content/blog/screenshots/fidelite-carte-cadeau-odoo/ (01-14, Playwright, scripts docs/blog-odoo20/captures-base-vs20_func/a3-fidelite/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Programme de fidélité et carte cadeau dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Des points gagnés à chaque achat, une carte cadeau vendue comme un
+                    article puis dépensée en plusieurs fois, un porte-monnaie électronique : Odoo 20 gère ces trois
+                    soldes avec le même moteur, partagé par les devis, la boutique en ligne et la caisse. Cet article
+                    les met en place et suit chaque solde, mouvement par mouvement.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau débutant · série <strong>Remises et promotions avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec Ventes, Site Web, eCommerce et Point de vente installés.
+                        Fidélité, cartes-cadeaux et e-wallet existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Une remise ponctuelle se règle sur la commande en cours. La fidélité, la carte cadeau et
+                    l'e-wallet, eux, suivent un <strong>solde</strong> d'une commande à l'autre : des points pour la
+                    première, un montant prépayé pour les deux autres. Dans Odoo, chaque solde vit sur une
+                    <strong>carte</strong> (un code unique, parfois rattaché à un client) et chaque gain ou dépense y
+                    laisse une ligne d'historique.</p>
+                <p>Ces fonctions s'activent avec la case <strong>Promotions, Fidélité &amp; Cartes-Cadeaux</strong>
+                    de <strong>Ventes › Configuration › Paramètres</strong> (bloc Tarif). Sur une base où Site Web et
+                    Point de vente sont installés, l'enregistrement ajoute sept modules, dont ceux de la boutique et
+                    de la caisse. Deux menus apparaissent sous <strong>Ventes › Promotions</strong> :
+                    <strong>Remise &amp; Fidélité</strong>, où se crée la carte de fidélité, et
+                    <strong>Cartes-cadeaux &amp; e-wallet</strong>.</p>
+                <p>Le prix de base de chaque client reste l'affaire des listes de prix, présentées dans
+                    <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et
+                    remises dans Odoo 20</a> ; les soldes décrits ici s'y ajoutent.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un programme de fidélité avec une règle de gain, des récompenses et une durée de validité des points ;</li>
+                    <li>lire le solde et l'historique des points d'un client ;</li>
+                    <li>vendre une carte cadeau, en utiliser une partie et retrouver le solde restant ;</li>
+                    <li>créditer et dépenser un e-wallet ;</li>
+                    <li>savoir où le client voit ses points : portail, panier de la boutique, caisse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer le programme de fidélité</h2>
+                <p>La base de démonstration contient déjà un « Programme de fidelité » actif. Pour éviter qu'un
+                    client cumule des points sur deux programmes à la fois, archivez-le (menu engrenage du
+                    formulaire, <strong>Archiver</strong>), puis ouvrez <strong>Ventes › Promotions › Remise &amp;
+                    Fidélité</strong> et cliquez sur <strong>Nouveau</strong>. Choisissez le type
+                    <strong>Cartes de fidélité</strong> et nommez le programme « Club fidélité ».</p>
+                <p>Odoo pré-remplit une règle « Si minimum 50,00 dépensé ». Cliquez dessus :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Règles conditionnelles d'Odoo 20 : Achat minimum 0 taxes incluses, Délivrer 1,00 Point(s) de fidélité, choix par commande, par $ dépensé, par unité payée" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle de gain : un point par dollar dépensé, sans minimum.</figcaption>
+                </figure>
+                <p>La partie <strong>Point(s)</strong> fixe le barème : un nombre de points <strong>par
+                    commande</strong>, <strong>par $ dépensé</strong> ou <strong>par unité payée</strong>. Le
+                    montant dépensé se compte taxes comprises. La partie <strong>Parmi</strong> limite le gain à
+                    certains produits, catégories ou étiquettes. Passez l'<strong>Achat minimum</strong> à 0 pour que
+                    chaque commande rapporte des points, puis <strong>Enregistrer &amp; Fermer</strong>.</p>
+                <p>À droite du type, saisissez <strong>365</strong> dans <strong>Points Validity</strong> (durée de
+                    validité des points, en jours), puis enregistrez le programme.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Programme Club fidélité dans Odoo 20, type Cartes de fidélité, Points Validity 365 days, règle 1,00 Point(s) de fidélité par $ dépensé, récompenses 5,00% de remise en échange de 200 points et Expédition gratuite en échange de 100 points" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le programme : une règle de gain, deux récompenses, des points valables 365 jours.</figcaption>
+                </figure>
+                <p>Les deux récompenses pré-remplies conviennent pour l'exemple : <strong>5,00 % de remise</strong>
+                    sur la commande contre 200 points, <strong>Expédition gratuite</strong> contre 100 points. Le bouton
+                    <strong>Ajouter une récompense</strong> en propose d'autres (montant fixe, article offert).</p>
+                <p>Le champ <strong>Points Validity</strong> est une nouveauté d'Odoo 20. Chaque gain reçoit sa
+                    propre date d'expiration : la date du gain plus le nombre de jours saisi. Laissé à 0, il rend les
+                    points permanents. En Odoo 19, seule la carte entière pouvait porter une date d'expiration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Cumuler des points sur une vente</h2>
+                <p>Créez un devis pour Joel Willis, le client de démonstration qui dispose d'un accès au portail, avec
+                    une <strong>Combinaison de bureau</strong> à 450 $, puis confirmez-le. Aucune action n'est
+                    nécessaire : les points sont attribués à la confirmation de la commande, et la carte du client
+                    est créée à ce moment-là si elle n'existe pas encore.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Commande Odoo 20 S00082 pour Joel Willis : Combinaison de bureau 450 dollars, total 517,50 dollars, sous le total Points Issued 518.5 et Points Used 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sous le total d'une commande confirmée, les points émis et consommés.</figcaption>
+                </figure>
+                <p>Sous le total, deux lignes nouvelles d'Odoo 20 apparaissent sur la commande confirmée :
+                    <strong>Points Issued</strong> (points émis) et <strong>Points Used</strong> (points consommés).
+                    Le total est de 517,50 $ taxes comprises, soit 517,50 points de fidélité. Le chiffre affiché,
+                    518.5, contient un point de plus : celui du programme de démonstration « 15% de remise sur votre
+                    prochaine commande », qui vient de générer un bon pour le même client (voir les points de
+                    vigilance).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Échanger des points contre une récompense</h2>
+                <p>Sur un nouveau devis pour Joel Willis, ajoutez une <strong>Chaise de bureau noire</strong>
+                    (120,50 $), enregistrez, puis cliquez sur <strong>Récompense</strong> sous les lignes. Avec
+                    517,50 points, le client peut prétendre aux deux récompenses du programme :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Récompenses disponibles d'Odoo 20 : Club fidélité - Expédition gratuite, Club fidélité - 5% sur votre commande sélectionnée, boutons Appliquer et Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>Seules les récompenses couvertes par le solde de points sont proposées.</figcaption>
+                </figure>
+                <p>Choisissez « Club fidélité - 5% sur votre commande », <strong>Appliquer</strong>, puis confirmez
+                    la commande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Commande Odoo 20 confirmée : Chaise de bureau noire 120,50 dollars, ligne 5% sur votre commande -6,03 dollars, total 131,65 dollars, Points Issued 139.58, Points Used 200" style="max-width:100%; height:auto;"/>
+                    <figcaption>La récompense devient une ligne de remise ; 200 points sont consommés.</figcaption>
+                </figure>
+                <p>La remise prend la forme d'une ligne « 5% sur votre commande » de −6,03 $ hors taxes.
+                    <strong>Points Used</strong> indique les 200 points consommés. La même commande rapporte aussi des
+                    points : 138,58, calculés sur le prix de la chaise taxes comprises, avant la remise de fidélité.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Consulter le solde et l'historique d'un client</h2>
+                <p>Ouvrez la fiche contact de Joel Willis. Les cartes du client se trouvent derrière le bouton
+                    intelligent <strong>Cartes de fidélité</strong>, rangé dans le menu <strong>Plus</strong> de la
+                    barre de boutons. La liste montre une ligne par carte : la carte « Club fidélité » et les bons
+                    « prochaine commande » générés par la démonstration. Ouvrez la carte du Club fidélité :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Carte de fidélité Odoo 20 de Joel Willis, code 0443-8395-40df, solde 456.08 Point(s) de fidélité, onglet Lignes d'historique : Commande S00083 consommé 200, Commande S00083 émis 138,58 expiration 6 oct. 2027, Commande S00082 émis 517,50 expiration 6 oct. 2027" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le solde se lit avec ses mouvements : chaque gain porte sa date d'expiration.</figcaption>
+                </figure>
+                <p>L'onglet <strong>Lignes d'historique</strong> retrace chaque mouvement : description, commande,
+                    date, <strong>Date d'expiration</strong>, points <strong>Émis</strong> et
+                    <strong>Consommé</strong>. Le solde, 517,50 + 138,58 − 200 = 456,08 points, est calculé à partir
+                    de ces lignes, sans compter les gains expirés.</p>
+                <p>La ligne de consommation n'a pas de date propre : les 200 points ont été prélevés sur le gain le
+                    plus ancien, et expireront avec lui. Odoo 20 consomme toujours en premier les points qui
+                    expirent le plus tôt. Le solde, affiché comme un lien, ouvre une fenêtre d'ajustement manuel,
+                    utile pour un geste commercial.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Vendre une carte cadeau</h2>
+                <p>Ouvrez <strong>Ventes › Promotions › Cartes-cadeaux &amp; e-wallet</strong>. La démonstration y
+                    fournit le programme « Cartes-cadeaux », relié à l'article <strong>Carte-cadeau</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Programme Cartes-cadeaux d'Odoo 20 : type Carte-cadeau, Produits carte-cadeau Carte-cadeau, Modèle d'e-mail Carte-cadeau Informations de la carte-cadeau, Imprimer le rapport Carte-cadeau, Disponible sur Point of sale, Ventes, Site Web cochés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un programme de carte cadeau : l'article qui la crée, le courriel qui l'envoie.</figcaption>
+                </figure>
+                <p>Ce formulaire est plus court que celui de la fidélité : pas de règle ni de récompense à
+                    construire. Le <strong>Produit carte-cadeau</strong> est l'article qui, une fois vendu, crée une
+                    carte d'un montant égal au prix payé ; le <strong>Modèle d'e-mail</strong> envoie le code à
+                    l'acheteur ; <strong>Imprimer le rapport</strong> désigne le document imprimable de la carte.
+                    Le bouton <strong>Générer des cartes-cadeaux</strong>, en haut du formulaire, en crée sans vente.</p>
+                <p>Créez un devis pour Acme Corporation avec une ligne <strong>Carte-cadeau</strong>, passez son prix
+                    unitaire de 50 $ à 200 $ et confirmez. Un bouton intelligent <strong>Cartes-cadeaux</strong>
+                    apparaît en haut de la commande :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste des cartes-cadeaux d'Odoo 20 créées par la commande S00084 : code 0443-6def-4267, solde 200 dollars, programme Cartes-cadeaux, partenaire vide, boutons Envoyer et Partager" style="max-width:100%; height:auto;"/>
+                    <figcaption>La vente a généré une carte de 200 $, sans titulaire.</figcaption>
+                </figure>
+                <p>La carte n'est rattachée à aucun client : celui qui connaît le code peut la dépenser, ce qui est
+                    l'usage d'un cadeau. À la confirmation, Odoo a préparé le courriel « Votre carte-cadeau chez My
+                    Company (San Francisco) » à destination de l'acheteur ; les boutons <strong>Envoyer</strong> et
+                    <strong>Partager</strong> le renvoient au besoin.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Payer une partie d'une commande avec la carte cadeau</h2>
+                <p>Le bénéficiaire passe commande : un devis pour Wood Corner avec une <strong>Chaise de bureau
+                    noire</strong>, soit 138,58 $ taxes comprises. Cliquez sur <strong>Code promotionnel</strong>,
+                    saisissez le code de la carte, <strong>Appliquer</strong>, puis choisissez
+                    « Cartes-cadeaux - Carte-cadeau » dans la fenêtre des récompenses.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Commande Odoo 20 pour Wood Corner : Chaise de bureau noire 120,50 dollars taxe 15 %, ligne Gift Card Carte-cadeau -138,58 dollars sans taxe, Montant hors taxes -18,08, Tax 18,08, Total 0,00, Total Advantage 138,58" style="max-width:100%; height:auto;"/>
+                    <figcaption>La carte couvre toute la commande ; le reste du solde demeure sur la carte.</figcaption>
+                </figure>
+                <p>La carte cadeau agit comme un moyen de paiement : une ligne « Gift Card » <strong>sans
+                    taxe</strong>, plafonnée au total de la commande taxes comprises. Le total tombe à 0,00 $, et le
+                    montant hors taxes affiché devient négatif (−18,08 $) puisque la taxe de la chaise reste due.
+                    Confirmez la commande, puis revenez au programme « Cartes-cadeaux » et ouvrez la carte depuis son
+                    bouton intelligent :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Carte-cadeau Odoo 20 code 0443-6def-4267, référence commande S00084, solde 61,42 dollars, historique : Commande S00085 consommé 138,58, Commande S00084 émis 200,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>200 $ émis, 138,58 $ consommés : il reste 61,42 $ sur la carte.</figcaption>
+                </figure>
+                <p>Le solde restant, 61,42 $, sera proposé à la prochaine saisie du code, sur un devis, au panier de
+                    la boutique ou en caisse (voir toutefois les points de vigilance sur ce dernier solde). Une carte cadeau n'a pas de durée de validité tant que son champ
+                    <strong>Date d'expiration</strong> reste vide.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. L'e-wallet : un solde prépayé au nom du client</h2>
+                <p>L'e-wallet fonctionne comme une carte cadeau nominative, rechargeable. La démonstration fournit
+                    l'article <strong>Recharger le e-wallet</strong>, mais pas de programme. Dans
+                    <strong>Cartes-cadeaux &amp; e-wallet</strong>, cliquez sur <strong>Nouveau</strong>, choisissez
+                    le type <strong>e-wallet</strong>, nommez-le « e-wallet » et enregistrez : l'article de
+                    recharge est proposé d'office. Un message du formulaire précise que, pour une recharge depuis le
+                    portail, cet article doit être publié.</p>
+                <p>Vendez ensuite à Joel Willis une ligne « Recharger le e-wallet » à 100 $ et confirmez : son
+                    e-wallet est crédité de 100 $. Sur sa commande suivante (une <strong>Lampe de bureau</strong>, 46 $
+                    taxes comprises), le bouton <strong>Récompense</strong> propose l'e-wallet à côté des
+                    récompenses de fidélité :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Récompenses disponibles d'Odoo 20 : e-wallet - e-wallet, Club fidélité - Expédition gratuite, Club fidélité - 5% sur votre commande" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sans code à saisir : l'e-wallet du client est proposé directement.</figcaption>
+                </figure>
+                <p>Appliqué, il ajoute une ligne « e-wallet » de −46,00 $ ; après confirmation, il reste 54 $ sur
+                    l'e-wallet. À la différence de la carte cadeau, l'e-wallet est rattaché au client : aucun code
+                    à communiquer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce que voit le client : portail, boutique, caisse</h2>
+                <p><strong>Sur le portail.</strong> Connecté à son compte (identifiants de démonstration
+                    <code>portal</code> / <code>portal</code>), Joel Willis voit sur la page <strong>Mon
+                    compte</strong> une vignette par programme de fidélité et par e-wallet :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Portail client Odoo 20 de Joel Willis : vignette Club fidélité 602.08 Point(s) de fidélité, Une récompense vous attend ; vignette e-wallet 54,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le solde de points et l'e-wallet, sur la page d'accueil du portail.</figcaption>
+                </figure>
+                <p>« Une récompense vous attend » s'affiche dès que le solde couvre une récompense du programme. Un
+                    clic sur la vignette ouvre une fenêtre avec les derniers mouvements et un lien vers l'historique
+                    complet :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Page Historique du portail Odoo 20 : lignes Commande S00087, S00086, S00083, S00082 avec date, expiration 06/10/2027, points émis et consommés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le client retrouve chaque gain avec sa date d'expiration.</figcaption>
+                </figure>
+                <p>Le solde y est passé de 456,08 à 602,08 points : la recharge de l'e-wallet (100 $) et la
+                    lampe (46 $) ont elles aussi rapporté des points (voir les points de vigilance). Les cartes
+                    cadeaux, anonymes, n'apparaissent pas sur le portail.</p>
+                <p><strong>Dans la boutique en ligne.</strong> Le panier d'un client connecté reprend tout :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Panier de la boutique en ligne Odoo 20 : champ Carte-cadeau ou code de remise avec bouton Appliquer, bloc Point(s) de fidélité 602.08 avec Expédition gratuite 100 points et 5% sur votre commande 200 points, e-wallet 54,00 dollars, bons 15% de remise sur votre commande, boutons Utiliser" style="max-width:100%; height:auto;"/>
+                    <figcaption>Au panier : le champ de code, les récompenses de fidélité, l'e-wallet et les bons du client.</figcaption>
+                </figure>
+                <p>Le champ <strong>Carte-cadeau ou code de remise</strong> accepte le code d'une carte cadeau ; les
+                    récompenses que le solde permet, l'e-wallet et les bons du client se déclenchent d'un clic sur
+                    <strong>Utiliser</strong>. La mise en place de la boutique elle-même est décrite dans
+                    <a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne avec Odoo
+                    20</a>.</p>
+                <p><strong>En caisse.</strong> Le module de liaison avec le point de vente ajoute à l'écran de vente
+                    un bouton de saisie de code (cartes cadeaux, bons, codes promo), un bouton de récompense et, dès
+                    qu'un programme e-wallet existe, un bouton de paiement par e-wallet ; la liste des clients de la
+                    caisse affiche leurs soldes de points. L'ouverture d'une session de caisse est présentée dans
+                    <a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Le point de vente avec
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Cartes de fidélité, cartes-cadeaux et e-wallet, ainsi que leur
+                        usage sur les devis, au panier de la boutique en ligne, en caisse et sur le portail, sont
+                        inclus dans Odoo 20 Community. Nouveautés d'Odoo 20 vues dans cet article : la durée de
+                        validité des points (<strong>Points Validity</strong>), l'expiration par gain avec
+                        consommation des points les plus anciens d'abord, et les lignes <strong>Points
+                        Issued</strong> / <strong>Points Used</strong> sous le total des commandes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Acheter une carte cadeau rapporte aussi des points</h4>
+                    <p>Une règle sans filtre compte tous les articles : l'achat de la carte cadeau de 200 $ a donné
+                        200 points de fidélité à Acme Corporation, la recharge de l'e-wallet 100 points à Joel Willis.
+                        Une commande payée par carte cadeau ou par e-wallet rapporte aussi ses points, calculés avant
+                        la ligne de paiement. Pour l'éviter, limitez la règle à des catégories ou à une étiquette
+                        d'articles (partie <strong>Parmi</strong>) qui excluent les articles carte-cadeau et
+                        e-wallet.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le dernier solde d'une carte cadeau peut être refusé</h4>
+                    <p>Sur la base de démonstration, le reste de la carte (61,42 $) appliqué à une nouvelle commande
+                        a bloqué la confirmation : « Vous n’avez pas suffisamment de points sur ce coupon pour
+                        continuer. Veuillez vérifier les récompenses appliquées et son solde. » Le solde calculé
+                        (200 − 138,58) vaut un infime peu moins que 61,42, et le contrôle ajouté à la confirmation en
+                        Odoo 20 compare les montants sans arrondi. Contournement vérifié : cliquez sur le
+                        <strong>Solde</strong> de la carte, saisissez un <strong>Nouveau solde</strong> supérieur
+                        d'un centime (61,43) avec une description, supprimez la ligne de carte cadeau de la commande,
+                        saisissez à nouveau le code, puis confirmez.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Points Issued » additionne des unités différentes</h4>
+                    <p>Les lignes sous le total additionnent tous les programmes de la commande. Sur la première
+                        vente, 518.5 = 517,50 points de fidélité + 1 bon « prochaine commande ». Sur la commande payée
+                        par carte cadeau, <strong>Points Used</strong> affiche 138.58 : ce sont des dollars de la
+                        carte, pas des points. Pour un chiffre fiable, lisez l'historique de la carte.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une durée de validité ne touche pas les points déjà gagnés</h4>
+                    <p>La date d'expiration est posée au moment du gain. Saisir ou modifier
+                        <strong>Points Validity</strong> sur un programme en cours ne change pas les gains
+                        antérieurs : ceux attribués avec une validité de 0 restent permanents. Fixez la durée avant
+                        la première vente.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les programmes de démonstration sont actifs</h4>
+                    <p>Le bon « 15% de remise sur votre prochaine commande » de la démonstration s'ajoute à chaque
+                        commande d'au moins 100 $ : Joel Willis en a reçu trois au fil de cet article. Archivez les
+                        programmes d'exemple avant d'utiliser la base pour de vrai.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> dépenser tout l'e-wallet sur une commande plus chère que son solde.</p>
+                    <p><strong>Indication :</strong> sur un devis pour Joel Willis avec une Chaise de bureau noire
+                        (138,58 $ taxes comprises), cliquez sur Récompense, choisissez « e-wallet - e-wallet »,
+                        appliquez et confirmez. Rouvrez ensuite le portail de Joel Willis.</p>
+                    <p><strong>Critère de réussite :</strong> la ligne « e-wallet » vaut −54,00 $, le client reste
+                        redevable de 84,58 $, et la vignette e-wallet du portail affiche $ 0,00.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Fidélité, carte cadeau et e-wallet tiennent chacun un solde sur une carte ; chaque gain ou
+                        dépense y laisse une ligne d'historique.</li>
+                    <li>Les points se gagnent à la confirmation de la commande et se dépensent avec le bouton
+                        Récompense.</li>
+                    <li>Nouveau en Odoo 20 : <strong>Points Validity</strong> donne à chaque gain sa date
+                        d'expiration, et les points les plus anciens sont consommés en premier.</li>
+                    <li>Une carte cadeau naît de la vente d'un article, sans titulaire ; elle se dépense en plusieurs
+                        fois par son code, comme un moyen de paiement non taxé.</li>
+                    <li>L'e-wallet est nominatif : il se recharge par un article et se propose de lui-même.</li>
+                    <li>Le client retrouve ses points et son e-wallet sur le portail, au panier de la boutique et en
+                        caisse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne</a></h5>
+                            <p class="small text-muted mb-0">Le panier où le client dépense ses points et ses cartes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Le point de vente</a></h5>
+                            <p class="small text-muted mb-0">La caisse, autre canal de la fidélité et des cartes cadeaux.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises</a></h5>
+                            <p class="small text-muted mb-0">Le prix de base de chaque client, avant toute récompense.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

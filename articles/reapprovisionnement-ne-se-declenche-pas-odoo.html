@@ -1,0 +1,493 @@
+<!--
+Article — Réapprovisionnement Odoo 20 : la règle ne se déclenche pas (dépannage)
+Série « Planifier son stock avec Odoo 20 » (blog Fonctionnel) — satellite du pilier min/max calculés
+Date : 2026-10-06
+Slug : reapprovisionnement-ne-se-declenche-pas-odoo
+Mot-clé cible : règle de réapprovisionnement ne fonctionne pas (odoo reordering rule not working)
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_b3 (copie de vs20_func : démonstration,
+  Inventaire, Achats, Ventes, Fabrication ; réception en 2 étapes, livraison en 3 étapes), port 9034.
+  Cause 1 (Manuel) : stock/models/stock_rule.py:733-738 (_get_orderpoint_domain : trigger auto + article actif) ;
+    shell : run_scheduler() → aucune demande pour Rangement de bureau (OP/00005, Manuel, prévision -2, Min 75).
+  Cause 2 (planificateur) : stock/models/stock_move.py:2722-2744 (_trigger_scheduler, appelé à la confirmation d'un
+    transfert, stock_picking.py:779-780) ; un ajustement d'inventaire n'appelle pas _trigger_scheduler ;
+    stock/data/stock_sequence_data.xml:54-65 (cron quotidien, OdooBot) ; stock/views/stock_rule_views.xml:119-121
+    (menu groups base.group_no_one = mode développeur). Parcours joué : Boîte de rangement inventaire 110 → 30,
+    prévision 8 < Min 50, À commander 92, aucune demande ; menu « Approvisionnement : lancer le planificateur » →
+    P00044 Wood Corner 92 × 13 $ par OdooBot, aucune notification à l'écran, prochaine exécution du cron inchangée
+    (7 oct.). Bouton Commander visible sur une règle automatique dès que À commander > 0
+    (stock_orderpoint_views.xml:58-59).
+  Cause 3 (prévision) : stock/models/stock_orderpoint.py:498-512 (commande seulement si prévision < Min, strict) ;
+    :424-440 (prévision = virtual_available + quantités en cours) ; Flipover dispo 0, prévision 98, À commander 0 ;
+    shell : Min 88 = prévision 88 → À commander 0, planificateur sans effet.
+  Cause 4 (demande en brouillon) : purchase_stock/models/stock.py:352-359 + purchase_stock/models/product.py:164-218
+    (lignes draft/sent/to approve comptées) ; après P00044 : prévision 100, À commander 0 ; shell : vente S00083 de
+    20 boîtes confirmée → aucune nouvelle demande (prévision 80 ≥ 50). Demande saisie à la main (P00035, 70 boîtes,
+    réception en 2 étapes, livrer à WH/Entrée) : non comptée pour la règle de WH/Stock, le planificateur commande
+    92 en plus (product.py:194-205 : default_location_dest_id du type d'opération dans l'emplacement de la règle).
+  Cause 5 (Min 0) : Table OP/00007 Min 0 Max 5 prévision 3 → rien ; stock/wizard/stock_orderpoint_suggest.py:29-41
+    (Suggérer, demande 0 → Min 0 Max 0, prouvé sur vs20_func_b1) ; stock_orderpoint.py:647-654 (lignes « Rapport de
+    réassorts » créées Min 0 Max 0, Manuel).
+  Cause 6 (fournisseur) : purchase_stock/models/stock_rule.py:165-170 (_filter_warehouse_routes : route Acheter de
+    l'entrepôt retenue seulement si fournisseur ou achat confirmé ; absent de 19) ; Commander sur Support d'écran →
+    « Avertissement Odoo : Aucune règle n'a été trouvée pour réapprovisionner "[FURN_0006] Support d'écran" dans
+    "WH/Stock". Vérifiez la configuration des routes du produit. » + bouton « Modifier le produit » ; en automatique :
+    activité « Exception » OdooBot sur l'article (stock_orderpoint.py:807-818) ; icône d'avertissement
+    (stock_orderpoint_views.xml:44, fr.po : « Votre produit ne dispose d'aucun moyen de réapprovisionnement ») ;
+    shell : fournisseur Ready Mat ajouté → Commander → P00042 Ready Mat, 1 Support d'écran.
+  Cause 7 (autre stock) : stock_move.py:2730-2736 (règle de la même société, emplacement parent de la source) ;
+    stock_orderpoint.py:520-526 (prévision lue sur l'emplacement de la règle) ; shell : règle déplacée sur un 2e entrepôt
+    WH2, vente S00082 de 70 boîtes depuis WH → aucune demande.
+  Reporter : stock_orderpoint_views.xml:60-61 (bouton seulement si Manuel), :85 (filtre Non reporté) ;
+    stock_orderpoint.py:340-342 (UserError sur une règle automatique, message vu en shell).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Réapprovisionnement Odoo 20 : la règle ne se déclenche pas</h1>
+                <p class="lead mt-3 text-white">Le stock est passé sous le minimum, la règle de réapprovisionnement
+                    existe, et aucune demande de prix n'apparaît. Odoo ne se trompe pas : il applique une condition
+                    que l'écran ne montre pas toujours. Sept causes, chacune reproduite sur la base de
+                    démonstration, avec le symptôme, l'explication et le correctif.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Planifier son stock avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        avec Inventaire et Achats installés. Toutes les causes décrites ont été reproduites sur la
+                        démonstration native. Ces fonctions existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qu'une règle attend pour commander</h2>
+                <p>Une règle de réapprovisionnement ne regarde pas le stock physique : elle compare la
+                    <strong>prévision</strong> (disponible, plus les entrées attendues, moins les sorties promises)
+                    à son <strong>Min</strong>. Pour qu'une demande de prix parte, quatre conditions doivent être
+                    réunies en même temps :</p>
+                <ul>
+                    <li>quelque chose déclenche la règle : la confirmation d'un transfert ou le passage du
+                        planificateur, et seulement si la règle est <strong>automatique</strong> ;</li>
+                    <li>la prévision, lue sur l'emplacement de la règle, est <strong>strictement</strong> sous le Min ;</li>
+                    <li>rien de déjà commandé ne couvre l'écart ;</li>
+                    <li>Odoo trouve un moyen de réapprovisionner : une route et, pour l'achat, un fournisseur.</li>
+                </ul>
+                <p>Chaque cause ci-dessous fait tomber l'une de ces conditions. La mise en place des règles est
+                    décrite dans <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort
+                    automatique dans Odoo 20</a> ; le présent article part du moment où « rien ne se passe ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire une ligne de règle pour savoir pourquoi elle n'a rien commandé ;</li>
+                    <li>lancer le planificateur à la demande et savoir quand il passe seul ;</li>
+                    <li>repérer une demande de prix oubliée qui bloque le réassort ;</li>
+                    <li>corriger un article qu'Odoo ne sait pas réapprovisionner.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DIAGNOSTIC ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le diagnostic en un tableau</h2>
+                <p>Ouvrez <strong>Inventaire › Opérations › Approvisionnement › Réassort</strong>, retirez les filtres, et
+                    cherchez l'article. La ligne donne presque toujours la réponse :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Ce que montre la ligne</th><th>Cause</th><th>Correctif</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Déclencheur « Manuel », quantité À commander positive</td><td>1. Règle manuelle</td><td>Commander, ou Automatiser</td></tr>
+                        <tr><td>Automatique, prévision sous le Min, À commander positive</td><td>2. Planificateur pas encore passé</td><td>Commander, ou lancer le planificateur</td></tr>
+                        <tr><td>Prévision égale ou supérieure au Min, alors que le stock est bas</td><td>3. Entrées attendues comptées</td><td>Vérifier le rapport de prévision</td></tr>
+                        <tr><td>Prévision remontée par une demande de prix jamais envoyée</td><td>4. Demande en brouillon</td><td>Envoyer et confirmer la demande</td></tr>
+                        <tr><td>Min à 0</td><td>5. Seuil nul</td><td>Saisir un vrai Min</td></tr>
+                        <tr><td>Icône d'avertissement à la place de la route</td><td>6. Pas de fournisseur</td><td>Onglet Achats de l'article</td></tr>
+                        <tr><td>Aucune ligne pour l'entrepôt qui expédie</td><td>7. La règle surveille un autre stock</td><td>Règle sur le bon emplacement</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La règle est en déclencheur manuel</h2>
+                <p><strong>Symptôme.</strong> L'article « Rangement de bureau » a une règle Min 75, Max 225, une
+                    prévision à −2, et aucune demande de prix n'est jamais créée, ni à la confirmation d'une vente ni
+                    le lendemain.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Écran Réassort d'Odoo 20, colonne Déclencheur : Rangement de bureau prévision -2, Min 75, Max 225, À commander 227 en Manuel ; Combinaison de bureau, Support d'écran, Canapé deux places, Écrans anti-bruit et Sous-main en Manuel avec Min 0 et Max 0, plusieurs lignes avec une icône d'avertissement à la place de la route, boutons Commander" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'écran Réassort, colonne Déclencheur affichée : toutes ces lignes attendent un clic.</figcaption>
+                </figure>
+                <p><strong>Cause.</strong> Le planificateur et les transferts ne traitent que les règles dont le
+                    Déclencheur vaut <strong>Automatique</strong>. Une règle <strong>Manuel</strong> se contente
+                    de calculer la quantité À commander et d'attendre dans l'écran Réassort. Lancé sur la base de
+                    démonstration, le planificateur ne crée rien pour le Rangement de bureau.</p>
+                <p><strong>Correctif.</strong> Cliquez sur <strong>Commander</strong> pour cette fois, ou sur
+                    <strong>Automatiser</strong> pour que la règle commande seule désormais. La colonne Déclencheur
+                    est masquée par défaut dans l'écran Réassort : ajoutez-la par le bouton des colonnes optionnelles,
+                    à droite de l'en-tête.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le planificateur n'est pas encore passé</h2>
+                <p><strong>Symptôme.</strong> Un inventaire physique ramène la « Boîte de rangement » de 110 à 30
+                    unités. La règle automatique (Min 50, Max 100) affiche une prévision de 8 et 92 unités À
+                    commander, mais aucune demande de prix n'existe.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des règles de réapprovisionnement d'Odoo 20 : Boîte de rangement disponible 30, prévision 8, déclencheur automatique, Min 50, Max 100, À commander 92 avec un bouton Commander ; Flipover disponible 0 prévision 98 ; Table Min 0 Max 5 prévision 3" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une règle automatique sous son minimum, et pourtant rien de commandé.</figcaption>
+                </figure>
+                <p><strong>Cause.</strong> Une règle automatique réagit à deux moments seulement :</p>
+                <ul>
+                    <li>à la <strong>confirmation d'un transfert</strong> qui fait sortir l'article de son
+                        emplacement, par exemple la livraison créée par une vente confirmée ;</li>
+                    <li>au passage du <strong>planificateur</strong>, une tâche planifiée exécutée une fois par jour.</li>
+                </ul>
+                <p>Un ajustement d'inventaire ou une modification du Min ne déclenchent rien
+                    sur le moment : la règle attend le prochain passage du planificateur.</p>
+                <p><strong>Correctif.</strong> Le plus simple : le bouton <strong>Commander</strong>, qui apparaît
+                    sur la ligne d'une règle automatique dès que la quantité À commander est positive. Pour traiter
+                    toutes les règles d'un coup, activez le mode développeur (Paramètres, bloc Outils développeur) : le menu
+                    Opérations d'Inventaire gagne une entrée <strong>Approvisionnement : lancer le planificateur</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Menu Opérations d'Inventaire dans Odoo 20 en mode développeur : Transferts, Ajustements, Approvisionnement avec Réassort et Références, puis l'entrée Approvisionnement : lancer le planificateur" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'entrée du planificateur n'existe qu'en mode développeur.</figcaption>
+                </figure>
+                <p>Le clic ne produit aucun message : la page reste affichée, le travail se fait en arrière-plan. La
+                    même tâche figure dans <strong>Paramètres › Technique › Actions planifiées</strong>, sous le nom
+                    « Approvisionnement : lancer le planificateur ». Sa fiche indique la fréquence (1 jour) et la
+                    prochaine exécution ; la lancer depuis le menu ne décale pas cette date.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Action planifiée Approvisionnement : lancer le planificateur dans Odoo 20 : modèle Règle de stock, utilisateur OdooBot, exécuter tous les 1 jours, active, prochaine date d'exécution 7 octobre 11:51" style="max-width:100%; height:auto;"/>
+                    <figcaption>La tâche planifiée : une fois par jour, au nom d'OdooBot.</figcaption>
+                </figure>
+                <p>Après le passage du planificateur, la demande de prix est là, créée par OdooBot chez le
+                    fournisseur le moins cher : 92 boîtes, de quoi remonter la prévision au Max de 100.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Demande de prix P00044 d'Odoo 20 chez Wood Corner : 92 Boîte de rangement à 13 dollars, montant hors taxes 1 196 dollars, livrer à YourCompany Réceptions" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande créée par le planificateur.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La prévision n'est pas sous le minimum</h2>
+                <p><strong>Symptôme.</strong> Le « Flipover » n'a plus une seule unité en stock, sa règle demande un
+                    Min de 5, et la quantité À commander reste à 0.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste des règles de réapprovisionnement d'Odoo 20 après le planificateur : Flipover disponible 0 prévision 98 Min 5 À commander 0 ; Boîte de rangement disponible 30 prévision 100 Min 50 Max 100 À commander 0 ; Table disponible 3 prévision 3 Min 0 Max 5 À commander 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois règles sans rien à commander, pour trois raisons différentes.</figcaption>
+                </figure>
+                <p><strong>Cause.</strong> Disponible 0, mais Prévision 98 : des réceptions sont attendues, et Odoo
+                    les compte. Tant que la prévision reste au-dessus du Min, la règle ne commande pas, même si le
+                    stock physique est vide. La comparaison est stricte : avec un Min égal à la prévision (essai
+                    sur la Boîte de rangement, Min 88 pour une prévision de 88), rien n'est commandé non plus.</p>
+                <p><strong>Correctif.</strong> Aucun réglage à changer si les réceptions sont réelles. Si elles
+                    ne le sont pas, l'icône de graphique à droite de la prévision ouvre le rapport de prévision de
+                    l'article : il liste les entrées et sorties prises en compte. Une commande fournisseur abandonnée se
+                    repère là ; annulez-la pour que la règle reprenne la main.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Une demande de prix en brouillon couvre déjà le besoin</h2>
+                <p><strong>Symptôme.</strong> Sur la même liste, la Boîte de rangement affiche toujours 30 en stock,
+                    mais une prévision de 100 et rien à commander. Une vente de 20 boîtes est confirmée ensuite :
+                    aucune nouvelle demande de prix n'apparaît.</p>
+                <p><strong>Cause.</strong> La demande P00044 créée par la règle est restée en brouillon. Les
+                    demandes de prix non confirmées (brouillon, envoyée, à approuver) entrent dans la prévision de la
+                    règle : 8 + 92 = 100. La vente de 20 boîtes fait redescendre la prévision à 80, toujours au-dessus
+                    du Min de 50. Pour Odoo, le besoin est couvert ; pour l'entrepôt, rien n'arrivera tant que la
+                    demande n'est ni envoyée ni confirmée.</p>
+                <p><strong>Correctif.</strong> Traitez les demandes de prix créées par OdooBot dans Achats › Commandes ›
+                    Demandes de prix : envoyez-les et confirmez-les, ou annulez celles qui ne servent plus. Le cycle complet (envoi, confirmation, réception)
+                    est décrit dans <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats :
+                    de la demande de prix à la facture dans Odoo 20</a>.</p>
+                <div class="pitfall-box">
+                    <h4>Une demande saisie à la main ne compte pas toujours</h4>
+                    <p>Une demande créée par l'acheteur, sans passer par la règle, n'entre dans la prévision que si
+                        elle livre l'emplacement de la règle. Avec une réception en deux étapes, elle livre
+                        WH/Entrée et non WH/Stock : sur la base de démonstration ainsi configurée, une demande manuelle de 70
+                        boîtes n'a pas empêché le planificateur d'en commander 92 de plus. Le réglage des étapes est
+                        présenté dans <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                        et livraisons en plusieurs étapes</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le minimum vaut zéro</h2>
+                <p><strong>Symptôme.</strong> La règle de la « Table » porte un Max de 5 et la prévision n'est que de
+                    3 : la règle semble prête à compléter le stock, et ne fait rien.</p>
+                <p><strong>Cause.</strong> Le seuil, c'est le Min, pas le Max. Avec un Min à 0, la règle ne se
+                    déclenche que lorsque la prévision devient négative, c'est-à-dire quand des sorties promises
+                    dépassent le stock. Un Min nul a trois origines courantes :</p>
+                <ul>
+                    <li>une règle créée sans saisir le Min (sa valeur par défaut est 0) ;</li>
+                    <li>le bouton <strong>Suggérer</strong>, appliqué à un article sans ventes sur la période choisie :
+                        Odoo 20 calcule alors un Min et un Max à 0 ;</li>
+                    <li>les lignes « Rapport de réassorts » qu'Odoo ajoute lui-même dans l'écran Réassort, toujours
+                        en Min 0 et Max 0, et en Manuel (figure 1).</li>
+                </ul>
+                <p><strong>Correctif.</strong> Saisissez un Min qui couvre le délai de réapprovisionnement, ou
+                    choisissez une période de calcul où l'article s'est vendu avant de cliquer sur Suggérer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. L'article n'a pas de fournisseur</h2>
+                <p><strong>Symptôme.</strong> Dans l'écran Réassort, la ligne « Support d'écran » n'affiche pas de
+                    route, mais une icône d'avertissement ; son infobulle indique « Votre produit ne dispose d'aucun
+                    moyen de réapprovisionnement (itinéraire, fournisseur, nomenclature) ». Le bouton Commander ouvre
+                    ce message :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Avertissement Odoo dans Odoo 20 : Aucune règle n'a été trouvée pour réapprovisionner [FURN_0006] Support d'écran dans WH/Stock. Vérifiez la configuration des routes du produit. Boutons Modifier le produit et Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le message parle de routes ; la cause est l'absence de fournisseur.</figcaption>
+                </figure>
+                <p><strong>Cause.</strong> La route Acheter est attachée à l'entrepôt, mais Odoo 20 ne la retient
+                    pour un article que s'il a un fournisseur dans sa liste de prix ou s'il a déjà fait l'objet d'un
+                    achat confirmé. Le Support d'écran n'a ni l'un ni l'autre : aucune règle ne mène à un achat,
+                    d'où le message sur les routes. Sur une règle automatique, le même problème ne s'affiche pas : le
+                    planificateur dépose une activité « Exception » au nom d'OdooBot sur la fiche de l'article, avec le
+                    même texte.</p>
+                <p><strong>Correctif.</strong> Cliquez sur <strong>Modifier le produit</strong>, onglet
+                    <strong>Achats</strong>, et ajoutez une ligne de fournisseur avec son prix. Pour un article
+                    fabriqué, c'est une nomenclature qu'il faut créer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CAUSE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. La règle surveille un autre stock</h2>
+                <p><strong>Symptôme.</strong> Avec deux entrepôts, une vente expédiée depuis le premier fait plonger
+                    son stock, et la règle de l'article ne réagit pas.</p>
+                <p><strong>Cause.</strong> Une règle porte sur un emplacement (WH/Stock par défaut) et sur une
+                    société. Elle ne lit la prévision que de cet emplacement et de ses sous-emplacements, et elle n'est
+                    déclenchée que par les sorties qui en partent, dans la même société. Sur la base de démonstration,
+                    la règle de la Boîte de rangement déplacée sur un second entrepôt n'a pas réagi à une vente de 70
+                    boîtes expédiée depuis WH.</p>
+                <p><strong>Correctif.</strong> Une règle par entrepôt qui expédie. Les colonnes Emplacement et, en
+                    multi-entrepôt, Entrepôt de la liste des règles permettent de le vérifier ; en multi-société,
+                    la colonne Société (optionnelle) aussi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Règles de réapprovisionnement, écran Réassort, planificateur,
+                        rapport de prévision et mode développeur sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une ligne reportée disparaît de l'écran Réassort</h4>
+                    <p>Le bouton <strong>Reporter</strong> n'apparaît que sur les règles manuelles. Il masque la ligne
+                        jusqu'à la date choisie, car l'écran s'ouvre avec le filtre <strong>Non reporté</strong>.
+                        Retirez ce filtre pour retrouver un article « disparu ». Une règle automatique, elle, ne se
+                        reporte pas : Odoo refuse (« Vous pouvez uniquement reporter les points de commande manuels »)
+                        et conseille de l'archiver si elle ne doit plus se déclencher.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le planificateur ne prévient de rien</h4>
+                    <p>Lancé depuis le menu, il ne confirme pas son passage et ne signale pas les échecs à l'écran.
+                        Après l'avoir lancé, vérifiez les demandes de prix créées par OdooBot et les activités
+                        d'exception sur les articles.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire réapprovisionner le Support d'écran.</p>
+                    <p><strong>Indication :</strong> dans la fiche de l'article, onglet Achats, ajoutez Ready Mat
+                        comme fournisseur à 10 $, puis cliquez sur Commander sur sa ligne de l'écran Réassort.</p>
+                    <p><strong>Critère de réussite :</strong> la notification « L'ordre de réassort suivant a été
+                        généré » donne une demande de prix chez Ready Mat pour 1 Support d'écran, et la ligne a
+                        quitté l'écran Réassort.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Seules les règles automatiques commandent seules, à la confirmation d'un transfert ou au
+                        passage quotidien du planificateur.</li>
+                    <li>Odoo compare la prévision, pas le stock physique, et seulement si elle passe strictement sous
+                        le Min.</li>
+                    <li>Une demande de prix en brouillon compte comme déjà commandée : un réassort oublié bloque les
+                        suivants.</li>
+                    <li>Sans fournisseur ni achat passé, l'article n'a pas de route d'achat : le message parle de
+                        routes, le correctif est dans l'onglet Achats.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique</a></h5>
+                            <p class="small text-muted mb-0">Créer les règles et traiter l'écran Réassort.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">De la demande de prix à la facture</a></h5>
+                            <p class="small text-muted mb-0">La suite des demandes créées par les règles.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">Ce qui change pour la prévision quand l'entrée précède le stock.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

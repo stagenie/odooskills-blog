@@ -1,0 +1,534 @@
+<!--
+Article — Faire un avoir dans Odoo 20 : partiel ou sur facture payée
+Série « Pas à pas Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-06
+Slug : avoir-partiel-facture-payee-odoo
+Meta : Avoir dans Odoo 20 Community : annuler une facture, avoir partiel sur prix ou quantité, avoir sur facture payée (remboursement ou imputation), avoir après retour.
+Mot-clé cible : odoo avoir partiel · odoo avoir facture payée · annuler une facture odoo
+Catégorie : Fonctionnel Odoo
+Tags : debutant, comptabilite, guide, community
+Temps de lecture : ~10 minutes
+Sources vérifiées le 2026-10-06 : Odoo 20.0 Community, base vs20_func_c3 (copie de vs20_func, démonstration, Ventes + Inventaire).
+  account/wizard/account_move_reversal_view.xml:15-23 (Motif, Journal, Date d'extourne ; Extourner / Extourner et créer
+  une facture) ; account/wizard/account_move_reversal.py:44-55 (journaux du même type → Ventes + 2 journaux PdV à l'écran),
+  :94-110 (référence « Extourne de : … , motif », date = date de facturation et échéance, auto_post « at_date » si date
+  future ; :112 invoice_origin recopié, 🆕 v20, absent du fichier 19), :123-136 (Extourner et créer = annulation
+  lettrée) ; account/models/account_move.py:6270-6345 (lettrage à la confirmation d'un avoir lié ; avec move_reverse_cancel
+  les lettrages de la facture d'origine sont retirés, :6277-6279), :7427-7460 (date comptable reportée après le verrou) ;
+  account/views/account_move_views.xml:825-833 (bouton Avoir si comptabilisée ; Annuler seulement en brouillon) ;
+  account/i18n/fr.po:4441 (« À la date »), :4569 (« Comptabilisation automatique ») ; aucune vue XML ne porte
+  sale_lock_date / fiscalyear_lock_date dans odoo/addons (grep vide) ; stock/models/stock_picking.py:812-821 + 
+  stock/views/stock_picking_views.xml:190 (Retour crée directement le transfert, plus d'assistant stock.return.picking) ;
+  sale/models/sale_order.py:2164-2170 (total négatif → avoir), account/models/account_move.py:8179-8190
+  (_refunds_origin_required False → avoir de commande non lié à la facture, donc non lettré).
+  Parcours joué (06/10/2026) : FAC/2026/00023 Ready Mat 2 Lampe + 1 Tiroir 219,08 $ → RFAC/2026/00008 total, facture
+  Extourné ; FAC/2026/00024 Lumber Inc 5 Tiroir 635,38 $ → RFAC/2026/00009 prix 11,05 = 63,54 $, dû 571,84 $ ;
+  FAC/2026/00025 Lumber Inc 3 Lampe 138 $ payée → RFAC/2026/00010 1 lampe 46 $ ouvert → imputé sur FAC/2026/00028
+  (92 $ → dû 46 $) ; FAC/2026/00026 Ready Mat 127,08 $ payée → RFAC/2026/00011 → Payer : PBNK1/2026/00018 outbound
+  127,08 $, avoir payé ; S00083 Ready Mat 4 Tiroir, WH/OUT/00086, FAC/2026/00027 508,30 $, retour WH/IN/00027 d'1 Tiroir
+  → délivré 3 / facturé 4 → Créer une facture → RFAC/2026/00012 127,08 $ non lettré → Ajouter → FAC/2026/00027 dû 381,22 $,
+  facturé 3.
+  Essais RPC/shell : facture payée (Azure Interior, 92 $) + Extourner et créer → facture reversed, avoir payé, paiement
+  PBNK1/2026/00012 non lettré, brouillon copie ; facture payée + Extourner → avoir ouvert 46 $ ; date 20/10 → brouillon
+  auto_post at_date ; verrou ventes 30/09 (shell, rollback) + date 26/09 → invoice_date 26/09, date 01/10 ; avoir total de
+  FAC/2026/00027 (rollback) → qty_invoiced 3 → −1, commande « to invoice » 4.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Faire un avoir dans Odoo 20 : partiel ou sur facture payée</h1>
+                <p class="lead mt-3 text-white">Une facture confirmée ne se supprime pas et ne s'annule pas : elle se
+                    corrige par un avoir. Avoir total, avoir partiel sur une quantité ou un prix, avoir sur une
+                    facture déjà payée, avoir né d'un retour de marchandise : chaque cas laisse une trace différente,
+                    et la suite (remboursement, imputation) n'est pas la même.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau débutant · série <strong>Pas à pas Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, avec Ventes, Facturation et Inventaire installés. Les avoirs font partie de l'application
+                        Facturation, incluse dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Avant de commencer</h2>
+                <p>Un avoir est une facture négative : il annule tout ou partie d'une facture client déjà
+                    confirmée. Odoo le crée depuis la facture d'origine, par le bouton <strong>Avoir</strong>, et
+                    le relie à elle. Le bouton n'apparaît que sur une facture au statut Comptabilisé : une facture
+                    encore en brouillon se modifie ou s'annule directement.</p>
+                <p>Le premier avoir partiel, sur une quantité, est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs
+                    dans Odoo 20</a>. Le présent article traite les autres cas : annuler une facture entière,
+                    corriger un prix, créditer une facture déjà réglée, puis rembourser ou imputer, et produire
+                    l'avoir depuis la commande de vente après un retour.</p>
+                <p>Les exemples utilisent deux clients de la base de démonstration sans crédit ouvert, Ready Mat et
+                    Lumber Inc, et les articles « Lampe de bureau » (40 $) et « Tiroir » (110,50 $). La démonstration
+                    installe un plan comptable générique en dollars avec une taxe de 15 %, sur la société affichée
+                    « My Company (San Francisco) » ; le mécanisme est le même avec un plan français.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>remplir l'assistant d'avoir : motif, journal, date ;</li>
+                    <li>annuler une facture non payée par un avoir total ;</li>
+                    <li>faire un avoir partiel sur un prix ou une quantité ;</li>
+                    <li>traiter l'avoir d'une facture déjà payée : rembourser le client ou l'imputer sur une autre
+                        facture ;</li>
+                    <li>créer l'avoir depuis la commande après un retour de marchandise.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. L'assistant Avoir</h2>
+                <p>Ouvrez la facture dans <strong>Facturation › Clients › Factures</strong> et cliquez sur
+                    <strong>Avoir</strong>. La fenêtre demande trois informations.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Avoir d'Odoo 20 : Motif affiché sur l'avoir rempli avec Facture émise par erreur, Journal Ventes, Date d'extourne 6 oct., boutons Extourner, Extourner et créer une facture, Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'assistant d'avoir : motif, journal, date, et deux façons d'extourner.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Motif affiché sur l'avoir</strong> : il s'ajoute à la référence de l'avoir,
+                        « Extourne de : FAC/2026/00023, Facture émise par erreur », et se retrouve dans le mémo du
+                        remboursement éventuel. Facultatif, mais c'est la seule explication que le client lira.</li>
+                    <li><strong>Journal</strong> : rempli avec le journal de la facture, ici Ventes. La liste
+                        propose tous les journaux de vente de la société ; dans la démonstration, elle contient aussi
+                        les journaux du point de vente. Gardez Ventes.</li>
+                    <li><strong>Date d'extourne</strong> : aujourd'hui par défaut. Elle devient la date de
+                        facturation et l'échéance de l'avoir. Une date future crée un avoir brouillon dont le
+                        champ <strong>Comptabilisation automatique</strong> vaut « À la date » : Odoo le
+                        confirmera lui-même ce jour-là.</li>
+                </ul>
+                <p>Deux boutons : <strong>Extourner</strong> crée un avoir brouillon, modifiable avant
+                    confirmation ; <strong>Extourner et créer une facture</strong> annule la facture entière et
+                    ouvre une nouvelle facture brouillon à corriger (étape 5).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Annuler une facture non payée : l'avoir total</h2>
+                <p>Une facture confirmée n'a plus de bouton Annuler : il est réservé aux brouillons. Pour annuler
+                    FAC/2026/00023 (Ready Mat, 219,08 $, non payée), cliquez sur <strong>Avoir</strong>, saisissez
+                    le motif, puis <strong>Extourner</strong>. Odoo ouvre un avoir brouillon qui reprend toutes les
+                    lignes de la facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Avoir client en brouillon d'Odoo 20 pour Ready Mat : 2 Lampe de bureau à 40 dollars et 1 Tiroir à 110,50 dollars, total 219,08 dollars, bandeau débits en circulation, liste Débits en circulation avec FAC/2026/00027 508,30 dollars et FAC/2026/00023 219,08 dollars, chacune avec un bouton Ajouter" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir total en brouillon, et les factures du client encore ouvertes.</figcaption>
+                </figure>
+                <p>Sous le total, la rubrique <strong>Débits en circulation</strong> liste toutes les factures
+                    ouvertes du client, et pas seulement celle d'origine : ici, FAC/2026/00027 aussi. Ne cliquez sur
+                    aucun bouton Ajouter : à la confirmation, Odoo lettre l'avoir avec sa facture d'origine. Cliquez
+                    sur <strong>Confirmer</strong>. L'avoir prend le numéro RFAC/2026/00008 et le bandeau PAYÉ ; la
+                    facture prend le bandeau <strong>EXTOURNÉ</strong> et un montant dû nul.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Facture client FAC/2026/00023 d'Odoo 20 avec le ruban EXTOURNÉ, bouton Avoirs 1, total 219,08 dollars, ligne Extourné le 06/10/2026 219,08 dollars, montant dû 0,00 dollar" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture annulée par l'avoir : statut de paiement Extourné, plus rien à payer.</figcaption>
+                </figure>
+                <p>La facture garde son numéro et reste comptabilisée : c'est voulu, la numérotation des factures
+                    ne doit pas avoir de trou. Le bouton <strong>Avoirs</strong> en haut de la facture ouvre
+                    l'avoir, et le fil de discussion note « Non payé → Extourné ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Avoir partiel : corriger un prix ou une quantité</h2>
+                <p>Un avoir partiel part du même bouton <strong>Extourner</strong> : c'est l'avoir brouillon que
+                    l'on retouche avant de le confirmer. Deux corrections reviennent souvent :</p>
+                <ul>
+                    <li><strong>une quantité</strong> (marchandise abîmée, manquante, retournée) : diminuez la
+                        quantité de la ligne, supprimez les lignes non concernées ;</li>
+                    <li><strong>un prix</strong> (geste commercial, erreur de tarif) : gardez la quantité et
+                        saisissez dans <strong>Prix</strong> la différence à rendre par unité.</li>
+                </ul>
+                <p>Exemple : FAC/2026/00024 facture 5 Tiroir à 110,50 $ à Lumber Inc, soit 635,38 $ ; un geste
+                    commercial de 10 % est accordé. Dans l'avoir brouillon (motif « Geste commercial de 10 % »),
+                    laissez la quantité à 5 et remplacez le prix par 11,05.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Avoir client en brouillon d'Odoo 20 pour Lumber Inc : ligne Tiroir quantité 5, prix 11,05, taxe 15 %, montant 55,25 dollars, total 63,54 dollars, Débits en circulation FAC/2026/00024 635,38 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un avoir partiel sur le prix : même quantité, 10 % du prix unitaire.</figcaption>
+                </figure>
+                <p>L'avoir vaut 55,25 $ hors taxes : la taxe est recalculée, 8,29 $, pour un total de 63,54 $.
+                    Confirmez : la facture passe à <strong>PARTIEL</strong>, son pied affiche « Extourné le
+                    06/10/2026 : 63,54 $ », et le montant dû tombe à 571,84 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Facture client FAC/2026/00024 d'Odoo 20 avec le ruban PARTIEL : total 635,38 dollars, Extourné le 06/10/2026 63,54 dollars, montant dû 571,84 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture après le geste commercial : 571,84 $ restent dus.</figcaption>
+                </figure>
+                <p>Corriger le prix plutôt que la quantité garde sur l'avoir l'article et le nombre d'unités
+                    concernées : le client lit exactement ce qui lui est rendu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Avoir sur une facture déjà payée</h2>
+                <p>FAC/2026/00025 (Lumber Inc, 3 Lampe de bureau, 138 $) est entièrement payée. Une lampe revient.
+                    Le geste est le même : <strong>Avoir</strong>, motif « Lampe retournée »,
+                    <strong>Extourner</strong>, quantité ramenée à 1, <strong>Confirmer</strong>. Le résultat, lui,
+                    diffère.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Avoir client RFAC/2026/00010 d'Odoo 20 confirmé pour Lumber Inc, sans ruban PAYÉ : 1 Lampe de bureau à 40 dollars, total 46 dollars, montant dû 46 dollars, bouton Payer, Débits en circulation FAC/2026/00024 571,84 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir d'une facture payée reste ouvert : 46 $ sont dus au client.</figcaption>
+                </figure>
+                <p>La facture d'origine est déjà soldée par le paiement : il n'y a plus rien à lettrer avec elle.
+                    L'avoir RFAC/2026/00010 reste donc <strong>ouvert</strong>, avec un montant dû de 46 $ : c'est
+                    l'entreprise qui doit cette somme au client. La facture, elle, garde son bandeau PAYÉ. Deux
+                    suites sont possibles.</p>
+
+                <h3>Imputer l'avoir sur une autre facture</h3>
+                <p>Le client commande à nouveau : FAC/2026/00028, 2 Lampe de bureau, 92 $. Dès sa confirmation, la
+                    facture affiche « Vous avez des crédits en circulation listés ci-dessous pour ce client » et,
+                    sous le total, l'avoir RFAC/2026/00010 avec un bouton <strong>Ajouter</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Facture client FAC/2026/00028 d'Odoo 20 pour Lumber Inc : bandeau Vous avez des crédits en circulation listés ci-dessous pour ce client, total 92 dollars, montant dû 92 dollars, rubrique Crédits en circulation RFAC/2026/00010 46 dollars avec un bouton Ajouter" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir ouvert proposé sur la facture suivante du même client.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Ajouter</strong> : la facture passe à PARTIEL, le pied indique « Extourné le
+                    06/10/2026 : 46 $ » et le client ne doit plus que 46 $. L'imputation peut aussi se faire depuis
+                    l'avoir : sa rubrique <strong>Débits en circulation</strong> liste les factures ouvertes du
+                    client (FAC/2026/00024 sur la figure 6).</p>
+
+                <h3>Rembourser le client</h3>
+                <p>Si le client ne recommande pas, l'avoir se règle comme une facture, dans l'autre sens. Sur un
+                    avoir ouvert de Ready Mat (RFAC/2026/00011, un Tiroir retourné, 127,08 $), cliquez sur
+                    <strong>Payer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Payer d'Odoo 20 ouverte depuis un avoir : Journal Banque, Recipient Account avec le compte bancaire du client, montant 127,08 dollars, date de règlement 6 oct., mémo Extourne de : FAC/2026/00026, Tiroir retourné, bouton Créer un paiement" style="max-width:80%; height:auto;"/>
+                    <figcaption>Payer un avoir : un paiement sortant, vers le compte bancaire du client.</figcaption>
+                </figure>
+                <p>La fenêtre est celle des encaissements, avec deux différences : le champ « Recipient Account »
+                    propose le compte bancaire du client, à qui l'argent est versé, et le mémo reprend la référence
+                    de l'avoir. <strong>Créer un paiement</strong> enregistre un paiement <strong>sortant</strong>
+                    (PBNK1/2026/00018) et l'avoir passe à PAYÉ. Le virement lui-même se fait depuis la banque ; le
+                    paiement Odoo sera rapproché du relevé, comme décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Annuler et refaire : Extourner et créer une facture</h2>
+                <p>Quand la facture est fausse de bout en bout (mauvais client, mauvais articles), le second bouton
+                    de l'assistant fait tout en une fois : il crée l'avoir total, le confirme, le lettre avec la
+                    facture (statut Extourné), puis ouvre une <strong>nouvelle facture brouillon</strong>, copie de
+                    l'ancienne, à corriger avant de la confirmer.</p>
+                <p>Sur une facture déjà payée, ce bouton a un effet de plus : Odoo <strong>détache le
+                    paiement</strong> de la facture pour lettrer l'avoir à sa place. Essai sur une facture de
+                    92 $ payée : après « Extourner et créer une facture », la facture est Extournée, l'avoir est
+                    payé, et le paiement de 92 $ n'est plus lettré à rien. Il devient un crédit en circulation du
+                    client, que la nouvelle facture proposera par son bouton Ajouter. Rien n'est perdu, mais le
+                    paiement doit être imputé à la main sur la facture corrigée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. L'avoir depuis la commande, après un retour</h2>
+                <p>Quand la marchandise revient physiquement, l'avoir peut naître de la commande de vente plutôt
+                    que de la facture. Exemple : S00083, 4 Tiroir pour Ready Mat, livrés par WH/OUT/00086 puis
+                    facturés (FAC/2026/00027, 508,30 $).</p>
+                <ol>
+                    <li>Sur le bon de livraison terminé, cliquez sur <strong>Retour</strong>. Odoo 20 crée
+                        directement le transfert de retour (ici WH/IN/00027), sans fenêtre intermédiaire, avec une
+                        demande de 0 et les boutons <strong>Tout renvoyer</strong> et <strong>Effacer</strong>.
+                        Saisissez 1 dans <strong>Demande</strong>, puis <strong>Valider</strong>.</li>
+                    <li>Sur la commande, la colonne <strong>Délivré</strong> tombe à 3, alors que
+                        <strong>Facturé</strong> reste à 4 : un Tiroir a été facturé sans être gardé.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Commande S00083 d'Odoo 20 pour Ready Mat après un retour : bouton Créer une facture, Livraison 5, étiquette Partiellement livré, ligne Tiroir quantité 4, délivré 3, facturé 4" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le retour d'un Tiroir : 3 délivrés, 4 facturés.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer une facture</strong>, gardez <strong>Facture normale</strong> et
+                    cliquez sur <strong>Créer brouillon</strong>. La différence étant négative, Odoo produit un
+                    <strong>avoir</strong>, et non une facture : « Avoir brouillon (S00083) », 1 Tiroir, 127,08 $,
+                    rattaché à la commande par le bouton <strong>Commandes clients</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Avoir client en brouillon d'Odoo 20 créé depuis la commande S00083 : 1 Tiroir à 110,50 dollars, total 127,08 dollars, bouton Commandes clients 1, Débits en circulation FAC/2026/00027 508,30 dollars avec un bouton Ajouter" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir produit par la commande : il ne connaît pas la facture d'origine.</figcaption>
+                </figure>
+                <p>Cet avoir n'est pas issu de l'assistant : Odoo ne sait pas quelle facture il corrige et ne le
+                    lettre pas à la confirmation. Après <strong>Confirmer</strong>, RFAC/2026/00012 reste ouvert ;
+                    cliquez sur <strong>Ajouter</strong> en face de FAC/2026/00027 dans les débits en circulation.
+                    L'avoir passe à PAYÉ et la facture n'est plus due que de 381,22 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Commande S00083 d'Odoo 20 après l'avoir : bouton Créer une facture secondaire, Factures clients 2, ligne Tiroir quantité 4, délivré 3, facturé 3" style="max-width:100%; height:auto;"/>
+                    <figcaption>Livré et facturé se rejoignent : la commande n'a plus rien à facturer.</figcaption>
+                </figure>
+                <p>Sur la commande, <strong>Facturé</strong> revient à 3, le bouton <strong>Factures
+                    clients</strong> compte 2 pièces (la facture et l'avoir) et Créer une facture n'est plus le
+                    bouton principal.</p>
+                <p>L'inverse est vrai aussi : un avoir fait depuis la facture d'une commande fait baisser la
+                    quantité facturée de la commande. Essai sur S00083 : un avoir total de FAC/2026/00027 ramène
+                    Facturé de 3 à −1 et remet la commande « à facturer » pour 4 Tiroir. Si la marchandise n'est
+                    pas à refacturer, ne relancez pas la facturation de cette commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Facture d'une période close</h2>
+                <p>Un avoir porte toujours sa propre date, celle de l'assistant : il ne modifie jamais la période
+                    de la facture d'origine. Une facture de l'an dernier se corrige donc par un avoir daté
+                    d'aujourd'hui, dans la période ouverte.</p>
+                <p>Odoo connaît des dates de verrouillage (ventes, exercice) qui interdisent toute écriture
+                    antérieure. Odoo 20 Community n'a aucun écran pour les poser. Quand une telle date existe et que
+                    la date d'extourne la précède, Odoo garde la date de facturation choisie mais reporte la date
+                    comptable au premier jour ouvert. Essai avec un verrou des ventes au 30/09 et une date
+                    d'extourne au 26/09 : l'avoir garde la date de facturation du 26/09 et il est comptabilisé au
+                    01/10.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHOISIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Quel avoir pour quelle situation ?</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Situation</th><th>Geste</th><th>Après confirmation</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Facture non payée à annuler</td><td>Avoir › Extourner, sans retouche</td>
+                            <td>Facture Extourné, montant dû nul</td></tr>
+                        <tr><td>Erreur de prix, geste commercial</td><td>Avoir › Extourner, prix corrigé</td>
+                            <td>Facture PARTIEL, montant dû réduit</td></tr>
+                        <tr><td>Retour sur facture non payée</td><td>Avoir › Extourner, quantité corrigée</td>
+                            <td>Facture PARTIEL, montant dû réduit</td></tr>
+                        <tr><td>Retour ou geste sur facture payée</td><td>Avoir › Extourner</td>
+                            <td>Avoir ouvert : Payer (remboursement) ou Ajouter sur une autre facture</td></tr>
+                        <tr><td>Facture entièrement à refaire</td><td>Avoir › Extourner et créer une facture</td>
+                            <td>Facture Extourné, nouvelle facture brouillon ; paiement éventuel détaché</td></tr>
+                        <tr><td>Retour de marchandise d'une commande</td><td>Retour, puis Créer une facture sur la
+                            commande</td><td>Avoir ouvert, à lettrer par Ajouter</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Avoirs totaux et partiels, Extourner et créer une facture,
+                        imputation des crédits en circulation, remboursement par paiement sortant, retours de
+                        marchandise et avoir depuis la commande sont inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Les débits en circulation ne sont pas tous la facture d'origine</h4>
+                    <p>L'avoir brouillon liste toutes les factures ouvertes du client. Un clic sur Ajouter en face
+                        d'une autre facture imputerait l'avoir au mauvais endroit. Pour un avoir créé par
+                        l'assistant, confirmez sans rien ajouter : le lettrage avec la facture d'origine est
+                        automatique.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un avoir confirmé n'est pas un remboursement</h4>
+                    <p>Sur une facture payée, l'avoir reste dû au client tant qu'il n'est ni payé ni imputé. Le menu
+                        Clients › Avoirs les liste : relisez-le avant chaque relance ou clôture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Extourner et créer une facture détache le paiement</h4>
+                    <p>Sur une facture payée, le paiement redevient un crédit libre du client. Pensez à l'imputer
+                        sur la facture corrigée, sinon celle-ci apparaîtra impayée.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un avoir sur facture de commande rouvre la facturation</h4>
+                    <p>La quantité facturée de la commande baisse d'autant : la commande redevient « à facturer ».
+                        Si rien n'est à refacturer, ne relancez pas Créer une facture.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> créditer une facture payée et imputer l'avoir.</p>
+                    <p><strong>Indication :</strong> créez et confirmez pour Lumber Inc une facture de 2 Lampe de
+                        bureau, payez-la (Payer › Créer un paiement), puis faites un avoir d'une lampe avec le motif
+                        « Lampe retournée ». Créez ensuite une nouvelle facture d'une lampe pour le même client.</p>
+                    <p><strong>Critère de réussite :</strong> l'avoir confirmé affiche un montant dû de 46 $ ; sur la
+                        nouvelle facture confirmée, un clic sur Ajouter dans les crédits en circulation ramène le
+                        montant dû à 0, et l'avoir passe à PAYÉ.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une facture confirmée se corrige par le bouton Avoir ; elle garde son numéro.</li>
+                    <li>Extourner donne un avoir brouillon : sans retouche il annule tout, retouché il est partiel
+                        (quantité ou prix).</li>
+                    <li>Sur une facture non payée, l'avoir de l'assistant se lettre tout seul ; sur une facture
+                        payée, il reste ouvert : Payer pour rembourser, Ajouter pour imputer.</li>
+                    <li>Extourner et créer une facture annule et recopie ; sur une facture payée, il détache le
+                        paiement.</li>
+                    <li>Après un retour, la commande produit elle-même l'avoir, à lettrer par Ajouter.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture et le premier avoir partiel.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaissements, paiements partiels et crédits à imputer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Quantités livrées, facturées, et politique de facturation.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
