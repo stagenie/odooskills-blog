@@ -29,6 +29,12 @@ class LibraryCopy(models.Model):
         default='available',
         required=True,
     )
+    shelf_id = fields.Many2one(
+        'library.shelf',
+        string="Rayon",
+        index=True,
+        ondelete='restrict',
+    )
     acquisition_date = fields.Date(
         string="Date d'acquisition",
         default=fields.Date.context_today,
