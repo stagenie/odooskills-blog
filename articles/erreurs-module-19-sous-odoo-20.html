@@ -1,0 +1,755 @@
+<!--
+Article — Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif
+Série « Dépanner Odoo 20 » (article autonome, page de renvoi)
+Date : 2026-10-07
+Slug : erreurs-module-19-sous-odoo-20
+Meta : Module Odoo 19 sous Odoo 20 : chaque message d'erreur réel (installation, exécution, journal), sa cause, son correctif, et les pannes qui ne disent rien.
+Mot-clé cible : odoo 20 migration error (module not installable odoo 20, odoo 20 upgrade module error)
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~14 minutes
+Preuves (base vs20_tech_d2 = copie de vs20_tech, sale_management + stock + website_blog ajouté, démo native fr_FR, Odoo 20.0 3538ed82, PG 16) :
+- Module jetable « façon 19 » mon_module : docs/blog-odoo20/captures-base-vs20_tech/d2-erreurs-module-19/e1 (19 brut) → e2 (version 20) → e3 (Domain)
+  → e4 (ir.access.csv) → e5 (règle convertie, installé) → e6 (t-out + attribut de t-call). Installations rejouées par fig01_run.sh
+  (sorties fig01_e1..e4.log, codes de sortie fig01_exit.txt : 0, 255, 255, 255) ; e1b_out.txt (2e passage : « not installable, skipped » +
+  ERROR « Some modules have inconsistent states »). Figure 01 = fig01.txt (lignes réelles, chemins → …/, base → ma_base, pile d'appels coupée).
+- Exécution : p_runtime.py → p_runtime_out.txt ; p_fig02.py → fig02.txt ; p_fig03.py → fig03.txt (pile du WARNING py.warnings retirée) ;
+  p_fixes.py → p_fixes_out.txt ; p_acces.py → p_acces_out.txt ; p_warn.py → p_warn_out.txt (WARNING py.warnings par défaut) ;
+  p_qweb.py → qweb_avant.txt / qweb_apres.txt ; grep_out.txt ; upgrade_code_out.txt (copie uc/, --glob 'mon_module/**/*').
+- Serveur local port 9140 : journal server.log « HTTP service running on 127.0.0.1:9140 », curl sur l'IP du poste → 000 (exit 7),
+  script_xmlrpc.py → WARNING odoo.addons.rpc.controllers.xmlrpc.
+- Code 20.0 : odoo/modules/module.py:500-502 (incompatible version) ; module_graph.py:242,293 ; loading.py:492 ; orm/registry.py:385 (KeyError) ;
+  tools/convert.py:643 (ParseError) ; addons/base/models/ir_qweb.py:1929 (Unknown directives), :2640-2730 t-call (attributs, .f) ;
+  ir_attachment.py:535 ; orm/fields_binary.py:112 ; orm/environments.py:315-323 (tz ZoneInfo), :833 invalidate_ormcache ;
+  orm/models.py:2103 (Aggregate method), :3443/3464 check_access/has_access, :6092-6094 union ; tools/__init__.py:25 ormcache ;
+  ir_config_parameter.py:66-124 get_*/set_* ; tools/config.py:289 http-interface 127.0.0.1 ; upgrade_code/19.1-00-t-call.py,
+  19.4-00-ir-access.py ; owl3-migration.py:547-554 (t-esc réécrit seulement sous /static/).
+- 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0, relue le 07/10/2026, copies dans pub19/) : module.py:466 même avertissement de version
+  (pas un écart) ; ir_rule.py:16 _name ir.rule ; ir_model.py:2096 ir.model.access ; registry.py:998 clear_cache ;
+  ir_config_parameter.py:60/82 get_param/set_param ; models.py:4168 check_access_rights (déprécié 18.0), :5478 copy_translations,
+  :6053-6055 force_company (DeprecationWarning), :6607 union(*args) ; environments.py:9,291 pytz ; requirements.txt:80 pytz (absent de 20) ;
+  ir_qweb.py:2487 _compile_directive_esc (→ t-out), :2573-2597 t-set dans le corps du t-call propagé ; ir_attachment.py:473 datas ;
+  fields_binary.py:92-112 (bytes base64) ; website_blog.py:198 post_date ; tools/config.py:257 http-interface 0.0.0.0.
+  XML-RPC : même WARNING en 19 (renvoi à l'article JSON-2, déjà prouvé).
+Captures : content/blog/screenshots/erreurs-module-19-sous-odoo-20/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+  table.tmc td.grp { background: #eef2f7; font-weight: 600; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</h1>
+                <p class="lead mt-3 text-white">Un module écrit pour la 19, posé tel quel sur une base Odoo 20 : ce que
+                    le journal affiche, dans l'ordre où ça arrive, ce que chaque message veut dire et la ligne à changer.
+                    Et, plus traîtres, les changements qui ne lèvent aucune erreur : le module s'installe, la page
+                    reste vide.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lire le message</h4>
+                        <p>Le texte exact de chaque erreur d'Odoo 20 face à du code 19, à retrouver d'un coup de
+                            recherche dans cette page.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Corriger</h4>
+                        <p>La forme Odoo 20 de chaque appel, exécutée, et l'article qui détaille le sujet.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Voir ce qui se tait</h4>
+                        <p>QWeb vide, pièce jointe vide, droits trop larges, serveur injoignable : les pannes sans
+                            erreur, montrées par leur effet.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 de test avec ses données de démonstration (ici Ventes, Inventaire et le Blog)
+                            et la console <code>odoo-bin shell</code>, présentée dans
+                            <a href="/blog/developpement-odoo-2/shell-odoo-20-272">l'article sur la console</a>.</li>
+                        <li>Tous les messages de cette page ont été reproduits sur une telle base, avec un petit module
+                            <code>mon_module</code> écrit comme en 19 (un modèle, un fichier de droits, une règle, trois
+                            gabarits QWeb), puis corrigé étape par étape.</li>
+                        <li>Le périmètre est le code serveur : Python, XML, données. Le JavaScript (OWL 3, icônes) est
+                            traité dans <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">ce qui change
+                            techniquement en Odoo 20</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE TABLEAU ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le tableau : message, cause, correctif</h2>
+
+                <p>Cherche ton message dans la première colonne (Ctrl+F sur un mot du journal). Les sections suivantes
+                    montrent chaque cas en vrai, dans l'ordre où un portage les rencontre.</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Message (Odoo 20)</th><th>Cause</th><th>Correctif</th><th>Pour aller plus loin</th></tr></thead>
+                    <tbody>
+                        <tr><td class="grp" colspan="4">À l'installation (<code>-i</code> / <code>-u</code>)</td></tr>
+                        <tr><td><code>WARNING … The module mon_module has an incompatible version, setting installable=False</code>, code de sortie 0</td>
+                            <td><code>'version': '19.0.x'</code> dans le manifeste</td>
+                            <td><code>'version': '20.0.1.0.0'</code>, une fois le module porté</td>
+                            <td><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Modules en ligne de commande</a></td></tr>
+                        <tr><td><code>WARNING … module mon_module: not installable, skipped</code> puis <code>ERROR … Some modules have inconsistent states, some dependencies may be missing: ['mon_module']</code></td>
+                            <td>la même, sur un module déjà connu de la base</td>
+                            <td>la même</td>
+                            <td>section 2</td></tr>
+                        <tr><td><code>ModuleNotFoundError: No module named 'odoo.osv'</code></td>
+                            <td>paquet <code>odoo.osv</code> supprimé</td>
+                            <td><code>from odoo.fields import Domain</code> ; <code>expression.AND</code> → <code>Domain.AND</code></td>
+                            <td><a href="/blog/developpement-odoo-2/domaines-odoo-20-274">Les domaines en Odoo 20</a></td></tr>
+                        <tr><td><code>KeyError: 'ir.model.access'</code></td>
+                            <td>modèle supprimé, remplacé par <code>ir.access</code></td>
+                            <td><code>security/ir.access.csv</code></td>
+                            <td><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20</a></td></tr>
+                        <tr><td><code>KeyError: 'ir.rule'</code> et <code>ParseError: while parsing …/security/….xml:3</code></td>
+                            <td>modèle supprimé : les règles deviennent des lignes <code>ir.access</code> avec domaine</td>
+                            <td>une ligne <code>ir.access</code> par règle ; <code>odoo-bin upgrade_code</code> le fait</td>
+                            <td>sections 2 et 3</td></tr>
+
+                        <tr><td class="grp" colspan="4">À l'exécution</td></tr>
+                        <tr><td><code>AttributeError: 'Registry' object has no attribute 'clear_cache'</code></td>
+                            <td>méthode supprimée</td>
+                            <td><code>env.transaction.invalidate_ormcache()</code></td>
+                            <td><a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">L'environnement en Odoo 20</a></td></tr>
+                        <tr><td><code>AttributeError: 'ir.config_parameter' object has no attribute 'get_param'</code></td>
+                            <td><code>get_param</code> / <code>set_param</code> supprimés</td>
+                            <td><code>get_str</code>, <code>get_int</code>, <code>get_float</code>, <code>get_bool</code> ; <code>set_str</code>, <code>set_int</code>…</td>
+                            <td>section 4</td></tr>
+                        <tr><td><code>AttributeError: 'res.partner' object has no attribute 'check_access_rights'</code></td>
+                            <td>supprimé (déprécié depuis la 18), comme <code>check_access_rule</code></td>
+                            <td><code>has_access('write')</code> (booléen) ou <code>check_access('write')</code> (lève)</td>
+                            <td><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20</a></td></tr>
+                        <tr><td><code>AttributeError: 'ZoneInfo' object has no attribute 'localize'</code> (ou <code>'zone'</code>)</td>
+                            <td><code>env.tz</code> est un <code>zoneinfo.ZoneInfo</code> ; pytz n'est plus une dépendance d'Odoo</td>
+                            <td><code>dt.replace(tzinfo=env.tz)</code></td>
+                            <td><a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">L'environnement en Odoo 20</a></td></tr>
+                        <tr><td><code>TypeError: res.partner.image_1920: use BinaryValue instead of bytes</code></td>
+                            <td>un champ <code>Binary</code> ne prend plus de base64 en octets</td>
+                            <td><code>BinaryBytes(octets)</code> (<code>from odoo.tools import BinaryBytes</code>)</td>
+                            <td><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change en Odoo 20</a></td></tr>
+                        <tr><td><code>ValueError: Aggregate method is mandatory for 'partner_id'</code> ; <code>TypeError: … unexpected keyword argument 'lazy'</code></td>
+                            <td><code>read_group</code> a changé de signature</td>
+                            <td><code>_read_group(domaine, groupby, agrégats)</code> ou <code>formatted_read_group</code></td>
+                            <td><a href="/blog/developpement-odoo-2/read-group-odoo-20-270">read_group en Odoo 20</a></td></tr>
+                        <tr><td><code>ValueError: Invalid operator in condition ('id', '&lt;&gt;', 1)</code></td>
+                            <td><code>&lt;&gt;</code>, <code>==</code>, opérateurs en majuscules refusés</td>
+                            <td><code>!=</code>, <code>=</code>, minuscules</td>
+                            <td><a href="/blog/developpement-odoo-2/domaines-odoo-20-274">Les domaines en Odoo 20</a></td></tr>
+                        <tr><td><code>ValueError: Invalid field blog.post.post_date in condition …</code> ; <code>AttributeError: 'blog.post' object has no attribute 'post_date'</code></td>
+                            <td>champ supprimé</td>
+                            <td><code>published_date</code> (et <code>publish_on</code> pour une publication programmée)</td>
+                            <td>section 4</td></tr>
+                        <tr><td><code>UserError: Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée…</code> malgré <code>_force_unlink</code></td>
+                            <td>le drapeau de contexte ne contourne plus les gardes <code>@api.ondelete</code></td>
+                            <td>annuler d'abord (<code>action_cancel()</code>)</td>
+                            <td><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command</a></td></tr>
+
+                        <tr><td class="grp" colspan="4">Avertissements dans le journal (le code marche encore)</td></tr>
+                        <tr><td><code>UserWarning: Since 20.0, use union() on an empty recordset</code></td>
+                            <td><code>a.union(b)</code></td>
+                            <td><code>env['modele'].union([a, b])</code></td>
+                            <td><a href="/blog/developpement-odoo-2/operations-ensemble-recordsets-odoo-20-276">Opérations d'ensemble</a></td></tr>
+                        <tr><td><code>DeprecationWarning: Since 20.0 import ormcache from odoo.api</code></td>
+                            <td><code>from odoo.tools import ormcache</code></td>
+                            <td><code>from odoo.api import ormcache</code></td>
+                            <td>section 6</td></tr>
+                        <tr><td><code>WARNING … The /xmlrpc, /xmlrpc/2 and /jsonrpc endpoints are deprecated in Odoo 19 and scheduled for removal in Odoo 22</code></td>
+                            <td>client externe en XML-RPC (déjà signalé en 19)</td>
+                            <td>API JSON-2 et clé API</td>
+                            <td><a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">Passer à l'API JSON-2</a></td></tr>
+
+                        <tr><td class="grp" colspan="4">Silencieux : aucune erreur, résultat faux</td></tr>
+                        <tr><td><code>WARNING … Unknown directives or unused attributes: {'t-esc'}</code>, et la valeur n'apparaît pas</td>
+                            <td><code>t-esc</code> et <code>t-raw</code> ne sont plus des directives</td>
+                            <td><code>t-out</code></td>
+                            <td>section 5</td></tr>
+                        <tr><td><em>rien</em> : la variable est vide dans le gabarit appelé</td>
+                            <td><code>&lt;t t-set&gt;</code> placé dans le corps d'un <code>t-call</code></td>
+                            <td>la passer en attribut : <code>&lt;t t-call="x" ville="'Bruxelles'"/&gt;</code></td>
+                            <td>section 5</td></tr>
+                        <tr><td><code>UserWarning: Use raw, datas has beeen removed</code>, pièce jointe de 0 octet</td>
+                            <td><code>ir.attachment</code> créé avec <code>datas=</code></td>
+                            <td><code>raw=</code> (octets bruts)</td>
+                            <td>section 5</td></tr>
+                        <tr><td><em>rien</em> : <code>base64.b64decode(rec.image_1920)</code> rend des octets sans sens</td>
+                            <td>le champ ne contient plus du base64</td>
+                            <td><code>rec.image_1920.content</code></td>
+                            <td>section 5</td></tr>
+                        <tr><td><em>rien</em> : <code>with_context(force_company=…)</code> garde la société courante</td>
+                            <td>clé de contexte ignorée, sans avertissement</td>
+                            <td><code>with_company(société)</code></td>
+                            <td><a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">L'environnement en Odoo 20</a></td></tr>
+                        <tr><td><em>rien</em> : une surcharge de <code>copy_translations</code> n'est jamais appelée</td>
+                            <td>méthode supprimée, les traductions passent par <code>copy_data</code></td>
+                            <td>déplacer la logique dans <code>copy_data</code></td>
+                            <td><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command</a></td></tr>
+                        <tr><td><em>rien</em> : un utilisateur voit les fiches des autres</td>
+                            <td>ancien droit d'accès recopié à côté de la règle convertie</td>
+                            <td>une seule ligne <code>ir.access</code> avec le domaine</td>
+                            <td>section 3</td></tr>
+                        <tr><td><em>rien</em> : un utilisateur ne voit plus rien</td>
+                            <td>ancien droit « sans groupe » recopié sans groupe : c'est devenu une restriction</td>
+                            <td>groupe <code>base.group_everyone</code></td>
+                            <td>section 3</td></tr>
+                        <tr><td><code>HTTP service running on 127.0.0.1:&lt;port&gt;</code>, serveur injoignable par son IP</td>
+                            <td><code>--http-interface</code> vaut <code>127.0.0.1</code> par défaut</td>
+                            <td><code>http_interface = 0.0.0.0</code> derrière un pare-feu, ou un proxy local</td>
+                            <td><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur</a></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. INSTALLATION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. À l'installation : une erreur à la fois</h2>
+
+                <p>Odoo charge un module dans un ordre fixe : le manifeste, puis le code Python, puis les fichiers de
+                    données dans l'ordre de la clé <code>data</code>. Il s'arrête à la première erreur. Le module 19 de
+                    départ, posé dans l'<code>addons_path</code> et installé avec
+                    <code>-i mon_module --stop-after-init</code>, donne donc ses erreurs une par une, à chaque correction :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : quatre installations successives de mon_module. 1) version 19.0.1.0.0 : WARNING The module mon_module has an incompatible version, setting installable=False, code de sortie 0. 2) version 20.0.1.0.0 : CRITICAL Couldn't load module mon_module, from odoo.osv import expression, ModuleNotFoundError: No module named 'odoo.osv', code 255. 3) import de Domain : loading mon_module/security/ir.model.access.csv puis KeyError: 'ir.model.access', code 255. 4) ir.access.csv : loading mon_module/security/mon_module_security.xml, KeyError: 'ir.rule', ParseError sur record ir.rule, code 255"/>
+                    <figcaption>Quatre tentatives, quatre messages : le manifeste, l'import Python, le fichier de droits, la règle (extraits du journal, pile d'appels coupée).</figcaption>
+                </figure>
+
+                <h3 class="h5 mt-4">La version du manifeste : le piège du code de sortie 0</h3>
+                <p>La première tentative ne « plante » pas : code de sortie 0, deux lignes WARNING noyées dans le journal,
+                    et le module n'est pas installé. Odoo 20 refuse tout module dont la version ne commence pas par
+                    <code>20.0</code> et le marque <code>installable=False</code>. Si le module est déjà connu de la base
+                    (liste des applications mise à jour auparavant), le journal ajoute :</p>
+<div class="out">2026-10-07 08:32:08,372 1035742 WARNING ma_base odoo.modules.module_graph: module mon_module: not installable, skipped
+2026-10-07 08:32:08,859 1035742 ERROR ma_base odoo.modules.loading: Some modules have inconsistent states, some dependencies may be missing: ['mon_module']</div>
+                <p>Toujours avec un code de sortie 0. Un script de déploiement qui ne teste que ce code croit
+                    l'installation réussie. Ce garde-fou existait déjà en 19 (même message) ; ce qu'il faut retenir, c'est de
+                    ne passer la version en <code>20.0.1.0.0</code> qu'<strong>après</strong> le portage : c'est elle qui
+                    déverrouille l'installation, et toutes les erreurs qui suivent.</p>
+
+                <h3 class="h5 mt-4"><code>odoo.osv</code>, puis les droits</h3>
+                <p>Le code Python est importé avant toute donnée : <code>from odoo.osv import expression</code> casse
+                    l'installation avant même le premier fichier XML. <code>Domain</code>, dans <code>odoo.fields</code>,
+                    remplace tout l'ancien module <code>expression</code>.</p>
+
+                <p>Viennent ensuite les droits. <code>ir.model.access</code> et <code>ir.rule</code> n'existent plus en
+                    Odoo 20 : un seul modèle, <code>ir.access</code>, porte à la fois le droit sur le modèle et le domaine
+                    de la règle. Le <code>KeyError</code> nomme le premier des deux que le manifeste charge. Le fichier
+                    s'écrit ainsi :</p>
+<pre class="language-markup"><code class="language-markup">id,name,model_id,group_id/id,operation,domain
+mon_modele_rule_own,Mon modèle : mes fiches,mon.modele,base.group_user,crud,"[('create_uid', '=', user.id)]"</code></pre>
+                <p><code>model_id</code> prend le nom du modèle tel quel, <code>operation</code> une combinaison des
+                    lettres <code>c</code>, <code>r</code>, <code>u</code>, <code>d</code>, et <code>domain</code> reste
+                    vide pour un droit sans condition. Avec ce fichier à la place des deux anciens, le module
+                    s'installe.</p>
+
+                <h3 class="h5 mt-4">L'outil de conversion d'Odoo : <code>upgrade_code</code></h3>
+                <p>La ligne ci-dessus n'a pas été écrite à la main : elle sort de la sous-commande
+                    <code>upgrade_code</code>, qui réécrit les sources sur place (fais un commit avant). Lancée script par
+                    script sur une copie du module 19 :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin upgrade_code --addons-path=… --glob 'mon_module/**/*' --script 19.1-00-t-call
+./odoo-bin upgrade_code --addons-path=… --glob 'mon_module/**/*' --script 19.4-00-ir-access
+./odoo-bin upgrade_code --addons-path=… --glob 'mon_module/**/*' --script owl3-migration</code></pre>
+<div class="out">updated: …/mon_module/views/mon_module_templates.xml
+updated: …/mon_module/__manifest__.py
+updated: …/mon_module/security/ir.access.csv
+deleted: …/mon_module/security/ir.model.access.csv
+deleted: …/mon_module/security/mon_module_security.xml</div>
+                <ul>
+                    <li><strong><code>--glob</code> n'est pas une option de confort.</strong> Sans elle, l'outil parcourt
+                        aussi les modules d'Odoo lui-même : un essai à blanc (<code>--dry-run</code>) du script
+                        <code>19.1-00-t-call</code> listait onze fichiers, dont dix du cœur. De même, <code>--from 19.1</code>
+                        (tous les scripts d'un coup) a planté ici sur un script de comptabilité
+                        (<code>KeyError: 'ar_base'</code>) : passer les scripts un par un.</li>
+                    <li>Le script des droits a <strong>fusionné</strong> le droit et la règle en une seule ligne, sous
+                        l'identifiant de la règle, et réécrit la clé <code>data</code> du manifeste.</li>
+                    <li>Le script <code>t-call</code> a transformé le <code>t-set</code> du corps en attribut
+                        (<code>ville.f="Bruxelles"</code>, une chaîne de format).</li>
+                    <li>Il <strong>ne touche pas</strong> à la version du manifeste, à <code>from odoo.osv</code>, ni au
+                        <code>t-esc</code> des gabarits serveur : <code>owl3-migration</code> ne réécrit
+                        <code>t-esc</code> que dans les fichiers sous <code>static/</code> (ici, aucun fichier modifié).
+                        Ni à <code>datas=</code>, pytz, <code>get_param</code> : tout ce qui suit reste à faire à la main.</li>
+                </ul>
+
+                <p>Pour faire l'inventaire d'un module avant de commencer, une recherche suffit. Sur le module 19 de
+                    départ :</p>
+<pre class="language-bash"><code class="language-bash">grep -rnE "odoo\.osv|ir\.model\.access|ir\.rule|t-esc|t-raw|datas|clear_cache|get_param|set_param|check_access_rights|pytz|localize|read_group|force_company|_force_unlink|copy_translations|post_date|b64encode|b64decode|\.union\(|&lt;t t-call=\"[^\"]*\"&gt;" mon_module/</code></pre>
+<div class="out">mon_module/security/mon_module_security.xml:3:    &lt;record id="mon_modele_rule_own" model="ir.rule"&gt;
+mon_module/models/mon_modele.py:2:from odoo.osv import expression
+mon_module/views/mon_module_templates.xml:4:        &lt;p class="carte"&gt;Client : &lt;t t-esc="client"/&gt;&lt;/p&gt;
+mon_module/views/mon_module_templates.xml:12:            &lt;t t-call="mon_module.adresse"&gt;
+mon_module/__manifest__.py:7:        'security/ir.model.access.csv',</div>
+                <p>Cinq lignes, dont deux (<code>t-esc</code> et le <code>t-call</code> ouvrant) ne lèveront jamais
+                    d'erreur : ce sont celles de la section 5.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. DROITS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les droits convertis à la main : deux erreurs muettes</h2>
+
+                <p>Le <code>KeyError</code> disparaît dès que les anciens fichiers sont remplacés par un
+                    <code>ir.access.csv</code>, qu'il soit juste ou non. Et deux conversions « évidentes » donnent un module qui s'installe sans un mot, avec des droits
+                    différents de la 19. Pour le voir, deux fiches (une créée par l'administrateur, une par
+                    l'utilisateur de démonstration), puis ce que voit l'utilisateur de démonstration selon les lignes
+                    présentes :</p>
+<pre class="language-python"><code class="language-python">M = env['mon.modele']
+admin, demo = env.ref('base.user_admin'), env.ref('base.user_demo')
+M.with_user(admin).create({'name': "fiche de l'admin"})
+M.with_user(demo).create({'name': 'fiche de demo'})
+
+def voir(titre):
+    env.invalidate_all()
+    env.transaction.invalidate_ormcache()
+    print(f"&gt;&gt;&gt; {titre}")
+    print("   domaine :", M.with_user(demo)._access_domain('read'))
+    print("   demo voit :", M.with_user(demo).search([]).mapped('name'))
+
+voir("1 ligne (convertie) : base.group_user, crud, [('create_uid', '=', user.id)]")
+
+A = env['ir.access']
+naive = A.create({'name': 'mon.modele user (ex-ACL)', 'model_id': env['ir.model']._get_id('mon.modele'),
+                  'group_id': env.ref('base.group_user').id, 'operation': 'crud'})
+voir("+ ligne recopiée de l'ancien CSV : base.group_user, crud, sans domaine")
+naive.unlink()
+
+vide = A.create({'name': 'mon.modele lecture (ex-ACL sans groupe)', 'model_id': env['ir.model']._get_id('mon.modele'),
+                 'group_id': False, 'operation': 'r', 'domain': "[('name', 'ilike', 'admin')]"})
+voir("+ ligne sans groupe : r, [('name', 'ilike', 'admin')]")
+env.cr.rollback()</code></pre>
+<div class="out">&gt;&gt;&gt; 1 ligne (convertie) : base.group_user, crud, [('create_uid', '=', user.id)]
+   domaine : [('create_uid', '=', 5)]
+   demo voit : ['fiche de demo']
+&gt;&gt;&gt; + ligne recopiée de l'ancien CSV : base.group_user, crud, sans domaine
+   domaine : [(1, '=', 1)]
+   demo voit : ["fiche de l'admin", 'fiche de demo']
+&gt;&gt;&gt; + ligne sans groupe : r, [('name', 'ilike', 'admin')]
+   domaine : ['&amp;', ('create_uid', '=', 5), ('name', 'ilike', 'admin')]
+   demo voit : []</div>
+
+                <ul>
+                    <li><strong>Une ligne avec groupe est une permission, et les permissions s'additionnent (OU).</strong>
+                        En 19, le droit sur le modèle et la règle se cumulaient : le droit ouvrait le modèle, la règle
+                        filtrait. En 20, recopier l'ancien droit à côté de la règle convertie fait deux permissions, dont
+                        une sans domaine : l'utilisateur voit tout. La conversion juste tient en <strong>une</strong>
+                        ligne, celle que produit <code>upgrade_code</code>.</li>
+                    <li><strong>Une ligne sans groupe est une restriction, appliquée à tous (ET).</strong> En 19, un
+                        droit sans groupe ouvrait le modèle à tout le monde. En 20, le même champ vide filtre tout le
+                        monde, y compris ceux qui avaient déjà une permission. Pour « tout le monde », écrire
+                        <code>base.group_everyone</code>.</li>
+                </ul>
+                <p>Dans les deux cas, aucun message : seul un test avec un utilisateur non administrateur
+                    (<code>with_user</code>) le montre. Le modèle complet est expliqué dans
+                    <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">l'article sur les droits d'accès en
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. EXÉCUTION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. À l'exécution : les appels qui n'existent plus</h2>
+
+                <p>Une fois le module installé, les erreurs suivantes n'apparaissent que quand le code concerné
+                    s'exécute : au clic sur un bouton, au passage d'une action planifiée, dans un test. Les voici
+                    rejouées dans la console, chacune avec l'appel tel qu'il s'écrivait en 19 :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Console odoo-bin shell : env.registry.clear_cache() AttributeError 'Registry' object has no attribute 'clear_cache' ; get_param AttributeError 'ir.config_parameter' object has no attribute 'get_param' ; check_access_rights AttributeError ; tz.localize AttributeError 'ZoneInfo' object has no attribute 'localize' ; acme.image_1920 = base64.b64encode(...) TypeError use BinaryValue instead of bytes ; read_group ValueError Aggregate method is mandatory for 'partner_id' ; search_count avec '&lt;&gt;' ValueError Invalid operator ; blog.post post_date ValueError Invalid field blog.post.post_date"/>
+                    <figcaption>Huit appels écrits pour la 19, huit erreurs en Odoo 20 : l'exception et son message, tels que la console les affiche.</figcaption>
+                </figure>
+
+                <p>Et les mêmes intentions, écrites pour Odoo 20, exécutées sur la même base :</p>
+<pre class="language-python"><code class="language-python">import datetime
+from odoo.fields import Domain
+from odoo.tools import BinaryBytes
+
+ICP = env['ir.config_parameter'].sudo()
+print(ICP.get_str('web.base.url'))
+print(env['res.partner'].has_access('write'))
+env.transaction.invalidate_ormcache()
+tz = env(context={'tz': 'Europe/Brussels'}).tz
+print(datetime.datetime(2026, 10, 7, 9, 0, tzinfo=tz))
+acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+acme.image_1920 = BinaryBytes(acme.image_128.content)
+print(acme.image_1920.content[:8])
+att = env['ir.attachment'].create({'name': 'note.txt', 'raw': b'Bonjour'})
+print(att.file_size, att.raw.content)
+print(env['sale.order']._read_group([('state', '=', 'sale')], ['partner_id'], ['amount_untaxed:sum'])[:2])
+print(env['res.partner'].search_count(Domain('id', '!=', 1)))
+print(env['blog.post'].search_count([('published_date', '!=', False)]))
+env.cr.rollback()</code></pre>
+<div class="out">http://localhost:9099
+True
+2026-10-07 09:00:00+02:00
+b'\x89PNG\r\n\x1a\n'
+7 b'Bonjour'
+[(res.partner(8,), 2947.5), (res.partner(11,), 23963.0)]
+42
+7</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Écrit pour la 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>env.registry.clear_cache()</code></td><td><code>env.transaction.invalidate_ormcache()</code></td></tr>
+                        <tr><td><code>ICP.get_param('cle')</code>, <code>ICP.set_param('cle', v)</code></td><td>typé : <code>get_str</code>, <code>get_int</code>, <code>get_float</code>, <code>get_bool</code> ; <code>set_str</code>, <code>set_int</code>, <code>set_float</code>, <code>set_bool</code></td></tr>
+                        <tr><td><code>check_access_rights('write')</code>, <code>check_access_rule('write')</code></td><td><code>has_access('write')</code> → booléen ; <code>check_access('write')</code> → lève <code>AccessError</code></td></tr>
+                        <tr><td><code>env.tz.localize(dt)</code>, <code>tz.zone</code>, <code>pytz.timezone(...)</code></td><td><code>dt.replace(tzinfo=env.tz)</code> ; <code>tz.key</code> ; <code>zoneinfo.ZoneInfo(...)</code></td></tr>
+                        <tr><td><code>rec.image_1920 = base64.b64encode(octets)</code></td><td><code>rec.image_1920 = BinaryBytes(octets)</code></td></tr>
+                        <tr><td><code>read_group(dom, ['amount'], ['partner_id'], lazy=False)</code></td><td><code>_read_group(dom, ['partner_id'], ['amount:sum'])</code></td></tr>
+                        <tr><td><code>('id', '&lt;&gt;', 1)</code></td><td><code>('id', '!=', 1)</code> ou <code>Domain('id', '!=', 1)</code></td></tr>
+                        <tr><td><code>blog.post.post_date</code></td><td><code>published_date</code> ; <code>publish_on</code> pour une date de publication programmée</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Deux de ces corrections demandent plus qu'un renommage. <code>pytz</code> a quitté les dépendances
+                    d'Odoo 20 : il peut encore être installé sur ta machine (il l'était ici), mais plus rien ne le
+                    garantit sur un serveur neuf, et les fuseaux qu'Odoo te donne sont des <code>ZoneInfo</code>. Et
+                    le <code>read_group</code> d'Odoo 20 est une autre méthode sous le même nom : l'article
+                    <a href="/blog/developpement-odoo-2/read-group-odoo-20-270">read_group en Odoo 20</a> détaille la
+                    réécriture.</p>
+
+                <div class="pitfall-box">
+                    <h4><code>_force_unlink</code> : l'erreur est la bonne</h4>
+                    <p>Un module 19 qui supprimait une commande confirmée avec
+                        <code>with_context(_force_unlink=True).unlink()</code> reçoit désormais le refus normal :</p>
+<div class="out">UserError: Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée. Vous devez l'annuler au préalable.</div>
+                    <p>Le drapeau ne saute plus les gardes de suppression. Fais ce que dit le message (annuler, puis
+                        supprimer) ; le détail est dans
+                        <a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. SILENCIEUSES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les pannes silencieuses : aucune erreur, résultat faux</h2>
+
+                <p>Une fois ses droits convertis, le module s'installe sans un avertissement, alors que ses gabarits
+                    n'ont pas été touchés. Le problème n'apparaît qu'au rendu. Le gabarit <code>fiche</code> appelle
+                    <code>carte</code> (qui affiche le client avec <code>t-esc</code>) et <code>adresse</code> (qui
+                    affiche une ville passée par un <code>t-set</code> dans le corps du <code>t-call</code>, comme en
+                    19) :</p>
+<pre class="language-markup"><code class="language-markup">&lt;template id="carte"&gt;
+    &lt;p class="carte"&gt;Client : &lt;t t-esc="client"/&gt;&lt;/p&gt;
+&lt;/template&gt;
+&lt;template id="adresse"&gt;
+    &lt;p class="adresse"&gt;Ville : &lt;t t-out="ville"/&gt;&lt;/p&gt;
+&lt;/template&gt;
+&lt;template id="fiche"&gt;
+    &lt;div class="fiche"&gt;
+        &lt;t t-call="mon_module.carte"/&gt;
+        &lt;t t-call="mon_module.adresse"&gt;
+            &lt;t t-set="ville" t-value="'Bruxelles'"/&gt;
+        &lt;/t&gt;
+    &lt;/div&gt;
+&lt;/template&gt;</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : le rendu de mon_module.fiche avec client Acme Corporation affiche un WARNING Unknown directives or unused attributes: {'t-esc'} puis Client : vide et Ville : vide ; ir.attachment créé avec datas écrit WARNING UserWarning: Use raw, datas has beeen removed et att.file_size, att.raw vaut (0, Binary(b'', filename='')) ; base64.b64decode(acme.image_128) rend des octets sans sens alors que acme.image_128.content commence par PNG"/>
+                    <figcaption>Trois résultats faux sans exception : un rendu vide, une pièce jointe vide, une image décodée en octets sans sens (pile d'appels de l'avertissement retirée).</figcaption>
+                </figure>
+
+                <ul>
+                    <li><strong><code>t-esc</code> (et <code>t-raw</code>)</strong> : Odoo 20 ne les connaît plus. Le
+                        journal écrit un WARNING <code>Unknown directives or unused attributes: {'t-esc'}</code>, au
+                        rendu seulement, et la valeur n'est pas affichée. Écrire <code>t-out</code>.</li>
+                    <li><strong><code>t-set</code> dans le corps d'un <code>t-call</code></strong> : la variable n'arrive
+                        plus au gabarit appelé, et cette fois <strong>aucune</strong> ligne dans le journal. La passer en
+                        attribut du <code>t-call</code> (une expression : <code>ville="'Bruxelles'"</code>, ou une chaîne
+                        de format : <code>ville.f="Bruxelles"</code>).</li>
+                    <li><strong><code>datas=</code></strong> : la pièce jointe est créée, vide (0 octet), avec un
+                        <code>UserWarning</code> facile à rater. Écrire <code>raw=</code> avec les octets bruts, sans
+                        base64.</li>
+                    <li><strong><code>base64.b64decode(rec.image_1920)</code></strong> : le champ renvoie maintenant les
+                        octets du fichier, pas du base64. Le décodage ne lève rien (les caractères invalides sont
+                        ignorés) et rend des octets sans sens. Lire <code>rec.image_1920.content</code>.</li>
+                </ul>
+
+                <p>Après correction (<code>t-out</code> et attribut), et mise à jour du module, le même rendu :</p>
+<pre class="language-markup"><code class="language-markup">&lt;t t-call="mon_module.carte"/&gt;
+&lt;t t-call="mon_module.adresse" ville="'Bruxelles'"/&gt;</code></pre>
+<div class="out">&lt;div class="fiche"&gt;
+        &lt;p class="carte"&gt;Client : Acme Corporation&lt;/p&gt;
+        &lt;p class="adresse"&gt;Ville : Bruxelles&lt;/p&gt;
+        &lt;/div&gt;</div>
+
+                <h3 class="h5 mt-4">Trois autres silences</h3>
+                <p><strong><code>force_company</code></strong> : la clé de contexte est ignorée, sans même un
+                    avertissement (la 19 en écrivait encore un).</p>
+<pre class="language-python"><code class="language-python">other = env['res.company'].search([('name', '=', 'My Company (Chicago)')])
+P = env['res.partner']
+print(env.company.name)
+print(P.with_context(force_company=other.id).env.company.name)
+print(P.with_company(other).env.company.name)</code></pre>
+<div class="out">My Company (San Francisco)
+My Company (San Francisco)
+My Company (Chicago)</div>
+                <p>Seul <code>with_company</code> change de société ; voir
+                    <a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">l'article sur l'environnement</a>.</p>
+
+                <p><strong><code>copy_translations</code></strong> : la méthode n'existe plus
+                    (<code>hasattr(env['product.template'], 'copy_translations')</code> vaut <code>False</code>). Une
+                    surcharge dans ton modèle reste une méthode ordinaire que personne n'appelle : la logique va dans
+                    <code>copy_data</code>.</p>
+
+                <p><strong>Le serveur injoignable</strong> : lancé sans <code>http_interface</code>, Odoo 20 n'écoute
+                    que sur la machine elle-même. Le journal le dit, mais il faut le lire :</p>
+<div class="out">2026-10-07 08:32:48,207 1038323 INFO ? odoo.service.server: HTTP service running on 127.0.0.1:9140</div>
+                <p>Depuis le réseau, <code>curl http://&lt;ip-du-serveur&gt;:9140/web/login</code> échoue (code
+                    <code>000</code>, connexion refusée). Sur un serveur derrière Nginx, c'est le bon réglage ; pour une
+                    instance jointe directement par son IP, écrire <code>http_interface = 0.0.0.0</code> dans le fichier
+                    de configuration (voir <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">l'installation
+                    sur un serveur</a>).</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Chacun de ces silences était un comportement accepté en 19 : <code>t-esc</code> y était compilé
+                        comme <code>t-out</code> ; les <code>t-set</code> du corps d'un <code>t-call</code> étaient
+                        recopiés dans les valeurs du gabarit appelé ; <code>ir.attachment</code> avait un champ
+                        <code>datas</code> en base64 et les champs <code>Binary</code> rendaient du base64 ;
+                        <code>force_company</code> déclenchait un <code>DeprecationWarning</code> ;
+                        <code>copy</code> appelait <code>copy_translations</code> ; et <code>--http-interface</code>
+                        valait <code>0.0.0.0</code>. Rien de tout cela ne lève d'erreur en 20 : c'est pour ça qu'un
+                        module « qui s'installe » n'est pas un module porté.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. AVERTISSEMENTS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les avertissements : ça marche encore, plus pour longtemps</h2>
+
+                <p>Certains appels 19 fonctionnent toujours mais écrivent un WARNING dans le journal, au niveau par
+                    défaut :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import ormcache
+P = env['res.partner']
+print(P.browse(10).union(P.browse(11)))</code></pre>
+<div class="out">2026-10-07 08:40:09,121 1059653 WARNING ma_base py.warnings: &lt;string&gt;:1: DeprecationWarning: Since 20.0 import ormcache from odoo.api
+2026-10-07 08:40:09,121 1059653 WARNING ma_base py.warnings: …/odoo/orm/models.py:6094: UserWarning: Since 20.0, use union() on an empty recordset
+res.partner(10, 11)</div>
+                <ul>
+                    <li><code>from odoo.api import ormcache</code> à la place de <code>odoo.tools</code>.</li>
+                    <li><code>env['res.partner'].union([a, b])</code> : un seul itérable, sur un recordset vide
+                        (<a href="/blog/developpement-odoo-2/operations-ensemble-recordsets-odoo-20-276">les opérations
+                        d'ensemble</a>). Python n'affiche chaque avertissement qu'une fois par processus : une boucle
+                        qui l'appelle mille fois n'en laisse qu'un.</li>
+                    <li>Un client externe en XML-RPC laisse à chaque appel :
+<div class="out">2026-10-07 08:32:57,428 1038323 WARNING ma_base odoo.addons.rpc.controllers.xmlrpc: The /xmlrpc, /xmlrpc/2 and /jsonrpc endpoints are deprecated in Odoo 19 and scheduled for removal in Odoo 22. Please report the problem to the client making the request.</div>
+                        Le message existait déjà en 19 : rien ne casse en 20, mais c'est le moment de
+                        <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">passer à l'API JSON-2</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. MÉTHODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Un ordre de portage qui ne laisse rien passer</h2>
+                <ol>
+                    <li>Copier le module sur une branche dédiée, faire l'inventaire (la recherche de la section 2).</li>
+                    <li><code>upgrade_code</code>, script par script, avec <code>--glob</code> ; relire le diff, surtout
+                        le fichier de droits.</li>
+                    <li>Corriger à la main ce que l'outil ne fait pas : imports (<code>odoo.osv</code>,
+                        <code>ormcache</code>), <code>t-esc</code>, <code>datas</code>, <code>Binary</code>, pytz,
+                        <code>get_param</code>, <code>read_group</code>, domaines.</li>
+                    <li>Passer la version du manifeste en <code>20.0.1.0.0</code> et installer sur une base de test :
+                        lire le journal en entier (<code>WARNING</code>, <code>ERROR</code>, <code>Unknown
+                        directives</code>), pas seulement le code de sortie.</li>
+                    <li>Ouvrir chaque écran et chaque rapport du module, et tester les droits avec un utilisateur non
+                        administrateur.</li>
+                    <li>Lancer les tests du module (<a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">tests
+                        automatisés en Odoo 20</a>).</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Une version de manifeste <code>19.0</code> rend le module non installable avec un code de sortie 0 : lire le journal.</li>
+                    <li>À l'installation, les erreurs arrivent une par une : <code>odoo.osv</code>, <code>ir.model.access</code>, <code>ir.rule</code>.</li>
+                    <li><code>odoo-bin upgrade_code</code> convertit les droits et les <code>t-call</code>, à condition de le limiter au module avec <code>--glob</code> ; le reste se fait à la main.</li>
+                    <li>À l'exécution : <code>clear_cache</code>, <code>get_param</code>, <code>check_access_rights</code>, <code>localize</code>, base64 dans un <code>Binary</code>, <code>read_group</code>, <code>&lt;&gt;</code>, <code>post_date</code> lèvent une erreur au premier appel.</li>
+                    <li>Les pannes muettes (<code>t-esc</code>, <code>t-set</code> dans <code>t-call</code>, <code>datas=</code>, <code>b64decode</code>, <code>force_company</code>, <code>copy_translations</code>, droits convertis, <code>127.0.0.1</code>) ne se voient qu'au rendu, à l'écran ou avec un autre utilisateur.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque message reproduit le 07/10/2026 sur Odoo 20.0 (PostgreSQL 16), base de
+                    démonstration avec Ventes, Inventaire et Blog, par l'installation d'un module écrit pour la 19 puis
+                    par <code>odoo-bin shell</code> ; serveur local pour le journal HTTP et XML-RPC. Comparaison avec la
+                    branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/module.py" target="_blank" rel="noopener"><code>odoo/modules/module.py</code></a> : contrôle de la version du manifeste</li>
+                    <li><a href="https://github.com/odoo/odoo/tree/20.0/odoo/upgrade_code" target="_blank" rel="noopener"><code>odoo/upgrade_code/</code></a> : <code>19.1-00-t-call.py</code>, <code>19.4-00-ir-access.py</code>, <code>owl3-migration.py</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_qweb.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_qweb.py</code></a> : directives inconnues, <code>t-call</code> et ses attributs</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_attachment.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_attachment.py</code></a> : <code>datas</code> retiré</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_binary.py" target="_blank" rel="noopener"><code>odoo/orm/fields_binary.py</code></a>, <a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/environments.py" target="_blank" rel="noopener"><code>odoo/orm/environments.py</code></a>, <a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a></li>
+                    <li><a href="https://github.com/odoo/odoo/tree/19.0" target="_blank" rel="noopener">Branche 19.0</a> : <code>ir.model.access</code>, <code>ir.rule</code>, <code>get_param</code>, <code>clear_cache</code>, <code>post_date</code>, <code>t-esc</code>, pytz dans <code>requirements.txt</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La vue d'ensemble, JavaScript et OWL 3 compris.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le modèle <code>ir.access</code>, permissions et restrictions.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/recordsets-filtered-mapped-sorted-odoo-20-271">Les recordsets en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0"><code>filtered</code>, <code>mapped</code>, <code>sorted</code>, <code>grouped</code> en Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a></h5>
+                            <p class="small text-muted mb-0">Lire vite en Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Modules en ligne de commande</a></h5>
+                            <p class="small text-muted mb-0">Installer, mettre à jour, désinstaller un module Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à reproduire chaque message de cette page.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

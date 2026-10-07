@@ -1,0 +1,535 @@
+<!--
+Article — Réécrire un script XML-RPC en JSON-2 pour Odoo 20, ligne à ligne
+Série « Dépanner Odoo 20 » (article autonome, satellite de l'article 273 JSON-2)
+Date : 2026-10-07
+Slug : xmlrpc-vers-json-2-odoo-20
+Meta : Un script XML-RPC Odoo réécrit en JSON-2 ligne à ligne : authenticate, execute_kw, create, write, erreurs, et les clés API sans portée venues de la 19.
+Mot-clé cible : odoo xmlrpc python
+Catégorie : Développement Odoo
+Tags : intermediaire, integrations, guide, community
+Temps de lecture : ~11 minutes
+Preuves (base de test locale copiée de la base technique, sale_management + stock, démo native fr_FR, Odoo 20.0, PG 16,
+serveur lancé sur le port 9138, appels HTTP réels le 07/10/2026) :
+- Sondes : docs/blog-odoo20/captures-base-*/a2-xmlrpc-json2/ — sync_xmlrpc.py et sync_json2.py (les deux scripts de
+  l'article, exécutés tels quels), f02_runs.txt (sorties), f02_log.txt (journal : 9 WARNING xmlrpc, unlink XML-RPC en
+  HTTP 200, unlink JSON-2 en 422) ; p1_keys.py (clé rpc + clé dont scope est mis à NULL par UPDATE SQL) ;
+  p3_pieges.py (clé rpc comme mot de passe XML-RPC → uid 2 ; clé NULL → authenticate False, execute_kw Fault 3 Access
+  Denied, JSON-2 401 Invalid apikey ; vals_list dict → [49] ; search_read sans fields → 174 clés dans les deux
+  protocoles ; read sans context → « Storage Box » dans les deux ; context_get lang fr_FR ; args → 422 missing domain /
+  500 TypeError _read_format ; action_archive XML-RPC → Fault 1 « cannot marshal None », enregistrement archivé quand
+  même ; action_unarchive JSON-2 → null ; read sans ids → []) ; p4_figs.sh (f03_cle19.txt) ; p5_remede.py (UPDATE scope
+  = 'rpc' → clé acceptée, HTTP 200) ; p6_demo_key.py (403 AccessError / Fault 4 ; 404 modèle et méthode / Fault 2 et 1).
+- odoo/addons/rpc/controllers/json2.py:43-85 (route, ids/context, @api.model + ids → 422, signature.bind → 422, recordset → ids) ;
+  odoo/addons/rpc/controllers/xmlrpc.py:25-29 (codes de fault 1-4), :116 OdooMarshaller(allow_none=False).
+- odoo/odoo/service/model.py:49-55 (context du client seulement) ; odoo/odoo/addons/base/models/res_users.py:390-391 (mot de passe
+  XML-RPC = clé API, scope='rpc'), :1546 scope required, :1557 colonne scope varchar sans NOT NULL, :1753-1766
+  _check_apikey_credentials « AND scope = %(scope)s ». Aucun code de conversion des clés à portée vide dans odoo/ (grep).
+- 19.0 publique (commit 9db68e615a, 07/10/2026, raw.githubusercontent.com) : res_users.py:388-389 (même chemin mot de
+  passe → clé), :1527 scope non obligatoire, :1593 « If None, the key will give access to any rpc », :1743
+  « AND (scope IS NULL OR scope = %(scope)s) », :1820 assistant _generate(None, …). xmlrpc.py 19 :114 allow_none=False (idem).
+Captures : content/blog/screenshots/xmlrpc-vers-json-2-odoo-20/ (01 pré-rendu des deux scripts réels, 02-03 sorties réelles).
+Clés créées pour l'article révoquées à la fin.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Réécrire un script XML-RPC en JSON-2 pour Odoo 20, ligne à ligne</h1>
+                <p class="lead mt-3 text-white">Un script Python d'intégration classique (<code>authenticate</code>,
+                    <code>execute_kw</code>, lecture, création, modification, confirmation d'une commande) et sa
+                    traduction en JSON-2, appel par appel, exécutées toutes les deux sur la même base Odoo 20. Avec les
+                    pièges que la traduction fait apparaître, et le cas des clés API créées en 19.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · parcours <strong>Intégrations</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Traduire</h4>
+                        <p>Passer chaque <code>execute_kw</code> en appel JSON-2 : arguments positionnels → nommés,
+                            <code>ids</code>, <code>context</code>, valeurs de retour.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Éviter les pièges</h4>
+                        <p><code>create</code> qui renvoie une liste, <code>read</code> sans <code>ids</code> qui
+                            renvoie <code>[]</code>, <code>None</code> que XML-RPC ne sait pas transporter, la langue.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Reprendre les clés 19</h4>
+                        <p>Pourquoi une clé API sans portée est refusée par Odoo 20, même par l'ancien script, et
+                            comment les repérer.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une instance Odoo 20 Community avec Ventes, sa base de démonstration, et une clé API à
+                            portée <code>rpc</code>. La création de la clé, l'avertissement de dépréciation et le
+                            détail des codes d'erreur sont dans
+                            <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié : passer à l'API JSON-2 d'Odoo 20</a> ;
+                            cet article part de là et se concentre sur la réécriture.</li>
+                        <li>Python 3, bibliothèque standard seulement (<code>xmlrpc.client</code> d'un côté,
+                            <code>urllib</code> et <code>json</code> de l'autre).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE SCRIPT DE DÉPART ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le script de départ, en XML-RPC</h2>
+
+                <p>Un script d'intégration comme il en existe des milliers : il s'authentifie, lit trois sociétés, crée
+                    un client et le modifie, crée un devis d'une ligne et le confirme, puis tente une suppression
+                    interdite pour montrer comment il récupère une erreur. Les paramètres de connexion viennent de
+                    variables d'environnement : le mot de passe n'est pas dans le code.</p>
+<pre class="language-python"><code class="language-python">import os
+import xmlrpc.client
+
+URL = os.environ["ODOO_URL"]                      # http://localhost:8069
+DB = os.environ["ODOO_DB"]                        # ma_base
+LOGIN = os.environ["ODOO_LOGIN"]                  # admin
+PASSWORD = os.environ["ODOO_PASSWORD"]            # mot de passe ou clé API
+
+common = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/common")
+uid = common.authenticate(DB, LOGIN, PASSWORD, {})
+models = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object")
+
+def call(model, method, args, kwargs=None):
+    return models.execute_kw(DB, uid, PASSWORD, model, method, args, kwargs or {})
+
+# 1. Lire : trois sociétés
+for p in call("res.partner", "search_read",
+              [[("is_company", "=", True)]], {"fields": ["name", "city"], "limit": 3}):
+    print(p["id"], p["name"], p["city"])
+
+# 2. Créer un client, puis le modifier
+partner_id = call("res.partner", "create", [{"name": "Client importé", "city": "Lyon"}])
+call("res.partner", "write", [[partner_id], {"phone": "+33 4 00 00 00 00"}])
+
+# 3. Un devis d'une ligne, confirmé
+[product_id] = call("product.product", "search", [[("default_code", "=", "E-COM08")]])
+order_id = call("sale.order", "create", [{
+    "partner_id": partner_id,
+    "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 4})],
+}])
+call("sale.order", "action_confirm", [[order_id]])
+print(call("sale.order", "read", [[order_id]],
+           {"fields": ["name", "state", "amount_total"], "context": {"lang": "fr_FR"}}))
+
+# 4. Une erreur métier : supprimer la commande confirmée
+try:
+    call("sale.order", "unlink", [[order_id]], {"context": {"lang": "fr_FR"}})
+except xmlrpc.client.Fault as exc:
+    print("Fault", exc.faultCode, exc.faultString.splitlines()[0])</code></pre>
+
+                <p>Sur Odoo 20, il tourne sans changement (sortie en partie 3). Le serveur, lui, écrit un
+                    <code>WARNING</code> de dépréciation par requête : neuf pour ce script, une par
+                    <code>authenticate</code> ou <code>execute_kw</code>. Autre détail du journal, qui compte pour la
+                    suite : toutes les requêtes XML-RPC sont notées <code>200</code>, y compris la suppression refusée.
+                    L'erreur voyage dans le corps de la réponse, pas dans le code HTTP.</p>
+<div class="out">… "POST /xmlrpc/2/object#sale.order.unlink HTTP/1.1" 200 372 19 0.005 0.012 rw
+… "POST /json/2/sale.order/unlink HTTP/1.1" 422 2592 18 0.005 0.008 rw</div>
+                <p>La seconde ligne est la même suppression faite par la version JSON-2 : là, l'échec se voit dans le
+                    journal d'accès, et dans n'importe quel outil de supervision HTTP.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LA VERSION JSON-2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La même chose en JSON-2</h2>
+
+                <p>La structure ne bouge pas : une fonction <code>call()</code> et les quatre blocs. Ce qui change :
+                    l'authentification disparaît au profit d'une clé envoyée à chaque requête, et
+                    <code>call()</code> prend des arguments nommés au lieu de listes.</p>
+<pre class="language-python"><code class="language-python">import json
+import os
+import urllib.error
+import urllib.request
+
+URL = os.environ["ODOO_URL"]                      # http://localhost:8069
+DB = os.environ["ODOO_DB"]                        # ma_base
+KEY = os.environ["ODOO_KEY"]                      # clé API à portée rpc
+
+class OdooError(Exception):
+    def __init__(self, status, body):
+        super().__init__(f"{status} {body['name']}: {body['message']}")
+        self.status, self.body = status, body
+
+def call(model, method, **params):
+    request = urllib.request.Request(
+        f"{URL}/json/2/{model}/{method}", method="POST",
+        data=json.dumps(params).encode(),
+        headers={"Authorization": f"bearer {KEY}", "X-Odoo-Database": DB,
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise OdooError(exc.code, json.load(exc)) from None
+
+# 1. Lire : trois sociétés
+for p in call("res.partner", "search_read",
+              domain=[("is_company", "=", True)], fields=["name", "city"], limit=3):
+    print(p["id"], p["name"], p["city"])
+
+# 2. Créer un client, puis le modifier
+[partner_id] = call("res.partner", "create", vals_list=[{"name": "Client importé", "city": "Lyon"}])
+call("res.partner", "write", ids=[partner_id], vals={"phone": "+33 4 00 00 00 00"})
+
+# 3. Un devis d'une ligne, confirmé
+[product_id] = call("product.product", "search", domain=[("default_code", "=", "E-COM08")])
+[order_id] = call("sale.order", "create", vals_list=[{
+    "partner_id": partner_id,
+    "order_line": [(0, 0, {"product_id": product_id, "product_uom_qty": 4})],
+}])
+call("sale.order", "action_confirm", ids=[order_id])
+print(call("sale.order", "read", ids=[order_id],
+           fields=["name", "state", "amount_total"], context={"lang": "fr_FR"}))
+
+# 4. Une erreur métier : supprimer la commande confirmée
+try:
+    call("sale.order", "unlink", ids=[order_id], context={"lang": "fr_FR"})
+except OdooError as exc:
+    print(exc.status, exc.body["name"], exc.body["message"])</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Les deux scripts côte à côte, lignes alignées : à gauche sync_xmlrpc.py, à droite sync_json2.py ; les lignes modifiées sont surlignées en rouge à gauche et en vert à droite : imports, variables LOGIN et PASSWORD remplacées par KEY, authenticate et ServerProxy remplacés par la classe OdooError, la fonction call avec urllib, et chaque appel où les listes d'arguments deviennent des arguments nommés domain, vals_list, ids, vals, fields, context"/>
+                    <figcaption>Les deux scripts alignés : les commentaires, les boucles et les valeurs ne changent pas ; seuls la connexion et la façon de passer les arguments changent.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LIGNE À LIGNE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ligne à ligne : ce qui change, et pourquoi</h2>
+
+                <table class="tmc">
+                    <thead><tr><th>XML-RPC</th><th>JSON-2</th><th>À retenir</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>LOGIN</code>, <code>PASSWORD</code></td><td><code>KEY</code></td><td>Une clé API remplace le couple identifiant / mot de passe ; c'est elle qui désigne l'utilisateur.</td></tr>
+                        <tr><td><code>uid = common.authenticate(…)</code></td><td>rien</td><td>Pas d'étape de connexion, pas d'<code>uid</code> à transporter. Pour savoir qui est derrière la clé : <code>call("res.users", "context_get")</code> → <code>{'lang': 'fr_FR', 'tz': 'Europe/Brussels', 'uid': 2}</code>.</td></tr>
+                        <tr><td><code>execute_kw(DB, uid, PASSWORD, modèle, méthode, args, kwargs)</code></td><td><code>POST /json/2/&lt;modèle&gt;/&lt;méthode&gt;</code>, corps JSON</td><td>La base part dans l'en-tête <code>X-Odoo-Database</code>, la clé dans <code>Authorization: bearer</code>.</td></tr>
+                        <tr><td><code>[[domaine]], {"fields": …, "limit": 3}</code></td><td><code>domain=…, fields=…, limit=3</code></td><td>Plus d'arguments positionnels : chaque argument porte le nom du paramètre Python de la méthode (<code>domain</code>, <code>vals_list</code>, <code>vals</code>…).</td></tr>
+                        <tr><td><code>"create", [{valeurs}]</code> → un id</td><td><code>vals_list=[{valeurs}]</code> → <code>[id]</code></td><td>Le résultat devient une <strong>liste</strong> d'ids : d'où <code>[partner_id] = …</code>.</td></tr>
+                        <tr><td><code>"write", [[id], {valeurs}]</code></td><td><code>ids=[id], vals={valeurs}</code></td><td>Les enregistrements visés sortent des arguments et passent dans la clé réservée <code>ids</code>.</td></tr>
+                        <tr><td><code>"action_confirm", [[id]]</code></td><td><code>ids=[id]</code></td><td>Un bouton d'Odoo s'appelle comme <code>write</code> : <code>ids</code> et rien d'autre.</td></tr>
+                        <tr><td><code>(0, 0, {…})</code> dans <code>order_line</code></td><td>identique</td><td>Les tuples partent en listes JSON et Odoo les accepte ; même syntaxe de commandes One2many que dans l'ORM.</td></tr>
+                        <tr><td><code>{"context": {"lang": "fr_FR"}}</code></td><td><code>context={"lang": "fr_FR"}</code></td><td>Clé réservée, comme <code>ids</code>.</td></tr>
+                        <tr><td><code>except xmlrpc.client.Fault</code></td><td><code>except OdooError</code> (code HTTP)</td><td>Correspondances constatées : Fault 2 <code>UserError</code> → <code>422</code> ; Fault 3 <code>Access Denied</code> → <code>401</code> ; Fault 4 <code>AccessError</code> → <code>403</code> ; modèle ou méthode inconnus (Fault 2 ou 1) → <code>404</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les deux scripts, lancés l'un après l'autre sur la même base de démonstration :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : python3 sync_xmlrpc.py affiche 10 Acme Corporation Pleasant Hill, 16 Azure Interior Fremont, 11 Gemini Furniture Serravalle, la commande S00027 à l'état sale pour 72.68, puis Fault 2 Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée ; python3 sync_json2.py affiche les mêmes sociétés, la commande S00028 à l'état sale pour 72.68, puis 422 odoo.exceptions.UserError et le même message"/>
+                    <figcaption>Mêmes données, même commande (4 boîtes de rangement, 72,68 taxes comprises), même message d'erreur ; seule la forme de l'erreur change : <code>Fault 2</code> d'un côté, <code>422</code> et le nom de l'exception de l'autre.</figcaption>
+                </figure>
+
+                <p>La correspondance tient parce qu'Odoo appelle, dans les deux cas, la même méthode Python avec les
+                    mêmes valeurs. JSON-2 vérifie simplement les noms avant l'appel : il lie le corps de la requête à la
+                    signature de la méthode et répond <code>422</code> si ça ne colle pas
+                    (<code>addons/rpc/controllers/json2.py</code>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LES PIÈGES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les pièges de la traduction</h2>
+
+                <h3><code>read</code> sans <code>ids</code> : une liste vide, sans erreur</h3>
+                <p>En XML-RPC, un <code>read</code> sans ids échouait bruyamment (<code>Fault 1 … IndexError: list
+                    index out of range</code>). En JSON-2, <code>ids</code> est facultatif (il vaut une liste vide par défaut) : l'appel
+                    réussit et ne lit rien.</p>
+<pre class="language-python"><code class="language-python">call("res.partner", "read", fields=["name"])</code></pre>
+<div class="out">[]</div>
+                <p>Même chose pour <code>write</code> ou un bouton : sans <code>ids</code>, <code>write</code> et
+                    <code>action_confirm</code> répondent <code>true</code> en <code>200</code>, et rien n'est modifié. Quand un appel « marche » mais n'a aucun effet, vérifier <code>ids</code> en premier.</p>
+
+                <h3>Les arguments positionnels ne passent plus</h3>
+                <p>La tentation est de garder les listes d'<code>execute_kw</code> dans une clé <code>args</code>.
+                    JSON-2 ne connaît pas cette clé : il la prend pour un argument nommé <code>args</code>.</p>
+<div class="out">search      → 422 werkzeug.exceptions.UnprocessableEntity : missing a required argument: 'domain'
+search_read → 500 builtins.TypeError : BaseModel._read_format() got an unexpected keyword argument 'args'</div>
+                <p><code>search</code> a une signature fermée, l'erreur est claire. <code>search_read</code> accepte
+                    des arguments libres qu'il transmet plus loin : l'erreur arrive tard, en <code>500</code>. Pour
+                    trouver le bon nom d'un argument, lire la signature de la méthode dans le code d'Odoo
+                    : <code>search_read(self, domain, fields, offset, limit, order, **read_kwargs)</code>.</p>
+
+                <h3><code>create</code> renvoie une liste</h3>
+                <p>En XML-RPC, <code>create</code> appelé avec un seul dictionnaire renvoyait un entier. En JSON-2, il
+                    renvoie la liste des ids, même pour un seul enregistrement, et même si tu passes un dictionnaire
+                    seul au lieu d'une liste (<code>vals_list={"name": …}</code> → <code>[49]</code>). Un
+                    <code>partner_id = call(…, "create", …)</code> recopié tel quel donne une liste, que le
+                    <code>write</code> suivant enveloppe dans une autre liste. Déballer le résultat :
+                    <code>[partner_id] = …</code>.</p>
+
+                <h3>Une méthode qui renvoie <code>None</code></h3>
+                <p>XML-RPC ne sait pas transporter <code>None</code> : le serveur Odoo encode ses réponses avec
+                    <code>allow_none=False</code> (<code>addons/rpc/controllers/xmlrpc.py</code>). Appeler par exemple
+                    <code>action_archive</code> sur un contact donne :</p>
+<div class="out">Fault 1 … TypeError: cannot marshal None unless allow_none is enabled</div>
+                <p>Le piège est que l'archivage, lui, est bien fait : relu ensuite, le contact a
+                    <code>active</code> à <code>False</code>. Le client reçoit une erreur pour une opération réussie.
+                    En JSON-2, la même méthode renvoie <code>null</code>, en <code>200</code>. Si ton ancien script
+                    entourait certains appels d'un <code>try/except Fault: pass</code> pour cette raison, la
+                    réécriture permet de les retirer.</p>
+
+                <h3>La langue et les champs : rien de nouveau, mais à corriger au passage</h3>
+                <ul>
+                    <li><strong>Sans <code>context</code>, les deux protocoles répondent en anglais.</strong>
+                        L'article de la commande (id 21) se lit « Storage Box » en XML-RPC comme en JSON-2, alors que
+                        l'utilisateur est en français : Odoo n'applique que le contexte envoyé par le client. La
+                        réécriture est le bon moment pour ajouter <code>context={"lang": "fr_FR"}</code> là où un
+                        libellé ou un message d'erreur est affiché.</li>
+                    <li><strong><code>fields</code> n'est pas obligatoire</strong>, mais sans lui
+                        <code>search_read</code> renvoie tous les champs : 174 clés pour un seul contact, dans les deux
+                        protocoles. Toujours lister les champs utiles.</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4>Chaque requête est sa propre transaction</h4>
+                    <p>Comme avec <code>execute_kw</code>, chaque appel JSON-2 est validé ou annulé seul. Dans le
+                        script, le client et la commande restent créés quand la suppression échoue. Une suite d'appels
+                        qui doit réussir ou échouer en bloc relève d'une méthode côté serveur (un module), pas d'une
+                        suite de requêtes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. LES CLÉS DE LA 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les clés API créées en 19</h2>
+
+                <p>Beaucoup de scripts XML-RPC n'utilisent déjà plus de mot de passe : Odoo 19 acceptait déjà
+                    une clé API à la place de <code>PASSWORD</code>, dans <code>authenticate</code> comme dans
+                    <code>execute_kw</code>. C'est toujours vrai en 20 : avec une clé à portée <code>rpc</code>, le
+                    script de la partie 1 fonctionne sans modification (<code>authenticate</code> renvoie
+                    <code>2</code>). Une clé API d'Odoo 20 peut donc servir aux deux scripts pendant la transition.</p>
+
+                <p>Le cas délicat est celui des clés <strong>créées en 19</strong>. L'assistant de la 19 les
+                    enregistrait sans portée (colonne <code>scope</code> vide). Pour reproduire une telle clé sur une
+                    base 20, une clé a été créée puis sa portée effacée en base
+                    (<code>UPDATE res_users_apikeys SET scope = NULL</code>), comme elle le serait après une migration
+                    qui la recopie telle quelle. Résultat :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : psql liste deux clés, Synchronisation boutique avec scope rpc et Clé venue de la 19 avec scope vide ; authenticate XML-RPC avec la clé sans portée renvoie False, avec la clé rpc renvoie 2 ; curl sur /json/2/res.partner/search_count avec la clé sans portée renvoie HTTP 401 Unauthorized Invalid apikey, avec la clé rpc HTTP 200 et 48"/>
+                    <figcaption>La clé sans portée est refusée partout : <code>authenticate</code> renvoie <code>False</code> en XML-RPC, <code>/json/2</code> répond <code>401 Invalid apikey</code>. La clé à portée <code>rpc</code> passe dans les deux.</figcaption>
+                </figure>
+
+                <p>Conséquence pratique : après le passage d'une base de 19 à 20, un script XML-RPC qui
+                    s'authentifie avec une clé de la 19 peut tomber <strong>avant même d'être réécrit</strong>. Il
+                    reçoit <code>uid = False</code>, puis <code>Fault 3 Access Denied</code> au premier
+                    <code>execute_kw</code> ; rien dans le message ne parle de portée.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : la portée vide n'ouvre plus rien</h4>
+                    <p>En 19, une clé sans portée donnait accès à tous les appels RPC : la vérification acceptait
+                        <code>scope IS NULL OR scope = 'rpc'</code>, et l'assistant créait justement des clés sans
+                        portée (<code>odoo/addons/base/models/res_users.py</code> de la branche 19.0). En 20, la
+                        portée est obligatoire et la vérification stricte (<code>scope = 'rpc'</code>). Le code source
+                        d'Odoo 20 ne contient aucune conversion des anciennes clés ; ce que fait le service de
+                        migration d'Odoo sur ce point n'a pas été vérifié ici. Le plus sûr est de le constater sur ta
+                        base migrée.</p>
+                </div>
+
+                <h3>Repérer et traiter les clés concernées</h3>
+                <p>Sur la base migrée, une requête suffit :</p>
+<pre class="language-sql"><code class="language-sql">SELECT k.id, k.name, u.login, k.expiration_date
+  FROM res_users_apikeys k JOIN res_users u ON u.id = k.user_id
+ WHERE k.scope IS NULL;</code></pre>
+                <ul>
+                    <li><strong>La voie propre</strong> : recréer une clé par intégration avec l'assistant d'Odoo 20
+                        (durée limitée, portée <code>rpc</code>), la déployer, puis supprimer l'ancienne depuis
+                        <strong>Mes préférences › Sécurité</strong>. C'est aussi l'occasion de remplacer les clés
+                        sans date d'expiration, fréquentes en 19.</li>
+                    <li><strong>Le dépannage</strong>, si une intégration doit repartir tout de suite :
+                        <code>UPDATE res_users_apikeys SET scope = 'rpc' WHERE scope IS NULL;</code>. Essayé sur la
+                        base de test, la clé est de nouveau acceptée (<code>200</code>). C'est une écriture SQL
+                        directe que l'interface ne propose pas, et elle conserve les durées de la 19 : à réserver à
+                        l'urgence, avant une vraie rotation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. DANS L'ORDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La migration d'un script, dans l'ordre</h2>
+                <ol>
+                    <li>Créer une clé API d'Odoo 20 (portée <code>rpc</code>) pour l'utilisateur de l'intégration et la
+                        mettre à la place du mot de passe ou de l'ancienne clé : le script XML-RPC continue de tourner,
+                        et les clés de la 19 sont hors du chemin.</li>
+                    <li>Remplacer la fonction <code>call()</code> et la connexion (partie 2), sans toucher au reste.</li>
+                    <li>Reprendre chaque appel avec le tableau de la partie 3 : arguments nommés, <code>ids</code>,
+                        <code>context</code>, déballage des <code>create</code>.</li>
+                    <li>Remplacer les <code>except Fault</code> par un traitement par code HTTP ; retirer ceux qui
+                        masquaient les retours <code>None</code>.</li>
+                    <li>Comparer les sorties des deux versions sur une base de test, comme dans la partie 3, puis
+                        vérifier qu'aucun <code>WARNING … rpc.controllers.xmlrpc</code> n'apparaît plus au journal.</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Un script XML-RPC se traduit en JSON-2 appel par appel : même méthode, mêmes valeurs, mais des arguments <strong>nommés</strong>, et <code>ids</code> et <code>context</code> à part.</li>
+                    <li>Plus d'<code>authenticate</code> : une clé API à portée <code>rpc</code> dans l'en-tête de chaque requête.</li>
+                    <li><code>create</code> renvoie une liste ; <code>read</code> ou <code>write</code> sans <code>ids</code> ne font rien, sans erreur ; <code>None</code> passe enfin.</li>
+                    <li>Les erreurs deviennent des codes HTTP : <code>422</code> pour une règle métier, <code>401</code> pour la clé, <code>403</code> pour les droits.</li>
+                    <li>Les clés API sans portée créées en 19 sont refusées par Odoo 20, en JSON-2 comme en XML-RPC : les repérer avec <code>scope IS NULL</code> et les recréer.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Les deux scripts de l'article exécutés le 07/10/2026 sur un serveur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration avec Ventes ; clés créées pour l'essai puis révoquées.
+                    Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/tree/20.0/addons/rpc/controllers" target="_blank" rel="noopener"><code>addons/rpc/controllers</code></a> : <code>json2.py</code> (arguments nommés, <code>ids</code>, <code>context</code>, contrôle de signature) et <code>xmlrpc.py</code> (codes de fault, <code>allow_none=False</code>)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/res_users.py</code></a> : clé API acceptée comme mot de passe, vérification de la portée</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/19.0/odoo/addons/base/models/res_users.py" target="_blank" rel="noopener"><code>res_users.py</code> en 19.0</a> : clés sans portée et vérification <code>scope IS NULL OR …</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié : passer à l'API JSON-2 d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La clé API pas à pas, <code>curl</code>, et tous les codes d'erreur de JSON-2.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les commandes One2many et Many2many qu'on envoie aussi par l'API.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a></h5>
+                            <p class="small text-muted mb-0">Ce que fait <code>search_read</code> côté serveur, et lire seulement les champs utiles.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

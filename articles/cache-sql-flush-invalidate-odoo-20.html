@@ -1,0 +1,653 @@
+<!--
+Article — Cache et SQL en Odoo 20 : flush, invalidate et env.cr.execute avec SQL
+Série « L'ORM Odoo 20 en pratique »
+Date : 2026-10-07
+Slug : cache-sql-flush-invalidate-odoo-20
+Meta : Cache de l'ORM Odoo 20 et SQL brut : flush_recordset avant de lire, invalidate_recordset après avoir écrit, l'objet SQL, to_flush et ce qui casse depuis la 19.
+Mot-clé cible : odoo flush recordset (odoo sql query, odoo invalidate cache, odoo env.cr.execute)
+Catégorie : Développement Odoo
+Tags : avance, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16, base de démonstration Ventes + Inventaire en français ;
+  chaque extrait exécuté dans odoo-bin shell (sondes s1 à s10), sorties collées telles quelles, rollback en fin de sonde.
+Preuves (20.0) :
+  - flush/invalidate : orm/models.py:5825 flush_model, :5839 flush_recordset, :6218 invalidate_model, :6233 invalidate_recordset
+    (flush=True par défaut), :6269 modified ; environments.py:387 invalidate_all, :410 flush_all.
+  - env.execute_query : environments.py:548-561 (flush des champs de _sql_tuple[2] puis cr.execute), execute_query_dict :564.
+  - cr.execute(SQL) : sql_db.py:398-404 (assert params is None, aucun flush) ; mogrify :392-396.
+  - SQL : tools/sql.py:38-46 identifier (assert isidentifier/IDENT_RE), :49 SQL, :112 LiteralSQL, :170-172 _sql_tuple (propriété privée), join :178.
+  - fields.py:1377 : SQL.identifier(..., to_flush=self) → c'est ainsi que search/_read_group flushent (exécuté : search et _read_group voient l'écriture en attente).
+  - Transaction.cache : environments.py:656-659 DeprecationWarning « Since 20.0 use fields method directly for cache manipulation » (exécuté).
+  - s1 : 1 requête puis 0 (env.cr.sql_log_count) ; s2 : SQL avant flush = ancienne valeur ; s3 : search flushe, cr.execute(SQL, to_flush) non,
+    env.execute_query oui ; s5 : flush=False perd l'écriture (même après flush_all) ; s6 : amount_total 2001.0 en base / 2340.25 ORM ;
+    s9 : UPDATE SQL de product_uom_qty → price_subtotal et amount_total non recalculés ; s10 : modified() → 1180.0 / 2340.25.
+  - Écriture de city sur Acme (id 10) : 24 SELECT, 0 UPDATE ; le flush écrit 1 UPDATE (4 lignes : contacts enfants synchronisés) — sonde p1_log.
+  - write sur 30 contacts puis flush_all : 1 seul UPDATE (sonde p3_verif) ; taxe de la ligne S00001 = 15 % (p3_verif) ; _read_group voit l'écriture en attente (p2_readgroup).
+  - fields.py:1377 est dans Field.to_sql (toute colonne stockée mise en requête par l'ORM).
+19.0 PUBLIQUE (raw GitHub, tête 9db68e615a, 07/10/2026) :
+  - tools/sql.py:46 class SQL ; :141-155 propriétés publiques code / params / to_flush ; :170-180 __iter__ avec DeprecationWarning
+    « Deprecated since 19.0, use code and params properties directly » → en 20 : AttributeError / TypeError (exécuté) → écart CONFIRMÉ.
+  - environments.py:515 flush_query, :527 execute_query (appelle flush_query) → 20 : flush_query absent (AttributeError exécuté) → écart CONFIRMÉ.
+  - environments.py:203-206 cache (cached_property) et :584 self.cache = Cache(self), sans avertissement → 20 : DeprecationWarning → écart CONFIRMÉ.
+  - models.py:6366/6380/6722/6737/6769 : flush_model, flush_recordset, invalidate_model, invalidate_recordset, modified — signatures identiques → PAS d'écart.
+  - sql_db.py:414-418 mogrify et :420-424 execute : assert « Unexpected parameters for SQL query object » DÉJÀ en 19 → pas d'écart.
+  - env.reset / registry.clear_cache : renvoi 275 (déjà prouvé au lot 1).
+Captures : content/blog/screenshots/cache-sql-flush-invalidate-odoo-20/ (01 schéma pré-rendu, 02-04 sorties shell)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Cache et SQL en Odoo 20 : flush, invalidate et env.cr.execute avec SQL</h1>
+                <p class="lead mt-3 text-white">L'ORM garde en mémoire ce qu'il a lu et retarde ce qu'il écrit. Tant
+                    qu'on passe par lui, c'est invisible. Dès qu'une requête SQL écrite à la main s'en mêle, elle peut
+                    lire une valeur périmée, ou laisser l'ORM en lire une. Quand faire <code>flush</code>, quand faire
+                    <code>invalidate</code>, comment écrire la requête avec l'objet <code>SQL</code>, et ce qui casse
+                    en venant de la 19.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau avancé · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Comprendre</h4>
+                        <p>Ce que contient le cache de l'ORM, pourquoi une écriture n'arrive pas tout de suite en base, et comment le mesurer avec <code>env.cr.sql_log_count</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Synchroniser</h4>
+                        <p><code>flush_recordset</code> avant une lecture SQL, <code>invalidate_recordset</code> après une écriture SQL, <code>modified</code> pour les champs calculés, <code>to_flush=</code> pour ne plus y penser.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Migrer</h4>
+                        <p><code>SQL.code</code>, <code>SQL.params</code> et <code>env.flush_query</code> disparus, <code>env.cache</code> déprécié : les messages exacts et leur remplacement.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 <strong>de test</strong> avec les données de démonstration, Ventes et
+                            Inventaire installés. Les exemples lisent et modifient le contact « Acme Corporation »
+                            (id 10) et la commande S00001 (id 1) de la démo ; chaque script se termine par
+                            <code>env.cr.rollback()</code> : rien n'est enregistré.</li>
+                        <li>La console <code>odoo-bin shell</code>, à qui chaque script est passé par <code>&lt;</code>
+                            (d'où les <code>print()</code>) : elle est présentée dans
+                            <a href="/blog/developpement-odoo-2/shell-odoo-20-272">l'article sur le shell Odoo 20</a>.</li>
+                        <li>Savoir lire une requête SQL simple (<code>SELECT</code>, <code>UPDATE</code>).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE CACHE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le cache de l'ORM : lire une fois, écrire plus tard</h2>
+
+                <p>Chaque transaction (un curseur, donc une requête HTTP ou une session de console) possède un cache
+                    de valeurs de champs, partagé par tous les recordsets qui en sont issus. Deux règles le gouvernent :</p>
+                <ul>
+                    <li><strong>En lecture</strong>, un champ absent du cache déclenche un <code>SELECT</code> qui
+                        charge d'un coup tous les champs stockés « préchargeables » du modèle, pour tous les
+                        enregistrements du lot. Les lectures suivantes ne coûtent plus rien.</li>
+                    <li><strong>En écriture</strong>, <code>record.champ = valeur</code> (ou <code>write()</code>)
+                        met la valeur dans le cache et la marque <em>en attente</em>. L'<code>UPDATE</code> part plus
+                        tard, d'un bloc : c'est le <strong>flush</strong>.</li>
+                </ul>
+                <p>Le compteur <code>env.cr.sql_log_count</code> (nombre de requêtes exécutées par ce curseur) rend la
+                    première règle visible :</p>
+<pre class="language-python"><code class="language-python">p = env['res.partner'].browse(10)
+env.invalidate_all()
+n = env.cr.sql_log_count
+print(p.name, '|', p.city)
+print('requêtes :', env.cr.sql_log_count - n)
+n = env.cr.sql_log_count
+print(p.name, '|', p.city, '|', p.email)
+print('requêtes :', env.cr.sql_log_count - n)
+p.invalidate_recordset(['city'])
+n = env.cr.sql_log_count
+print(p.city)
+print('requêtes :', env.cr.sql_log_count - n)</code></pre>
+<div class="out">Acme Corporation | Pleasant Hill
+requêtes : 1
+Acme Corporation | Pleasant Hill | acme_corp@yourcompany.example.com
+requêtes : 0
+Pleasant Hill
+requêtes : 1</div>
+                <p>Une requête pour lire le nom et la ville, aucune pour relire les deux et y ajouter l'adresse
+                    électronique : elle était dans le même <code>SELECT</code>. Après <code>invalidate_recordset</code>,
+                    la ville est oubliée et la lecture suivante retourne en base.</p>
+
+                <p>Pour l'écriture, il suffit d'observer les requêtes passées par <code>odoo.sql_db</code> au niveau
+                    <code>DEBUG</code> : <code>p.city = 'Lyon'</code> sur Acme Corporation en lance une vingtaine,
+                    toutes des <code>SELECT</code> (droits, champs liés, contacts enfants à synchroniser), et
+                    <strong>aucun</strong> <code>UPDATE</code>. L'<code>UPDATE</code> n'apparaît qu'au flush.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : à gauche le cache de la transaction (valeurs lues, écritures en attente, champs calculés à recalculer), à droite PostgreSQL. flush_recordset, flush_model et flush_all envoient les UPDATE en attente vers la base ; une lecture ORM fait un SELECT par lot ; invalidate_recordset et invalidate_model font oublier la valeur. En bas : SQL qui lit, flush avant ; SQL qui écrit, invalidate après ; search et _read_group font leur propre flush"/>
+                    <figcaption>Deux mondes qui ne se voient pas : ce que l'ORM n'a pas encore écrit, et ce que le SQL brut a écrit sans lui le dire.</figcaption>
+                </figure>
+
+                <p>Tant que tout passe par l'ORM, ce décalage est sans conséquence : avant chacune de ses propres
+                    requêtes (<code>search</code>, <code>_read_group</code>, <code>search_fetch</code>…), l'ORM écrit
+                    lui-même les champs dont la requête dépend. Le problème ne naît qu'avec le SQL écrit à la main,
+                    dans un sens ou dans l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. SQL QUI LIT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le SQL qui lit une valeur pas encore écrite : <code>flush</code></h2>
+
+                <p>Premier cas : le code modifie un enregistrement par l'ORM, puis lit la table avec
+                    <code>env.cr.execute</code>. Le curseur interroge la base, et la base ne connaît pas encore la
+                    nouvelle valeur :</p>
+<pre class="language-python"><code class="language-python">p = env['res.partner'].browse(10)
+p.city = 'Lyon'
+print('ORM :', p.city)
+env.cr.execute("SELECT city FROM res_partner WHERE id = %s", [p.id])
+print('SQL avant flush :', env.cr.fetchone())
+p.flush_recordset(['city'])
+env.cr.execute("SELECT city FROM res_partner WHERE id = %s", [p.id])
+print('SQL après flush :', env.cr.fetchone())
+env.cr.rollback()</code></pre>
+<div class="out">ORM : Lyon
+SQL avant flush : ('Pleasant Hill',)
+SQL après flush : ('Lyon',)</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : le script flush.py passé à odoo-bin shell affiche ORM : Lyon, puis SQL avant flush : ('Pleasant Hill',), puis SQL après flush : ('Lyon',)"/>
+                    <figcaption>L'ORM voit « Lyon » tout de suite ; la requête SQL voit encore « Pleasant Hill » jusqu'au <code>flush_recordset</code>.</figcaption>
+                </figure>
+
+                <p>Trois portées pour la même opération, de la plus fine à la plus large :</p>
+                <table class="tmc">
+                    <thead><tr><th>Appel</th><th>Ce qui part en base</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>records.flush_recordset(['city'])</code></td><td>au moins les champs cités de ces enregistrements, recalculs compris (sans argument : tous leurs champs en attente) ; l'ORM peut en écrire davantage dans le même <code>UPDATE</code></td></tr>
+                        <tr><td><code>env['res.partner'].flush_model(['city'])</code></td><td>au moins les champs cités, pour tous les enregistrements du modèle</td></tr>
+                        <tr><td><code>env.flush_all()</code></td><td>tout ce qui est en attente dans la transaction, recalculs compris</td></tr>
+                    </tbody>
+                </table>
+                <p>Avant une requête qui lit plusieurs tables, <code>flush_model</code> sur chacune (avec les seuls
+                    champs lus) suffit ; <code>flush_all()</code> est le filet de sécurité, plus coûteux.</p>
+
+                <h3>Les champs calculés stockés aussi attendent</h3>
+                <p>Le piège est plus sournois avec un champ calculé stocké : modifier une quantité de ligne ne recalcule
+                    pas tout de suite le total de la commande en base. L'ORM le recalcule à la lecture, en mémoire ;
+                    la colonne <code>amount_total</code> garde l'ancienne valeur jusqu'au flush :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+so = env['sale.order'].browse(1)
+line = so.order_line[0]
+print(so.name, so.amount_total, '| ligne', line.product_uom_qty, 'x', line.price_unit)
+line.product_uom_qty += 1
+print('ORM :', so.amount_total)
+print('SQL brut :', env.execute_query(SQL("SELECT amount_total FROM sale_order WHERE id = %s", so.id)))
+print('SQL to_flush :', env.execute_query(SQL("SELECT amount_total FROM sale_order WHERE id = %s", so.id,
+                                             to_flush=so._fields['amount_total'])))
+env.cr.rollback()</code></pre>
+<div class="out">S00001 2001.0 | ligne 3.0 x 295.0
+ORM : 2340.25
+SQL brut : [(2001.0,)]
+SQL to_flush : [(2340.25,)]</div>
+                <p>Une unité de plus à 295 (prix hors taxe), taxe de 15 % comprise : 2 001 + 339,25 = 2 340,25. La requête brute
+                    lit encore 2 001. La seconde déclare qu'elle dépend du champ <code>amount_total</code>
+                    (<code>to_flush=</code>) : <code>env.execute_query</code> l'écrit en base avant d'exécuter, et la
+                    lecture est juste.</p>
+
+                <h3><code>to_flush</code> : laisser la requête dire de quoi elle dépend</h3>
+                <p>C'est exactement le mécanisme qu'utilise l'ORM pour ses propres requêtes : chaque colonne stockée qu'il
+                    place dans une requête est un <code>SQL.identifier(..., to_flush=champ)</code>
+                    (<code>odoo/orm/fields.py</code>). Mais la déclaration ne sert qu'à
+                    <code>env.execute_query</code> ; <code>env.cr.execute</code> l'ignore :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+Partner = env['res.partner']
+p = Partner.browse(10)
+p.city = 'Lyon'
+print('search :', Partner.search([('city', '=', 'Lyon'), ('id', '=', 10)]))
+p.city = 'Nantes'
+q = SQL("SELECT city FROM res_partner WHERE id = %s", p.id)
+env.cr.execute(q)
+print('cr.execute(SQL) :', env.cr.fetchall())
+q = SQL("SELECT city FROM res_partner WHERE id = %s", p.id, to_flush=Partner._fields['city'])
+env.cr.execute(q)
+print('cr.execute(SQL, to_flush) :', env.cr.fetchall())
+print('env.execute_query :', env.execute_query(q))
+env.cr.rollback()</code></pre>
+<div class="out">search : res.partner(10,)
+cr.execute(SQL) : [('Lyon',)]
+cr.execute(SQL, to_flush) : [('Lyon',)]
+env.execute_query : [('Nantes',)]</div>
+                <ul>
+                    <li><code>search</code> trouve Acme Corporation à Lyon alors que rien n'a été écrit à la main :
+                        l'ORM a flushé <code>city</code> avant sa requête. Effet de bord : « Lyon » est maintenant en
+                        base.</li>
+                    <li>« Nantes » est ensuite écrit dans le cache seulement. Les deux <code>env.cr.execute</code>
+                        lisent « Lyon », avec ou sans <code>to_flush</code>.</li>
+                    <li><code>env.execute_query</code> flushe les champs déclarés, puis exécute : « Nantes ».</li>
+                </ul>
+                <p>D'où la règle pratique : pour une requête de lecture écrite à la main, passer par
+                    <code>env.execute_query</code> (ou <code>env.execute_query_dict</code> pour des dictionnaires) et
+                    déclarer ses champs en <code>to_flush</code>, plutôt que <code>env.cr.execute</code> suivi d'un
+                    flush qu'on finit par oublier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. SQL QUI ÉCRIT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le SQL qui écrit, l'ORM qui relit l'ancienne valeur : <code>invalidate</code></h2>
+
+                <p>Cas inverse : un <code>UPDATE</code> écrit en SQL modifie la base, mais le cache garde la valeur
+                    qu'il avait lue. Tout code qui passe ensuite par l'ORM dans la même transaction travaille sur
+                    l'ancienne :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+p = env['res.partner'].browse(10)
+print('ORM avant :', p.city)
+env.cr.execute(SQL("UPDATE res_partner SET city = %s WHERE id = %s", 'Lyon', p.id))
+print('lignes modifiées :', env.cr.rowcount)
+print('ORM après UPDATE :', p.city)
+p.invalidate_recordset(['city'])
+print('ORM après invalidate :', p.city)
+env.cr.rollback()</code></pre>
+<div class="out">ORM avant : Pleasant Hill
+lignes modifiées : 1
+ORM après UPDATE : Pleasant Hill
+ORM après invalidate : Lyon</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : le script invalidate.py affiche ORM avant : Pleasant Hill, lignes modifiées : 1, ORM après UPDATE : Pleasant Hill, ORM après invalidate : Lyon"/>
+                    <figcaption>La base dit « Lyon » dès l'<code>UPDATE</code> ; l'ORM continue de répondre « Pleasant Hill » jusqu'à l'<code>invalidate_recordset</code>.</figcaption>
+                </figure>
+
+                <p>Mêmes portées que pour le flush : <code>records.invalidate_recordset(['city'])</code>,
+                    <code>env['res.partner'].invalidate_model(['city'])</code> (le bon choix après un
+                    <code>UPDATE</code> qui touche un nombre inconnu de lignes), <code>env.invalidate_all()</code>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Piège : <code>invalidate(flush=False)</code> jette les écritures en attente</h4>
+                    <p>Les trois méthodes d'invalidation font d'abord un flush, par défaut. Le paramètre
+                        <code>flush=False</code> le supprime : une valeur écrite par l'ORM et pas encore en base est
+                        alors <strong>perdue</strong>, sans erreur.</p>
+<pre class="language-python"><code class="language-python">p = env['res.partner'].browse(10)
+p.city = 'Lyon'
+p.invalidate_recordset(['city'], flush=False)
+print('flush=False :', p.city)
+env.flush_all()
+env.cr.execute("SELECT city FROM res_partner WHERE id = 10")
+print('en base :', env.cr.fetchone())
+env.cr.rollback()
+p = env['res.partner'].browse(10)
+p.city = 'Lyon'
+p.invalidate_recordset(['city'])
+print('flush=True :', p.city)
+env.cr.rollback()</code></pre>
+<div class="out">flush=False : Pleasant Hill
+en base : ('Pleasant Hill',)
+flush=True : Lyon</div>
+                    <p>Même un <code>flush_all()</code> ultérieur n'écrit plus « Lyon ». Ne passer
+                        <code>flush=False</code> que si l'on sait qu'aucune écriture n'est en attente sur ces champs.</p>
+                </div>
+
+                <h3>Les champs calculés ne suivent pas un <code>UPDATE</code> SQL</h3>
+                <p>Invalider le cache suffit pour relire la colonne modifiée. Mais les champs <strong>calculés
+                    stockés</strong> qui en dépendent ne sont recalculés que lorsque l'ORM apprend la modification.
+                    Un <code>UPDATE</code> de quantité en SQL laisse le sous-total et le total faux :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+so = env['sale.order'].browse(1)
+line = so.order_line[0]
+print(so.amount_total, line.price_subtotal)
+env.cr.execute(SQL("UPDATE sale_order_line SET product_uom_qty = product_uom_qty + 1 WHERE id = %s", line.id))
+env.invalidate_all()
+print(line.product_uom_qty, line.price_subtotal, so.amount_total)
+env.cr.rollback()</code></pre>
+<div class="out">2001.0 885.0
+4.0 885.0 2001.0</div>
+                <p>Quatre articles, mais un sous-total de trois (885 = 3 × 295). Pour que l'ORM recalcule, il faut lui
+                    signaler la modification avec <code>modified()</code>, après l'invalidation :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+so = env['sale.order'].browse(1)
+line = so.order_line[0]
+print(so.amount_total, line.price_subtotal)
+env.cr.execute(SQL("UPDATE sale_order_line SET product_uom_qty = product_uom_qty + 1 WHERE id = %s", line.id))
+line.invalidate_recordset(['product_uom_qty'])
+line.modified(['product_uom_qty'])
+print(line.product_uom_qty, line.price_subtotal, so.amount_total)
+env.cr.rollback()</code></pre>
+<div class="out">2001.0 885.0
+4.0 1180.0 2340.25</div>
+                <p><code>modified(['product_uom_qty'])</code> marque à recalculer tout ce qui en dépend, de proche en
+                    proche : le sous-total de la ligne (1 180), puis le total de la commande (2 340,25). Ce qui
+                    reste hors de portée du SQL brut, en revanche : les droits d'accès, les contraintes Python, le
+                    suivi dans le chatter, les surcharges de <code>write()</code> des autres modules. Aucun n'est
+                    appelé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. L'OBJET SQL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'objet <code>SQL</code> : paramètres, identifiants, assemblage</h2>
+
+                <p><code>from odoo.tools import SQL</code> enveloppe un morceau de requête et ses paramètres. Il se
+                    passe tel quel à <code>env.cr.execute</code> ou <code>env.execute_query</code>, et surtout il
+                    <strong>se compose</strong> : un <code>SQL</code> peut en contenir d'autres, leurs paramètres
+                    suivent sans qu'on ait à les recoller.</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import SQL
+Partner = env['res.partner']
+col = 'city'
+q = SQL(
+    "SELECT %s, count(*) FROM %s WHERE %s = %s GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 3",
+    SQL.identifier(col), SQL.identifier(Partner._table),
+    SQL.identifier('res_partner', 'is_company'), True,
+)
+print(q)
+print(env.execute_query(q))
+filtre = SQL(" AND ").join([SQL("active"), SQL("name ILIKE %s", '%acme%')])
+q2 = SQL("SELECT id, name FROM res_partner WHERE %(f)s ORDER BY id", f=filtre)
+print(env.execute_query_dict(q2))
+try:
+    SQL.identifier('city; DROP TABLE res_partner')
+except AssertionError as e:
+    print('AssertionError', e)</code></pre>
+<div class="out">SQL('SELECT "city", count(*) FROM "res_partner" WHERE "res_partner"."is_company" = %s GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 3', True)
+[('Tracy', 2), ('Fremont', 1), ('Pleasant Hill', 1)]
+[{'id': 10, 'name': 'Acme Corporation'}]
+AssertionError 'city; DROP TABLE res_partner' invalid for SQL.identifier()</div>
+                <table class="tmc">
+                    <thead><tr><th>Écriture</th><th>Rôle</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>SQL("… %s …", valeur)</code></td><td>Une <strong>valeur</strong> : elle reste un paramètre, jamais collée dans le texte (le <code>repr</code> le montre : <code>%s</code> + <code>True</code> à part).</td></tr>
+                        <tr><td><code>SQL("… %(nom)s …", nom=valeur)</code></td><td>Même chose avec des noms ; positionnels et nommés ne se mélangent pas.</td></tr>
+                        <tr><td><code>SQL.identifier(table)</code>, <code>SQL.identifier(table, colonne)</code></td><td>Un <strong>nom</strong> de table ou de colonne, mis entre guillemets et contrôlé : un nom qui n'est pas un identifiant lève <code>AssertionError</code>.</td></tr>
+                        <tr><td>Un <code>SQL</code> passé en argument</td><td>Inséré tel quel, avec ses paramètres.</td></tr>
+                        <tr><td><code>SQL(" AND ").join([...])</code></td><td>Assemble une liste de conditions ou de valeurs avec un séparateur.</td></tr>
+                        <tr><td><code>to_flush=champ</code> (ou liste de champs)</td><td>Champs à écrire en base avant exécution, lu par <code>env.execute_query</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="pitfall-box">
+                    <h4>Piège : le texte du <code>SQL</code> doit être une constante</h4>
+                    <p>L'objet <code>SQL</code> ne protège que si son premier argument est un texte <strong>littéral</strong>.
+                        <code>SQL(f"… WHERE name = '{nom}'")</code> fabrique une injection SQL parfaitement valide.
+                        Les valeurs passent en <code>%s</code>, les noms de tables et de colonnes en
+                        <code>SQL.identifier()</code>, et le caractère <code>%</code> s'écrit <code>%%</code> dans le
+                        texte (<code>LIKE 'a%%'</code>), même sans paramètre. Le motif <code>'%acme%'</code> de
+                        l'exemple, lui, est un paramètre : pas d'échappement.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. CE QUI CASSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce qui casse en venant de la 19</h2>
+
+                <p>L'usage de <code>SQL</code> décrit plus haut fonctionne à l'identique en 19 et en 20. Ce qui change,
+                    ce sont les accès à <strong>l'intérieur</strong> de l'objet, qu'un module 19 utilise parfois pour
+                    journaliser une requête ou la passer à une autre bibliothèque. Le script suivant les essaie un par
+                    un sur Odoo 20 :</p>
+<pre class="language-python"><code class="language-python">import warnings
+from odoo.tools import SQL
+q = SQL("SELECT id FROM res_partner WHERE id = %s", 10)
+for essai in ("q.code", "q.params", "q.to_flush"):
+    try:
+        eval(essai)
+    except AttributeError as e:
+        print(essai, '->', type(e).__name__, e)
+try:
+    code, params = q
+except TypeError as e:
+    print('code, params = q ->', type(e).__name__, e)
+print(q._sql_tuple)
+try:
+    env.cr.execute(q, [10])
+except AssertionError as e:
+    print('cr.execute(q, [10]) ->', type(e).__name__, e)
+p = env['res.partner'].browse(10)
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter('always')
+    env.cache.invalidate([(p._fields['city'], [p.id])])
+print('env.cache ->', w[0].category.__name__, w[0].message)
+print(env.cr.mogrify(q))
+try:
+    env.flush_query(q)
+except AttributeError as e:
+    print('env.flush_query ->', type(e).__name__, e)</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Terminal : migration_sql.py affiche q.code, q.params et q.to_flush -> AttributeError 'LiteralSQL' object has no attribute ..., code, params = q -> TypeError cannot unpack non-iterable LiteralSQL object, le tuple ('SELECT id FROM res_partner WHERE id = %s', (10,), ()), cr.execute(q, [10]) -> AssertionError Unexpected parameters for SQL query object, env.cache -> DeprecationWarning Since 20.0 use fields method directly for cache manipulation, b'SELECT id FROM res_partner WHERE id = 10', env.flush_query -> AttributeError 'Environment' object has no attribute 'flush_query'"/>
+                    <figcaption>Sur Odoo 20 : trois attributs et une méthode disparus, un dépaquetage refusé, un accès au cache déprécié.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Code 19</th><th>En 20</th><th>Remplacer par</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>sql.code</code>, <code>sql.params</code></td><td><code>AttributeError: 'LiteralSQL' object has no attribute 'code'</code></td><td>pour journaliser : <code>env.cr.mogrify(sql)</code> (requête finale, en octets, valable en 19 et en 20) ; pour exécuter : passer l'objet tel quel</td></tr>
+                        <tr><td><code>sql.to_flush</code> + <code>env.flush_query(sql)</code></td><td><code>AttributeError</code> (les deux)</td><td><code>env.execute_query(sql)</code>, qui flushe lui-même</td></tr>
+                        <tr><td><code>code, params = sql</code> (déjà déprécié en 19)</td><td><code>TypeError: cannot unpack non-iterable LiteralSQL object</code></td><td>idem : <code>mogrify</code> ou l'objet tel quel</td></tr>
+                        <tr><td><code>env.cache.invalidate(...)</code></td><td>fonctionne, avec <code>DeprecationWarning: Since 20.0 use fields method directly for cache manipulation</code></td><td><code>invalidate_recordset</code> / <code>invalidate_model</code></td></tr>
+                        <tr><td><code>env.cr.execute(sql, params)</code></td><td><code>AssertionError: Unexpected parameters for SQL query object</code> (déjà le cas en 19)</td><td>les paramètres dans le <code>SQL</code></td></tr>
+                        <tr><td><code>env.reset()</code>, <code>env.registry.clear_cache()</code></td><td><code>AttributeError</code></td><td>voir <a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">l'environnement en Odoo 20</a>, section caches</td></tr>
+                    </tbody>
+                </table>
+                <p>Le contenu reste lisible en 20 par <code>q._sql_tuple</code> (texte, paramètres, champs à flusher),
+                    mais c'est un attribut privé : du code de module ne devrait pas en dépendre.
+                    <code>flush_recordset</code>, <code>flush_model</code>, <code>invalidate_recordset</code>,
+                    <code>invalidate_model</code> et <code>modified</code>, eux, ont gardé leur signature de la 19.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : <code>SQL</code> ne se lit plus de l'extérieur</h4>
+                    <p>En 19, <code>odoo.tools.SQL</code> exposait trois propriétés publiques, <code>code</code>,
+                        <code>params</code> et <code>to_flush</code>, et se laissait encore dépaqueter
+                        (<code>code, params = sql</code>) avec un <code>DeprecationWarning: Deprecated since 19.0, use
+                        code and params properties directly</code>. <code>env.execute_query</code> s'appuyait sur une
+                        méthode publique <code>env.flush_query(sql)</code>. En 20, <code>SQL(...)</code> rend un
+                        <code>LiteralSQL</code> qui ne garde que <code>_sql_tuple</code> : les trois propriétés,
+                        le dépaquetage et <code>flush_query</code> ont disparu, et <code>env.cache</code> émet un
+                        <code>DeprecationWarning</code>. Chercher <code>.code</code>, <code>.params</code>, <code>.to_flush</code> et
+                        <code>flush_query</code> sur les objets <code>SQL</code> de tout module porté.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. QUAND LE SQL BRUT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Quand le SQL brut vaut le coup</h2>
+
+                <p>Le SQL écrit à la main contourne tout ce que fait l'ORM : droits d'accès, règles
+                    multi-sociétés, contraintes Python, recalculs (sauf <code>modified</code>), suivi, surcharges. Il se
+                    justifie quand ce contournement est voulu ou quand l'ORM n'a pas d'équivalent :</p>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>D'abord</th><th>SQL brut si…</th></tr></thead>
+                    <tbody>
+                        <tr><td>Sommes, comptages, regroupements</td><td><code>_read_group</code> (voir <a href="/blog/developpement-odoo-2/read-group-odoo-20-270">read_group en Odoo 20</a>)</td><td>jointure ou fonction de fenêtre que <code>_read_group</code> n'exprime pas</td></tr>
+                        <tr><td>Lire vite beaucoup de lignes</td><td><code>search_fetch</code> avec la liste des champs (voir <a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a>)</td><td>le nombre de requêtes mesuré reste trop élevé</td></tr>
+                        <tr><td>Modifier des milliers de lignes</td><td><code>records.write(vals)</code> en une fois (un seul <code>UPDATE</code> au flush)</td><td>migration ou correctif ponctuel, sans logique métier à déclencher : <code>UPDATE</code>, puis <code>invalidate_model</code> et <code>modified</code> si des calculés en dépendent</td></tr>
+                        <tr><td>Verrouiller une ligne</td><td>—</td><td><code>SELECT … FOR UPDATE NOWAIT</code>, cas classique du SQL brut</td></tr>
+                    </tbody>
+                </table>
+                <p>Dans tous les cas, mesurer avant d'optimiser : <code>env.cr.sql_log_count</code> autour du code
+                    suspect, ou l'option <code>--log-sql</code> pour voir les requêtes elles-mêmes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Situation</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Lire en SQL ce que l'ORM vient d'écrire</td><td><code>env.execute_query(SQL(…, to_flush=champs))</code>, ou <code>records.flush_recordset([...])</code> avant <code>env.cr.execute</code></td></tr>
+                        <tr><td>Relire par l'ORM ce que le SQL vient d'écrire</td><td><code>records.invalidate_recordset([...])</code> / <code>Model.invalidate_model([...])</code></td></tr>
+                        <tr><td>Faire suivre les champs calculés stockés</td><td><code>records.modified([...])</code> après l'invalidation</td></tr>
+                        <tr><td>Une valeur dans une requête</td><td><code>SQL("… %s", valeur)</code>, jamais de f-string</td></tr>
+                        <tr><td>Un nom de table ou de colonne</td><td><code>SQL.identifier(table, colonne)</code></td></tr>
+                        <tr><td>Afficher la requête finale</td><td><code>env.cr.mogrify(sql)</code></td></tr>
+                        <tr><td>Compter les requêtes</td><td><code>env.cr.sql_log_count</code> avant / après</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>L'ORM lit par lots et garde en cache ; il écrit dans le cache et reporte l'<code>UPDATE</code> au flush. Ses propres requêtes flushent ce dont elles dépendent.</li>
+                    <li>SQL qui lit après l'ORM : <strong>flush</strong> avant, ou <code>to_flush=</code> avec <code>env.execute_query</code> ; <code>env.cr.execute</code> ne flushe jamais.</li>
+                    <li>SQL qui écrit avant l'ORM : <strong>invalidate</strong> après, <code>modified</code> si des calculés stockés en dépendent ; jamais <code>flush=False</code> à l'aveugle.</li>
+                    <li>En 20, l'objet <code>SQL</code> ne se lit plus par <code>.code</code> / <code>.params</code>, <code>env.flush_query</code> a disparu et <code>env.cache</code> est déprécié.</li>
+                </ul>
+                <p class="mb-0">Pour la vue d'ensemble des changements de la version, voir
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">ce qui change techniquement en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration Ventes + Inventaire en français, transaction annulée en fin
+                    de script. Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/sql.py" target="_blank" rel="noopener"><code>odoo/tools/sql.py</code></a> : <code>SQL</code>, <code>LiteralSQL</code>, <code>SQL.identifier</code>, <code>join</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/environments.py" target="_blank" rel="noopener"><code>odoo/orm/environments.py</code></a> : <code>execute_query</code>, <code>execute_query_dict</code>, <code>flush_all</code>, <code>invalidate_all</code>, <code>Transaction.cache</code> déprécié</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>flush_model</code>, <code>flush_recordset</code>, <code>invalidate_model</code>, <code>invalidate_recordset</code>, <code>modified</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/sql_db.py" target="_blank" rel="noopener"><code>odoo/sql_db.py</code></a> : <code>Cursor.execute</code>, <code>mogrify</code>, <code>sql_log_count</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">env, with_context, sudo, with_company : l'environnement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le cache des méthodes, <code>invalidate_ormcache</code>, et ce qui remplace <code>env.reset()</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch : lire vite en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Compter les requêtes et remplir le cache en une fois, sans SQL.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Écrire par l'ORM, y compris sur les One2many et Many2many.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

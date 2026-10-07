@@ -1,0 +1,742 @@
+<!--
+Article — L'action planifiée ne s'exécute pas en Odoo 20 : les vérifications
+Série « Dépanner Odoo 20 » (article autonome)
+Date : 2026-10-07
+Slug : cron-ne-s-execute-pas-odoo-20
+Meta : Cron Odoo 20 qui ne tourne pas : active, nextcall, threads cron, -d, neutralisation, module en attente, erreur, droits, verrou. Chaque cause reproduite.
+Mot-clé cible : odoo cron not working
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~14 minutes
+Preuves (base de test copiée de la base technique : sale_management + stock, démo native fr_FR, Odoo 20.0 commit 3538ed82,
+PostgreSQL 16 ; serveur lancé sur un port dédié avec -d sur cette seule base ; action planifiée de test id 26, 07/10/2026) :
+- Sondes et sorties : docs/blog-odoo20/captures-base-*/d1-cron/ (p1…p14, out_*.txt, server1-3.log, out_neutralize.log).
+- Cause « inactive » / « nextcall futur » : p4a/p4b (_get_all_ready_jobs, _trigger() sur inactive = ir.cron.trigger() vide), p4c (_trigger → exécution en 1 s).
+- --max-cron-threads=0 : server2.log sans ligne « cronN: Alive », déclencheur 4 en attente 70 s ; server3.log : exécution 60 s après « Alive ».
+- -d / --db-filter : p7 (cron_database_list : 1 base avec -d, 61 dont 60 hors filtre sans -d).
+- Module « to upgrade » : p12 + server3.log:116-117 (« Skipping database … »).
+- Neutralisation : out_p13_avant (22 actives) / out_p13_apres (1 : autovacuum), p13b (toggle sans effet, write possible).
+- Erreur de code : server1.log:57-85 (get_param supprimé en 20) ; avertissement puis désactivation : server3.log:50-81 ; canal Administrateurs : p9.
+- Droits : server3.log:84-114 (AccessError, utilisateur Marc Demo). Verrou : p6. Exécution manuelle : p11 (display_exception, échec compté).
+- Code 20.0 : odoo/addons/base/models/ir_cron.py:36 (MIN_TIME_PER_JOB=120), :113-124 champs, :152-186 method_direct_trigger,
+  :189-215 _process_jobs, :257-284 _check_modules_state, :287-297 condition « prête », :306 tri failure_count, :451-454 replanification,
+  :494-501 boucle, :589-626 échecs/désactivation, :656-678 _reschedule_later (lastcall mis à jour même en échec), :712-720 verrou en écriture,
+  :737-747 toggle, :750-790 _trigger(coalesce), :805-807 déclencheur ignoré si inactive, :918-921 _rollback_progress ;
+  odoo/service/server.py:68 SLEEP_INTERVAL, :112-114 cron_database_list, :426-437 cron_spawn, :926-928 WorkerCron ; odoo/modules/db.py:701-729 list_dbs ;
+  odoo/http/router.py:87-100 db_filter (HTTP seulement) ; odoo/addons/base/data/neutralize.sql:13-22 ; addons/mail/models/ir_cron.py:14-21.
+- 19.0 publique (commit 9db68e61, raw.githubusercontent.com, 07/10/2026) : mêmes champs ; MIN_TIME_PER_JOB = 10 ; pas d'avertissement avant
+  désactivation ; _trigger sans coalesce ; pas de _rollback_progress ; mail/models/ir_cron.py sans active=tracking ;
+  ir_config_parameter.py avec get_param/set_param ; server.py cron_database_list identique.
+Captures : content/blog/screenshots/cron-ne-s-execute-pas-odoo-20/ (01-04).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">L'action planifiée ne s'exécute pas en Odoo 20 : les vérifications</h1>
+                <p class="lead mt-3 text-white">Le cron est là, dans la liste, et pourtant rien ne se passe. Neuf causes
+                    possibles, de la case « Actif » décochée au serveur lancé sans thread cron, en passant par la base
+                    neutralisée, le module resté « à mettre à jour » et le code qui plante en silence. Chacune a été
+                    reproduite sur un serveur Odoo 20, avec la ligne de journal qui la trahit et le moyen de la lever.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Regarder</h4>
+                        <p>Les champs de <code>ir.cron</code> qui comptent, ceux que le formulaire n'affiche pas, et les lignes du journal à chercher.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Diagnostiquer</h4>
+                        <p>Les neuf causes d'un cron muet, reproduites une à une, avec le correctif de chacune.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Relancer</h4>
+                        <p>« Exécuter manuellement », <code>_trigger()</code>, et ce que la 20 a changé dans la mécanique depuis la 19.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un serveur Odoo 20 que tu peux arrêter et relancer, et l'accès à son journal.</li>
+                        <li>La console <code>odoo-bin shell</code> : toutes les vérifications de cet article y ont été
+                            faites. Elle est présentée dans
+                            <a href="/blog/developpement-odoo-2/shell-odoo-20-272">l'article sur le shell Odoo 20</a>.</li>
+                        <li>Le mode développeur, pour voir le menu <em>Technique</em>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. OÙ REGARDER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Où regarder</h2>
+
+                <p>Les actions planifiées se trouvent dans <em>Paramètres › Technique › Automatisation › Actions
+                    planifiées</em>, mode développeur activé. Le formulaire montre l'essentiel de la planification :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Formulaire de l'action planifiée Démo : compter les passages : bouton Exécuter manuellement, Modèle Contact, Utilisateur de l'outil de planification Mitchell Admin, Exécuter tou(te)s les 1 Jours, Actif activé, Prochaine date d'exécution 8 oct., 09:33, Priorité 5, onglet Code avec deux lignes get_int et set_int sur ir.config_parameter"/>
+                    <figcaption>L'action planifiée de test : un intervalle, un interrupteur « Actif », une prochaine date, l'utilisateur qui exécute, et le code.</figcaption>
+                </figure>
+
+                <p>Le serveur ne lit que quelques colonnes de la table <code>ir_cron</code>. Les voici, avec les deux
+                    que le formulaire ne montre pas :</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Libellé</th><th>Ce qu'il dit</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>active</code></td><td>Actif</td><td>Une action inactive n'est jamais prise.</td></tr>
+                        <tr><td><code>nextcall</code></td><td>Prochaine date d'exécution</td><td>Stockée en UTC, affichée dans ton fuseau. L'action n'est prise que si elle est passée.</td></tr>
+                        <tr><td><code>interval_number</code>, <code>interval_type</code></td><td>Exécuter tou(te)s les</td><td>De combien avancer <code>nextcall</code> après un passage.</td></tr>
+                        <tr><td><code>user_id</code></td><td>Utilisateur de l'outil de planification</td><td>Le code tourne avec <strong>ses</strong> droits.</td></tr>
+                        <tr><td><code>priority</code></td><td>Priorité</td><td>0 passe avant 10, à échecs égaux.</td></tr>
+                        <tr><td><code>lastcall</code></td><td>(absent du formulaire)</td><td>Date du dernier passage, <strong>réussi ou non</strong>.</td></tr>
+                        <tr><td><code>failure_count</code>, <code>first_failure_date</code></td><td>(absents du formulaire)</td><td>Échecs consécutifs et date du premier ; remis à zéro au premier succès.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Pour lire l'état complet d'une action, une petite fonction dans la console suffit. Elle servira tout
+                    au long de l'article ; le compteur <code>demo_cron.passages</code> est celui que le cron de test
+                    incrémente à chaque passage réussi :</p>
+
+<pre class="language-python"><code class="language-python">def etat(env, cron_id=26):
+    env.invalidate_all()
+    c = env['ir.cron'].with_context(active_test=False).browse(cron_id)
+    print(f"active={c.active} nextcall={c.nextcall} lastcall={c.lastcall} "
+          f"failure_count={c.failure_count} first_failure_date={c.first_failure_date} "
+          f"passages={env['ir.config_parameter'].get_int('demo_cron.passages')}")</code></pre>
+
+                <h3>La règle du serveur, en une requête</h3>
+
+                <p>Toutes les minutes environ, chaque thread cron se réveille et cherche, base par base, les actions
+                    <strong>prêtes</strong>. La condition est écrite en SQL dans
+                    <code>ir_cron.py</code> (méthode <code>_get_ready_sql_condition</code>) :</p>
+
+<pre class="language-python"><code class="language-python">active IS TRUE
+AND (nextcall &lt;= %(now)s
+    OR id IN (
+        SELECT cron_id
+        FROM ir_cron_trigger
+        WHERE call_at &lt;= %(now)s
+    )
+)</code></pre>
+
+                <p>Active, et soit l'heure est passée, soit un <strong>déclencheur</strong> (<code>ir.cron.trigger</code>)
+                    est échu. Les actions prêtes sont traitées dans l'ordre <code>failure_count, priority, id</code> :
+                    une action qui échoue passe derrière les autres. Chaque passage laisse deux lignes dans le journal,
+                    à chercher par le nom de l'action :</p>
+
+<div class="out">INFO ma_base odoo.addons.base.models.ir_cron: Job 'Démo : compter les passages' (26) starting
+INFO ma_base odoo.addons.base.models.ir_cron: Job 'Démo : compter les passages' (26) fully done (#loop 1; done 0; remaining 0; duration 0.05s)</div>
+
+                <p>Pas de ligne <code>starting</code> : le serveur n'a pas pris l'action (causes 1 à 6). Une ligne
+                    <code>failed</code> : il l'a prise et le code a échoué (causes 7 et 8). Le nom de la base figure
+                    sur chaque ligne : c'est la première chose à vérifier quand plusieurs bases tournent sur le même
+                    serveur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE CRON DE TEST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Un cron de test</h2>
+
+                <p>Pour reproduire chaque panne, il faut une action dont on voit l'effet. Celle-ci, créée en console sur
+                    une base de démonstration, incrémente un paramètre système à chaque passage. Le code est celui
+                    qu'on écrirait par habitude en Odoo 19 :</p>
+
+<pre class="language-python"><code class="language-python">from odoo import fields
+cron = env['ir.cron'].create({
+    'name': "Démo : compter les passages",
+    'model_id': env.ref('base.model_res_partner').id,
+    'state': 'code',
+    'code': (
+        "n = int(env['ir.config_parameter'].get_param('demo_cron.passages', '0')) + 1\n"
+        "env['ir.config_parameter'].set_param('demo_cron.passages', str(n))\n"
+    ),
+    'interval_number': 1,
+    'interval_type': 'days',
+    'nextcall': fields.Datetime.now(),
+})
+env.cr.commit()
+print(cron.id, cron.name, cron.user_id.login, cron.active, cron.nextcall, cron.lastcall, cron.failure_count)</code></pre>
+
+<div class="out">26 Démo : compter les passages __system__ True 2026-10-07 08:29:41 False 0</div>
+
+                <p><code>ir.cron</code> délègue <code>name</code>, <code>model_id</code>, <code>state</code> et
+                    <code>code</code> à une action serveur (<code>_inherits</code>), comme en 19. Sans
+                    <code>user_id</code>, l'utilisateur est celui qui crée : ici le superutilisateur de la console.
+                    Le serveur démarre, et une minute plus tard… le cron échoue. Ce sera la cause 7 ; le code est
+                    ensuite corrigé pour la suite des essais.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES CAUSES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les causes, une à une</h2>
+
+                <h3>Cause 1 : l'action est inactive</h3>
+
+                <p>La plus simple, à soupçonner d'abord après une copie de base ou une désactivation automatique
+                    (causes 6 et 7). On désactive l'action en laissant une date passée, puis on demande si elle est prête, avec la
+                    méthode même qu'utilise le serveur :</p>
+
+<pre class="language-python"><code class="language-python">from datetime import timedelta
+from odoo import fields
+from odoo.addons.base.models.ir_cron import IrCron
+etat(env)
+cron = env['ir.cron'].browse(26)
+cron.write({'active': False, 'nextcall': fields.Datetime.now() - timedelta(hours=1)})
+env.cr.commit()
+pretes = [j['id'] for j in IrCron._get_all_ready_jobs(env.cr)]
+print("inactive, nextcall passée -> prête :", 26 in pretes)
+print("_trigger() ->", cron._trigger())
+env.cr.commit()</code></pre>
+
+<div class="out">active=True nextcall=2026-10-08 08:29:41 lastcall=2026-10-07 08:31:15 failure_count=0 first_failure_date=False passages=1
+inactive, nextcall passée -> prête : False
+_trigger() -> ir.cron.trigger()</div>
+
+                <p>Non prête, et <code>_trigger()</code> ne crée <strong>aucun</strong> déclencheur : sur une action
+                    inactive, les déclenchements immédiats sont abandonnés en silence (<code>_trigger_list</code>).
+                    Une minute plus tard, le compteur n'a pas bougé. Correctif : réactiver l'action, et chercher
+                    pourquoi elle avait été désactivée (causes 6 et 7).</p>
+
+                <h3>Cause 2 : la prochaine date est dans le futur</h3>
+
+                <p>Active, mais prévue pour demain :</p>
+
+<pre class="language-python"><code class="language-python">cron = env['ir.cron'].with_context(active_test=False).browse(26)
+cron.write({'active': True, 'nextcall': fields.Datetime.now() + timedelta(days=1)})
+env.cr.commit()
+pretes = [j['id'] for j in IrCron._get_all_ready_jobs(env.cr)]
+print("active, nextcall demain -> prête :", 26 in pretes)</code></pre>
+
+<div class="out">active, nextcall demain -> prête : False</div>
+
+                <p>Le piège classique : une action quotidienne créée à 10 h avec une prochaine date à 10 h le
+                    lendemain ne tourne pas « tout de suite ». Et un passage ne recale <code>nextcall</code> que si
+                    elle est échue : une action lancée à la main ne décale pas son prochain rendez-vous. Pour la faire
+                    passer maintenant sans toucher à la date, crée un déclencheur :</p>
+
+<pre class="language-python"><code class="language-python">etat(env)
+cron = env['ir.cron'].browse(26)
+print("_trigger() ->", cron._trigger())
+env.cr.commit()</code></pre>
+
+<div class="out">active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:31:15 failure_count=0 first_failure_date=False passages=1
+_trigger() -> ir.cron.trigger(3,)
+active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:34:27 failure_count=0 first_failure_date=False passages=2</div>
+
+                <p>La troisième ligne est relue quelques secondes plus tard : le serveur a exécuté l'action dans la
+                    seconde (le <code>commit</code> d'un déclencheur échu réveille les threads cron par un
+                    <code>NOTIFY</code> PostgreSQL), <code>lastcall</code> a bougé, <code>nextcall</code> non.</p>
+
+                <h3>Cause 3 : le serveur n'a pas de thread cron</h3>
+
+                <p>Les actions planifiées ne tournent que dans un serveur Odoo démarré, et seulement s'il a des threads
+                    (ou, avec <code>--workers</code>, des processus) dédiés. Leur nombre est
+                    <code>--max-cron-threads</code>, 2 par défaut. À 0, il n'y en a plus aucun. Au démarrage normal, le
+                    journal les annonce :</p>
+
+<div class="out">INFO ? odoo.service.server: HTTP service running on 127.0.0.1:9139
+INFO ? odoo.service.server.ThreadedServer.cron0: Alive
+INFO ? odoo.service.server.ThreadedServer.cron1: Alive</div>
+
+                <p>Avec <code>--max-cron-threads=0</code>, la ligne <code>HTTP service running</code> est seule. Le
+                    même déclencheur, posé sur ce serveur, attend :</p>
+
+<div class="out">active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:34:27 failure_count=0 first_failure_date=False passages=2
+_trigger() -> ir.cron.trigger(4,)
+active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:34:27 failure_count=0 first_failure_date=False passages=2</div>
+
+                <p>Soixante-dix secondes plus tard, rien. Le déclencheur reste en base ; au redémarrage avec les
+                    threads par défaut, il est consommé au premier tour, une minute après <code>cron0: Alive</code>.
+                    Cherche donc <code>max_cron_threads</code> dans le fichier de configuration, la ligne de commande et
+                    le service <code>systemd</code> : un serveur web secondaire est souvent lancé à 0 pour laisser les
+                    crons à un seul nœud — très bien, à condition que ce nœud tourne. Même idée pour un serveur de
+                    développement arrêté le soir : aucune action ne passera la nuit.</p>
+
+                <h3>Cause 4 : la base n'est pas dans <code>-d</code></h3>
+
+                <p>Quelles bases les threads cron visitent-ils ? La réponse tient en une fonction,
+                    <code>cron_database_list()</code> : la liste <code>-d</code> (<code>db_name</code>) si elle est
+                    donnée, sinon <strong>toutes</strong> les bases dont le rôle PostgreSQL est propriétaire.
+                    <code>--db-filter</code> n'y figure pas : il ne filtre que les requêtes HTTP.</p>
+
+<pre class="language-python"><code class="language-python">import re
+from odoo.service.server import cron_database_list
+from odoo.tools import config
+print("-d", config['db_name'], "| --db-filter", config['dbfilter'])
+print("  bases visitées par les crons :", cron_database_list())
+config['db_name'] = []
+bases = cron_database_list()
+hors = [b for b in bases if not re.match(config['dbfilter'], b)]
+print("sans -d, même --db-filter")
+print("  bases visitées par les crons :", len(bases), "dont hors --db-filter :", len(hors))</code></pre>
+
+<div class="out">-d ['ma_base'] | --db-filter ^ma_base$
+  bases visitées par les crons : ['ma_base']
+sans -d, même --db-filter
+  bases visitées par les crons : 61 dont hors --db-filter : 60</div>
+
+                <p>Deux pannes symétriques en découlent :</p>
+                <ul>
+                    <li>un serveur lancé avec <code>-d prod</code> n'exécute <strong>jamais</strong> les actions d'une
+                        autre base, même si on s'y connecte par le navigateur. Ajoute-la à la liste
+                        (<code>-d prod,test</code>) ou donne-lui son propre serveur ;</li>
+                    <li>un serveur lancé <strong>sans</strong> <code>-d</code> exécute les actions de toutes les bases
+                        du rôle, y compris une copie de production restaurée « pour voir » — qui enverra alors ses
+                        courriels. D'où la cause 6.</li>
+                </ul>
+
+                <h3>Cause 5 : un module est resté « à mettre à jour »</h3>
+
+                <p>Une mise à jour de module interrompue laisse parfois un module dans l'état <code>to upgrade</code>,
+                    <code>to install</code> ou <code>to remove</code>. Tant que c'est le cas, le serveur saute la base
+                    entière. Reproduit en passant <code>sale_management</code> à <code>to upgrade</code> puis en
+                    déclenchant l'action :</p>
+
+<div class="out">WARNING ma_base odoo.addons.base.models.ir_cron: Skipping database ma_base because of modules to install/upgrade/remove.</div>
+
+                <p>Aucune action de la base ne passe, pas seulement la tienne. Correctif : terminer l'opération
+                    (<code>-u module</code>, voir
+                    <a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">les modules en ligne de commande</a>)
+                    et lire l'erreur qui l'avait interrompue. Le code prévoit un filet : si la plus
+                    ancienne action prête attend depuis plus de 5 heures, le serveur remet les états d'office
+                    (<code>MAX_FAIL_TIME</code>, <code>_check_modules_state</code>) — cinq heures sans aucun cron.</p>
+
+                <h3>Cause 6 : la base est neutralisée</h3>
+
+                <p>Une base de test copiée de la production devrait toujours être <strong>neutralisée</strong> :
+                    <code>odoo-bin neutralize -d &lt;base&gt;</code>, ou l'option du même nom au chargement d'une
+                    sauvegarde. Entre autres effets, le script SQL du module <code>base</code> désactive toutes les
+                    actions planifiées sauf le nettoyage automatique. Avant et après, sur la base de test :</p>
+
+<pre class="language-python"><code class="language-python">Cron = env['ir.cron']
+print("actions planifiées actives :", Cron.search_count([]), "| neutralisée :", env['ir.config_parameter'].get_bool('database.is_neutralized'))
+print("restantes :", Cron.search([]).mapped('cron_name'))
+print("démo active :", Cron.with_context(active_test=False).browse(26).active)</code></pre>
+
+<div class="out">actions planifiées actives : 22 | neutralisée : False
+…
+$ ./odoo-bin neutralize -c odoo.conf -d ma_base
+INFO ? odoo.cli.neutralize: Starting ma_base database neutralization
+INFO ? odoo.modules.neutralize: Neutralization finished
+
+actions planifiées actives : 1 | neutralisée : True
+restantes : ['Base: Auto-vacuum internal data']
+démo active : False</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des actions planifiées après neutralisation : colonnes Priorité, Nom de l'action, Modèle, Prochaine date d'exécution, Numéro, Unité d'intervalle, Actif ; seules Base : données internes de l'aspiration automatique et Démo : compter les passages sont cochées et en noir, les autres (Account: Inventory Valuation Closing, Digest d'e-mails, E-mail : Gestionnaire de la file d'attente des e-mails, Approvisionnement : lancer le planificateur…) sont grisées et décochées"/>
+                    <figcaption>Après neutralisation : les actions grisées sont inactives. « Démo » a été réactivée à la main ; seule l'aspiration automatique l'était restée d'office.</figcaption>
+                </figure>
+
+                <p>La base porte un bandeau rouge « Base de données neutralisée pour les tests ». Elle ne verrouille
+                    rien : <code>cron.active = True</code> réactive une action, comme sur la capture. En revanche,
+                    les réactivations <strong>indirectes</strong> sont bloquées : la méthode <code>toggle()</code>,
+                    que des modules appellent pour allumer ou éteindre un cron selon qu'il a du travail, ne fait rien
+                    sur une base neutralisée :</p>
+
+<pre class="language-python"><code class="language-python">cron = env['ir.cron'].with_context(active_test=False).browse(26)
+print("toggle ->", cron.toggle('res.partner', []), "| active :", cron.active)
+cron.active = True
+print("write active=True -> active :", cron.active)</code></pre>
+
+<div class="out">toggle -> True | active : False
+write active=True -> active : True</div>
+
+                <p>Réactive seulement ce dont le test a besoin : une base neutralisée dont on rallume la file des
+                    courriels n'est plus neutralisée que de nom.</p>
+
+                <h3>Cause 7 : le code échoue</h3>
+
+                <p>C'est ici que le cron de test est tombé dès son premier passage. Le journal ne laisse aucun doute :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Journal Odoo 20 : Job Démo : compter les passages (26) starting, puis ERROR Job (26) server action #488 failed, trace AttributeError: 'ir.config_parameter' object has no attribute 'get_param', puis ValueError while evaluating avec le code de l'action, et INFO Job (26) failed (#loop 1; done 0; remaining 0; duration 0.02s)"/>
+                    <figcaption>Un code d'action écrit pour la 19 : <code>get_param</code> n'existe plus sur <code>ir.config_parameter</code> en Odoo 20.</figcaption>
+                </figure>
+
+                <p>En Odoo 20, <code>get_param</code> et <code>set_param</code> ont disparu au profit de méthodes
+                    typées : <code>get_str</code>, <code>get_int</code>, <code>get_float</code>, <code>get_bool</code>
+                    et leurs <code>set_*</code>. Toute action planifiée ou action serveur copiée d'une 19 qui lit un
+                    paramètre système tombe ainsi. Le code corrigé :</p>
+
+<pre class="language-python"><code class="language-python">n = env['ir.config_parameter'].get_int('demo_cron.passages') + 1
+env['ir.config_parameter'].set_int('demo_cron.passages', n)</code></pre>
+
+                <p>Ce qu'un échec laisse en base, relu juste après :</p>
+
+<div class="out">active=True nextcall=2026-10-08 08:29:41 lastcall=2026-10-07 08:30:49 failure_count=1 first_failure_date=2026-10-07 08:30:49 passages=0</div>
+
+                <div class="pitfall-box">
+                    <h4><code>lastcall</code> avance aussi quand le cron échoue</h4>
+                    <p>L'aide du champ parle du « dernier passage réussi », mais après un échec le serveur appelle la
+                        même replanification qu'après un succès (<code>_reschedule_later</code>) : <code>lastcall</code>
+                        prend l'heure de l'échec et <code>nextcall</code> saute à l'intervalle suivant — ici, au
+                        lendemain. Un <code>lastcall</code> récent ne prouve donc rien : regarde
+                        <code>failure_count</code>. Et une action quotidienne qui échoue ne réessaie pas avant
+                        demain.</p>
+                </div>
+
+                <h3>La désactivation automatique</h3>
+
+                <p>Un cron qui échoue sans cesse finit désactivé. Il faut que les <strong>deux</strong> seuils soient
+                    atteints : 5 échecs consécutifs (<code>MIN_FAILURE_COUNT_BEFORE_DEACTIVATION</code>) et un premier
+                    échec vieux de plus de 7 jours (<code>MIN_DELTA_BEFORE_DEACTIVATION</code>). Pour le voir sans
+                    attendre une semaine, le code fautif est remis et l'historique vieilli :</p>
+
+<pre class="language-python"><code class="language-python">cron.write({
+    'code': "n = int(env['ir.config_parameter'].get_param('demo_cron.passages', '0')) + 1\n",
+    'failure_count': 2,
+    'first_failure_date': fields.Datetime.now() - timedelta(days=8),
+})
+etat(env)
+cron._trigger()
+env.cr.commit()
+# … puis, après ce passage :
+etat(env)
+cron.write({'failure_count': 4})
+cron._trigger()
+env.cr.commit()
+# … et après le suivant :
+etat(env)</code></pre>
+
+<div class="out">active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:37:17 failure_count=2 first_failure_date=2026-09-29 08:37:40 passages=3
+active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:37:40 failure_count=3 first_failure_date=2026-09-29 08:37:40 passages=3
+active=False nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:37:47 failure_count=0 first_failure_date=False passages=3</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Journal Odoo 20 : Job (26) failed, puis WARNING Cron job 'Démo : compter les passages' (26) is failing and will be deactivated if you don't take action ; au passage suivant Job (26) starting, failed, puis WARNING Cron job (26) has been deactivated after failing 5 times. More information can be found in the server logs around 2026-10-07 08:37:47"/>
+                    <figcaption>Le troisième échec déclenche un avertissement, le cinquième la désactivation (trace d'erreur de chaque échec retirée de l'extrait).</figcaption>
+                </figure>
+
+                <p>Au moment de la désactivation, les compteurs sont remis à zéro : une action désactivée par le serveur
+                    ressemble ensuite à n'importe quelle action désactivée. Deux traces restent :</p>
+                <ul>
+                    <li>le journal, avec le <code>WARNING … has been deactivated after failing 5 times</code> ;</li>
+                    <li>le canal Discuss des administrateurs, où le module <code>mail</code> recopie les deux messages :</li>
+                </ul>
+
+<div class="out">canal : Administrateurs
+ - OdooBot | Cron job 'Démo : compter les passages' (26) has been deactivated after failing 5 times. More information can b
+ - OdooBot | Cron job 'Démo : compter les passages' (26) is failing and will be deactivated if you don't take action. More </div>
+
+                <p>Le chatter de l'action, lui, ne dit rien : le serveur écrit <code>active</code> par une requête SQL
+                    directe, sans passer par le suivi des champs. Seules les modifications faites par un utilisateur
+                    y apparaissent (« Oui → Non (Actif) »).</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : un avertissement avant la désactivation</h4>
+                    <p>Les seuils (5 échecs, 7 jours) et les champs <code>failure_count</code> /
+                        <code>first_failure_date</code> sont les mêmes qu'en 19. Ce qui est nouveau en 20 : le message
+                        « <em>is failing and will be deactivated if you don't take action</em> », envoyé une fois les
+                        7 jours passés dès le 2ᵉ échec consécutif (puis à intervalles espacés pour les crons très
+                        fréquents), et le suivi du champ <code>active</code> dans le chatter. En 19, seul le message de
+                        désactivation existait, sans avertissement préalable.</p>
+                </div>
+
+                <h3>Cause 8 : l'utilisateur du cron n'a pas les droits</h3>
+
+                <p>Le code tourne avec les droits de <code>user_id</code>, pas en superutilisateur. Le même code
+                    corrigé, confié à l'utilisateur de démonstration :</p>
+
+<pre class="language-python"><code class="language-python">cron.write({'active': True, 'user_id': env.ref('base.user_demo').id})
+print(cron.user_id.name, cron.user_id.has_group('base.group_system'))
+cron._trigger()
+env.cr.commit()</code></pre>
+
+<div class="out">Marc Demo False
+ERROR ma_base odoo.addons.base.models.ir_cron: Job 'Démo : compter les passages' (26) server action #488 failed
+…
+odoo.exceptions.AccessError: You are not allowed to access 'System Parameter' (ir.config_parameter) records.
+
+This operation is allowed for the following groups:
+	- Role / Administrator
+
+Contact your administrator to request access if necessary.</div>
+
+                <p>Le journal nomme le modèle et le groupe requis. Deux corrections possibles : un utilisateur
+                    d'exécution qui a les droits (souvent <code>base.user_root</code> dans les données d'un module),
+                    ou un <code>sudo()</code> ciblé dans la méthode appelée, pour la seule opération qui le justifie
+                    — voir <a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">l'environnement et
+                    <code>sudo</code> en Odoo 20</a>. Pense à cette cause quand un cron qui marchait s'arrête après
+                    un changement de groupes de son utilisateur.</p>
+
+                <h3>Cause 9 : l'action est déjà en cours</h3>
+
+                <p>Pendant un passage, le serveur verrouille la ligne de l'action (<code>FOR NO KEY UPDATE SKIP
+                    LOCKED</code>) : un second thread la saute, et l'interface refuse d'y toucher. Reproduit en tenant
+                    le même verrou depuis une seconde transaction, comme le ferait un cron long :</p>
+
+<pre class="language-python"><code class="language-python">cron = env['ir.cron'].browse(26)
+autre = env.registry.cursor()            # une autre transaction, comme un cron en cours
+autre.execute("SELECT id FROM ir_cron WHERE id = 26 FOR NO KEY UPDATE")
+try:
+    cron.method_direct_trigger()
+except Exception as e:
+    print(type(e).__name__, ":", e)
+try:
+    cron.write({'priority': 3})
+except Exception as e:
+    print(type(e).__name__, ":", e)
+autre.rollback(); autre.close()
+env.cr.rollback()</code></pre>
+
+<div class="out">UserError : Tâche 'Démo : compter les passages' déjà en cours d’exécution
+UserError : L'enregistrement ne peut pas être modifié à l'instant : Cette tâche 'cron' est actuellement en cours d'exécution et ne peut pas être modifiée. Veuillez réessayer dans quelques minutes</div>
+
+                <p>Si le message persiste, cherche la transaction qui tient le verrou dans
+                    <code>pg_stat_activity</code> : un cron très long, ou une session de console restée ouverte avec
+                    des écritures non validées sur les mêmes lignes. La durée d'un cron est par ailleurs bornée par
+                    <code>--limit-time-real-cron</code> (par défaut, la valeur de <code>--limit-time-real</code>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LANCER À LA MAIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lancer à la main, et ce que cela prouve</h2>
+
+                <h3>« Exécuter manuellement »</h3>
+
+                <p>Le bouton du formulaire appelle <code>method_direct_trigger()</code>. Il exécute l'action dans le
+                    processus du serveur web, sans thread cron, mais <strong>comme le planificateur</strong> : même
+                    verrou, nouveau curseur, mêmes droits (ceux de <code>user_id</code>), même comptage des échecs. Il
+                    contourne donc les causes 1 à 6 et reproduit les causes 7 à 9 :</p>
+
+<pre class="language-python"><code class="language-python">cron = env['ir.cron'].browse(26)
+res = cron.method_direct_trigger()            # utilisateur du cron : Marc Demo
+print(res['type'], res['tag'], '|', res['params']['data']['name'], '|', res['params']['data']['message'][:60])
+env.cr.commit()
+etat(env)
+cron.user_id = env.ref('base.user_admin')
+print(cron.method_direct_trigger())           # utilisateur du cron : Mitchell Admin
+env.cr.commit()
+etat(env)</code></pre>
+
+<div class="out">ir.actions.client display_exception | builtins.RuntimeError |
+active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:38:34 failure_count=2 first_failure_date=2026-10-07 08:38:17 passages=3
+True
+active=True nextcall=2026-10-08 08:33:09 lastcall=2026-10-07 08:38:34 failure_count=0 first_failure_date=False passages=4</div>
+
+                <p>En cas d'erreur, la méthode ne lève pas d'exception : elle renvoie une action
+                    <code>display_exception</code>, que l'interface affiche en fenêtre d'erreur, et l'échec
+                    <strong>compte</strong> (<code>failure_count</code> passe à 2). Le succès suivant remet tout à zéro.
+                    Lecture du diagnostic : si le bouton marche et que l'action ne passe jamais seule, le problème est
+                    côté planificateur (causes 1 à 6) ; s'il échoue, il est dans le code ou les droits.</p>
+
+                <div class="pitfall-box">
+                    <h4>Depuis la console, valide avant de déclencher</h4>
+                    <p>Le cron tourne dans sa propre transaction. Des écritures non validées de ta session sur les
+                        lignes qu'il touche le mettent en attente d'un verrou que toi seul peux relâcher :
+                        <code>env.cr.commit()</code> d'abord. Le détail est dans
+                        <a href="/blog/developpement-odoo-2/retards-cron-odoo-20-183">l'article sur le cron des retards</a>.</p>
+                </div>
+
+                <h3><code>_trigger()</code> : programmer depuis le code</h3>
+
+                <p>Quand un traitement doit suivre un événement (une commande confirmée, un fichier reçu), mieux vaut un
+                    déclencheur qu'un cron à la minute : <code>env.ref('mon_module.mon_cron')._trigger()</code> le
+                    programme dès la validation de la transaction, <code>_trigger(at=une_date)</code> plus tard, une liste
+                    de dates pour plusieurs rendez-vous. Trois règles vues plus haut : un déclenchement immédiat est ignoré sur une
+                    action inactive, <code>nextcall</code> ne bouge pas, et un serveur sans thread cron les laisse en
+                    attente.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : <code>coalesce</code>, et des passes plus longues</h4>
+                    <ul>
+                        <li><code>_trigger(at, coalesce=15)</code> (nouveau) repousse chaque déclencheur à la fin de sa
+                            fenêtre de 15 minutes : cent déclenchements rapprochés, un seul réveil.</li>
+                        <li>Un cron qui traite par lots avec <code>_commit_progress()</code> (déjà là en 19) est relancé
+                            dans la même passe tant qu'il reste du travail, au moins 10 fois et pendant au moins
+                            <strong>120 secondes</strong> (<code>MIN_TIME_PER_JOB</code>, 10 secondes en 19).</li>
+                        <li><code>_rollback_progress()</code> (nouveau) annule le lot en cours avec la même logique.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>#</th><th>Symptôme</th><th>Vérifier</th><th>Correctif</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>Aucune ligne <code>starting</code></td><td>« Actif »</td><td>Réactiver ; chercher qui l'a désactivée (6, 7)</td></tr>
+                        <tr><td>2</td><td>Aucune ligne <code>starting</code></td><td>« Prochaine date d'exécution » (UTC en base)</td><td>Corriger la date ou <code>_trigger()</code></td></tr>
+                        <tr><td>3</td><td>Pas de <code>cronN: Alive</code> au démarrage</td><td><code>max_cron_threads</code>, serveur démarré</td><td>Au moins un nœud avec des threads cron</td></tr>
+                        <tr><td>4</td><td>Rien sur cette base, tout sur les autres</td><td><code>-d</code> / <code>db_name</code> (pas <code>--db-filter</code>)</td><td>Ajouter la base à <code>-d</code></td></tr>
+                        <tr><td>5</td><td><code>Skipping database … modules to install/upgrade/remove</code></td><td>Modules en <code>to …</code></td><td>Finir ou annuler l'opération</td></tr>
+                        <tr><td>6</td><td>Bandeau « neutralisée », presque tout grisé</td><td><code>database.is_neutralized</code></td><td>Réactiver à la main, au cas par cas</td></tr>
+                        <tr><td>7</td><td><code>ERROR … server action #… failed</code></td><td>Trace, <code>failure_count</code></td><td>Corriger le code ; désactivation à 5 échecs + 7 jours</td></tr>
+                        <tr><td>8</td><td><code>AccessError</code> dans la trace</td><td><code>user_id</code>, ses groupes</td><td>Autre utilisateur ou <code>sudo()</code> ciblé</td></tr>
+                        <tr><td>9</td><td>« déjà en cours d'exécution »</td><td>Verrou, <code>pg_stat_activity</code></td><td>Attendre, ou trouver la transaction</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Une action passe si elle est active et que sa date ou un déclencheur est échu, dans une base que
+                        les threads cron visitent : la liste <code>-d</code>, ou toutes les bases du rôle sans elle.</li>
+                    <li>Le journal tranche : pas de <code>starting</code>, le planificateur ne l'a pas prise ; un
+                        <code>failed</code>, c'est le code ou les droits.</li>
+                    <li><code>lastcall</code> bouge aussi en cas d'échec : le bon indicateur est <code>failure_count</code>.</li>
+                    <li>Neutraliser une base désactive ses crons ; un module bloqué en « à mettre à jour » les suspend tous.</li>
+                    <li>Un code d'action écrit pour la 19 peut casser en 20 : <code>get_param</code> est devenu
+                        <code>get_str</code>, <code>get_int</code>, <code>get_bool</code>…</li>
+                    <li>En 20, un avertissement précède la désactivation automatique, dans le journal et dans le canal des administrateurs.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque cause reproduite le 07/10/2026 sur un serveur Odoo 20.0 (PostgreSQL 16), base de
+                    démonstration avec Ventes et Inventaire, action planifiée de test en code ; sorties de console et de
+                    journal collées telles quelles (nom de base remplacé). Comparaison avec la branche 19.0 publique
+                    relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_cron.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_cron.py</code></a> : champs, condition « prête », verrou, échecs et désactivation, <code>method_direct_trigger</code>, <code>_trigger</code>, <code>toggle</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/service/server.py" target="_blank" rel="noopener"><code>odoo/service/server.py</code></a> : threads et processus cron, <code>cron_database_list</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/data/neutralize.sql" target="_blank" rel="noopener"><code>odoo/addons/base/data/neutralize.sql</code></a> : ce que la neutralisation fait aux crons</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/ir_cron.py" target="_blank" rel="noopener"><code>addons/mail/models/ir_cron.py</code></a> : suivi des champs et notification des administrateurs</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/19.0/odoo/addons/base/models/ir_cron.py" target="_blank" rel="noopener"><code>ir_cron.py</code> en 19.0</a> : la mécanique de la version précédente</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/retards-cron-odoo-20-183">Les retards en Odoo 20 : compteurs et action planifiée</a></h5>
+                            <p class="small text-muted mb-0">Déclarer une action planifiée dans un module, idempotente et journalisée.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La console qui a servi à toutes les vérifications de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/actions-serveur-cron-automations-odoo-73">Actions serveur, cron et automations en Odoo 19</a></h5>
+                            <p class="small text-muted mb-0">Le même sujet pour la version 19, avec les actions serveur et <code>base.automation</code>.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

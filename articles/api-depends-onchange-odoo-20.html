@@ -1,0 +1,644 @@
+<!--
+Article — @api.depends ou @api.onchange : choisir, et dépanner, en Odoo 20
+Série « L'ORM Odoo 20 en pratique » (article autonome)
+Date : 2026-10-07
+Slug : api-depends-onchange-odoo-20
+Meta : @api.depends ou @api.onchange en Odoo 20 : calcul stocké, calcul modifiable, et les six raisons réelles pour lesquelles un onchange ne part pas, rejouées avec Form.
+Mot-clé cible : odoo api depends vs onchange / odoo onchange not triggered
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Preuves (base vs20_tech_o10 = copie de vs20_tech, sale_management + stock, démo native fr_FR, Odoo 20.0, PG 16) :
+- Module jetable demo_onchange (+ demo_onchange_override, installé puis désinstallé) :
+  docs/blog-odoo20/captures-base-vs20_tech/o10-depends-onchange/addons/ ; sondes p1_compute, p2_form, p3_domain,
+  p4_native (+ _override.out sans décorateur, _override_deco.out avec), p5_form_asserts, p6_keys, p7_s29 (.py/.out).
+  Sorties collées telles quelles ; seule coupe : dans la sortie p4 citée en § 5.1, la ligne WARNING
+  « @api.onchange('partner_id.city',)… » (méthode du module de démo, sans rapport) est omise.
+- odoo/odoo/orm/decorators.py:150-196 onchange (docstring : chemins pointés « not supported and will be ignored »,
+  warning type notification/dialog) ; :200-231 depends.
+- odoo/odoo/orm/models.py:594-627 _onchange_methods (getmembers sur hasattr(func, '_onchange') : une surcharge sans
+  décorateur n'est plus vue ; WARNING « parameters must be field names » :608-611) ;
+  :6485-6492 _has_onchange ; :6494-6513 _apply_onchange_methods (seules les clés 'value' et 'warning' sont lues).
+- odoo/odoo/orm/fields.py:624-633 dépendances lues sur resolve_mro (surcharge sans @depends : deps conservées).
+- odoo/odoo/addons/base/models/ir_ui_view.py:1612-1620 on_change="1" posé seulement sur les champs présents dans la vue.
+- odoo/addons/web/models/models.py:2189 onchange ; :2345 premier appel = tous les champs de la vue.
+- odoo/odoo/tests/form.py:350/369-372 assertions (absent, readonly, invisible) ; :435-437 __exit__ → save() ; :524-531 champ readonly non
+  envoyé sans force_save ; :588-590 avertissement → logger odoo.tests.form.onchange.
+- odoo/addons/stock/wizard/stock_quant_relocate.py:17 domain="dest_package_id_domain" (champ calculé).
+- odoo/addons/sale/models/sale_order.py:1303-1319 _onchange_commitment_date ; :252 domain="..." de champ.
+- Écran : serveur local, devis neuf, client Acme Corporation, avant / après enregistrement (S00029, relu en shell :
+  locked_note False, hidden_note False, invisible_note rempli) ; S00003 date de livraison 04/10 → dialogue.
+- 19.0 PUBLIQUE relue le 07/10/2026 (raw GitHub, tête 9db68e615a72, 2026-10-07T05:34Z) : _apply_onchange_methods
+  (models.py:6988-7007) et _onchange_methods (:565-577) identiques ; décorateur onchange (decorators.py:214-216)
+  même avertissement sur les chemins pointés ; web onchange : seul écart = exception res.users sur check_access ;
+  Form : mêmes assertions (:350, 369-372). AUCUN écart 19→20 sur le sujet → pas d'encadré « Venant de la 19 ».
+Captures : content/blog/screenshots/api-depends-onchange-odoo-20/ (01 formulaire, 02 dialogue, 03 Form)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">@api.depends ou @api.onchange : choisir, et dépanner, en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un champ qui se remplit tout seul : calcul ou onchange ? Le premier
+                    vit dans l'ORM et suit chaque écriture, le second ne vit que dans le formulaire. Les trois formes
+                    de calcul, ce que l'onchange sait encore faire, et les six raisons, toutes reproduites, pour
+                    lesquelles « l'onchange ne part pas ».</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Choisir</h4>
+                        <p>Calcul non stocké, <code>store=True</code>, <code>readonly=False</code>, ou
+                            <code>@api.onchange</code> : qui part quand, et depuis où.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Dépanner</h4>
+                        <p>Appel ORM, champ absent ou en lecture seule, chemin pointé, domaine renvoyé, surcharge sans
+                            décorateur : six pannes, six symptômes.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Rejouer</h4>
+                        <p><code>Form</code> de <code>odoo.tests</code> pour déclencher un onchange depuis la console
+                            ou un test, comme le ferait l'écran.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 avec l'application <strong>Ventes</strong> et ses données de démonstration.</li>
+                        <li>Un petit module de démonstration, donné en entier au § 2, qui ajoute six champs au devis
+                            (<code>sale.order</code>). L'onchange natif de la date de livraison (§ 4) se rejoue sans lui.</li>
+                        <li>La console <code>odoo-bin shell</code>, où chaque extrait a été exécuté. Elle est présentée dans
+                            <a href="/blog/developpement-odoo-2/shell-odoo-20-272">l'article sur la console</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DEUX MÉCANISMES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Deux mécanismes, deux endroits</h2>
+
+                <p>Les deux décorateurs répondent à « quand A change, mets à jour B », mais pas au même endroit.</p>
+                <ul>
+                    <li><strong><code>@api.depends</code></strong> déclare la méthode de calcul d'un champ. C'est
+                        l'<strong>ORM</strong> qui la rappelle dès qu'une dépendance change : <code>create</code>,
+                        <code>write</code>, import, appel externe, action planifiée, et aussi le formulaire.</li>
+                    <li><strong><code>@api.onchange</code></strong> déclare une réaction du <strong>formulaire</strong> :
+                        le client web l'appelle quand l'utilisateur modifie un champ, sur un enregistrement provisoire
+                        qui n'est pas encore en base. Hors formulaire, personne ne l'appelle.</li>
+                </ul>
+
+                <table class="tmc">
+                    <thead><tr><th></th><th><code>@api.depends</code> (champ calculé)</th><th><code>@api.onchange</code></th></tr></thead>
+                    <tbody>
+                        <tr><td>Déclenché par</td><td>toute écriture d'une dépendance, par n'importe quel chemin</td><td>une saisie dans un formulaire (client web, ou <code>Form</code> en test)</td></tr>
+                        <tr><td><code>create</code> / <code>write</code> en Python</td><td>oui</td><td><strong>non</strong></td></tr>
+                        <tr><td>Chemin pointé (<code>'partner_id.city'</code>)</td><td>oui</td><td><strong>non</strong> (ignoré, avec un avertissement)</td></tr>
+                        <tr><td>Peut afficher un avertissement</td><td>non</td><td>oui (<code>return {'warning': …}</code>)</td></tr>
+                        <tr><td>Écrit dans</td><td>son propre champ</td><td>n'importe quel champ du formulaire</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le module de démonstration</h2>
+
+                <p>Un module <code>demo_onchange</code> (manifeste en <code>20.0.1.0.0</code>, dépendance
+                    <code>sale</code>) hérite du devis. Trois champs calculés, un sous chaque forme, trois champs
+                    remplis par un onchange, et deux onchanges volontairement fautifs pour la suite :</p>
+<pre class="language-python"><code class="language-python">from odoo import api, fields, models
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    # 1. calcul non stocké : recalculé à chaque lecture
+    line_count = fields.Integer("Nombre de lignes", compute='_compute_line_count')
+    # 2. calcul stocké, dépendance par chemin pointé
+    partner_country = fields.Char("Pays du client", compute='_compute_partner_country', store=True)
+    # 3. calcul stocké ET modifiable : la valeur proposée peut être corrigée
+    delivery_city = fields.Char("Ville de livraison", compute='_compute_delivery_city',
+                                store=True, readonly=False)
+    # 4. champs remplis par un onchange
+    onchange_note = fields.Char("Note (onchange)")
+    hidden_note = fields.Char("Note hors vue")
+    locked_note = fields.Char("Note en lecture seule")
+    invisible_note = fields.Char("Note invisible")
+
+    @api.depends('order_line')
+    def _compute_line_count(self):
+        for order in self:
+            order.line_count = len(order.order_line)
+
+    @api.depends('partner_id.country_id')
+    def _compute_partner_country(self):
+        for order in self:
+            order.partner_country = order.partner_id.country_id.name
+
+    @api.depends('partner_id')
+    def _compute_delivery_city(self):
+        for order in self:
+            order.delivery_city = order.partner_id.city
+
+    @api.onchange('partner_id')
+    def _onchange_partner_note(self):
+        self.onchange_note = f"Client choisi : {self.partner_id.name}"
+        self.hidden_note = f"Client choisi : {self.partner_id.name}"
+        self.locked_note = f"Client choisi : {self.partner_id.name}"
+        self.invisible_note = f"Client choisi : {self.partner_id.name}"
+
+    @api.onchange('partner_id.city')            # fautif : chemin pointé
+    def _onchange_partner_city(self):
+        self.onchange_note = "La ville du client a changé"
+
+    @api.onchange('partner_id')                 # fautif : renvoie un domaine
+    def _onchange_partner_domain(self):
+        return {'domain': {'user_id': [('id', '=', self.env.uid)]}}</code></pre>
+
+                <p>La vue ajoute cinq de ces champs sous le client. <code>hidden_note</code> n'y figure pas,
+                    <code>locked_note</code> y est en lecture seule, <code>invisible_note</code> y est masqué :</p>
+<pre class="language-markup"><code class="language-markup">&lt;xpath expr="//field[@name='partner_id']" position="after"&gt;
+    &lt;field name="partner_country"/&gt;
+    &lt;field name="delivery_city"/&gt;
+    &lt;field name="onchange_note"/&gt;
+    &lt;field name="locked_note" readonly="1"/&gt;
+    &lt;field name="invisible_note" invisible="1"/&gt;
+    &lt;field name="line_count"/&gt;
+&lt;/xpath&gt;</code></pre>
+                <p>Rien à déclarer dans <code>ir.access.csv</code> : le module n'ajoute aucun modèle, seulement des
+                    champs sur un modèle qui a déjà ses droits.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. TROIS FORMES DE CALCUL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les trois formes d'un champ calculé</h2>
+
+                <p>Tout se passe en Python, sans formulaire : un devis pour Acme Corporation, une correction à la
+                    main, un changement de client, puis un changement de pays chez ce client.</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+acme = env['res.partner'].browse(10)
+gemini = env['res.partner'].browse(11)
+order = SO.create({'partner_id': acme.id})
+print("create :", order.partner_country, "|", order.delivery_city, "|", order.onchange_note)
+order.delivery_city = 'Oakland'
+print("saisie :", order.delivery_city)
+order.partner_id = gemini
+print("write  :", order.partner_country, "|", order.delivery_city, "|", order.onchange_note)
+gemini.country_id = env.ref('base.it')
+print("pays   :", order.partner_country)
+env.flush_all()
+env.cr.execute("SELECT partner_country, delivery_city FROM sale_order WHERE id = %s", [order.id])
+print("SQL    :", env.cr.fetchone())</code></pre>
+<div class="out">create : États-Unis | Pleasant Hill | False
+saisie : Oakland
+write  : Saint-Marin | Serravalle | False
+pays   : Italie
+SQL    : ('Italie', 'Serravalle')</div>
+
+                <p>Ligne par ligne :</p>
+                <ul>
+                    <li><strong><code>create</code></strong> a calculé le pays et la ville. La note, elle, est vide :
+                        <code>_onchange_partner_note</code> n'a pas été appelé. C'est la première cause du § 5.</li>
+                    <li><strong>Saisie</strong> : <code>delivery_city</code> est <code>readonly=False</code>, la valeur
+                        tapée est gardée et stockée.</li>
+                    <li><strong>Changement de client</strong> : la dépendance <code>partner_id</code> a changé, le calcul
+                        repart et <strong>écrase</strong> « Oakland » par Serravalle. C'est le contrat du calcul
+                        modifiable : une valeur proposée, que l'utilisateur peut corriger, jusqu'au prochain changement
+                        de ce dont elle dépend.</li>
+                    <li><strong>Pays</strong> : le devis n'a pas été touché, seul le client l'a été. La dépendance
+                        pointée <code>partner_id.country_id</code> suffit pour que l'ORM recalcule
+                        <code>partner_country</code> de toutes les commandes de ce client, et la ligne SQL montre la
+                        valeur stockée en base.</li>
+                </ul>
+
+                <p>Le champ non stocké, lui, est calculé à la lecture, et n'existe pas pour SQL :</p>
+<pre class="language-python"><code class="language-python">print("lignes :", order.line_count)
+env['sale.order.line'].create({'order_id': order.id, 'product_id': env.ref('product.product_product_4').id})
+print("lignes :", order.line_count)
+print("Italie :", SO.search_count([('partner_country', '=', 'Italie')]))
+print(SO.search_count([('line_count', '&gt;', 0)]))</code></pre>
+<div class="out">lignes : 0
+lignes : 1
+Italie : 18
+ValueError : Field has no SQL representation because it is not stored in condition ('line_count', '&gt;', 0)</div>
+                <p>Les 18 commandes de Gemini Furniture (17 de la démonstration et le devis neuf) sont désormais
+                    « Italie » en base, et on peut chercher dessus. Chercher sur <code>line_count</code> lève une erreur :
+                    un calcul non stocké se recherche seulement si on lui écrit une méthode <code>search=</code>.</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Déclaration</th><th>Recalcul</th><th>Recherche, tri, regroupement</th><th>Saisie</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>compute=</code></td><td>à chaque lecture</td><td>non (sauf <code>search=</code>)</td><td>non</td></tr>
+                        <tr><td><code>compute=, store=True</code></td><td>quand une dépendance change, puis stocké</td><td>oui</td><td>non</td></tr>
+                        <tr><td><code>compute=, store=True, readonly=False</code></td><td>idem ; une saisie est gardée jusqu'au prochain changement d'une dépendance</td><td>oui</td><td>oui</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="pitfall-box">
+                    <h4>Le calcul modifiable remplace la plupart des onchange</h4>
+                    <p>« Quand le client change, propose sa ville » s'écrivait autrefois en onchange. En calcul stocké
+                        modifiable, la même règle s'applique aussi à un devis créé par import, par l'API ou par une autre
+                        méthode, et l'utilisateur garde la main. C'est la forme qu'utilise Odoo lui-même :
+                        <code>price_unit</code> et <code>name</code> des lignes de commande sont des calculs stockés
+                        <code>readonly=False</code> (<code>addons/sale/models/sale_order_line.py</code>). Réserver
+                        <code>@api.onchange</code> à ce qui n'a de sens qu'à l'écran : un avertissement, ou une
+                        modification qui ne doit jamais se produire hors saisie.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. L'ONCHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que fait un onchange, à l'écran</h2>
+
+                <p>Dans le formulaire d'un devis neuf, choisir Acme Corporation déclenche à la fois l'onchange et les
+                    calculs dont un champ est affiché : pays, ville et notes se remplissent avant tout enregistrement.
+                    Puis on enregistre :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Deux états du même devis : à gauche, client Acme Corporation choisi, formulaire non enregistré : Pays du client États-Unis, Ville de livraison Pleasant Hill, Note (onchange) et Note en lecture seule valent Client choisi : Acme Corporation ; à droite, après enregistrement du devis S00029, la Note en lecture seule est vide, les autres champs sont inchangés"/>
+                    <figcaption>À gauche, l'onchange a rempli les deux notes. À droite, après enregistrement : la note en lecture seule a disparu.</figcaption>
+                </figure>
+
+                <p>La note en lecture seule était bien remplie à l'écran, puis elle est perdue à l'enregistrement : c'est
+                    l'une des pannes du § 5. Avant d'y venir, l'autre usage de l'onchange, celui qu'aucun calcul ne
+                    remplace : prévenir l'utilisateur. Odoo l'utilise sur le devis
+                    (<code>addons/sale/models/sale_order.py</code>) :</p>
+<pre class="language-python"><code class="language-python">@api.onchange("commitment_date", "expected_date")
+def _onchange_commitment_date(self):
+    """Warn if the commitment dates is sooner than the expected date."""
+    if (
+        self.commitment_date
+        and self.expected_date
+        and self.commitment_date &lt; self.expected_date
+    ):
+        return {
+            "warning": {
+                "title": self.env._("Requested date is too soon."),
+                "message": self.env._(
+                    "The delivery date is sooner than the expected date."
+                    " You may be unable to honor the delivery date."
+                ),
+            }
+        }</code></pre>
+
+                <p>Sur le devis S00003 de la démonstration, saisir une date de livraison antérieure à la date prévue
+                    ouvre ce dialogue :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Devis S00003 : la date de livraison vaut 4 oct., 10:00 ; un dialogue s'ouvre, titre La date demandée est trop proche., message La date de livraison est antérieure à la date prévue. Vous ne pourrez peut-être pas honorer la date de livraison., bouton Fermer"/>
+                    <figcaption>Le <code>return {'warning': …}</code> de l'onchange natif, traduit, affiché en dialogue.</figcaption>
+                </figure>
+                <p>Avec <code>'type': 'notification'</code> dans le dictionnaire <code>warning</code>, le même message
+                    s'affiche en notification au lieu d'un dialogue (docstring de <code>api.onchange</code>,
+                    <code>odoo/orm/decorators.py</code>). Le dialogue n'empêche rien : la date reste saisie.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. POURQUOI IL NE PART PAS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. « L'onchange ne part pas » : six causes</h2>
+
+                <h3>5.1 Le code passe par <code>create</code> ou <code>write</code></h3>
+                <p>La cause la plus fréquente, et ce n'est pas un défaut. Le même devis S00003, la même date trop
+                    proche, d'abord par <code>write</code>, puis par un formulaire simulé :</p>
+<pre class="language-python"><code class="language-python">import datetime
+from odoo.tests import Form
+order = env['sale.order'].search([('name', '=', 'S00003')])
+print(order.name, order.expected_date)
+early = order.expected_date - datetime.timedelta(days=3)
+order.write({'commitment_date': early})
+print("write :", order.commitment_date)
+with Form(order) as f:
+    f.commitment_date = early - datetime.timedelta(days=1)</code></pre>
+<div class="out">S00003 2026-10-07 08:33:44
+write : 2026-10-04 08:33:44
+2026-10-07 08:33:45,181 1043405 WARNING ma_base odoo.tests.form.onchange: La date demandée est trop proche. La date de livraison est antérieure à la date prévue. Vous ne pourrez peut-être pas honorer la date de livraison.</div>
+                <p>Le <code>write</code> enregistre la date sans un mot ; seul le formulaire produit l'avertissement.
+                    Au § 3, <code>create</code> avait laissé <code>onchange_note</code> vide pour la même raison.
+                    Remède : si la valeur doit suivre en toutes circonstances, en faire un calcul (§ 3) ; si c'est un
+                    contrôle, une contrainte <code>@api.constrains</code>. Appeler la méthode d'onchange à la main
+                    depuis du code serveur est un contournement fragile : elle est écrite pour un enregistrement
+                    provisoire.</p>
+
+                <h3>5.2 Le champ n'est pas dans la vue</h3>
+                <p>Deux variantes. Le champ <strong>déclencheur</strong> : à l'affichage, Odoo pose
+                    <code>on_change="1"</code> sur les champs <em>présents</em> dans la vue qui ont un onchange ou dont
+                    dépend un calcul affiché (<code>odoo/addons/base/models/ir_ui_view.py</code>). Le champ
+                    <strong>cible</strong> : le formulaire ne demande au serveur que les champs de la vue, et n'enregistre
+                    que ceux-là. <code>hidden_note</code>, rempli par l'onchange mais absent de la vue, finit vide
+                    (sortie au § 6). Remède : ajouter le champ à la vue, invisible si besoin.</p>
+
+                <h3>5.3 Le champ cible est en lecture seule dans la vue</h3>
+                <p>La capture du § 4 le montre : <code>locked_note</code> s'affiche, puis disparaît à
+                    l'enregistrement. Le client web n'envoie pas un champ en lecture seule, et le devis S00029 relu en
+                    console le confirme :</p>
+<div class="out">S00029 | Client choisi : Acme Corporation | Client choisi : Acme Corporation | False | False</div>
+                <p>Dans l'ordre : <code>onchange_note</code>, <code>invisible_note</code>, <code>locked_note</code>,
+                    <code>hidden_note</code>. Remède : <code>force_save="1"</code> sur le champ dans la vue, ou mieux,
+                    un calcul stocké (§ 3), qui se recalcule de toute façon à l'enregistrement.</p>
+                <p>Le champ <strong>invisible</strong>, à l'inverse, n'est pas une cause : <code>invisible_note</code>
+                    est bien enregistré. Masquer un champ ne l'empêche pas de recevoir la valeur d'un onchange ; c'est
+                    justement le remède du § 5.2.</p>
+
+                <h3>5.4 <code>@api.onchange('partner_id.city')</code> : un chemin pointé</h3>
+                <p>Le décorateur n'accepte que des noms de champs du modèle. Un chemin pointé ne lève pas d'erreur : il
+                    produit une ligne dans le journal, au premier formulaire ouvert sur le modèle, et la méthode ne part
+                    jamais.</p>
+<div class="out">2026-10-07 08:32:43,685 1037635 WARNING ma_base odoo.models: @api.onchange('partner_id.city',) parameters must be field names -&gt; not valid: ['partner_id.city']</div>
+                <p>La raison se lit dans la table des onchanges du modèle : la méthode est rangée sous la clé
+                    <code>'partner_id.city'</code>, un nom qu'aucun formulaire n'envoie jamais.</p>
+<pre class="language-python"><code class="language-python">methods = env['sale.order']._onchange_methods
+for key in ('partner_id', 'partner_id.city'):
+    print(key, '-&gt;', [getattr(m, '__name__', 'change_default') for m in methods.get(key, [])])</code></pre>
+<div class="out">partner_id -&gt; ['_onchange_partner_domain', '_onchange_partner_id', '_onchange_partner_note', 'change_default']
+partner_id.city -&gt; ['_onchange_partner_city']</div>
+                <p>Remède : réagir au champ du modèle (<code>@api.onchange('partner_id')</code>), ou, si la ville du
+                    client peut changer ailleurs, passer en calcul : <code>@api.depends</code>, lui, accepte les chemins
+                    pointés, comme <code>partner_country</code> au § 3.</p>
+
+                <h3>5.5 La méthode renvoie un domaine</h3>
+                <p><code>return {'domain': {…}}</code> pour restreindre un autre champ se rencontre encore dans du code
+                    ancien. En Odoo 20, la valeur de retour d'un onchange n'est lue que pour deux clés,
+                    <code>'value'</code> et <code>'warning'</code> (<code>_apply_onchange_methods</code>,
+                    <code>odoo/orm/models.py</code>) : le reste est ignoré, sans erreur ni avertissement. Appel direct de
+                    la méthode que le client web utilise :</p>
+<pre class="language-python"><code class="language-python">spec = {'partner_id': {}, 'onchange_note': {}}
+res = env['sale.order'].onchange({'partner_id': 10}, ['partner_id'], spec)
+print(sorted(res))
+print(res['value'])</code></pre>
+<div class="out">['value']
+{'onchange_note': 'Client choisi : Acme Corporation'}</div>
+                <p>Aucune clé <code>domain</code> dans la réponse. Remède : le domaine se déclare sur le champ, sous
+                    forme de chaîne évaluée par le client avec les valeurs du formulaire. Odoo le fait sur le devis :
+                    <code>domain="['|', ('company_id', '=', False), ('company_id', '=', company_id)]"</code>
+                    (<code>addons/sale/models/sale_order.py</code>). Pour une règle plus complexe, un champ calculé
+                    qui produit le domaine, référencé par son nom : <code>domain="dest_package_id_domain"</code>
+                    (<code>addons/stock/wizard/stock_quant_relocate.py</code>).</p>
+
+                <h3>5.6 La méthode est surchargée sans son décorateur</h3>
+                <p>Plus sournois. Un module qui surcharge <code>_onchange_commitment_date</code> pour y ajouter une
+                    règle, mais oublie de recopier le décorateur :</p>
+<pre class="language-python"><code class="language-python">class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    def _onchange_commitment_date(self):   # surcharge SANS @api.onchange
+        return super()._onchange_commitment_date()</code></pre>
+                <p>Le scénario du § 5.1 rejoué avec ce module installé :</p>
+<div class="out">S00003 2026-10-07 08:29:20
+write : 2026-10-04 08:29:20</div>
+                <p>Plus d'avertissement, même par le formulaire. Odoo repère les onchanges en cherchant, sur la classe
+                    finale du modèle, les méthodes qui portent la marque du décorateur
+                    (<code>_onchange_methods</code>, <code>odoo/orm/models.py</code>) : la surcharge masque l'originale,
+                    et elle n'a pas la marque. Remède : recopier le décorateur, avec les mêmes champs,
+                    <code>@api.onchange("commitment_date", "expected_date")</code> ; le message revient.
+                    <code>@api.depends</code>, lui, ne craint pas ce piège : les dépendances sont lues sur toutes les
+                    définitions de la méthode de calcul le long de l'héritage (<code>resolve_mro</code>,
+                    <code>odoo/orm/fields.py</code>), une surcharge nue les conserve.</p>
+
+                <div class="pitfall-box">
+                    <h4>L'inverse : un onchange qui part trop tôt</h4>
+                    <p>À l'ouverture d'un formulaire neuf, le client web lance tous les onchanges de la vue, avant toute
+                        saisie (premier appel de <code>onchange</code>, <code>addons/web/models/models.py</code>). La
+                        méthode tourne donc avec un client vide, d'où « Client choisi : False » au § 6. Commencer par
+                        <code>if not self.partner_id: return</code> quand la valeur n'a de sens qu'une fois le champ rempli.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. FORM ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Rejouer un onchange avec <code>Form</code></h2>
+
+                <p><code>Form</code>, du paquet <code>odoo.tests</code>, simule le formulaire : il charge la vue,
+                    appelle <code>onchange</code> à chaque affectation et n'enregistre que ce qu'enverrait le client web.
+                    Il marche aussi bien dans un test que dans la console :</p>
+<pre class="language-python"><code class="language-python">from odoo.tests import Form
+f = Form(env['sale.order'])
+print("avant  :", f.onchange_note, "|", f.delivery_city, "|", f.locked_note)
+f.partner_id = env['res.partner'].browse(10)     # Acme Corporation
+print("après  :", f.onchange_note, "|", f.delivery_city, "|", f.locked_note)
+order = f.save()
+for name in ('onchange_note', 'invisible_note', 'locked_note', 'hidden_note'):
+    print(name, "=", order[name])</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : Form(env['sale.order']) affiche l'avertissement @api.onchange('partner_id.city',) parameters must be field names ; avant : Client choisi : False | False | Client choisi : False ; après choix d'Acme Corporation : Client choisi : Acme Corporation | Pleasant Hill | Client choisi : Acme Corporation ; après save : onchange_note et invisible_note remplis, locked_note = False, hidden_note = False"/>
+                    <figcaption>Le formulaire simulé reproduit l'écran : l'avertissement du chemin pointé, l'onchange lancé dès l'ouverture, puis les deux notes perdues à l'enregistrement.</figcaption>
+                </figure>
+
+                <p>Tout y est : la ligne du § 5.4, l'onchange lancé à vide, puis les champs en lecture seule et hors vue
+                    vides après <code>save()</code>, exactement comme dans le navigateur. <code>Form</code> refuse en
+                    outre ce que l'utilisateur ne pourrait pas faire, et ses messages nomment la cause :</p>
+<div class="out">AssertionError: 'hidden_note' was not found in the view
+AssertionError: can't write on readonly field 'locked_note'
+AssertionError: can't write on invisible field 'invisible_note'</div>
+                <p>Un avertissement renvoyé par un onchange arrive dans le journal, sous
+                    <code>odoo.tests.form.onchange</code> (§ 5.1). Dans un test, <code>self.assertLogs</code> sur ce
+                    nom vérifie qu'il est bien émis. <code>Form(order)</code> sur un enregistrement existant le passe en
+                    édition ; <code>with Form(…) as f:</code> enregistre à la sortie du bloc. Les tests eux-mêmes sont
+                    présentés dans
+                    <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">l'article sur les tests automatisés</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. DÉCISION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Tableau de décision</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Écrire</th></tr></thead>
+                    <tbody>
+                        <tr><td>Une valeur toujours déduite d'autres champs, affichée seulement</td><td><code>compute=</code>, non stocké</td></tr>
+                        <tr><td>La même, mais recherchée, triée, regroupée, ou lue par un rapport</td><td><code>compute=, store=True</code></td></tr>
+                        <tr><td>Une valeur proposée que l'utilisateur peut corriger</td><td><code>compute=, store=True, readonly=False</code></td></tr>
+                        <tr><td>Suivre un champ d'un enregistrement lié (<code>partner_id.city</code>)</td><td><code>@api.depends('partner_id.city')</code>, jamais <code>@api.onchange</code></td></tr>
+                        <tr><td>Prévenir l'utilisateur pendant la saisie</td><td><code>@api.onchange</code> + <code>return {'warning': {…}}</code></td></tr>
+                        <tr><td>Refuser un enregistrement incohérent, quel que soit le chemin</td><td><code>@api.constrains</code></td></tr>
+                        <tr><td>Restreindre les choix d'un champ selon un autre</td><td><code>domain="[…]"</code> sur le champ</td></tr>
+                        <tr><td>Modifier un champ seulement quand un humain saisit</td><td><code>@api.onchange</code>, champ cible présent et modifiable dans la vue</td></tr>
+                    </tbody>
+                </table>
+
+                <table class="tmc">
+                    <thead><tr><th>Symptôme</th><th>Cause</th></tr></thead>
+                    <tbody>
+                        <tr><td>Marche à l'écran, pas par import, API ou script</td><td>onchange : <code>create</code>/<code>write</code> ne l'appellent pas (5.1)</td></tr>
+                        <tr><td>Valeur visible à l'écran, perdue à l'enregistrement</td><td>champ cible en lecture seule sans <code>force_save</code> (5.3) ou absent de la vue (5.2)</td></tr>
+                        <tr><td>Ligne <code>parameters must be field names</code> au démarrage d'un formulaire</td><td>chemin pointé dans <code>@api.onchange</code> (5.4)</td></tr>
+                        <tr><td>Le domaine renvoyé n'a aucun effet</td><td>clé <code>domain</code> ignorée (5.5)</td></tr>
+                        <tr><td>Un onchange natif a disparu après installation d'un module</td><td>surcharge sans décorateur (5.6)</td></tr>
+                        <tr><td>La méthode tourne avec des champs vides</td><td>appel à l'ouverture du formulaire (encadré du § 5)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>@api.depends</code> appartient à l'ORM : chaque écriture d'une dépendance, par n'importe quel chemin, relance le calcul ; les chemins pointés sont acceptés.</li>
+                    <li><code>@api.onchange</code> appartient au formulaire : ni <code>create</code> ni <code>write</code> ne l'appellent.</li>
+                    <li>Un calcul <code>store=True, readonly=False</code> remplace la plupart des onchange qui proposent une valeur.</li>
+                    <li>Un onchange n'écrit que dans les champs présents et modifiables de la vue (ou <code>force_save="1"</code>) ; un champ invisible convient.</li>
+                    <li>Chemin pointé ignoré avec un avertissement, <code>domain</code> renvoyé ignoré sans un mot, surcharge sans décorateur : l'onchange ne part plus.</li>
+                    <li><code>Form</code> de <code>odoo.tests</code> rejoue tout cela depuis la console ou un test. Ce comportement est le même en 19 : le code concerné n'a pas changé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration avec Ventes, et le formulaire capturé sur la même base.
+                    Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/decorators.py" target="_blank" rel="noopener"><code>odoo/orm/decorators.py</code></a> : <code>onchange</code>, <code>depends</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>_onchange_methods</code>, <code>_has_onchange</code>, <code>_apply_onchange_methods</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/models/models.py" target="_blank" rel="noopener"><code>addons/web/models/models.py</code></a> : <code>onchange</code>, appelé par le client web</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_ui_view.py</code></a> : l'attribut <code>on_change</code> posé sur les champs de la vue</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tests/form.py" target="_blank" rel="noopener"><code>odoo/tests/form.py</code></a> : <code>Form</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/models/sale_order.py" target="_blank" rel="noopener"><code>addons/sale/models/sale_order.py</code></a> : <code>_onchange_commitment_date</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les écritures qui déclenchent les calculs, et pas les onchanges.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/heritage-vues-odoo-20-192">Héritage de vues en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Ajouter un champ à une vue existante avec <code>xpath</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à toutes les vérifications de cet article.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

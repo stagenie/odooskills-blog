@@ -1,0 +1,605 @@
+<!--
+Article — Copier la prod en base de test Odoo 20 : db dump, load, neutralize
+Série « La ligne de commande Odoo 20 » (blog Développement)
+Date : 2026-10-07
+Slug : copier-prod-base-test-odoo-20
+Mot-clé cible : odoo test database / odoo duplicate database / odoo neutralize
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16, base de démonstration (sale_management + stock, fr_FR,
+71 modules après payment_custom), rendue « comme une prod » avec des valeurs fictives (prepare_prod.py : serveur SMTP
+smtp.example.com avec identifiants, relève IMAP en état « done », modèle de courriel de devis forcé sur ce serveur, action
+webhook, Virement bancaire en réel et publié, clés web push générées, compte IAP). Copies jetables supprimées ensuite.
+Preuves (docs/blog-odoo20/captures-base-vs20_tech/c3-base-test/) :
+  - help_db*.txt, help_neutralize.txt : sous-commandes init, load, dump, duplicate, rename, drop ; options de load -f, -n, --move.
+  - dump.log (1,13 s), zip 13,1 Mo = dump.sql 24,6 Mo (SQL texte) + manifest.json + filestore (14 Mo) ; --no-filestore 2,6 Mo ;
+    --format dump 5,8 Mo (PostgreSQL custom database dump). odoo/modules/db.py:565-613 (filestore copié, manifest, pg_dump --no-owner).
+  - load_pgdump.log : load d'un .dump → « Not a zipped dump file, use `pg_restore`… », rc 1, alors que l'aide dit « zip or pg_dump
+    file » (cli/db.py:121 / :227-229 ; identique dans la 19.0 publique :123 / :232-234).
+  - load_n.log (6,0 s) : ordre psql → neutralisation → registre → init(force) si copie → filestore (odoo/modules/db.py:616-667).
+    Lignes « Connection to the database failed » en INFO = test d'existence.
+  - etat_source / etat_copie_n / etat_move / etat_move_n / etat_dup_* : uuid, secret (empreinte), web.base.url (http://localhost:<http_port>,
+    ir_config_parameter.py:27) régénérés par load et duplicate ; --move les garde ; --move -n → secret « dummysecret ».
+  - neutralize_stdout.sql : 5 fichiers sur la base (base, iap, mail, payment, web) ; ordre non trié (neutralize.py:18-24, sans ORDER BY).
+    77 modules ont un data/neutralize.sql en 20 (neutralize_modules_20.txt), 77 dans la 19.0 publique (liste différente).
+  - fig02 (fig03.txt) : resume.py avant/après neutralize en place sur une copie dupliquée ; 23 → 1 tâches actives sur 26.
+  - verifier_sortie.txt : requêtes SQL sur source et copie. verif_copie.txt : relève réactivée → tâche « Mail: Fetchmail Service »
+    reste inactive (ir_cron.py:736-742 toggle + get_bool is_neutralized) ; courriel → exception « -2 / Nom ou service inconnu ».
+  - session_source.log : db duplicate coupe une session psql ouverte sur la SOURCE (FATAL: terminating connection due to
+    administrator command) — _drop_conn (modules/db.py:487), idem 19.0 publique service/db.py:193.
+  - drop_*.log : drop d'une base absente → traceback psycopg2 InvalidCatalogName, rc 1 ; 19.0 publique cli/db.py:253-255
+    « Database X does not exist. ».
+  - etat_copie2_double_n.txt : load -n d'un dump déjà neutralisé → 2 serveurs leurres (1 archivé, 1 actif).
+  - Gestionnaire de bases : web/static/src/public/database_manager.qweb.html:144-146 (Restore) et :227-229 (Duplicate), case
+    « Neutralize » ; web/controllers/database.py:186,266.
+  - Cron sur toutes les bases : odoo/service/server.py:112-114 cron_database_list = db_name ou list_dbs(force=True).
+19.0 publique (9db68e61, raw GitHub 07/10) — v19pub/ :
+  - base/data/neutralize.sql : pas de remplacement de database.secret (20 :35-38) ; is_neutralized écrit true (20 : 'True').
+    smtp_user/smtp_pass vidés AUSSI en 19 publique → pas un écart.
+  - payment/data/neutralize.sql : 19 SET state = 'disabled' WHERE state NOT IN ('test','disabled') ; 20 SET is_live = False
+    (champ state supprimé, payment_provider.py:39). iap, mail, web : identiques. odoo/cli/neutralize.py, odoo/modules/neutralize.py identiques.
+  - cli/db.py : mêmes 6 sous-commandes, load --move présent → pas un écart.
+Captures : content/blog/screenshots/copier-prod-base-test-odoo-20/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</h1>
+                <p class="lead mt-3 text-white">Une copie de production qui garde ses tâches planifiées, son serveur de
+                    courriel et ses fournisseurs de paiement en mode réel peut écrire à de vrais clients. Odoo 20 fournit
+                    tout ce qu'il faut en ligne de commande : <code>odoo-bin db dump</code>, <code>db load -n</code> et
+                    <code>odoo-bin neutralize</code>. Voici ce que chacun fait réellement, ce que la neutralisation coupe
+                    sur une base Ventes et Inventaire, et comment le vérifier.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Copier</h4>
+                        <p><code>db dump</code> en zip (filestore compris), <code>db load</code> sous un autre nom, <code>db duplicate</code> et ses limites.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Neutraliser</h4>
+                        <p>La liste réelle de ce que coupe <code>-n</code> / <code>odoo-bin neutralize</code>, module par module, et le SQL exécuté.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Vérifier</h4>
+                        <p>Le bandeau rouge, quatre requêtes SQL et un courriel d'essai : la preuve que la copie ne parle plus au monde extérieur.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 installé avec son <code>odoo.conf</code> (accès PostgreSQL, <code>data_dir</code>) : voir
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a>.</li>
+                        <li>Une base appelée ici <code>ma_base</code> joue la production : démonstration Ventes et Inventaire en
+                            français, à laquelle ont été ajoutés un serveur SMTP avec identifiants, une boîte de relève IMAP, un
+                            modèle de courriel forcé sur ce serveur, une action webhook et le Virement bancaire en mode réel. Toutes les
+                            valeurs sont fictives (<code>smtp.example.com</code>, <code>imap.example.com</code>…).</li>
+                        <li>Les commandes sont lancées depuis le dossier des sources (<code>./odoo-bin</code>). Les copies s'appellent
+                            <code>ma_base_test</code> et <code>ma_base_essai</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. db ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La sous-commande <code>odoo-bin db</code></h2>
+
+                <p>C'est le gestionnaire de bases de l'écran <code>/web/database/manager</code>, en ligne de commande. Ses six
+                    opérations, telles que les liste <code>./odoo-bin db --help</code> :</p>
+<div class="out">positional arguments:
+  {init,load,dump,duplicate,rename,drop}
+    init                Create and initialize a database
+    load                Load a dump file.
+    dump                Create a dump with filestore.
+    duplicate           Duplicate a database including filestore.
+    rename              Rename a database including filestore.
+    drop                Delete a database including filestore</div>
+
+                <p>« Filestore » revient partout : les pièces jointes ne sont pas dans PostgreSQL mais dans le dossier
+                    <code>filestore/&lt;nom de la base&gt;</code> du <code>data_dir</code>. Une copie faite avec <code>pg_dump</code>
+                    seul donne une base dont les images et les PDF sont introuvables ; les commandes <code>db</code> déplacent
+                    les deux ensemble.</p>
+
+                <p>Deux règles de syntaxe :</p>
+                <ul>
+                    <li>les options générales se placent <strong>avant</strong> l'opération :
+                        <code>./odoo-bin db -c odoo.conf dump …</code>, pas <code>db dump -c odoo.conf</code> ;</li>
+                    <li><code>db</code> n'accepte que <code>-c</code>, <code>-D</code> (dossier de données), <code>--addons-path</code>
+                        et les options PostgreSQL (<code>-r</code>, <code>-w</code>, <code>--db_host</code>, <code>--db_port</code>,
+                        <code>--pg_path</code>, <code>--db_sslmode</code>). Le reste vient du fichier de configuration.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. dump ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Sauvegarder : <code>db dump</code></h2>
+
+<pre class="language-bash"><code class="language-bash">./odoo-bin db -c odoo.conf dump ma_base prod.zip</code></pre>
+
+                <p>Sur la base de démonstration (71 modules, 14 Mo de filestore), la commande a pris 1,1 s. Le zip contient
+                    trois choses :</p>
+<div class="out">  Length      Date    Time    Name
+---------  ---------- -----   ----
+ 24607803  2026-10-07 08:29   dump.sql
+     2841  2026-10-07 08:29   manifest.json
+     2855  2026-10-07 06:16   filestore/35/35d3dbae2b787dbbe1154b164c49641f530c8b1d
+…</div>
+                <ul>
+                    <li><code>dump.sql</code> : un <code>pg_dump --no-owner</code> en SQL texte, sans propriétaire, rechargeable
+                        par un autre rôle PostgreSQL ;</li>
+                    <li><code>manifest.json</code> : nom de la base, version d'Odoo (<code>20.0</code>), version de PostgreSQL et
+                        liste des modules installés avec leur version ;</li>
+                    <li><code>filestore/</code> : les fichiers des pièces jointes.</li>
+                </ul>
+
+                <table class="tmc">
+                    <thead><tr><th>Variante</th><th>Contenu</th><th>Taille mesurée</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>dump ma_base prod.zip</code></td><td>SQL + manifeste + filestore</td><td>13,1 Mo</td></tr>
+                        <tr><td><code>dump --no-filestore ma_base prod.zip</code></td><td>SQL + manifeste</td><td>2,6 Mo</td></tr>
+                        <tr><td><code>dump --format dump ma_base prod.dump</code></td><td>format personnalisé de <code>pg_dump</code>, sans filestore</td><td>5,8 Mo</td></tr>
+                        <tr><td><code>dump ma_base</code> (sans chemin) ou <code>-</code></td><td>zip écrit sur la sortie standard</td><td>—</td></tr>
+                    </tbody>
+                </table>
+
+                <p>La sauvegarde ne bloque pas la production : <code>pg_dump</code> lit un instantané cohérent pendant que le
+                    service continue. Le filestore, lui, est copié juste <strong>avant</strong> le SQL (<code>odoo/modules/db.py</code>,
+                    fonction <code>dump</code>) : un fichier joint pendant la copie peut manquer dans le zip, sans conséquence
+                    pour une base de test.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. load ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Charger sous un autre nom : <code>db load -n</code></h2>
+
+<pre class="language-bash"><code class="language-bash">./odoo-bin db -c odoo.conf load -n ma_base_test prod.zip</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : db dump ma_base prod.zip écrit DUMP DB: ma_base format zip with filestore ; ls -lh montre un fichier de 14M ; db load -n ma_base_test prod.zip écrit RESTORING DB, Neutralization finished, charge 71 modules puis RESTORE DB: ma_base_test"/>
+                    <figcaption>Sauvegarde puis chargement neutralisé : la ligne « Neutralization finished » arrive avant le chargement des modules.</figcaption>
+                </figure>
+
+                <p>Ce que dit le journal, dans l'ordre (<code>odoo/modules/db.py</code>, fonction <code>restore</code>) :</p>
+                <ol>
+                    <li>les deux lignes <code>Connection to the database failed</code> en <code>INFO</code> ne sont pas des
+                        erreurs : Odoo vérifie que la base cible n'existe pas encore ;</li>
+                    <li>création d'une base vide, puis <code>psql</code> rejoue <code>dump.sql</code> ;</li>
+                    <li><strong>neutralisation</strong>, avant que la base ne soit visible des tâches planifiées ;</li>
+                    <li>chargement du registre, puis nouvelle identité de base (voir le tableau) ;</li>
+                    <li>déplacement du filestore dans le <code>data_dir</code> du fichier <code>-c</code>.</li>
+                </ol>
+                <p>Le tout a pris 6,0 s.</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Option de <code>load</code></th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>-n</code>, <code>--neutralize</code></td><td>neutralise la copie (section 4)</td></tr>
+                        <tr><td><code>-f</code>, <code>--force</code></td><td>supprime d'abord une base existante du même nom, filestore compris</td></tr>
+                        <tr><td><code>--move</code></td><td>garde <code>database.uuid</code> et <code>database.secret</code> de la source</td></tr>
+                        <tr><td>nom omis</td><td>la base prend le nom du fichier sans extension : <code>load prod.zip</code> crée… une base <code>prod</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Sans <code>--move</code>, la copie reçoit une nouvelle identité. Relevé sur la source et sur la copie :</p>
+                <table class="tmc">
+                    <thead><tr><th>Paramètre système</th><th><code>ma_base</code></th><th><code>ma_base_test</code> (<code>load -n</code>)</th><th><code>load --move</code></th></tr></thead>
+                    <tbody>
+                        <tr><td><code>database.uuid</code></td><td><code>9473240c-…</code></td><td>nouveau (<code>390dd25b-…</code>)</td><td>conservé</td></tr>
+                        <tr><td><code>database.secret</code></td><td>valeur d'origine</td><td>nouvelle valeur</td><td>conservé</td></tr>
+                        <tr><td><code>web.base.url</code></td><td><code>http://localhost:9099</code></td><td><code>http://localhost:9020</code> (port HTTP du fichier <code>-c</code>)</td><td>conservé</td></tr>
+                    </tbody>
+                </table>
+                <p>Une base de test ne doit pas partager l'identifiant de la production : garde le comportement par défaut, et
+                    réserve <code>--move</code> à la restauration de la production elle-même.</p>
+
+                <div class="pitfall-box">
+                    <h4>L'aide parle de « pg_dump file », la commande le refuse</h4>
+                    <p><code>load --help</code> annonce <code>dump_file  zip or pg_dump file to load</code>. Un fichier produit par
+                        <code>dump --format dump</code> s'arrête pourtant net, code de sortie 1 :</p>
+<div class="out">Restoring prod.dump...
+Not a zipped dump file, use `pg_restore` to restore raw dumps, and `psql` to execute sql dumps or scripts.</div>
+                    <p>Ce format se recharge avec <code>pg_restore</code>, et le filestore se copie à part.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. neutralize ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que la neutralisation coupe réellement</h2>
+
+                <p>Neutraliser n'est pas une liste figée : Odoo prend chaque module installé et exécute son fichier
+                    <code>data/neutralize.sql</code> s'il en a un (<code>odoo/modules/neutralize.py</code>). Odoo 20 en livre 77 ;
+                    sur la base Ventes et Inventaire, cinq modules installés en ont un. Pour une base déjà en place, la
+                    sous-commande <code>neutralize</code> fait la même chose que <code>load -n</code> :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin neutralize -c odoo.conf -d ma_base_essai</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : avant neutralize, 23 tâches planifiées actives sur 26, serveur Relais SMTP actif avec mot de passe, boîte support active, quatre fournisseurs en réel, webhook vers example.com, is_neutralized False, bandeau inactif ; neutralize écrit Starting et Neutralization finished ; après, 1 tâche active sur 26, seul serveur actif neutralization - disable emails (invalid), aucun mot de passe, aucune boîte entrante, aucun fournisseur en réel, webhook remplacé, is_neutralized True, bandeau actif"/>
+                    <figcaption>La même copie avant et après <code>odoo-bin neutralize</code> (0,2 s) : il ne reste qu'une tâche planifiée et un serveur sortant, le leurre.</figcaption>
+                </figure>
+
+                <p>Le détail, module par module, sur cette base :</p>
+                <table class="tmc">
+                    <thead><tr><th>Module</th><th>Ce que fait son <code>neutralize.sql</code></th></tr></thead>
+                    <tbody>
+                        <tr><td><code>base</code></td><td>
+                            <ul class="mb-0">
+                                <li>archive tous les serveurs sortants et <strong>vide leurs identifiants</strong> (<code>smtp_user</code>, <code>smtp_pass</code>) ;</li>
+                                <li>ajoute un serveur actif <code>neutralization - disable emails</code> vers l'hôte <code>invalid</code>, port 1025, pour qu'un serveur SMTP passé en ligne de commande ne serve pas de secours ;</li>
+                                <li>archive toutes les tâches planifiées sauf <code>base.autovacuum_job</code> (nettoyage interne) ;</li>
+                                <li>remplace l'URL de chaque action serveur de type webhook par <code>neutralization - disable webhook</code> ;</li>
+                                <li>écrit <code>database.is_neutralized = True</code> et remplace <code>database.secret</code> par <code>dummysecret</code>.</li>
+                            </ul></td></tr>
+                        <tr><td><code>mail</code></td><td>retire le serveur forcé des modèles de courriel, archive les serveurs de relève (IMAP/POP), supprime les clés de notifications web push, la file <code>mail_push</code> et les appareils enregistrés.</td></tr>
+                        <tr><td><code>payment</code></td><td>passe <strong>tous</strong> les fournisseurs en mode test (<code>is_live = False</code>). Ils restent actifs et publiés.</td></tr>
+                        <tr><td><code>iap</code></td><td>suffixe les jetons des comptes de services IAP par <code>+disabled</code> (SMS, enrichissement…).</td></tr>
+                        <tr><td><code>web</code></td><td>active la vue <code>web.neutralize_banner</code> : le bandeau rouge (section 6).</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Sur une autre base, la liste change avec les modules : <code>website</code> ajoute son ruban et un
+                    <code>robots.txt</code> fermé, les modules de paiement (Stripe, PayPal, Adyen…) et de caisse, les agendas
+                    Google et Microsoft, l'authentification OAuth, le stockage en nuage, les localisations à facturation
+                    électronique ont chacun leur fichier. Pour lire ce qui s'appliquera à <strong>ta</strong> base sans rien
+                    modifier :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin neutralize -c odoo.conf -d ma_base --stdout &gt; neutralisation.sql</code></pre>
+                <p>La sortie est le SQL exact, entre <code>BEGIN;</code> et <code>COMMIT;</code>, par exemple pour le module
+                    <code>base</code> :</p>
+<pre class="language-sql"><code class="language-sql">-- deactivate crons
+UPDATE ir_cron
+   SET active = false
+ WHERE id NOT IN (
+       SELECT res_id
+         FROM ir_model_data
+        WHERE model = 'ir.cron'
+          AND name = 'autovacuum_job'
+          AND module = 'base'
+);</code></pre>
+
+                <div class="pitfall-box">
+                    <h4>Ce que la neutralisation ne touche pas</h4>
+                    <ul>
+                        <li>Les <strong>données</strong> : adresses des clients, courriels déjà en file d'attente, utilisateurs et
+                            leurs mots de passe restent ceux de la production. Le leurre empêche l'envoi, il n'efface rien.</li>
+                        <li>Les modules sans <code>neutralize.sql</code> : un module maison qui appelle une API externe dans une
+                            méthode lancée à la main continue de l'appeler. Ajoute-lui son propre <code>data/neutralize.sql</code>,
+                            Odoo le prendra en compte de lui-même.</li>
+                        <li>Le fichier de configuration : un <code>smtp_server</code> dans <code>odoo.conf</code> reste là, mais le
+                            serveur leurre, actif, passe avant lui.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. duplicate ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. <code>db duplicate</code> : rapide, mais pas sur une production en service</h2>
+
+                <p>Sur le même serveur PostgreSQL, <code>duplicate</code> évite le passage par un fichier :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin db -c odoo.conf duplicate -n ma_base ma_base_essai</code></pre>
+
+                <p>1,5 s, contre 7 s environ pour <code>dump</code> puis <code>load</code>, parce que PostgreSQL copie la base comme modèle (<code>CREATE DATABASE … TEMPLATE
+                    ma_base</code>), puis Odoo copie le filestore. Même nouvelle identité qu'un <code>load</code>, même option
+                    <code>-n</code>. Mais une base ne sert de modèle que si personne n'y est connecté : Odoo commence donc par
+                    <strong>couper toutes les connexions à la source</strong>. Une session <code>psql</code> ouverte sur
+                    <code>ma_base</code> pendant le <code>duplicate</code> :</p>
+<div class="out">FATAL:  terminating connection due to administrator command
+SSL connection has been closed unexpectedly
+connection to server was lost</div>
+                <p>Sur une production, ce sont les utilisateurs connectés et les tâches planifiées en cours qui sautent. Pour
+                    copier la production, <code>dump</code> puis <code>load -n</code> ; <code>duplicate</code> sert à cloner une
+                    base de test ou de développement.</p>
+
+                <p>Les deux dernières opérations : <code>db rename ancien nouveau</code> renomme la base et son dossier de
+                    filestore (mêmes coupures de connexion), <code>db drop ma_base_essai</code> supprime les deux.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. vérifier ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Vérifier la copie avant de l'ouvrir</h2>
+
+                <p>Quatre requêtes suffisent, à lancer dans <code>psql -d ma_base_test</code> :</p>
+<pre class="language-sql"><code class="language-sql">SELECT value AS neutralisee FROM ir_config_parameter WHERE key = 'database.is_neutralized';
+SELECT count(*) FILTER (WHERE active) AS crons_actifs, count(*) AS crons FROM ir_cron;
+SELECT name, smtp_host, active FROM ir_mail_server ORDER BY id;
+SELECT count(*) AS fournisseurs_en_reel FROM payment_provider WHERE is_live;</code></pre>
+<div class="out"> neutralisee
+-------------
+ True
+(1 row)
+
+ crons_actifs | crons
+--------------+-------
+            1 |    26
+(1 row)
+
+              name               |    smtp_host     | active
+---------------------------------+------------------+--------
+ Relais SMTP                     | smtp.example.com | f
+ neutralization - disable emails | invalid          | t
+(2 rows)
+
+ fournisseurs_en_reel
+----------------------
+                    0
+(1 row)</div>
+                <p>Sur <code>ma_base</code>, les mêmes requêtes rendent 0 ligne, 23 tâches actives, le seul relais actif et 4
+                    fournisseurs en réel.</p>
+
+                <p>À l'écran, le bandeau rouge s'affiche en haut de chaque page du client web. Dans Paramètres › Technique ›
+                    Actions planifiées, seule la case « Actif » de l'aspiration automatique reste cochée :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Client web Odoo 20 : bandeau rouge « Base de données neutralisée pour les tests : aucun e-mail envoyé, etc. » au-dessus du menu, puis la liste Actions planifiées où seule la ligne « Base : données internes de l'aspiration automatique » a la case Actif cochée ; les lignes Gestionnaire de la file d'attente des e-mails et service fetchmail sont décochées"/>
+                    <figcaption>La copie neutralisée : le bandeau, et des actions planifiées toutes décochées sauf l'aspiration automatique.</figcaption>
+                </figure>
+
+                <p>Et l'épreuve du feu, dans la console (<a href="/blog/developpement-odoo-2/shell-odoo-20-272">le shell Odoo 20</a>),
+                    sans valider la transaction :</p>
+<pre class="language-python"><code class="language-python">srv = env['fetchmail.server'].with_context(active_test=False).search([])
+srv.write({'active': True, 'state': 'done'})
+print("relève réactivée :", srv.name, srv.active, srv.state)
+print("tâche de relève active :", env.ref('mail.ir_cron_mail_gateway_action').active)
+mail = env['mail.mail'].create({'email_to': 'client@example.com', 'subject': 'Essai', 'body_html': '&lt;p&gt;Essai&lt;/p&gt;'})
+mail.send()
+print("courriel :", mail.state, "|", mail.failure_type, "|", repr(mail.failure_reason))</code></pre>
+<div class="out">relève réactivée : Boîte support True done
+tâche de relève active : False
+courriel : exception | False | '-2\nNom ou service inconnu'</div>
+                <ul>
+                    <li>Sur une base normale, confirmer un serveur de relève active la tâche « Mail: Fetchmail Service ». Sur une
+                        base neutralisée, <code>ir.cron.toggle()</code> lit <code>database.is_neutralized</code> et ne réactive
+                        rien : la boîte se configure, mais rien ne la relève.</li>
+                    <li>Le courriel part vers le leurre, l'hôte <code>invalid</code> ne se résout pas, le message passe en
+                        <code>exception</code>. Le texte de l'erreur vient du système : « Name or service not known » sur un
+                        serveur en anglais.</li>
+                </ul>
+                <p>Pour tester les courriels pour de vrai, ajoute un serveur sortant vers un piège à courriels local
+                    (MailHog, Mailpit…), jamais le relais de production.</p>
+
+                <div class="pitfall-box">
+                    <h4>Une copie <em>non</em> neutralisée sur le serveur de production</h4>
+                    <p>Le serveur Odoo lance les tâches planifiées de toutes les bases que son rôle PostgreSQL possède, sauf si
+                        <code>db_name</code> est fixé dans <code>odoo.conf</code> (<code>odoo/service/server.py</code>,
+                        <code>cron_database_list</code>) ; le <code>dbfilter</code> n'y change rien. Une copie chargée sans
+                        <code>-n</code> à côté de la production envoie donc sa file de courriels dans la minute. D'où la règle :
+                        toujours <code>-n</code> pour une copie, ou <code>neutralize</code> avant tout démarrage.</p>
+                </div>
+
+                <p>Dernier détail : charger avec <code>-n</code> le zip d'une base <strong>déjà</strong> neutralisée ajoute un
+                    second serveur leurre (le premier est archivé avec les autres). Sans gravité, mais inutile : recharge
+                    plutôt ce zip sans <code>-n</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. gestionnaire ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. La même chose depuis le gestionnaire de bases</h2>
+
+                <p>Quand le gestionnaire de bases est ouvert (<code>list_db</code> actif, mot de passe maître connu), la page
+                    <code>/web/database/manager</code> fait les mêmes opérations : ses fenêtres <strong>Restore</strong> et
+                    <strong>Duplicate</strong> ont chacune une case <strong>Neutralize</strong>
+                    (<code>web/static/src/public/database_manager.qweb.html</code>), qui appelle le même code que
+                    <code>load -n</code> et <code>duplicate -n</code>. Sur une production, ce gestionnaire est en général
+                    fermé (<code>list_db = False</code>) : la ligne de commande reste alors le seul chemin, et le plus facile à
+                    mettre dans un script.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <ul>
+                        <li><strong>Paiement</strong> : la 19 passait les fournisseurs à l'état « Désactivé » (<code>state =
+                            'disabled'</code>, sauf ceux déjà en test). La 20 n'a plus ce champ : elle les passe en mode test
+                            (<code>is_live = False</code>), ils restent actifs et publiés.</li>
+                        <li><strong><code>database.secret</code></strong> remplacé par <code>dummysecret</code> : nouveau en 20.
+                            Il ne se voit qu'avec <code>neutralize</code> sur place ou <code>load --move -n</code> ; un
+                            <code>load</code> ou un <code>duplicate</code> ordinaire génère de toute façon un nouveau secret.</li>
+                        <li><code>db drop</code> d'une base inexistante : la 19 répond « Database … does not exist. », la 20 sort
+                            sur une trace <code>psycopg2.errors.InvalidCatalogName</code> (code de sortie 1 dans les deux cas).</li>
+                        <li>Inchangés : les six opérations de <code>db</code>, <code>load --move</code>, le refus des fichiers
+                            non zip, l'effacement des identifiants SMTP, <code>neutralize --stdout</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Sauvegarder base + filestore</td><td><code>./odoo-bin db -c odoo.conf dump ma_base prod.zip</code></td></tr>
+                        <tr><td>Copie de test depuis la prod</td><td><code>./odoo-bin db -c odoo.conf load -n ma_base_test prod.zip</code></td></tr>
+                        <tr><td>Remettre la prod en place</td><td><code>load --move</code> (garde uuid et secret), sans <code>-n</code></td></tr>
+                        <tr><td>Cloner une base de test</td><td><code>db duplicate -n source cible</code> (coupe les connexions à la source)</td></tr>
+                        <tr><td>Neutraliser une base existante</td><td><code>./odoo-bin neutralize -c odoo.conf -d ma_base_test</code></td></tr>
+                        <tr><td>Voir le SQL avant</td><td><code>neutralize … --stdout</code></td></tr>
+                        <tr><td>Vérifier</td><td><code>database.is_neutralized</code>, tâches actives, serveurs sortants, <code>payment_provider.is_live</code></td></tr>
+                        <tr><td>Supprimer</td><td><code>db drop ma_base_test</code> (base et filestore)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>db dump</code> produit un zip SQL + manifeste + filestore, sans arrêter la production.</li>
+                    <li><code>db load -n</code> recharge sous un autre nom, neutralise avant tout démarrage et donne une nouvelle identité à la copie.</li>
+                    <li>La neutralisation dépend des modules installés : <code>neutralize --stdout</code> montre le SQL exact pour ta base.</li>
+                    <li>Elle coupe tâches planifiées, serveurs de courriel, relève, webhooks, paiements en réel, jetons IAP et notifications push ; elle n'efface aucune donnée.</li>
+                    <li><code>db duplicate</code> déconnecte tout le monde de la source : pas sur une production en service.</li>
+                    <li>Avant d'ouvrir la copie : bandeau, quatre requêtes, un courriel d'essai qui doit échouer.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes exécutées le 07/10/2026 sur Odoo 20.0 (PostgreSQL 16), base de démonstration et
+                    copies jetables supprimées ensuite ; durées relevées avec <code>/usr/bin/time</code>. Comparaison avec la
+                    branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/db.py" target="_blank" rel="noopener"><code>odoo/cli/db.py</code></a> : les opérations et leurs options</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/db.py" target="_blank" rel="noopener"><code>odoo/modules/db.py</code></a> : <code>dump</code>, <code>restore</code>, <code>duplicate</code>, <code>rename</code>, <code>drop</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/neutralize.py" target="_blank" rel="noopener"><code>odoo/modules/neutralize.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/neutralize.py" target="_blank" rel="noopener"><code>odoo/cli/neutralize.py</code></a></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/data/neutralize.sql" target="_blank" rel="noopener"><code>odoo/addons/base/data/neutralize.sql</code></a>, et les fichiers de même nom de <code>mail</code>, <code>payment</code>, <code>iap</code>, <code>web</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_cron.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_cron.py</code></a> : <code>toggle</code> sur une base neutralisée</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a></h5>
+                            <p class="small text-muted mb-0">Ce qu'on fait ensuite sur la copie : tester une mise à jour.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La console qui a servi au courriel d'essai.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0"><code>psql</code>, <code>pg_dump</code> et <code>pg_restore</code> côté PostgreSQL.</p>
+                        </div></div>
+                    </div>
+                </div>
+                <p class="small text-center text-muted mb-0">Pour la version 19 :
+                    <a href="/blog/developpement-odoo-2/gestion-bases-donnees-odoo-57">Gestion des bases de données Odoo 19</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,686 @@
+<!--
+Article — Champs calculés Odoo 20 : store, inverse, search, « failed to assign »
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : champs-calcules-odoo-20
+Meta : champ calculé Odoo 20 : compute et @api.depends, store=True, l'erreur « Compute method failed to assign », inverse, search, compute_sudo, precompute, recursive, depends_context.
+Mots-clés cibles : odoo compute inverse, odoo compute method failed to assign, odoo compute store search
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Captures : content/blog/screenshots/champs-calcules-odoo-20/ (01-04)
+Preuves (base vs20_tech_o11 : sale_management + stock, démo native, fr_FR ; Odoo 20.0 3538ed82) :
+  - module de sonde docs/blog-odoo20/captures-base-vs20_tech/o11-champs-calcules/addons/demo_calcules (code montré dans l'article)
+    et demo_calcules_pieges (variantes fautives : size_label_stored, size_label_rw, total_qty_stale, lang_code, ref_label, ref_label_pre)
+  - scripts s1..s9 -> s*_out.txt (sorties collées), s3_raw.txt (traceback, figure 01), s3_fix_out.txt (après correctif), s7_norec_out.txt,
+    w_out.txt (avertissements, figure 04), installation : « _compute_total_qty sur sale.order(16, 12, …, 5, 1) » (24 commandes, un appel)
+  - écrans 02/03 : cap.py, serveur :9133, devis S00003 (saisie 15 avant enregistrement, puis après)
+  - odoo/odoo/orm/fields.py : défauts compute :488-493 (compute_sudo = store, readonly = not inverse), précompute doc :216-240 et :496-500,
+    search doc :153-166, setup avertissement contexte stocké :581-586, resolve_depends recursive :954-956, __get__ failed to assign :1913-1937,
+    recompute :2026-2071 (lots IN_MAX), compute_value :2073-2096 ; odoo/odoo/orm/domains.py :1008-1022 (méthode search puis « no SQL representation »), :1068-1088 (NotImplemented, opérateur inverse)
+  - addons/sale/models/sale_order.py : commitment_date :109, expected_date :459/_compute_expected_date :1084
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0, tête 9db68e615a72, relue le 07/10/2026) : fields.py:1756-1757 même condition et même message
+    « Compute method failed to assign » (ValueError) ; fields.py:1216 « Cannot convert … to SQL because it is not stored » (pas de contrôle dans domains.py) ;
+    fields.py:832 avertissement recursive identique ; aucun « should not depend on context » ; registry.py:547-576 avertissements store/compute_sudo/precompute identiques
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Champs calculés Odoo 20 : store, inverse, search, « failed to assign »</h1>
+                <p class="lead mt-3 text-white">Un <code>compute</code> qui marche, puis tout ce qui le fait échouer : la
+                    branche oubliée qui lève <code>Compute method failed to assign</code>, la dépendance manquante qui laisse
+                    une valeur périmée, le champ qu'on ne peut ni écrire ni chercher. Chaque cas a été exécuté sur la démo
+                    d'Odoo 20, avec un petit module sur les commandes de vente.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Calculer, stocker</h4>
+                        <p><code>compute</code> et <code>@api.depends</code>, ce que change <code>store=True</code> et pourquoi la méthode reçoit plusieurs enregistrements.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>« failed to assign »</h4>
+                        <p>Le message exact, quand il apparaît, quand il n'apparaît pas (et c'est pire), et le correctif.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Écrire, chercher</h4>
+                        <p><code>inverse</code>, <code>search</code>, puis <code>compute_sudo</code>, <code>precompute</code>, <code>recursive</code> et <code>@api.depends_context</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec <strong>Ventes</strong> et les données de démonstration, en
+                            français : le devis <code>S00003</code> (deux lignes, 11 unités) et le client « Acme Corporation »
+                            viennent de là.</li>
+                        <li>Un module <code>demo_calcules</code> qui dépend de <code>sale_management</code> et hérite de
+                            <code>sale.order</code> ; son code est donné section par section. Les champs se déclarent en Python,
+                            il faut donc un module : pas de raccourci par la console.</li>
+                        <li>La console <code>./odoo-bin shell -c odoo.conf -d ma_base</code> pour les essais (présentée dans
+                            <a href="/blog/developpement-odoo-2/shell-odoo-20-272">l'article sur le shell Odoo 20</a>). Les
+                            séries qui écrivent finissent par <code>env.cr.rollback()</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CALCUL MINIMAL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le calcul minimal : <code>compute</code> et <code>@api.depends</code></h2>
+
+                <p>Un champ calculé est un champ ordinaire auquel on donne le nom d'une méthode. La méthode reçoit un
+                    recordset et doit <strong>affecter</strong> le champ sur chaque enregistrement ; elle ne renvoie
+                    rien. <code>@api.depends</code> liste les champs dont la valeur dépend :</p>
+<pre class="language-python"><code class="language-python"># demo_calcules/models/sale_order.py
+from odoo import api, fields, models
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    line_count = fields.Integer("Nombre de lignes", compute='_compute_line_count')
+
+    @api.depends('order_line')
+    def _compute_line_count(self):
+        for order in self:
+            order.line_count = len(order.order_line)</code></pre>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('name', '=', 'S00003')])
+print(order.line_count, len(order.order_line))</code></pre>
+<div class="out">2 2</div>
+
+                <p>Sans autre attribut, le champ n'est <strong>pas stocké</strong> : aucune colonne en base, la valeur est
+                    calculée à la lecture puis gardée en cache jusqu'à ce qu'une dépendance change. Il est en lecture
+                    seule, n'est pas recopié par <code>copy</code>, et ne se cherche pas (section 5).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. STORE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>store=True</code> : une colonne, recalculée quand une dépendance change</h2>
+
+                <p>Avec <code>store=True</code>, la valeur est écrite dans une colonne de <code>sale_order</code> : on
+                    peut la chercher, la trier, la grouper. Odoo la recalcule quand un champ de <code>@api.depends</code>
+                    est modifié, y compris à travers une relation (<code>order_line.product_uom_qty</code>). Le
+                    <code>print</code> sert à voir sur quels enregistrements la méthode est appelée :</p>
+<pre class="language-python"><code class="language-python">    total_qty = fields.Float("Quantité totale", compute='_compute_total_qty', store=True)
+
+    @api.depends('order_line.product_uom_qty')
+    def _compute_total_qty(self):
+        print("_compute_total_qty sur", self)   # trace, à retirer ensuite
+        for order in self:
+            order.total_qty = sum(order.order_line.mapped('product_uom_qty'))</code></pre>
+
+                <p>À l'installation du module, la colonne est créée puis remplie pour toutes les commandes existantes, en
+                    <strong>un seul appel</strong> :</p>
+<div class="out">_compute_total_qty sur sale.order(16, 12, 10, 18, 17, 15, 14, 13, 11, 9, 4, 8, 7, 6, 20, 19, 3, 2, 21, 22, 23, 24, 5, 1)</div>
+
+                <p>Ensuite, seules les commandes touchées sont recalculées, et seulement quand on relit le champ (ou au
+                    prochain <em>flush</em>) :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+order = SO.search([('name', '=', 'S00003')])
+print(order.total_qty)
+order.order_line[0].product_uom_qty = 12
+print(order.total_qty)
+drafts = SO.search([('state', '=', 'draft')])
+drafts.order_line.write({'product_uom_qty': 2})
+print(drafts.mapped('total_qty'))
+for name in ('line_count', 'total_qty'):
+    f = SO._fields[name]
+    print(name, f.store, f.readonly, f.compute_sudo, f.copy)
+env.cr.rollback()</code></pre>
+<div class="out">11.0
+_compute_total_qty sur sale.order(3,)
+13.0
+_compute_total_qty sur sale.order(3, 5, 2, 1)
+[4.0, 2.0, 4.0, 6.0]
+line_count False True False False
+total_qty True True True False</div>
+
+                <p>Deux leçons. Le <code>write</code> sur les lignes de quatre devis déclenche <strong>un</strong> appel
+                    avec les quatre commandes : c'est pour cela qu'une méthode de calcul boucle toujours sur
+                    <code>self</code> et ne suppose jamais un seul enregistrement (pas de <code>self.ensure_one()</code>,
+                    pas de <code>self.total_qty = …</code> hors de la boucle). Et la dernière ligne montre les défauts : un
+                    champ stocké est calculé <strong>en superutilisateur</strong> (<code>compute_sudo=True</code>), un champ
+                    non stocké avec les droits de l'utilisateur (<code>compute_sudo=False</code>), règle posée dans
+                    <code>odoo/orm/fields.py</code> (<code>compute_sudo</code> vaut <code>store</code> par défaut).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. FAILED TO ASSIGN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. « Compute method failed to assign » : la branche oubliée</h2>
+
+                <p>Un champ qui classe les commandes selon la quantité totale. Il manque un cas : la commande sans ligne,
+                    dont la quantité vaut 0.</p>
+<pre class="language-python"><code class="language-python">    size_label = fields.Char("Taille", compute='_compute_size_label')
+
+    @api.depends('total_qty')
+    def _compute_size_label(self):
+        for order in self:
+            if order.total_qty &gt;= 10:
+                order.size_label = "grosse"
+            elif order.total_qty &gt; 0:
+                order.size_label = "petite"</code></pre>
+
+                <p>Sur <code>S00003</code> (11 unités), tout va bien. Sur une commande neuve, sans ligne, le script
+                    <code>taille.py</code> suivant échoue à la cinquième ligne :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+acme = env['res.partner'].search([('name', '=', "Acme Corporation")])
+order = SO.create({'partner_id': acme.id})
+print(order.name, order.total_qty)
+print(order.size_label)</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Sortie de odoo-bin shell : _compute_total_qty sur sale.order(36,), S00036 0.0, puis un traceback qui se termine dans odoo/orm/fields.py, ligne 1932, méthode __get__, par ValueError: Compute method failed to assign sale.order(36,).size_label"/>
+                    <figcaption>Le message nomme l'enregistrement et le champ, mais le traceback s'arrête dans <code>fields.py</code>, pas dans ta méthode.</figcaption>
+                </figure>
+
+                <p>Le message est <code>ValueError: Compute method failed to assign sale.order(36,).size_label</code> :
+                    la méthode a été appelée sur la commande 36 et n'a rien affecté à <code>size_label</code>. Odoo s'en
+                    aperçoit <strong>après</strong> l'appel, en lisant le cache, d'où un traceback qui ne passe pas par
+                    <code>_compute_size_label</code>. Pour trouver la branche fautive, cherche dans la méthode le chemin
+                    qui ne contient pas d'affectation : un <code>if</code>/<code>elif</code> sans <code>else</code>, un
+                    <code>continue</code>, un <code>return</code> au milieu de la boucle, ou une boucle sur un autre
+                    recordset que <code>self</code>.</p>
+
+                <p>Le correctif : affecter dans <strong>tous</strong> les cas.</p>
+<pre class="language-python"><code class="language-python">            elif order.total_qty &gt; 0:
+                order.size_label = "petite"
+            else:
+                order.size_label = False</code></pre>
+<div class="out">_compute_total_qty sur sale.order(39,)
+S00039 0.0
+False</div>
+                <p>Variante tout aussi sûre : poser la valeur par défaut avant le <code>if</code>
+                    (<code>order.size_label = False</code>), puis la remplacer.</p>
+
+                <h3>Quand l'erreur ne se produit pas</h3>
+                <p>L'erreur n'est levée que pour un champ <strong>non stocké et en lecture seule</strong> (test
+                    <code>if self.readonly and not self.store</code> dans <code>Field.__get__</code>). La même méthode
+                    sans branche <code>else</code>, posée sur un champ stocké ou sur un champ modifiable, ne dit rien :</p>
+<pre class="language-python"><code class="language-python">    size_label_stored = fields.Char(compute='_compute_size_label_stored', store=True)
+    size_label_rw = fields.Char(compute='_compute_size_label_rw', readonly=False)
+    # même corps que _compute_size_label, sans else</code></pre>
+<pre class="language-python"><code class="language-python">order = SO.create({'partner_id': acme.id})
+print("stocké :", repr(order.size_label_stored), "| modifiable :", repr(order.size_label_rw))
+env.cr.rollback()</code></pre>
+<div class="out">_compute_total_qty sur sale.order(37,)
+stocké : False | modifiable : False</div>
+                <table class="tmc">
+                    <thead><tr><th>Champ calculé</th><th>Branche sans affectation</th></tr></thead>
+                    <tbody>
+                        <tr><td>non stocké, lecture seule (le cas par défaut)</td><td><code>ValueError: Compute method failed to assign …</code></td></tr>
+                        <tr><td><code>store=True</code></td><td>aucune erreur, la valeur devient <code>False</code></td></tr>
+                        <tr><td><code>readonly=False</code> ou avec <code>inverse</code></td><td>aucune erreur, la valeur devient <code>False</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le silence n'est pas une bonne nouvelle : un champ stocké qui reste à <code>False</code> sur une partie
+                    des enregistrements passe les tests et se remarque des semaines plus tard dans un rapport. La règle
+                    « une affectation par enregistrement, dans tous les cas » vaut pour tous les champs calculés.</p>
+                <p>Le message, son type (<code>ValueError</code>) et la condition sont les mêmes dans la branche 19.0 :
+                    un correctif écrit pour la 19 vaut pour la 20.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. INVERSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>inverse</code> : écrire sur un champ calculé</h2>
+
+                <p>Un délai de livraison en jours, calculé à partir de la date de commande et de la date de livraison
+                    promise (<code>commitment_date</code>). La méthode <code>inverse</code> fait le chemin dans l'autre
+                    sens : on saisit un délai, elle écrit la date.</p>
+<pre class="language-python"><code class="language-python"># en tête du fichier : from datetime import timedelta
+
+    delivery_days = fields.Integer(
+        "Délai (jours)",
+        compute='_compute_delivery_days',
+        inverse='_inverse_delivery_days',
+        search='_search_delivery_days',      # section 5
+    )
+
+    @api.depends('date_order', 'commitment_date')
+    def _compute_delivery_days(self):
+        for order in self:
+            if order.date_order and order.commitment_date:
+                order.delivery_days = (order.commitment_date - order.date_order).days
+            else:
+                order.delivery_days = 0
+
+    def _inverse_delivery_days(self):
+        for order in self:
+            order.commitment_date = order.date_order + timedelta(days=order.delivery_days)</code></pre>
+
+                <p>Un champ avec <code>inverse</code> n'est plus en lecture seule par défaut. Dans la console, l'écriture
+                    appelle l'inverse tout de suite, et le calcul suit dans l'autre sens :</p>
+<pre class="language-python"><code class="language-python">from datetime import timedelta
+order = env['sale.order'].search([('name', '=', 'S00003')])
+print(order.date_order, order.commitment_date, order.delivery_days)
+order.delivery_days = 15
+print(order.date_order, order.commitment_date, order.delivery_days)
+order.commitment_date = order.date_order + timedelta(days=40)
+print(order.delivery_days)
+env.cr.rollback()</code></pre>
+<div class="out">2026-10-07 06:16:42 False 0
+2026-10-07 06:16:42 2026-10-22 06:16:42 15
+40</div>
+
+                <p>Dans le formulaire, il suffit d'afficher le champ (vue héritée de <code>sale.view_order_form</code>) :</p>
+<pre class="language-markup"><code class="language-markup">&lt;field name="payment_term_id" position="after"&gt;
+    &lt;field name="total_qty"/&gt;
+    &lt;field name="delivery_days"/&gt;
+    &lt;field name="commitment_date"/&gt;
+&lt;/field&gt;</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Devis S00003, groupe de droite du formulaire avant enregistrement : Quantité totale 11,00, Délai (jours) 15 saisi, Livraison promise encore vide (jj/mm/aaaa hh:mm), Date de livraison 7 oct."/>
+                    <figcaption>15 jours saisis, pas encore enregistré : la date promise est toujours vide.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Le même groupe après enregistrement : Délai (jours) 15, Livraison promise 22 oct., Date de livraison 22 oct."/>
+                    <figcaption>Après « Enregistrer » : l'inverse a écrit la date promise, et la date de livraison prévue de la Vente la reprend.</figcaption>
+                </figure>
+
+                <p>Le formulaire ne déclenche pas l'inverse à la frappe : la valeur saisie part au serveur avec
+                    l'enregistrement, et c'est le <code>write</code> qui appelle <code>_inverse_delivery_days</code>.
+                    Pour une mise à jour immédiate à l'écran, il faudrait que <code>commitment_date</code> soit lui-même
+                    calculé à partir de <code>delivery_days</code>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Un inverse doit savoir traiter toutes les valeurs</h4>
+                    <p>Ici, saisir 0 donne une date promise égale à la date de commande, au lieu de l'effacer. Un inverse
+                        reçoit aussi <code>False</code>, 0 ou une valeur absurde : décide explicitement de ce que chacune
+                        écrit. Et comme le calcul, il boucle sur <code>self</code> : un <code>write</code> sur plusieurs
+                        commandes l'appelle une fois pour toutes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. SEARCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. <code>search=</code> : chercher sur un champ non stocké</h2>
+
+                <p>Un champ non stocké n'a pas de colonne : un domaine qui le cite ne peut pas devenir du SQL. Sans
+                    méthode de recherche, la recherche échoue ; avec une méthode qui ne gère pas l'opérateur demandé
+                    aussi :</p>
+<pre class="language-python"><code class="language-python">    def _search_delivery_days(self, operator, value):
+        if operator != '&gt;':
+            return NotImplemented
+        orders = self.search([('commitment_date', '!=', False)])
+        return Domain('id', 'in', orders.filtered(lambda o: o.delivery_days &gt; value).ids)</code></pre>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+for domain in ([('line_count', '&gt;', 1)], [('delivery_days', '&lt;', 10)]):
+    try:
+        SO.search(domain)
+    except Exception as e:
+        print(type(e).__name__, ":", e)
+order = SO.search([('name', '=', 'S00003')])
+order.delivery_days = 15
+print(SO.search([('delivery_days', '&gt;', 10)]).mapped('name'))
+env.cr.rollback()</code></pre>
+<div class="out">ValueError : Field has no SQL representation because it is not stored in condition ('line_count', '&gt;', 1)
+UserError : Opérateur non pris en charge sur Délai (jours) 'Commande client' (sale.order) dans [('delivery_days', '&lt;', 10)]
+['S00003']</div>
+
+                <p>La méthode reçoit l'opérateur et la valeur, et rend un domaine qui remplace la condition
+                    (<code>Domain</code> s'importe de <code>odoo.fields</code> ; une liste est encore acceptée). Quand
+                    elle rend <code>NotImplemented</code>, l'ORM essaie l'opérateur contraire et nie le résultat, puis
+                    abandonne avec le <code>UserError</code> ci-dessus. Elle ne reçoit jamais <code>=</code> : Odoo le
+                    transforme en <code>in</code> avant de l'appeler. La syntaxe des domaines est détaillée dans
+                    <a href="/blog/developpement-odoo-2/domaines-odoo-20-274">l'article sur les domaines Odoo 20</a>.</p>
+                <p>La méthode d'exemple parcourt les commandes en Python : acceptable sur quelques centaines
+                    d'enregistrements, pas sur un gros volume. Si la recherche, le tri ou le regroupement comptent, stocke
+                    le champ.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : un autre message pour la même erreur</h4>
+                    <p>En 19.0, le domaine passait l'optimisation et l'erreur tombait plus tard, à la traduction en SQL,
+                        avec <code>ValueError: Cannot convert sale.order.line_count to SQL because it is not stored</code>.
+                        En 20, la condition est refusée dès l'optimisation du domaine, et le message devient
+                        <code>Field has no SQL representation because it is not stored in condition (…)</code>. Même type
+                        d'exception : seul un test qui comparait le texte est à revoir.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. COMPUTE_SUDO, PRECOMPUTE, RECURSIVE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>compute_sudo</code>, <code>precompute</code>, <code>recursive</code></h2>
+
+                <h3><code>compute_sudo</code></h3>
+                <p>Vu à la section 2 : <code>True</code> par défaut pour un champ stocké (la valeur en base doit être la
+                    même pour tous), <code>False</code> pour un champ non stocké. Mets <code>compute_sudo=True</code> sur un
+                    non stocké quand le calcul lit des modèles que l'utilisateur ne voit pas, et
+                    <code>compute_sudo=False</code> sur un stocké seulement si tu sais pourquoi.</p>
+
+                <h3><code>precompute=True</code></h3>
+                <p>Un champ stocké est normalement calculé <strong>après</strong> l'insertion, au flush, par un
+                    <code>UPDATE</code>. Avec <code>precompute=True</code>, il est calculé avant et part dans
+                    l'<code>INSERT</code>. Deux champs identiques, l'un précalculé :</p>
+<pre class="language-python"><code class="language-python">    ref_label = fields.Char(compute='_compute_ref_label', store=True)
+    ref_label_pre = fields.Char(compute='_compute_ref_label_pre', store=True, precompute=True)
+    # les deux méthodes : f"REF-{order.partner_id.id}", @api.depends('partner_id')</code></pre>
+                <p>On espionne les requêtes qui écrivent dans <code>sale_order</code> pendant un <code>create</code> puis
+                    un <code>flush_all()</code> :</p>
+<pre class="language-python"><code class="language-python">import re
+SO = env['sale.order']
+acme = env['res.partner'].search([('name', '=', "Acme Corporation")])
+orig = type(env.cr).execute
+log = []
+def spy(self, query, params=None, log_exceptions=True):
+    q = str(query)
+    m = re.match(r"""SQL\(['"]\s*(INSERT INTO|UPDATE) "sale_order"[^_]""", q)
+    if m:
+        log.append((m.group(1).split()[0], [c for c in ('ref_label', 'ref_label_pre') if f'"{c}"' in q]))
+    return orig(self, query, params, log_exceptions)
+type(env.cr).execute = spy
+order = SO.create({'partner_id': acme.id})
+print("après create :", log)
+env.flush_all()
+print("après flush  :", log)
+type(env.cr).execute = orig
+env.cr.rollback()</code></pre>
+<div class="out">après create : [('INSERT', ['ref_label_pre'])]
+_compute_total_qty sur sale.order(38,)
+après flush  : [('INSERT', ['ref_label_pre']), ('UPDATE', ['ref_label'])]</div>
+                <p>À réserver aux champs dont la valeur doit exister dès l'insertion : un champ <code>required</code>, une
+                    contrainte SQL, ou des lignes créées en lot par leur document. La documentation du champ prévient :
+                    une valeur par défaut, ou une valeur passée au <code>create</code>, empêche le précalcul, et un
+                    précalcul fait enregistrement par enregistrement perd l'avantage du calcul en lot. Un champ précalculé
+                    qui dépend d'un champ stocké non précalculé perd son <code>precompute</code>, avec un avertissement
+                    au chargement.</p>
+
+                <h3><code>recursive=True</code></h3>
+                <p>Un champ qui dépend de lui-même à travers une relation, comme la profondeur d'une étiquette de contact
+                    dans son arbre :</p>
+<pre class="language-python"><code class="language-python"># demo_calcules/models/res_partner_category.py
+class ResPartnerCategory(models.Model):
+    _inherit = 'res.partner.category'
+
+    depth = fields.Integer("Profondeur", compute='_compute_depth', store=True, recursive=True)
+
+    @api.depends('parent_id.depth')
+    def _compute_depth(self):
+        for tag in self:
+            tag.depth = tag.parent_id.depth + 1 if tag.parent_id else 0</code></pre>
+<pre class="language-python"><code class="language-python">Tag = env['res.partner.category']
+parent = Tag.create({'name': "Clients"})
+child = Tag.create({'name': "Grands comptes", 'parent_id': parent.id})
+grandchild = Tag.create({'name': "Export", 'parent_id': child.id})
+print([(t.name, t.depth) for t in parent | child | grandchild])
+child.parent_id = False
+print([(t.name, t.depth) for t in parent | child | grandchild])
+env.cr.rollback()</code></pre>
+<div class="out">[('Clients', 0), ('Grands comptes', 1), ('Export', 2)]
+[('Clients', 0), ('Grands comptes', 0), ('Export', 1)]</div>
+                <p>Détacher « Grands comptes » recalcule aussi son enfant « Export ». Sans <code>recursive=True</code>, le
+                    résultat est le même (Odoo pose l'attribut lui-même), mais un avertissement apparaît à chaque
+                    chargement du registre : voir la figure de la section suivante. Déclare-le, ne compte pas sur la
+                    rustine.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. DEPENDS_CONTEXT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>@api.depends_context</code> : une valeur qui dépend du contexte</h2>
+
+                <p>Certains calculs ne dépendent pas d'un champ mais du contexte : la langue, la société, une clé posée
+                    par une action. <code>@api.depends_context</code> le dit à l'ORM, qui garde alors une valeur en cache
+                    <strong>par contexte</strong>. Le statut du devis en toutes lettres, dans la langue de
+                    l'utilisateur :</p>
+<pre class="language-python"><code class="language-python">    state_label = fields.Char("Statut en clair", compute='_compute_state_label')
+
+    @api.depends('state')
+    @api.depends_context('lang')
+    def _compute_state_label(self):
+        labels = dict(self._fields['state']._description_selection(self.env))
+        for order in self:
+            order.state_label = labels[order.state]</code></pre>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('name', '=', 'S00003')])
+print(order.state_label, "|", order.with_context(lang='en_US').state_label)</code></pre>
+<div class="out">Devis | Quotation</div>
+                <p>Les deux lectures portent sur la même commande, dans deux contextes : chacune a sa valeur. Un tel champ reste
+                    <strong>non stocké</strong> : une colonne ne peut contenir qu'une valeur, pas une par langue.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Mise à jour du module dans le terminal : deux lignes WARNING py.warnings. odoo/orm/fields.py:956 : Field res.partner.category.depth should be declared with recursive=True ; odoo/orm/fields.py:586 : Stored field sale.order.lang_code should not depend on context (('lang',))"/>
+                    <figcaption>Extrait du journal de mise à jour : <code>depth</code> sans <code>recursive=True</code>, et un champ stocké déclaré avec <code>depends_context=('lang',)</code>. Les variantes fautives de l'article vivent dans un second module, <code>demo_calcules_pieges</code>.</figcaption>
+                </figure>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : le champ stocké dépendant du contexte est signalé</h4>
+                    <p>Odoo 20 avertit au chargement quand un champ <strong>stocké</strong> déclare
+                        <code>depends_context=…</code> en attribut (seconde ligne de la figure ; exceptions : <code>lang</code>
+                        pour un champ traduit, <code>company</code> pour un champ <code>company_dependent</code>). La
+                        branche 19.0 n'a pas ce contrôle. Il ne voit que l'attribut du champ : avec le décorateur
+                        <code>@api.depends_context</code> sur la méthode, rien n'est signalé. Le
+                        conseil ne change pas : ce champ-là ne se stocke pas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. DÉPENDANCE MANQUANTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Le piège silencieux : la dépendance manquante</h2>
+
+                <p>Le même total que <code>total_qty</code>, mais avec <code>@api.depends('order_line')</code> au lieu de
+                    <code>'order_line.product_uom_qty'</code> :</p>
+<pre class="language-python"><code class="language-python">    total_qty_stale = fields.Float(compute='_compute_total_qty_stale', store=True)
+
+    @api.depends('order_line')
+    def _compute_total_qty_stale(self):
+        for order in self:
+            order.total_qty_stale = sum(order.order_line.mapped('product_uom_qty'))</code></pre>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('name', '=', 'S00003')])
+print(order.total_qty, order.total_qty_stale)
+order.order_line[0].product_uom_qty = 12
+print(order.total_qty, order.total_qty_stale)
+env.cr.rollback()</code></pre>
+<div class="out">11.0 11.0
+_compute_total_qty sur sale.order(3,)
+13.0 11.0</div>
+                <p>Ajouter ou retirer une ligne recalcule le champ ; modifier la quantité d'une ligne existante, non. La
+                    valeur stockée reste à 11, sans erreur ni avertissement. Règle : <code>@api.depends</code> cite
+                    <strong>chaque champ lu</strong> par la méthode, avec son chemin complet. Pour un champ déjà faux en
+                    base, corriger le <code>depends</code> ne suffit pas : il faut aussi recalculer les enregistrements
+                    existants (par exemple <code>env.add_to_compute(Model._fields['total_qty_stale'], records)</code> puis un <code>flush_all()</code>, dans un script de migration).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Symptôme ou besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Compute method failed to assign rec.champ</code></td><td>une branche de la méthode n'affecte pas le champ : ajouter le <code>else</code> ou une valeur par défaut avant le <code>if</code></td></tr>
+                        <tr><td>Champ stocké resté à <code>False</code></td><td>même cause, sans erreur (stocké ou modifiable)</td></tr>
+                        <tr><td>Valeur stockée périmée</td><td>dépendance manquante dans <code>@api.depends</code> (chemin complet)</td></tr>
+                        <tr><td>Saisir un champ calculé</td><td><code>inverse='_inverse_x'</code> (le champ devient modifiable)</td></tr>
+                        <tr><td><code>Field has no SQL representation because it is not stored</code></td><td><code>search='_search_x'</code> ou <code>store=True</code></td></tr>
+                        <tr><td><code>Opérateur non pris en charge sur …</code></td><td>la méthode de recherche rend <code>NotImplemented</code> pour cet opérateur</td></tr>
+                        <tr><td>Valeur nécessaire dès l'<code>INSERT</code></td><td><code>store=True, precompute=True</code>, sans <code>default</code></td></tr>
+                        <tr><td><code>should be declared with recursive=True</code></td><td>ajouter <code>recursive=True</code></td></tr>
+                        <tr><td>Valeur selon la langue, la société</td><td><code>@api.depends_context(...)</code>, champ non stocké</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Une méthode de calcul boucle sur <code>self</code> et affecte le champ sur <strong>chaque</strong> enregistrement, dans tous les cas : l'ORM l'appelle en lot.</li>
+                    <li><code>store=True</code> crée une colonne recalculée quand une dépendance change ; le champ est alors calculé en superutilisateur par défaut.</li>
+                    <li>« Compute method failed to assign » n'apparaît que sur un champ non stocké en lecture seule ; ailleurs, la même faute donne <code>False</code> en silence. Message identique en 19 et en 20.</li>
+                    <li><code>inverse</code> rend le champ modifiable, <code>search</code> le rend cherchable ; sans elle, Odoo 20 refuse la condition avec « Field has no SQL representation ».</li>
+                    <li><code>precompute</code> pour une valeur requise à l'insertion, <code>recursive</code> pour un champ qui dépend de lui-même, <code>@api.depends_context</code> pour une valeur par langue ou société, jamais stockée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Tous les extraits exécutés le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire, en français, avec le module
+                    d'exemple installé ; formulaire du devis capturé dans le navigateur avant et après l'enregistrement.
+                    Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields.py" target="_blank" rel="noopener"><code>odoo/orm/fields.py</code></a> : attributs <code>compute</code>, <code>precompute</code>, <code>compute_sudo</code>, <code>recursive</code>, <code>search</code> ; <code>__get__</code> (« failed to assign »), <code>recompute</code>, <code>compute_value</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/domains.py" target="_blank" rel="noopener"><code>odoo/orm/domains.py</code></a> : appel de la méthode de recherche, <code>NotImplemented</code>, refus d'un champ non stocké</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/models/sale_order.py" target="_blank" rel="noopener"><code>addons/sale/models/sale_order.py</code></a> : <code>commitment_date</code>, <code>expected_date</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les écritures qui déclenchent les recalculs et les inverses.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à toutes les vérifications de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/contraintes-champs-calcules-odoo-63">Contraintes et champs calculés (version 19)</a></h5>
+                            <p class="small text-muted mb-0"><code>@api.depends</code> et <code>models.Constraint</code> pour qui travaille encore en Odoo 19.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
