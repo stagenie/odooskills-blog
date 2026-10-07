@@ -1,0 +1,625 @@
+<!--
+Article — read_group en Odoo 20 : sommes, comptages, regroupements par mois
+Série « L'ORM Odoo 20 en pratique » (article autonome)
+Date : 2026-10-07
+Slug : read-group-odoo-20
+Meta : read_group en Odoo 20 : _read_group, agrégats :sum et __count, regroupement par mois, having, formatted_read_group, et l'appel écrit pour la 19 qui casse.
+Mot-clé cible : odoo read_group
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Preuves (base vs20_tech_o6 = copie de vs20_tech, sale_management + stock, démo native fr_FR, Odoo 20.0, PG 16) :
+- Sondes rejouées dans odoo-bin shell : docs/blog-odoo20/captures-base-vs20_tech/o6-read-group/p2_main.py,
+  p3_compare.py, p4_order.py, p6_term.py, p7.py (sorties collées telles quelles).
+- odoo/odoo/orm/models.py:1930-1994 read_group 20 (@typing.final, signature de _read_group, records → id / ids) ;
+  :1996 _read_group ; :2063 « Need groupby or aggregates. » ; :2103 « Aggregate method is mandatory » ;
+  :2116 « Invalid aggregate method » ; :2159 « Granularity not set on a date(time) field » ;
+  :2170 « Granularity set on a no-datetime field or property » ; :329-342 READ_GROUP_AGGREGATE ;
+  :199-209 get_public_method (méthode « _ » non appelable à distance).
+- odoo/odoo/orm/utils.py:26-48 granularités ; odoo/orm/fields_temporal.py:86-91 fuseau du contexte (tz).
+- odoo/addons/web/models/models.py:1022 formatted_read_group (même signature en 19 publique, :802).
+- 19.0 PUBLIQUE relue le 07/10/2026 (raw GitHub, tête 8191f184d3c7, 2026-10-07T01:26Z) :
+  odoo/orm/models.py:2752-2755 read_group(domain, fields, groupby, offset, limit, orderby, lazy),
+  @api.deprecated("Since 19.0, read_group is deprecated…"), retour = liste de dicts ; clé de comptage
+  « <champ>_count » en lazy (:2818) ; _read_group :1867 même signature qu'en 20.
+- Pivot Ventes › Commandes, filtre favori état = sale, lignes Client, colonnes Date de commande : Mois,
+  mesures Montant HT + Nombre : mêmes chiffres que la console (capture 02, serveur local de recette).
+Captures : content/blog/screenshots/read-group-odoo-20/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">read_group en Odoo 20 : sommes, comptages, regroupements par mois</h1>
+                <p class="lead mt-3 text-white">Le chiffre d'affaires par client et par mois, en une seule requête SQL
+                    et sans boucle Python : c'est le travail de <code>_read_group</code>. Ses trois listes (domaine,
+                    regroupements, agrégats), les tuples qu'il renvoie, les granularités de date, <code>having</code>
+                    et <code>order</code>, ses deux cousins <code>read_group</code> et <code>formatted_read_group</code>,
+                    et l'appel recopié d'un module 19 qui ne passe plus.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Grouper</h4>
+                        <p>Par champ, par mois ou par année, à travers un <code>many2one</code>, avec le tri et le filtre des groupes.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Agréger</h4>
+                        <p><code>:sum</code>, <code>:avg</code>, <code>__count</code>, <code>:count_distinct</code>, <code>:recordset</code>… et ce que chaque appel renvoie.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Migrer</h4>
+                        <p>Pourquoi un <code>read_group</code> écrit pour la 19 lève une erreur en 20, et comment le réécrire.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 avec l'application <strong>Ventes</strong> et ses données de démonstration :
+                            tous les exemples portent sur <code>sale.order</code> et <code>sale.order.line</code>, sans
+                            module à écrire.</li>
+                        <li>La console <code>odoo-bin shell</code>, où chaque extrait a été exécuté. Elle est présentée dans
+                            <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article sur la console</a>
+                            (écrit pour la 19, la commande est la même).</li>
+                        <li>Les dates de la démonstration sont posées à l'installation, autour du jour où la base est
+                            créée : sur ta base, les mois et les montants différeront des sorties ci-dessous.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE BESOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le chiffre d'affaires par client et par mois</h2>
+
+                <p>Le réflexe naïf : chercher les commandes confirmées, boucler, additionner dans un dictionnaire. Ça
+                    marche, mais chaque commande est chargée en mémoire pour n'en garder qu'un total : le coût grandit
+                    avec le nombre de commandes. <code>_read_group</code> pose la question à PostgreSQL, qui fait le
+                    <code>GROUP BY</code> et ne renvoie qu'une ligne par groupe :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+rows = SO._read_group(
+    [('state', '=', 'sale')],                # domaine : les commandes confirmées
+    ['partner_id', 'date_order:month'],      # regroupements : client, puis mois
+    ['amount_untaxed:sum', '__count'],       # agrégats : somme HT, nombre de commandes
+)
+for partner, month, total, count in rows:
+    print(partner.name, month.strftime('%Y-%m'), total, count)</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Console odoo-bin shell : appel _read_group sur sale.order groupé par partner_id et date_order:month avec amount_untaxed:sum et __count ; quatre lignes : Joel Willis 2026-09 2947.5 1, Gemini Furniture 2026-09 5074.0 5, Gemini Furniture 2026-10 18889.0 12, Lumber Inc 2026-10 750.0 1"/>
+                    <figcaption>Quatre groupes (client, mois) pour les 19 commandes confirmées de la démonstration : une requête, quatre lignes.</figcaption>
+                </figure>
+
+                <p>Trois listes, dans cet ordre, et c'est toute la méthode :</p>
+                <table class="tmc">
+                    <thead><tr><th>Argument</th><th>Contenu</th><th>Ici</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>domain</code></td><td>Un domaine de recherche ordinaire, comme pour <code>search</code>.</td><td>les commandes à l'état <code>sale</code></td></tr>
+                        <tr><td><code>groupby</code></td><td>Les champs de regroupement ; un champ date porte obligatoirement sa granularité (<code>:month</code>).</td><td>le client, puis le mois de la commande</td></tr>
+                        <tr><td><code>aggregates</code></td><td><code>'champ:fonction'</code>, ou <code>'__count'</code> pour le nombre de lignes du groupe.</td><td>la somme du montant HT, le nombre de commandes</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LES TUPLES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que renvoie <code>_read_group</code> : des tuples</h2>
+
+                <p>Chaque groupe est un tuple : d'abord les valeurs des regroupements, dans l'ordre demandé, puis les
+                    agrégats, dans l'ordre demandé. D'où le déballage direct
+                    <code>for partner, month, total, count in rows</code>. Les valeurs sont typées :</p>
+<pre class="language-python"><code class="language-python">p, m, t, c = rows[0]
+print(type(p), type(m), repr(m), p.display_name)</code></pre>
+<div class="out">&lt;class 'odoo.orm.models.res.partner'&gt; &lt;class 'datetime.datetime'&gt; datetime.datetime(2026, 9, 1, 0, 0) Joel Willis</div>
+
+                <ul>
+                    <li>Un <code>many2one</code> revient sous forme d'<strong>enregistrement</strong>
+                        (<code>res.partner(8,)</code>), pas d'un identifiant : <code>partner.name</code> marche sans
+                        <code>browse</code>.</li>
+                    <li>Un mois revient comme le <strong>premier instant du mois</strong> : un <code>datetime</code> pour
+                        un champ <code>Datetime</code> comme <code>date_order</code>.</li>
+                    <li>Les sommes sont des <code>float</code>, <code>__count</code> un entier.</li>
+                </ul>
+
+                <p>Sans regroupement, on obtient une seule ligne, le total global. Et si le domaine ne trouve rien,
+                    cette ligne existe quand même, avec des valeurs vides :</p>
+<pre class="language-python"><code class="language-python">print(SO._read_group([('state', '=', 'sale')], [], ['amount_untaxed:sum', '__count']))
+print(SO._read_group([('state', '=', 'cancel')], [], ['amount_untaxed:sum', '__count']))</code></pre>
+<div class="out">[(27660.5, 19)]
+[(False, 0)]</div>
+                <p>Le <code>False</code> vient de là : aucune commande annulée dans la démonstration, et la somme d'un
+                    ensemble vide n'est pas zéro. Prévoir <code>total or 0.0</code> avant de calculer avec.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES AGRÉGATS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les agrégats</h2>
+
+                <p>La partie après les deux-points est une fonction d'agrégation SQL. Odoo 20 en accepte une liste
+                    fermée (<code>READ_GROUP_AGGREGATE</code>, <code>odoo/orm/models.py</code>) :</p>
+                <table class="tmc">
+                    <thead><tr><th>Écriture</th><th>Résultat par groupe</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>__count</code></td><td>nombre de lignes (<code>COUNT(*)</code>)</td></tr>
+                        <tr><td><code>champ:sum</code>, <code>:avg</code>, <code>:min</code>, <code>:max</code></td><td>somme, moyenne, minimum, maximum</td></tr>
+                        <tr><td><code>champ:count</code>, <code>:count_distinct</code></td><td>nombre de valeurs non vides, de valeurs distinctes</td></tr>
+                        <tr><td><code>champ:bool_and</code>, <code>:bool_or</code></td><td>« tous vrais », « au moins un vrai »</td></tr>
+                        <tr><td><code>champ:array_agg</code>, <code>:array_agg_distinct</code></td><td>liste Python des valeurs</td></tr>
+                        <tr><td><code>champ:recordset</code></td><td>un recordset (champ relationnel ou <code>id</code>), sans doublon</td></tr>
+                        <tr><td><code>champ:sum_currency</code></td><td>somme d'un champ <code>Monetary</code> ramenée à la devise de la société</td></tr>
+                    </tbody>
+                </table>
+
+<pre class="language-python"><code class="language-python">print(SO._read_group([('state', '=', 'sale')], ['partner_id'],
+    ['amount_untaxed:avg', 'amount_untaxed:max', 'amount_untaxed:min',
+     'user_id:count_distinct', 'id:array_agg']))
+print(SO._read_group([('state', '=', 'sale')], ['partner_id'], ['id:recordset']))</code></pre>
+<div class="out">[(res.partner(8,), 2947.5, 2947.5, 2947.5, 1, [20]), (res.partner(11,), 1409.5882352941176, 4350.0, 415.5, 2, [4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24]), (res.partner(17,), 750.0, 750.0, 750.0, 1, [6])]
+[(res.partner(8,), sale.order(20,)), (res.partner(11,), sale.order(4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24)), (res.partner(17,), sale.order(6,))]</div>
+
+                <p>Gemini Furniture : 17 commandes, panier moyen 1 409,59, deux vendeurs différents. Avec
+                    <code>:recordset</code>, les commandes du groupe arrivent prêtes à l'emploi :
+                    <code>orders.mapped('name')</code>, <code>orders.action_…()</code>, sans second
+                    <code>search</code>.</p>
+
+                <p>La fonction est <strong>obligatoire</strong>. Un nom de champ seul ne prend pas l'agrégat par défaut
+                    du champ, il est refusé :</p>
+<div class="out">ValueError: Aggregate method is mandatory for 'amount_untaxed'
+ValueError: Invalid aggregate method 'total' for 'amount_untaxed:total'.</div>
+                <p>La première ligne pour <code>['amount_untaxed']</code>, la seconde pour une fonction inventée
+                    (<code>['amount_untaxed:total']</code>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LES DATES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Grouper par mois, par semaine, par année</h2>
+
+                <p>Un champ <code>Date</code> ou <code>Datetime</code> se groupe toujours avec une granularité. Deux
+                    familles (<code>odoo/orm/utils.py</code>) :</p>
+                <ul>
+                    <li><strong>Périodes</strong> : <code>:hour</code>, <code>:day</code>, <code>:week</code>,
+                        <code>:month</code>, <code>:quarter</code>, <code>:year</code>. La valeur rendue est le début de
+                        la période.</li>
+                    <li><strong>Numéros</strong> : <code>:year_number</code>, <code>:quarter_number</code>,
+                        <code>:month_number</code>, <code>:iso_week_number</code>, <code>:day_of_year</code>,
+                        <code>:day_of_month</code>, <code>:day_of_week</code>, <code>:hour_number</code>,
+                        <code>:minute_number</code>, <code>:second_number</code>. Un nombre, toutes années confondues :
+                        « tous les mois de septembre », « tous les mercredis ».</li>
+                </ul>
+<pre class="language-python"><code class="language-python">dom = [('state', '=', 'sale')]
+print(SO._read_group(dom, ['date_order:year'], ['__count']))
+print(SO._read_group(dom, ['date_order:week'], ['__count']))
+print(SO._read_group(dom, ['date_order:month_number'], ['__count']))
+print(SO._read_group(dom, ['date_order:day_of_week'], ['__count']))</code></pre>
+<div class="out">[(datetime.datetime(2026, 1, 1, 0, 0), 19)]
+[(datetime.datetime(2026, 8, 31, 0, 0), 1), (datetime.datetime(2026, 9, 7, 0, 0), 2), (datetime.datetime(2026, 9, 14, 0, 0), 1), (datetime.datetime(2026, 9, 21, 0, 0), 1), (datetime.datetime(2026, 9, 28, 0, 0), 1), (datetime.datetime(2026, 10, 5, 0, 0), 13)]
+[(9.0, 6), (10.0, 13)]
+[(1.0, 1), (3.0, 18)]</div>
+
+                <ul>
+                    <li>Les semaines commencent le lundi (31 août, 7 septembre…) : le premier jour vient de la langue de
+                        l'utilisateur (<code>week_start</code>), ici le français.</li>
+                    <li>Les numéros reviennent en <code>float</code> (<code>9.0</code>) : c'est le
+                        <code>date_part</code> de PostgreSQL. <code>int()</code> avant de s'en servir comme clé.</li>
+                    <li><code>:day_of_week</code> suit PostgreSQL : 0 pour dimanche, 1 pour lundi… 3 pour mercredi, le jour
+                        où la base de démonstration a été créée.</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4>Le mois de qui ? Le fuseau du contexte</h4>
+                    <p>Pour un <code>Datetime</code>, Odoo convertit l'heure UTC stockée dans le fuseau
+                        <code>tz</code> du <strong>contexte</strong> avant de tronquer au mois
+                        (<code>odoo/orm/fields_temporal.py</code>). Le client web l'envoie à chaque appel ; dans la console,
+                        il vient de l'utilisateur, ici <code>'tz': 'Europe/Brussels'</code>. Sans <code>tz</code>
+                        (une tâche planifiée, un script), le découpage se fait en UTC : une commande passée le
+                        1<sup>er</sup> à 0 h 30 à Paris tombe dans le mois précédent. Pour un calcul qui doit
+                        correspondre à l'écran : <code>SO.with_context(tz=env.user.tz)._read_group(…)</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. HAVING ORDER LIMIT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Filtrer, trier et limiter les groupes : <code>having</code>, <code>order</code>, <code>limit</code></h2>
+
+                <p>Le domaine filtre les <strong>lignes</strong> avant le regroupement. Pour filtrer les
+                    <strong>groupes</strong> sur la valeur d'un agrégat, c'est <code>having</code>, un domaine dont les
+                    « champs » sont des agrégats. <code>order</code> trie les groupes, <code>limit</code> et
+                    <code>offset</code> les paginent :</p>
+<pre class="language-python"><code class="language-python"># les clients au-delà de 1 000 de CA HT
+print(SO._read_group(dom, ['partner_id'], ['amount_untaxed:sum'],
+                     having=[('amount_untaxed:sum', '>', 1000)]))
+# le top 2
+print(SO._read_group(dom, ['partner_id'], ['amount_untaxed:sum'],
+                     order='amount_untaxed:sum desc', limit=2))
+# le deuxième, seul
+print(SO._read_group(dom, ['partner_id'], ['amount_untaxed:sum'],
+                     order='amount_untaxed:sum desc', offset=1, limit=1))
+# les clients d'au moins 5 commandes
+print(SO._read_group(dom, ['partner_id'], ['__count'], having=[('__count', '>=', 5)]))</code></pre>
+<div class="out">[(res.partner(8,), 2947.5), (res.partner(11,), 23963.0)]
+[(res.partner(11,), 23963.0), (res.partner(8,), 2947.5)]
+[(res.partner(8,), 2947.5)]
+[(res.partner(11,), 17)]</div>
+
+                <p>Sans <code>order</code>, les groupes sortent dans l'ordre des colonnes de regroupement, en valeur
+                    brute : pour <code>partner_id</code>, l'ordre des identifiants (8, 11, 17). Écrire
+                    <code>order='partner_id'</code> suit l'ordre du modèle client, donc les noms :</p>
+<pre class="language-python"><code class="language-python">print(SO._read_group(dom, ['partner_id'], ['amount_untaxed:sum']))
+print(SO._read_group(dom, ['partner_id'], ['amount_untaxed:sum'], order='partner_id'))</code></pre>
+<div class="out">[(res.partner(8,), 2947.5), (res.partner(11,), 23963.0), (res.partner(17,), 750.0)]
+[(res.partner(11,), 23963.0), (res.partner(8,), 2947.5), (res.partner(17,), 750.0)]</div>
+                <p>Gemini Furniture, Joel Willis, Lumber Inc : l'ordre alphabétique. Les opérateurs acceptés dans
+                    <code>having</code> sont <code>=</code>, <code>!=</code>, <code>&lt;</code>, <code>&gt;</code>,
+                    <code>&lt;=</code>, <code>&gt;=</code>, <code>in</code> et <code>not in</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. CHEMIN ET LIGNES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Grouper à travers un <code>many2one</code>, grouper les lignes</h2>
+
+                <p>Un regroupement peut suivre un <code>many2one</code> avec un point : le pays du client, sans champ
+                    relié à déclarer. Odoo ajoute la jointure :</p>
+<pre class="language-python"><code class="language-python">for country, total in SO._read_group(dom, ['partner_id.country_id'], ['amount_untaxed:sum']):
+    print(country.name, total)</code></pre>
+<div class="out">Saint-Marin 23963.0
+États-Unis 3697.5</div>
+                <p>Seul un <code>many2one</code> se traverse ainsi (sinon : <code>Only many2one path is accepted</code>),
+                    et seulement côté regroupement : un agrégat <code>'partner_id.x:sum'</code> est refusé.</p>
+
+                <p>Le même outil répond à « quels articles rapportent le plus », sur les lignes de commande :</p>
+<pre class="language-python"><code class="language-python">print(env['sale.order.line']._read_group(
+    [('state', '=', 'sale')], ['product_id'],
+    ['price_subtotal:sum', 'product_uom_qty:sum'],
+    order='price_subtotal:sum desc', limit=3))</code></pre>
+<div class="out">[(product.product(38,), 13635.0, 47.0), (product.product(31,), 3253.5, 27.0), (product.product(3,), 3000.0, 40.0)]</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. TROIS MÉTHODES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>_read_group</code>, <code>read_group</code>, <code>formatted_read_group</code></h2>
+
+                <p>Trois méthodes, une même signature
+                    <code>(domain, groupby, aggregates, having, offset, limit, order)</code>, trois formes de résultat.</p>
+
+                <p><strong><code>read_group</code></strong>, sans tiret bas, appelle <code>_read_group</code> puis
+                    remplace les enregistrements par leurs identifiants : l'id pour un regroupement, la liste d'ids pour
+                    un agrégat <code>:recordset</code>. Une méthode qui commence par <code>_</code> ne peut pas être
+                    appelée à distance (<code>get_public_method</code>, <code>odoo/orm/models.py</code>) ;
+                    <code>read_group</code> est la version qu'un client externe peut appeler, avec un résultat
+                    sérialisable.</p>
+<pre class="language-python"><code class="language-python">print(SO.read_group(dom, ['partner_id', 'date_order:month'], ['amount_untaxed:sum', '__count']))
+print(SO.read_group(dom, ['partner_id'], ['id:recordset']))</code></pre>
+<div class="out">[(8, datetime.datetime(2026, 9, 1, 0, 0), 2947.5, 1), (11, datetime.datetime(2026, 9, 1, 0, 0), 5074.0, 5), (11, datetime.datetime(2026, 10, 1, 0, 0), 18889.0, 12), (17, datetime.datetime(2026, 10, 1, 0, 0), 750.0, 1)]
+[(8, [20]), (11, [4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24]), (17, [6])]</div>
+
+                <p><strong><code>formatted_read_group</code></strong> (module <code>web</code>) renvoie ce dont l'interface
+                    a besoin : un dictionnaire par groupe, le nom affiché à côté de l'id, le libellé du mois dans la
+                    langue de l'utilisateur, et <code>__extra_domain</code>, le domaine qui ouvre les enregistrements du
+                    groupe :</p>
+<pre class="language-python"><code class="language-python">for g in SO.formatted_read_group(dom, ['partner_id', 'date_order:month'],
+                                 ['amount_untaxed:sum', '__count']):
+    print(g)</code></pre>
+<div class="out">{'partner_id': (11, 'Gemini Furniture'), 'date_order:month': ('2026-08-31 22:00:00', 'septembre 2026'), '__extra_domain': ['&amp;', '&amp;', ('partner_id', '=', 11), ('date_order', '&gt;=', '2026-08-31 22:00:00'), ('date_order', '&lt;', '2026-09-30 22:00:00')], 'amount_untaxed:sum': 5074.0, '__count': 5}
+{'partner_id': (11, 'Gemini Furniture'), 'date_order:month': ('2026-09-30 22:00:00', 'octobre 2026'), '__extra_domain': ['&amp;', '&amp;', ('partner_id', '=', 11), ('date_order', '&gt;=', '2026-09-30 22:00:00'), ('date_order', '&lt;', '2026-10-31 23:00:00')], 'amount_untaxed:sum': 18889.0, '__count': 12}
+{'partner_id': (8, 'Joel Willis'), 'date_order:month': ('2026-08-31 22:00:00', 'septembre 2026'), '__extra_domain': ['&amp;', '&amp;', ('partner_id', '=', 8), ('date_order', '&gt;=', '2026-08-31 22:00:00'), ('date_order', '&lt;', '2026-09-30 22:00:00')], 'amount_untaxed:sum': 2947.5, '__count': 1}
+{'partner_id': (17, 'Lumber Inc'), 'date_order:month': ('2026-09-30 22:00:00', 'octobre 2026'), '__extra_domain': ['&amp;', '&amp;', ('partner_id', '=', 17), ('date_order', '&gt;=', '2026-09-30 22:00:00'), ('date_order', '&lt;', '2026-10-31 23:00:00')], 'amount_untaxed:sum': 750.0, '__count': 1}</div>
+                <p>Le fuseau se lit dans les bornes : septembre à Bruxelles commence le 31 août à 22 h UTC, et octobre
+                    finit à 23 h UTC, après le passage à l'heure d'hiver. Les groupes sont triés par nom de client.
+                    Les clés d'agrégat sont l'écriture demandée (<code>'amount_untaxed:sum'</code>).</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Méthode</th><th>Un groupe</th><th>Pour</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>_read_group</code></td><td>tuple, enregistrements et <code>datetime</code></td><td>le code serveur : calculs, rapports, champs calculés</td></tr>
+                        <tr><td><code>read_group</code></td><td>tuple, ids à la place des enregistrements</td><td>un appel externe qui veut des valeurs brutes</td></tr>
+                        <tr><td><code>formatted_read_group</code></td><td>dictionnaire, noms affichés, libellés, domaine du groupe</td><td>une interface, un export lisible</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. À L'ÉCRAN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Le même calcul à l'écran</h2>
+
+                <p>Le tableau croisé dynamique de <strong>Ventes › Commandes</strong> repose sur ces mêmes regroupements.
+                    Commandes à l'état <code>sale</code>, lignes par client, colonnes par mois de la date de commande,
+                    mesures Montant hors taxes et Nombre : on retrouve les quatre groupes de la console, au centime
+                    près.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Vue pivot Commandes clients, favori CA par client et par mois : colonnes septembre 2026 et octobre 2026, mesures Montant hors taxes et Nombre ; Gemini Furniture 5 074,00 (5) et 18 889,00 (12), Joel Willis 2 947,50 (1) en septembre, Lumber Inc 750,00 (1) en octobre ; total 27 660,50 pour 19 commandes"/>
+                    <figcaption>Le pivot des commandes confirmées : Gemini Furniture 5 074 puis 18 889, Joel Willis 2 947,50, Lumber Inc 750, total 27 660,50 sur 19 commandes. Les chiffres de <code>_read_group</code>.</figcaption>
+                </figure>
+
+                <p>Le favori « CA par client et par mois » de la capture enregistre ces réglages : son domaine est
+                    <code>[('state', '=', 'sale')]</code>, son contexte porte
+                    <code>pivot_row_groupby</code>, <code>pivot_column_groupby</code> et <code>pivot_measures</code>,
+                    et le pivot les applique à l'ouverture. Quand un chiffre d'écran et un chiffre de code divergent,
+                    c'est par là qu'on compare : même domaine, mêmes regroupements, même fuseau.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. VENANT DE LA 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. L'appel écrit pour la 19 qui casse</h2>
+
+                <p>Un module 19 contient souvent ceci : un <code>read_group</code> public avec la liste des champs en
+                    deuxième position et les regroupements en troisième, des dictionnaires en retour.</p>
+<pre class="language-python"><code class="language-python"># écrit pour Odoo 19
+groups = env['sale.order'].read_group(
+    [('state', '=', 'sale')],
+    ['amount_untaxed'],          # fields : les champs à agréger
+    ['partner_id'],              # groupby
+    lazy=False,
+)
+for g in groups:
+    print(g['partner_id'][1], g['amount_untaxed'], g['__count'])</code></pre>
+
+                <p>En Odoo 20, le nom existe toujours, mais la deuxième liste est <code>groupby</code> et la troisième
+                    <code>aggregates</code>. Les arguments sont lus à l'envers et chaque variante de l'appel lève une
+                    erreur :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : SO.read_group(dom, ['amount_untaxed'], ['partner_id']) lève ValueError Aggregate method is mandatory for 'partner_id' ; avec 'amount_untaxed:sum' en deuxième position, ValueError Granularity set on a no-datetime field or property ; lazy=False et orderby lèvent TypeError unexpected keyword argument ; read_group(dom, ['partner_id'], ['amount_untaxed:sum']) renvoie [(8, 2947.5), (11, 23963.0), (17, 750.0)]"/>
+                    <figcaption>Quatre écritures de la 19, quatre erreurs ; la dernière ligne est la forme 20.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Écriture 19</th><th>Erreur en 20</th><th>Pourquoi</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>read_group(dom, ['amount_untaxed'], ['partner_id'])</code></td><td><code>ValueError: Aggregate method is mandatory for 'partner_id'</code></td><td>Odoo groupe par <code>amount_untaxed</code> et cherche à agréger <code>partner_id</code>, sans fonction.</td></tr>
+                        <tr><td><code>read_group(dom, ['amount_untaxed:sum'], ['partner_id'])</code></td><td><code>ValueError: Granularity set on a no-datetime field or property: 'amount_untaxed:sum'</code></td><td><code>:sum</code> est lu comme une granularité de regroupement.</td></tr>
+                        <tr><td><code>lazy=False</code></td><td><code>TypeError: … unexpected keyword argument 'lazy'</code></td><td>Le regroupement « paresseux » n'existe plus : tous les niveaux sont calculés d'un coup.</td></tr>
+                        <tr><td><code>orderby='…'</code>, <code>fields=[…]</code></td><td><code>TypeError: … unexpected keyword argument 'orderby'</code> (idem <code>'fields'</code>)</td><td>Le paramètre s'appelle <code>order</code> ; <code>fields</code> n'existe plus.</td></tr>
+                        <tr><td><code>g['partner_id']</code> sur le résultat</td><td><code>TypeError: tuple indices must be integers or slices, not str</code></td><td>Le résultat est une liste de tuples.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>La réécriture dépend de l'endroit où le code tourne. Côté serveur, <code>_read_group</code> et le
+                    déballage du tuple :</p>
+<pre class="language-python"><code class="language-python"># Odoo 20, code serveur
+for partner, total, count in env['sale.order']._read_group(
+        [('state', '=', 'sale')], ['partner_id'], ['amount_untaxed:sum', '__count']):
+    print(partner.name, total, count)</code></pre>
+<div class="out">Joel Willis 2947.5 1
+Gemini Furniture 23963.0 17
+Lumber Inc 750.0 1</div>
+                <p>Si le code exploitait les dictionnaires (un contrôleur, un export), <code>formatted_read_group</code>
+                    garde cette forme ; seules les clés changent : <code>g['amount_untaxed:sum']</code> au lieu de
+                    <code>g['amount_untaxed']</code>, et le domaine du groupe est <code>__extra_domain</code>.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : même nom, autre méthode</h4>
+                    <p>En 19, <code>read_group(domain, fields, groupby, offset, limit, orderby, lazy)</code> était
+                        marqué <code>@api.deprecated</code> (« Since 19.0, read_group is deprecated. Please use
+                        _read_group in the backend code or formatted_read_group for a complete formatted result ») et
+                        renvoyait des dictionnaires ; avec <code>lazy=True</code>, le comptage s'appelait
+                        <code>partner_id_count</code>. Odoo 20 réutilise le nom pour une tout autre méthode : la
+                        signature de <code>_read_group</code>, des tuples, des ids. Un module porté ne reçoit donc pas
+                        d'avertissement de dépréciation, il reçoit une erreur. <code>_read_group</code> et
+                        <code>formatted_read_group</code>, eux, ont déjà en 19 la signature qu'ils ont en 20 : le code
+                        qui les utilisait passe tel quel.</p>
+                </div>
+
+                <div class="pitfall-box">
+                    <h4>Trois messages à reconnaître</h4>
+                    <ul>
+                        <li><code>ValueError: Need groupby or aggregates.</code> : <code>_read_group(dom, [], [])</code>, aucune des deux listes n'est remplie.</li>
+                        <li><code>ValueError: Granularity not set on a date(time) field: 'date_order'</code> : un champ date sans <code>:month</code>, <code>:day</code>…</li>
+                        <li><code>ValueError: Aggregate method is mandatory for '…'</code> : un agrégat sans fonction, ou des listes inversées.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Somme et nombre par client</td><td><code>_read_group(dom, ['partner_id'], ['amount_untaxed:sum', '__count'])</code></td></tr>
+                        <tr><td>Par mois</td><td><code>'date_order:month'</code> (<code>:day</code>, <code>:week</code>, <code>:quarter</code>, <code>:year</code>)</td></tr>
+                        <tr><td>Tous les mois de septembre</td><td><code>'date_order:month_number'</code> (renvoie un <code>float</code>)</td></tr>
+                        <tr><td>Total global</td><td><code>_read_group(dom, [], ['amount_untaxed:sum'])</code> → <code>[(total,)]</code>, <code>False</code> si vide</td></tr>
+                        <tr><td>Groupes au-delà d'un seuil</td><td><code>having=[('amount_untaxed:sum', '&gt;', 1000)]</code></td></tr>
+                        <tr><td>Top N</td><td><code>order='amount_untaxed:sum desc', limit=N</code></td></tr>
+                        <tr><td>Les enregistrements du groupe</td><td><code>'id:recordset'</code></td></tr>
+                        <tr><td>Par pays du client</td><td><code>'partner_id.country_id'</code></td></tr>
+                        <tr><td>Ids au lieu d'enregistrements</td><td><code>read_group(…)</code>, même signature</td></tr>
+                        <tr><td>Dictionnaires lisibles</td><td><code>formatted_read_group(…)</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>_read_group(domain, groupby, aggregates)</code> fait le <code>GROUP BY</code> en SQL et renvoie un tuple par groupe : regroupements, puis agrégats.</li>
+                    <li>Un agrégat s'écrit <code>'champ:fonction'</code> ou <code>'__count'</code> ; la fonction est obligatoire.</li>
+                    <li>Un champ date se groupe avec une granularité, dans le fuseau <code>tz</code> du contexte.</li>
+                    <li><code>having</code> filtre les groupes, <code>order</code> les trie (y compris par agrégat), <code>limit</code> et <code>offset</code> les paginent.</li>
+                    <li><code>read_group</code> a en 20 la signature de <code>_read_group</code> et renvoie des ids ; un appel écrit pour la 19 lève une erreur, à réécrire avec <code>_read_group</code> ou <code>formatted_read_group</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration avec Ventes ; pivot capturé sur la même base. Comparaison avec la
+                    branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>read_group</code>, <code>_read_group</code>, <code>_read_group_select</code>, <code>_read_group_groupby</code>, <code>_read_group_having</code>, <code>READ_GROUP_AGGREGATE</code>, <code>get_public_method</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/utils.py" target="_blank" rel="noopener"><code>odoo/orm/utils.py</code></a> : les granularités de date</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_temporal.py" target="_blank" rel="noopener"><code>odoo/orm/fields_temporal.py</code></a> : fuseau du contexte et début de semaine</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/models/models.py" target="_blank" rel="noopener"><code>addons/web/models/models.py</code></a> : <code>formatted_read_group</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/19.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code> en 19.0</a> : l'ancien <code>read_group</code>, déprécié</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/kanban-graphique-pivot-odoo-20-191">Kanban, graphique et pivot en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Déclarer une vue pivot et ses mesures dans un module.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les autres écarts à connaître avant de porter un module 19.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à toutes les vérifications de cet article (version 19).</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

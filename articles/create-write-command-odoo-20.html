@@ -1,0 +1,658 @@
+<!--
+Article — create, write et Command en Odoo 20 : écrire sur One2many et Many2many
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : create-write-command-odoo-20
+Meta : create en liste, write sur plusieurs enregistrements, les 7 Command sur One2many et Many2many, copy et unlink en Odoo 20, testés sur la démo.
+Mots-clés cibles : odoo command set, odoo command create, odoo many2many write, odoo create multiple records
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Captures : content/blog/screenshots/create-write-command-odoo-20/ (01-04)
+Preuves (base vs20_tech_o7 : sale_management + stock, démo native, fr_FR ; Odoo 20.0 3538ed82) :
+  - sondes docs/blog-odoo20/captures-base-vs20_tech/o7-create-write/ : p5_final.py -> p5_out.txt (§1-6, rollback), p6_commit.py -> p6_out.txt (§4, validé, écrans 01/02 avant/après),
+    p7_verif.py -> p7_out.txt (§6-8 tels qu'écrits, rollback), p4_extra.py (from odoo import Command, ordre d'écriture, copy suffixe), p1/p2/p3 sondes préalables
+  - odoo/odoo/orm/models.py : create :4088 (@api.model_create_multi :4087), write :3805, tri _fields_update_order__ :3869, unlink :3658 (gardes ondelete :3670-3677),
+    copy_data :4954 (callable(field.copy) :4997, champs traduits :5008), copy :5025 (sans copy_translations) ; model_classes.py:346 _fields_update_order__
+  - odoo/orm/commands.py:11-118 Command ; fields_relational.py:1051 unlink One2many (cascade -> suppression, sinon inverse = False) ; :589 write_sequence x2many = 20
+  - odoo/orm/fields_textual.py:529-534 name/x_name -> copy=mark_as_copy ; odoo/tools/translate.py:954 mark_as_copy
+  - odoo/addons/base/models/ir_model.py:42 MODULE_UNINSTALL_FLAG = 'force_delete' ; addons/web/models/models.py web_save -> record.write
+  - addons/sale/models/sale_order.py:339 order_line copy=True, :1486 _unlink_except_draft_or_cancel ; sale_order_line.py:42 order_id cascade, :1934 _unlink_except_confirmed ; sale/i18n/fr.po:4209 msgstr vide
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0, tête 8191f184d3c7, relue le 07/10/2026) : models.py copy :5543-5555 (copy_translations :5478),
+    unlink :4211-4214 (MODULE_UNINSTALL_FLAG dans le contexte saute toutes les gardes at_uninstall=False), write tri par write_sequence seul :4474 ;
+    ir_model.py:36 MODULE_UNINSTALL_FLAG = '_force_unlink' ; sale_order.py:1034 même garde at_uninstall=False ; fields_textual.py et translate.py : aucun mark_as_copy ; res_partner.py:564 et product_template.py:608 copy_data « (copy) »
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">create, write et Command en Odoo 20 : écrire sur One2many et Many2many</h1>
+                <p class="lead mt-3 text-white">Créer un ou plusieurs enregistrements, les modifier en un appel, puis
+                    toucher aux lignes d'une commande de vente et aux étiquettes d'un contact avec les sept
+                    <code>Command</code>. Chaque commande a été exécutée sur la démo d'Odoo 20, état avant et après :
+                    laquelle supprime vraiment, laquelle déplace une ligne sans prévenir, et ce que <code>copy</code> et
+                    <code>unlink</code> font de différent depuis la 19.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Créer, modifier</h4>
+                        <p><code>create</code> avec un dictionnaire ou une liste, <code>write</code> sur un ou plusieurs enregistrements, et l'ordre dans lequel Odoo 20 écrit les champs.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Les 7 <code>Command</code></h4>
+                        <p><code>create</code>, <code>update</code>, <code>delete</code>, <code>unlink</code>, <code>link</code>, <code>clear</code>, <code>set</code> : sur un One2many et sur un Many2many, ce qui reste en base.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Dupliquer, supprimer</h4>
+                        <p><code>copy</code> et le suffixe « (copie) », <code>unlink</code> et <code>@api.ondelete</code>, et le drapeau qui ne contourne plus rien.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec les modules <strong>Ventes</strong> et <strong>Inventaire</strong>
+                            et les données de démonstration, en français : les commandes <code>S00002</code> à
+                            <code>S00005</code>, les contacts « Acme Corporation » ou « Lumber Inc » et les étiquettes de
+                            contact viennent de là.</li>
+                        <li>La console <code>./odoo-bin shell -c odoo.conf -d ma_base</code> : tous les extraits y ont été
+                            exécutés, et chaque série se termine par <code>env.cr.rollback()</code> pour laisser la base
+                            intacte. La console est présentée dans
+                            <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article sur odoo-bin shell</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CREATE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>create</code> : un dictionnaire ou une liste</h2>
+
+                <p><code>create</code> est décoré par <code>@api.model_create_multi</code> : il attend une
+                    <strong>liste</strong> de dictionnaires et crée tous les enregistrements en un appel. Un dictionnaire
+                    seul est encore accepté, le décorateur l'emballe dans une liste. Dans les deux cas, le retour est un
+                    recordset :</p>
+<pre class="language-python"><code class="language-python">Partner = env['res.partner']
+one = Partner.create({'name': "Atelier Nord"})
+print(one, one.name)
+several = Partner.create([
+    {'name': "Atelier Sud"},
+    {'name': "Atelier Est", 'city': "Lyon"},
+])
+print(several, several.mapped('name'))
+print(Partner.create([]))</code></pre>
+<div class="out">res.partner(51,) Atelier Nord
+res.partner(52, 53) ['Atelier Sud', 'Atelier Est']
+res.partner()</div>
+
+                <p>Une liste vide ne crée rien et rend un recordset vide, sans erreur. Quand tu crées en boucle,
+                    construis la liste puis appelle <code>create</code> une fois : les champs calculés, les contraintes et
+                    les écritures SQL sont traités par lot.</p>
+
+                <p>Un enregistrement et ses lignes se créent ensemble : la valeur d'un One2many est une liste de
+                    commandes. Une commande de vente pour Acme Corporation avec deux lignes :</p>
+<pre class="language-python"><code class="language-python">from odoo.fields import Command
+
+acme = Partner.search([('name', '=', "Acme Corporation")])
+chair = env['product.product'].search([('default_code', '=', 'FURN_7777')])
+desk = env['product.product'].search([('default_code', '=', 'FURN_0789')])
+order = env['sale.order'].create({
+    'partner_id': acme.id,
+    'order_line': [
+        Command.create({'product_id': chair.id, 'product_uom_qty': 4}),
+        Command.create({'product_id': desk.id, 'product_uom_qty': 1}),
+    ],
+})
+print(order.name, order.state, order.order_line.mapped('product_id.name'), order.amount_total)</code></pre>
+<div class="out">S00027 draft ['Chaise de bureau', 'Espace de travail individuel'] 1339.75</div>
+
+                <p>Le numéro, le prix, les taxes et le total sont calculés par Odoo, comme si la commande avait été
+                    saisie à l'écran. <code>Command</code> s'importe de <code>odoo.fields</code> ; <code>from odoo import
+                    Command</code> donne la même classe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. WRITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>write</code> : un ou plusieurs enregistrements</h2>
+
+                <p><code>write</code> applique le même dictionnaire à <strong>tous</strong> les enregistrements du
+                    recordset et renvoie <code>True</code>. Les trois ateliers créés plus haut, en un appel :</p>
+<pre class="language-python"><code class="language-python">ateliers = one | several
+print(ateliers.write({'city': "Nantes"}))
+print(ateliers.mapped('city'))</code></pre>
+<div class="out">True
+['Nantes', 'Nantes', 'Nantes']</div>
+
+                <p>Pour donner des valeurs différentes à chaque enregistrement, il faut un <code>write</code> par valeur
+                    distincte (ou par enregistrement). Grouper les enregistrements qui reçoivent la même valeur reste le
+                    moyen le plus économe.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : l'ordre d'écriture des champs</h4>
+                    <p>Dans un même <code>write</code>, les champs sont triés par priorité (<code>write_sequence</code> :
+                        montants après leur devise, One2many et Many2many en dernier). À priorité égale, la 19 les écrivait
+                        dans l'ordre des clés du dictionnaire ; Odoo 20 les écrit dans l'<strong>ordre de déclaration du
+                        modèle</strong> (<code>_fields_update_order__</code>, couple <code>(write_sequence, rang du
+                        champ)</code>). Deux dictionnaires aux clés mélangées donnent maintenant le même ordre :</p>
+<div class="out">['order_line', 'note', 'partner_id', 'amount_total'] -> ['partner_id', 'note', 'amount_total', 'order_line']
+['partner_id', 'amount_total', 'note', 'order_line'] -> ['partner_id', 'note', 'amount_total', 'order_line']</div>
+                    <p>Un code qui comptait sur l'ordre des clés pour qu'un champ à <code>inverse</code> passe avant un
+                        autre doit s'appuyer sur l'ordre des champs dans la classe, ou faire deux <code>write</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES 7 COMMAND SUR UN ONE2MANY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les sept <code>Command</code> sur les lignes d'une commande</h2>
+
+                <p>Un One2many ou un Many2many ne s'écrit pas avec une liste d'ids : on lui passe une liste de
+                    commandes, chacune un triplet <code>(code, id, valeurs)</code> que les méthodes de
+                    <code>Command</code> fabriquent pour toi. Le terrain d'essai : le devis <code>S00003</code> de la démo,
+                    deux lignes, et un petit affichage après chaque commande (id, article, quantité, puis total) :</p>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('name', '=', 'S00003')])
+other = env['sale.order'].search([('name', '=', 'S00002')])
+
+def show(label):
+    print(f"{label:&lt;7}", [(l.id, l.product_id.name, l.product_uom_qty) for l in order.order_line], order.amount_total)
+
+show("avant")
+first, second = order.order_line
+order.write({'order_line': [Command.create({'product_id': desk.id, 'product_uom_qty': 3})]})
+show("create")
+new = order.order_line - first - second
+order.write({'order_line': [Command.update(new.id, {'product_uom_qty': 5})]})
+show("update")
+order.write({'order_line': [Command.delete(second.id)]})
+show("delete")
+print("        second.exists() -&gt;", second.exists())
+borrowed = other.order_line[0]
+order.write({'order_line': [Command.link(borrowed.id)]})
+show("link")
+print("        borrowed.order_id -&gt;", borrowed.order_id.name, "| S00002 garde", other.order_line.ids)
+order.write({'order_line': [Command.unlink(borrowed.id)]})
+show("unlink")
+print("        borrowed.exists() -&gt;", borrowed.exists())
+order.write({'order_line': [Command.set([first.id])]})
+show("set")
+print("        new.exists() -&gt;", new.exists())
+order.write({'order_line': [Command.clear()]})
+show("clear")
+print("        first.exists() -&gt;", first.exists())
+env.cr.rollback()</code></pre>
+<div class="out">avant   [(6, "Design d'intérieur virtuel", 10.0), (7, 'Chaise de bureau', 1.0)] 434.13
+create  [(6, "Design d'intérieur virtuel", 10.0), (7, 'Chaise de bureau', 1.0), (58, 'Espace de travail individuel', 3.0)] 3487.38
+update  [(6, "Design d'intérieur virtuel", 10.0), (7, 'Chaise de bureau', 1.0), (58, 'Espace de travail individuel', 5.0)] 5522.88
+delete  [(6, "Design d'intérieur virtuel", 10.0), (58, 'Espace de travail individuel', 5.0)] 5442.38
+        second.exists() -&gt; sale.order.line()
+link    [(6, "Design d'intérieur virtuel", 10.0), (58, 'Espace de travail individuel', 5.0), (4, "Design d'intérieur virtuel", 24.0)] 7512.38
+        borrowed.order_id -&gt; S00003 | S00002 garde [5]
+unlink  [(6, "Design d'intérieur virtuel", 10.0), (58, 'Espace de travail individuel', 5.0)] 5442.38
+        borrowed.exists() -&gt; sale.order.line()
+set     [(6, "Design d'intérieur virtuel", 10.0)] 353.63
+        new.exists() -&gt; sale.order.line()
+clear   [] 0.0
+        first.exists() -&gt; sale.order.line()</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Commande</th><th>Ce qui s'est passé</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>Command.create(vals)</code></td><td>Une ligne 58 est créée et rattachée au devis ; le total suit.</td></tr>
+                        <tr><td><code>Command.update(id, vals)</code></td><td>La ligne 58 passe à 5 unités. C'est un <code>write</code> sur la ligne, à travers la commande.</td></tr>
+                        <tr><td><code>Command.delete(id)</code></td><td>La ligne 7 n'existe plus : <code>exists()</code> rend un recordset vide.</td></tr>
+                        <tr><td><code>Command.link(id)</code></td><td>La ligne 4 appartenait à <code>S00002</code>. Un One2many ne partage pas : la ligne est <strong>déplacée</strong>, son <code>order_id</code> vaut maintenant <code>S00003</code> et <code>S00002</code> n'a plus que la ligne 5.</td></tr>
+                        <tr><td><code>Command.unlink(id)</code></td><td>La ligne 4 est <strong>supprimée</strong>, pas seulement détachée (voir plus bas).</td></tr>
+                        <tr><td><code>Command.set(ids)</code></td><td>Il ne reste que la ligne 6 ; la ligne 58, absente de la liste, est supprimée.</td></tr>
+                        <tr><td><code>Command.clear()</code></td><td>Toutes les lignes sont supprimées, le total tombe à 0.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="pitfall-box">
+                    <h4>Sur un One2many, <code>unlink</code> peut supprimer</h4>
+                    <p>Une ligne détachée doit bien aller quelque part. Odoo regarde le champ inverse : s'il porte
+                        <code>ondelete='cascade'</code>, comme <code>sale.order.line.order_id</code>, la ligne est
+                        supprimée ; sinon l'inverse est vidé et l'enregistrement reste orphelin
+                        (<code>odoo/orm/fields_relational.py</code>, fonction <code>unlink</code> de l'écriture d'un
+                        One2many). <code>unlink</code>, <code>clear</code> et <code>set</code> passent par là : sur des
+                        lignes de commande, les trois effacent. Et <code>link</code> sur une ligne d'un autre document la
+                        lui retire sans message.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. EN UN SEUL WRITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Plusieurs commandes dans un seul <code>write</code></h2>
+
+                <p>En pratique, on combine. La liste passée au champ est exécutée dans l'ordre, en une écriture. Le devis
+                    <code>S00003</code> d'origine :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Formulaire du devis S00003 pour Ready Mat, onglet Lignes de commande : Design d'intérieur virtuel, quantité 10,00, prix 30,75, montant 307,50 ; [FURN_7777] Chaise de bureau, quantité 1,00, prix 70,00, montant 70,00 ; total 434,13"/>
+                    <figcaption>Avant : deux lignes, 434,13 TTC.</figcaption>
+                </figure>
+
+                <p>On passe la première ligne à 4 unités, on supprime la chaise et on ajoute deux espaces de travail, puis
+                    on valide :</p>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('name', '=', 'S00003')])
+desk = env['product.product'].search([('default_code', '=', 'FURN_0789')])
+design, chair = order.order_line
+order.write({'order_line': [
+    Command.update(design.id, {'product_uom_qty': 4}),
+    Command.delete(chair.id),
+    Command.create({'product_id': desk.id, 'product_uom_qty': 2}),
+]})
+print([(l.id, l.product_id.name, l.product_uom_qty) for l in order.order_line], order.amount_total)
+env.cr.commit()</code></pre>
+<div class="out">[(6, "Design d'intérieur virtuel", 4.0), (67, 'Espace de travail individuel', 2.0)] 2176.95</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Le même devis S00003 après l'écriture : Design d'intérieur virtuel, quantité 4,00, montant 123,00 ; [FURN_0789] Espace de travail individuel, quantité 2,00, prix 885,00, montant 1 770,00 ; total 2 176,95"/>
+                    <figcaption>Après le <code>write</code> : la ligne modifiée garde sa place, la chaise a disparu, la nouvelle ligne arrive en bas, total 2 176,95.</figcaption>
+                </figure>
+
+                <p>Le client web ne fait pas autre chose : quand tu modifies les lignes et enregistres, il appelle
+                    <code>web_save</code>, qui passe au <code>write</code> du devis une liste de commandes pour
+                    <code>order_line</code> (<code>addons/web/models/models.py</code>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. MANY2MANY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les mêmes commandes sur un Many2many</h2>
+
+                <p>Les étiquettes d'un contact (<code>res.partner.category_id</code>) sont un Many2many : une étiquette
+                    peut être posée sur plusieurs contacts, et le lien vit dans une table à deux colonnes,
+                    <code>res_partner_res_partner_category_rel</code>. On suit le contact Lumber Inc, qui n'a pas
+                    d'étiquette, en lisant à chaque étape le champ <strong>et</strong> la table :</p>
+<pre class="language-python"><code class="language-python">partner = Partner.search([('name', '=', "Lumber Inc")])
+Tag = env['res.partner.category']
+
+def tags(label):
+    env.flush_all()
+    env.cr.execute(
+        "SELECT category_id FROM res_partner_res_partner_category_rel"
+        " WHERE partner_id = %s ORDER BY 1", [partner.id])
+    print(f"{label:&lt;7}", partner.category_id.mapped('name'), "| table :", [r[0] for r in env.cr.fetchall()])
+
+tags("avant")
+partner.write({'category_id': [Command.create({'name': "Grands comptes"})]})
+tags("create")
+key = partner.category_id
+partner.write({'category_id': [Command.update(key.id, {'name': "Comptes clés"})]})
+tags("update")
+advice = Tag.search([('name', '=', "Services de conseil")])
+partner.write({'category_id': [Command.link(advice.id)]})
+tags("link")
+partner.write({'category_id': [Command.unlink(advice.id)]})
+tags("unlink")
+print("        advice -&gt;", advice.exists().name, "| encore sur", advice.partner_ids.mapped('name'))
+partner.write({'category_id': [Command.delete(key.id)]})
+tags("delete")
+print("        key.exists() -&gt;", key.exists())
+partner.write({'category_id': [Command.set([5, 6])]})
+tags("set")
+partner.write({'category_id': [Command.clear()]})
+tags("clear")
+print("        5, 6 -&gt;", Tag.browse([5, 6]).exists().mapped('name'))
+env.cr.rollback()</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : étiquettes de Lumber Inc et lignes de la table de relation après chaque commande ; create ajoute Grands comptes (id 10), update la renomme Comptes clés, link ajoute Services de conseil (table 4, 10), unlink la retire mais elle reste sur Gemini Furniture, delete supprime l'étiquette 10, set pose Services et Fournitures de bureau (5, 6), clear vide la table et les étiquettes 5 et 6 existent toujours"/>
+                    <figcaption>La sortie réelle de la série ci-dessus ; chaque <code>write</code> est suivi de son <code>tags(…)</code> sur une seule ligne pour la lecture.</figcaption>
+                </figure>
+
+                <p>La différence avec le One2many tient en deux lignes :</p>
+                <ul>
+                    <li><code>unlink</code>, <code>clear</code> et <code>set</code> ne touchent qu'à la table de relation :
+                        « Services de conseil » quitte Lumber Inc mais reste sur Gemini Furniture, et les étiquettes 5 et
+                        6 existent toujours après <code>clear</code>.</li>
+                    <li><code>delete</code> supprime l'<strong>étiquette elle-même</strong>, pour tous les contacts qui la
+                        portaient. Pour « retirer l'étiquette de ce contact », c'est <code>unlink</code>.</li>
+                </ul>
+                <p>Le détail du Many2many (table, colonnes, <code>ondelete</code> de la relation) est dans
+                    <a href="/blog/developpement-odoo-2/genres-many2many-odoo-20-185">l'article sur les genres d'un livre</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. CE QUI ARRIVE EN BASE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les sept commandes d'un coup d'œil</h2>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Tableau des 7 Command d'Odoo 20 : triplet, effet sur les lignes de commande (One2many) et sur les étiquettes (Many2many). delete supprime l'enregistrement dans les deux cas ; unlink, clear et set suppriment les lignes de commande mais ne retirent que les liens des étiquettes ; link déplace une ligne de commande existante"/>
+                    <figcaption>Ce que chaque commande a fait en base dans les deux séries ci-dessus.</figcaption>
+                </figure>
+
+                <p>Les méthodes ne font que fabriquer le triplet. Par RPC (JSON-2, XML-RPC), où la classe n'existe pas,
+                    on envoie le triplet lui-même, le premier élément étant le code entier :</p>
+<pre class="language-python"><code class="language-python">print(Command.create({'name': "x"}), Command.link(4), Command.set([5, 6]), Command.clear())</code></pre>
+<div class="out">(&lt;Command.CREATE: 0&gt;, 0, {'name': 'x'}) (&lt;Command.LINK: 4&gt;, 4, 0) (&lt;Command.SET: 6&gt;, 0, [5, 6]) (&lt;Command.CLEAR: 5&gt;, 0, 0)</div>
+                <p><code>Command</code> est une énumération d'entiers : <code>Command.LINK == 4</code>, et
+                    <code>[(4, 4, 0)]</code> écrit en dur fait la même chose que <code>[Command.link(4)]</code>. Dans le
+                    code Python, préfère les méthodes : elles se lisent.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. COPY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>copy</code> : dupliquer un enregistrement</h2>
+
+                <p><code>copy(default=None)</code> lit les valeurs à recopier (<code>copy_data</code>), y applique
+                    <code>default</code>, puis appelle <code>create</code>. Chaque champ décide s'il est recopié par son
+                    attribut <code>copy</code> : le numéro de commande ne l'est pas (<code>copy=False</code>), les lignes
+                    le sont (<code>copy=True</code> sur <code>order_line</code>), recréées par des
+                    <code>Command.create</code>.</p>
+<pre class="language-python"><code class="language-python">s4 = env['sale.order'].search([('name', '=', 'S00004')])
+dup = s4.copy()
+print(dup.name, dup.state, len(dup.order_line), dup.amount_total, "| origine :", s4.name, s4.state)
+dup2 = s4.copy({'client_order_ref': "REF-42"})
+print(dup2.name, dup2.client_order_ref)
+print(Tag.browse(5).copy().name)
+print(Partner.search([('name', '=', "Lumber Inc")]).copy().name)
+template = chair.product_tmpl_id
+print(template.copy_data()[0]['name'])
+print(hasattr(template, 'copy_translations'))
+env.cr.rollback()</code></pre>
+<div class="out">S00028 draft 4 2240.0 | origine : S00004 sale
+S00031 REF-42
+Services (copie)
+Lumber Inc (copie)
+{'en_US': 'Office Chair (copy)', 'fr_FR': 'Chaise de bureau (copie)'}
+False</div>
+
+                <p>La commande confirmée donne un <strong>devis</strong> neuf (<code>draft</code>), avec ses quatre lignes
+                    et le même total. L'étiquette et le contact reçoivent le suffixe « (copie) ». Pour un champ traduit,
+                    <code>copy_data</code> rend toutes les traductions, chacune suffixée dans sa langue.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : deux changements dans <code>copy</code></h4>
+                    <p><strong>Le suffixe « (copy) » devient générique.</strong> En Odoo 20, tout champ <code>Char</code>
+                        nommé <code>name</code> (ou <code>x_name</code>) qui ne déclare pas <code>copy</code> reçoit
+                        <code>copy=mark_as_copy('name')</code> (<code>odoo/orm/fields_textual.py</code>,
+                        <code>odoo/tools/translate.py</code>). En 19, seuls les modèles qui surchargeaient
+                        <code>copy_data</code> ajoutaient « (copy) », comme <code>res.partner</code> et
+                        <code>product.template</code> ; une étiquette de contact, ou le modèle de ton module, était
+                        dupliquée sous le même nom. Si le nom doit rester identique (un code, une référence), déclare
+                        <code>copy=True</code> sur le champ ; s'il ne doit pas être recopié, <code>copy=False</code>.</p>
+                    <p><strong><code>copy_translations</code> a disparu.</strong> En 19, <code>copy</code> appelait
+                        <code>copy_translations(new)</code> après la création pour recopier les traductions. En 20, elles
+                        voyagent dans <code>copy_data</code> et la méthode n'existe plus : une surcharge de
+                        <code>copy_translations</code> portée telle quelle n'est jamais appelée, sans erreur. La logique
+                        va dans <code>copy_data</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. UNLINK ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>unlink</code> et <code>@api.ondelete</code></h2>
+
+                <p><code>unlink()</code> supprime les enregistrements du recordset et renvoie <code>True</code>. Avant,
+                    il appelle les méthodes décorées par <code>@api.ondelete</code> du modèle : c'est là qu'un module
+                    refuse une suppression. Celle du module Ventes :</p>
+<pre class="language-python"><code class="language-python"># addons/sale/models/sale_order.py (Odoo 20)
+    @api.ondelete(at_uninstall=False)
+    def _unlink_except_draft_or_cancel(self):
+        for order in self:
+            if order.state not in ("draft", "cancel"):
+                raise UserError(
+                    order.env._(
+                        "You can not delete a sent quotation or a confirmed sales order."
+                        " You must first cancel it."
+                    )
+                )</code></pre>
+
+                <p>On essaie sur la commande confirmée <code>S00004</code>, avec et sans le drapeau
+                    <code>force_delete</code>, puis sur une de ses lignes, puis sur le devis <code>S00005</code> :</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import UserError
+
+confirmed = env['sale.order'].search([('name', '=', 'S00004')])
+for ctx in ({}, {'force_delete': True}):
+    try:
+        with env.cr.savepoint():
+            confirmed.with_context(**ctx).unlink()
+    except UserError as e:
+        print(ctx, "UserError :", e.args[0])
+try:
+    with env.cr.savepoint():
+        confirmed.write({'order_line': [Command.delete(confirmed.order_line[0].id)]})
+except UserError as e:
+    print("Command.delete -&gt; UserError :", e.args[0])
+draft = env['sale.order'].search([('name', '=', 'S00005')])
+print(draft.state, draft.unlink(), draft.exists())
+env.cr.rollback()</code></pre>
+<div class="out">{} UserError : Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée. Vous devez l'annuler au préalable.
+{'force_delete': True} UserError : Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée. Vous devez l'annuler au préalable.
+Command.delete -&gt; UserError : Once a sales order is confirmed, you can't remove one of its lines (we need to track if something gets invoiced or delivered).
+Set the quantity to 0 instead.
+draft True sale.order()</div>
+
+                <p>Trois enseignements. Un <code>Command.delete</code> passe par l'<code>unlink</code> de la ligne, donc
+                    par ses gardes (<code>_unlink_except_confirmed</code> sur <code>sale.order.line</code>) : la console
+                    n'y échappe pas, bien qu'elle tourne en superutilisateur. Le devis, lui, part sans difficulté. Et le
+                    message de la ligne sort en anglais : il n'a pas de traduction française dans cette version, ce n'est
+                    pas ton code.</p>
+
+                <p><code>at_uninstall=False</code> veut dire : « ne pas appliquer cette garde quand le module qui la
+                    déclare est en cours de désinstallation », pour que la désinstallation de Ventes puisse vider ses
+                    tables. Avec <code>at_uninstall=True</code>, la garde s'applique toujours.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : le drapeau ne contourne plus les gardes</h4>
+                    <p>En 19, la clé de contexte s'appelait <code>_force_unlink</code>
+                        (<code>MODULE_UNINSTALL_FLAG</code>) et <code>unlink</code> sautait <strong>toutes</strong> les
+                        méthodes <code>at_uninstall=False</code> dès qu'elle était présente : un
+                        <code>with_context(_force_unlink=True).unlink()</code> supprimait une commande confirmée. En 20,
+                        la clé s'appelle <code>force_delete</code> (<code>odoo/addons/base/models/ir_model.py</code>,
+                        la constante n'est gardée que pour compatibilité) et <code>unlink</code> ne regarde plus le
+                        contexte : une garde n'est sautée que si <strong>son propre module</strong> figure parmi les
+                        modules en désinstallation (<code>self.pool.uninstalling_modules</code>). La sortie ci-dessus le
+                        montre. Pour supprimer une commande confirmée, annule-la d'abord
+                        (<code>action_cancel()</code>), comme le demande le message.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer plusieurs enregistrements</td><td><code>Model.create([{…}, {…}])</code>, un seul appel</td></tr>
+                        <tr><td>Créer avec ses lignes</td><td><code>'order_line': [Command.create({…}), …]</code></td></tr>
+                        <tr><td>Même valeur sur plusieurs enregistrements</td><td><code>records.write({…})</code> → <code>True</code></td></tr>
+                        <tr><td>Retirer une étiquette d'un contact</td><td><code>Command.unlink(id)</code> (pas <code>delete</code>)</td></tr>
+                        <tr><td>Remplacer toutes les étiquettes</td><td><code>Command.set(ids)</code></td></tr>
+                        <tr><td>Supprimer une ligne de document</td><td><code>Command.delete(id)</code> ; <code>unlink</code>/<code>set</code>/<code>clear</code> suppriment aussi si l'inverse est en <code>cascade</code></td></tr>
+                        <tr><td>Dupliquer sous le même nom</td><td><code>copy({'name': record.name})</code>, ou <code>copy=True</code> sur le champ</td></tr>
+                        <tr><td>Refuser une suppression</td><td><code>@api.ondelete(at_uninstall=False)</code> + <code>UserError</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>create</code> prend une liste de dictionnaires et rend un recordset ; <code>write</code> applique les mêmes valeurs à tout le recordset, dans l'ordre de déclaration des champs en Odoo 20.</li>
+                    <li>Les One2many et Many2many s'écrivent avec des <code>Command</code>, exécutées dans l'ordre de la liste, en un seul <code>write</code>.</li>
+                    <li><code>delete</code> supprime l'enregistrement lié. Sur un One2many dont l'inverse est en <code>cascade</code>, <code>unlink</code>, <code>set</code> et <code>clear</code> suppriment aussi, et <code>link</code> déplace la ligne d'un autre document.</li>
+                    <li>Sur un Many2many, <code>unlink</code>, <code>set</code> et <code>clear</code> ne touchent qu'à la table de relation.</li>
+                    <li>En Odoo 20, <code>copy</code> ajoute « (copie) » à tout champ <code>name</code> sans attribut <code>copy</code>, et les traductions passent par <code>copy_data</code> ; <code>force_delete</code> ne contourne plus les gardes <code>@api.ondelete</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Tous les extraits exécutés le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire, en français ; écrans du devis
+                    capturés dans le navigateur avant et après l'écriture. Comparaison avec la branche 19.0 publique relue
+                    le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>create</code>, <code>write</code> et <code>_fields_update_order__</code>, <code>unlink</code>, <code>copy_data</code>, <code>copy</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/commands.py" target="_blank" rel="noopener"><code>odoo/orm/commands.py</code></a> : la classe <code>Command</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_relational.py" target="_blank" rel="noopener"><code>odoo/orm/fields_relational.py</code></a> : écriture des One2many et Many2many</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_textual.py" target="_blank" rel="noopener"><code>odoo/orm/fields_textual.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/translate.py" target="_blank" rel="noopener"><code>odoo/tools/translate.py</code></a> : <code>mark_as_copy</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_model.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_model.py</code></a> : <code>force_delete</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/models/sale_order.py" target="_blank" rel="noopener"><code>addons/sale/models/sale_order.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/models/sale_order_line.py" target="_blank" rel="noopener"><code>sale_order_line.py</code></a> : <code>order_line</code>, <code>order_id</code>, gardes de suppression</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/genres-many2many-odoo-20-185">Many2many en Odoo 20 : les genres d'un livre</a></h5>
+                            <p class="small text-muted mb-0">Déclarer un Many2many, sa table de relation et ses colonnes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil qui a servi à toutes les vérifications de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/methodes-modele-odoo-66">Méthodes de modèle (version 19)</a></h5>
+                            <p class="small text-muted mb-0"><code>create</code>, <code>write</code>, <code>unlink</code> pour qui travaille encore en Odoo 19.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

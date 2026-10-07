@@ -1,0 +1,512 @@
+<!--
+Article — Union, intersection, différence de recordsets en Odoo 20
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : operations-ensemble-recordsets-odoo-20
+Meta : Combiner des recordsets en Odoo 20 : |, &, -, +, in, <=, union() et concat() sur un recordset vide, recordset vide, browse, exists, ensure_one.
+Mots-clés cibles : odoo recordset operations, odoo union recordset
+Catégorie : Développement Odoo
+Tags : debutant, framework-orm, guide, community
+Temps de lecture : ~9 minutes
+Captures : content/blog/screenshots/operations-ensemble-recordsets-odoo-20/ (01 schéma pré-rendu, 02-04 sorties shell)
+Preuves (base vs20_tech_o3 : sale_management + stock, démo native, fr_FR ; Odoo 20.0 3538ed82 ; transaction annulée) :
+  - sondes docs/blog-odoo20/captures-base-vs20_tech/o3-ensembles/p5_final.py -> p5_out.txt (tous les extraits, figures 02-04 = t_F02/t_F03/t_F04.txt,
+    chemins remplacés par …/ et base par ma_base, pile d'appels des WARNING retirée), p4_sonde.py -> p4_out.txt (|= en boucle vs union, 20 000 ids),
+    p3_out.txt (avertissement non répété dans la boucle), schema.html -> figure 01
+  - odoo/odoo/orm/models.py : exists :5037, browse :5359 (assert :5374), ensure_one :5408, __bool__ :5948, __contains__ :5987, __add__ :6006,
+    concat :6019 (avertissements :6024/:6026), __sub__ :6046, __and__ :6059, __or__ :6072, union :6087 (:6092/:6094), __eq__ :6114, __lt__ :6123, __le__ :6131
+  - odoo/odoo/netsvc.py:53 showwarning_with_traceback (WARNING py.warnings + pile) ; filtre 'default' de Python : un avertissement par emplacement et par processus
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0/odoo/orm/models.py, tête 8191f184d3c7, relue le 07/10/2026) :
+    browse :5896 sans contrôle des ids ; __add__ :6557 -> concat(*args) :6562 ; __or__ :6600 -> union(*args) :6607, sans avertissement,
+    un argument non recordset -> TypeError (arg._name) ; opérateurs terminés par self.browse(ids)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Union, intersection, différence de recordsets en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Les clients qui ont un devis, ceux qui ont une commande confirmée :
+                    lesquels sont dans les deux, lesquels sont à relancer ? Sur les recordsets, Odoo fournit les
+                    opérations d'ensemble de Python : <code>|</code>, <code>&amp;</code>, <code>-</code>,
+                    <code>+</code>, <code>in</code>, <code>&lt;=</code>. Ce qu'elles renvoient, l'ordre et les
+                    doublons, la nouvelle forme de <code>union()</code> en Odoo 20, et les recordsets vides ou
+                    fantômes.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau débutant · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Combiner</h4>
+                        <p><code>|</code>, <code>&amp;</code>, <code>-</code> et <code>+</code> : ce qui est gardé, dans quel ordre, avec ou sans doublon.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Comparer</h4>
+                        <p><code>in</code>, <code>&lt;=</code>, <code>&lt;</code>, <code>==</code>, et le piège de <code>in</code> avec plusieurs enregistrements.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Construire</h4>
+                        <p><code>union()</code> et <code>concat()</code> version Odoo 20, le recordset vide, <code>browse</code>, <code>exists</code>, <code>ensure_one</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Pour rejouer les exemples</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec les données de démonstration et les applications
+                            <strong>Ventes</strong> et <strong>Inventaire</strong>. Aucun module à écrire : les
+                            exemples portent sur les commandes de vente et les contacts de la démo.</li>
+                        <li>La console : <code>odoo-bin shell -c odoo.conf -d ma_base --no-http</code>, présentée dans
+                            <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article
+                            sur la console</a>. Les sorties ci-dessous y ont été relevées telles quelles ; sur ta base,
+                            les ids peuvent différer. Pour une erreur, seule la dernière ligne de la trace est
+                            reproduite.</li>
+                        <li>Rien n'est écrit en base : aucun exemple ne modifie d'enregistrement.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DEUX ENSEMBLES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Deux ensembles de clients</h2>
+
+                <p>Un recordset est une suite d'ids d'un même modèle. Les opérations d'ensemble prennent deux
+                    recordsets <strong>du même modèle</strong> et en rendent un troisième, en mémoire, sans requête de
+                    recherche. Pour les voir à l'œuvre, deux ensembles de contacts tirés des commandes de vente :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+devis = SO.search([('state', 'in', ('draft', 'sent'))], order='id')
+confirmees = SO.search([('state', '=', 'sale')], order='id')
+a = devis.partner_id          # clients d'un devis en cours
+b = confirmees.partner_id     # clients d'une commande confirmée
+a.mapped('name')
+b.mapped('name')</code></pre>
+<div class="out">['Acme Corporation', 'Ready Mat', 'Joel Willis']
+['Gemini Furniture', 'Lumber Inc', 'Joel Willis']</div>
+
+                <p><code>devis.partner_id</code> lu sur plusieurs commandes donne directement le recordset de leurs
+                    clients, sans doublon : <code>a</code> vaut <code>res.partner(10, 12, 8)</code>, <code>b</code>
+                    vaut <code>res.partner(11, 17, 8)</code>. Joel Willis (id 8) est dans les deux : il a un devis
+                    envoyé et une commande confirmée.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de Venn : le cercle a contient Acme Corporation (id 10), Ready Mat (id 12) et Joel Willis (id 8) ; le cercle b contient Gemini Furniture (id 11), Lumber Inc (id 17) et Joel Willis, au centre. À droite : a | b donne (10, 12, 8, 11, 17), a &amp; b (8,), a - b (10, 12), b - a (11, 17), a + b (10, 12, 8, 11, 17, 8)"/>
+                    <figcaption>Les deux ensembles et le résultat de chaque opération, relevé dans la console.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. OPÉRATEURS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les quatre opérateurs : <code>|</code>, <code>&amp;</code>, <code>-</code>, <code>+</code></h2>
+<pre class="language-python"><code class="language-python">a | b      # union
+a &amp; b      # intersection
+a - b      # différence
+b - a
+a + b      # concaténation
+b | a</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Console odoo-bin shell : a | b donne res.partner(10, 12, 8, 11, 17), a &amp; b res.partner(8,), a - b res.partner(10, 12), b - a res.partner(11, 17), a + b res.partner(10, 12, 8, 11, 17, 8), b | a res.partner(11, 17, 8, 10, 12)"/>
+                    <figcaption>Les quatre opérateurs sur les deux ensembles de clients.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Opérateur</th><th>Résultat</th><th>Ordre et doublons</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>a | b</code></td><td>les enregistrements de <code>a</code> ou de <code>b</code></td><td>sans doublon, ordre de première apparition : ceux de <code>a</code>, puis les nouveaux de <code>b</code>. <code>b | a</code> donne les mêmes enregistrements dans un autre ordre.</td></tr>
+                        <tr><td><code>a &amp; b</code></td><td>ceux qui sont dans les deux</td><td>sans doublon, dans l'ordre de <code>a</code>.</td></tr>
+                        <tr><td><code>a - b</code></td><td>ceux de <code>a</code> absents de <code>b</code></td><td>ordre de <code>a</code> conservé. Ici : les clients d'un devis qui n'ont aucune commande confirmée, Acme Corporation et Ready Mat.</td></tr>
+                        <tr><td><code>a + b</code></td><td>les ids de <code>a</code> suivis de ceux de <code>b</code></td><td><strong>doublons gardés</strong> : Joel Willis apparaît deux fois, <code>len(a + b)</code> vaut 6.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les formes augmentées existent aussi : <code>clients |= autre</code>,
+                    <code>reste -= traites</code>. Elles ne modifient pas le recordset de départ ; elles en créent
+                    un nouveau et le rangent dans la variable.</p>
+
+                <div class="pitfall-box">
+                    <h4><code>+</code> n'est pas l'union</h4>
+                    <p>Un recordset avec doublons se parcourt deux fois sur le même enregistrement : une boucle qui
+                        envoie un courriel par client en enverrait deux à Joel Willis. Pour réunir des ensembles,
+                        <code>|</code> ; <code>+</code> sert quand l'ordre et la répétition comptent (une liste de
+                        lignes à rendre telles quelles, par exemple).</p>
+                </div>
+
+                <p>En Odoo 20, ces opérateurs gardent aussi le jeu de <em>prefetch</em> de leurs opérandes (les ids
+                    dont Odoo lit les champs d'un coup), là où la 19 repartait des seuls ids du résultat : rien à
+                    changer dans le code, parfois une requête de moins.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. COMPARER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Appartenance et sous-ensembles</h2>
+<pre class="language-python"><code class="language-python">P = env['res.partner']
+joel = P.browse(8)
+joel in a
+a[:2] in a
+a[:2] &lt;= a
+(a &amp; b) &lt;= a, a &lt; (a | b), a &lt;= b
+a == P.browse([12, 8, 10])
+'name' in a
+a | env['res.users'].browse(2)</code></pre>
+<div class="out">True
+False
+True
+(True, True, False)
+True
+True
+TypeError: inconsistent models in: res.partner(10, 12, 8) | res.users(2,)</div>
+
+                <ul>
+                    <li><strong><code>rec in a</code></strong> teste <strong>un</strong> enregistrement. Avec
+                        plusieurs, la réponse est <code>False</code> même s'ils sont tous dans <code>a</code> : le test
+                        exige <code>len(item) == 1</code> (<code>__contains__</code>, <code>odoo/orm/models.py</code>).
+                        Pour « tous ceux-ci sont-ils dans <code>a</code> ? », écrire <code>sous_ensemble &lt;= a</code>.</li>
+                    <li><strong><code>&lt;=</code> et <code>&lt;</code></strong> : sous-ensemble et sous-ensemble
+                        strict ; <code>&gt;=</code> et <code>&gt;</code> dans l'autre sens. Un recordset vide est
+                        sous-ensemble de tout.</li>
+                    <li><strong><code>==</code></strong> compare les ensembles d'ids sans tenir compte de l'ordre :
+                        <code>(10, 12, 8)</code> égale <code>(12, 8, 10)</code>.</li>
+                    <li><strong>Une chaîne</strong> à gauche de <code>in</code> teste l'existence d'un champ sur le
+                        modèle : <code>'name' in a</code>.</li>
+                    <li><strong>Deux modèles différents</strong> : <code>TypeError</code>, que ce soit
+                        <code>|</code>, <code>&amp;</code>, <code>-</code> ou <code>+</code>. Une liste d'ids à la place
+                        d'un recordset aussi (<code>unsupported operand types</code>) : passer par
+                        <code>P.browse(ids)</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. UNION / CONCAT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>union()</code> et <code>concat()</code> : plusieurs recordsets d'un coup</h2>
+
+                <p><code>union()</code> fait le travail de <code>|</code>, <code>concat()</code> celui de
+                    <code>+</code>, mais sur autant de recordsets qu'on veut. En Odoo 20, la forme attendue est
+                    précise : on l'appelle sur le <strong>recordset vide</strong> du modèle, avec <strong>un seul
+                    itérable</strong> de recordsets (liste, tuple, générateur).</p>
+<pre class="language-python"><code class="language-python">P.union([a, b])
+P.concat([a, b])
+P.union(o.partner_id for o in SO.search([], order='id'))
+a.union(b)          # ancienne forme
+P.union(a, b)       # ancienne forme
+a.concat(b)         # ancienne forme
+for i in range(3):
+    x = a.union(b)</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : P.union([a, b]) donne res.partner(10, 12, 8, 11, 17), P.concat([a, b]) res.partner(10, 12, 8, 11, 17, 8), l'union d'un générateur sur toutes les commandes res.partner(10, 12, 11, 17, 8) ; a.union(b) affiche WARNING py.warnings UserWarning: Since 20.0, use union() on an empty recordset, P.union(a, b) UserWarning: Since 20.0, use union() with only one iterable, a.concat(b) UserWarning: Since 20.0, use concat() on an empty recordset ; la boucle qui suit n'affiche rien"/>
+                    <figcaption>La forme Odoo 20 est muette ; les anciennes formes marchent mais laissent un WARNING dans le journal (pile d'appels du journal retirée de la capture).</figcaption>
+                </figure>
+
+                <p>Le générateur de la troisième ligne est l'usage typique : réunir les clients des 24 commandes de
+                    la démo sans construire de liste intermédiaire. Résultat : cinq clients, dans l'ordre de leur
+                    première apparition.</p>
+
+                <p>Les anciennes formes donnent toujours le bon résultat, mais chacune émet un
+                    <code>UserWarning</code> qui commence par <code>Since 20.0</code> : « on an empty recordset »
+                    quand l'objet de départ n'est pas vide, « with only one iterable » quand plusieurs arguments sont
+                    passés. Odoo le consigne au niveau <code>WARNING</code>, avec la pile d'appels. Le filtre par
+                    défaut de Python ne le montre qu'une fois par processus, quel que soit l'appelant (il est
+                    rattaché à la ligne d'Odoo qui l'émet) : la boucle qui suit, qui refait trois fois
+                    <code>a.union(b)</code>, n'en ajoute aucun. Un avertissement vu une
+                    fois au démarrage peut donc cacher un appel exécuté des milliers de fois.</p>
+
+                <h3 class="h5 mt-4">Pourquoi pas <code>|=</code> dans une boucle ?</h3>
+                <p>Chaque <code>|</code> recopie le recordset accumulé : sur une longue boucle, le coût grimpe avec le
+                    carré du nombre d'éléments. <code>union()</code> parcourt tout en une passe (sa docstring parle de
+                    temps linéaire). Mesure sur 20 000 ids de contacts passés à <code>browse</code> (aucune lecture en
+                    base) :</p>
+<pre class="language-python"><code class="language-python">import time
+recs = [P.browse(i) for i in range(1, 20001)]
+
+def boucle():
+    total = P
+    for r in recs:
+        total |= r
+    return total
+
+def chrono(f):
+    t = time.perf_counter()
+    res = f()
+    return len(res), round(time.perf_counter() - t, 3)
+
+chrono(boucle)
+chrono(lambda: P.union(recs))</code></pre>
+<div class="out">(20000, 4.319)
+(20000, 0.002)</div>
+                <p>Plus de quatre secondes contre deux millisecondes sur la machine de test, pour le même
+                    recordset. Dès qu'on accumule dans une boucle, ranger les morceaux dans une liste et finir par
+                    <code>P.union(morceaux)</code>.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Dans la branche 19.0 publique, <code>union(self, *args)</code> et
+                        <code>concat(self, *args)</code> prennent des recordsets en arguments séparés, sans aucun
+                        avertissement. L'idiome 20 <code>P.union([a, b])</code> y échoue : la liste n'a pas d'attribut
+                        <code>_name</code>, d'où un <code>TypeError: unsupported operand types</code>. Pour un module
+                        qui doit tourner sur les deux versions, <code>P.union(*morceaux)</code> fonctionne partout
+                        (en 20, avec l'avertissement « only one iterable ») ; pour un module 20 seulement,
+                        <code>P.union(morceaux)</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. VIDE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le recordset vide et la vérité d'un recordset</h2>
+<pre class="language-python"><code class="language-python">vide = env['res.partner']
+vide, len(vide), bool(vide)
+P.browse(), P.browse(False), P.browse(0)
+bool(a - a), a - a == vide
+if not (a &amp; P.browse(17)):
+    print("aucun client commun")</code></pre>
+<div class="out">(res.partner(), 0, False)
+(res.partner(), res.partner(), res.partner())
+(False, True)
+aucun client commun</div>
+
+                <p><code>env['res.partner']</code> est déjà un recordset : vide, du bon modèle. C'est le point de
+                    départ naturel d'une accumulation et l'objet sur lequel appeler <code>union()</code>.
+                    <code>browse()</code> sans argument, avec <code>False</code> ou avec <code>0</code> donne aussi un
+                    recordset vide. Un recordset est vrai s'il contient au moins un enregistrement : <code>if
+                    not (a &amp; c)</code> se lit « s'ils n'ont rien en commun ». Il n'y a pas besoin de
+                    <code>len(...) == 0</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. BROWSE EXISTS ENSURE_ONE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>browse</code>, <code>exists</code>, <code>ensure_one</code></h2>
+<pre class="language-python"><code class="language-python">P.browse([8, 10, 8])
+P.browse([0])
+P.browse([8, None])
+fantome = P.browse(999999)
+bool(fantome), bool(fantome.exists())
+P.browse([8, 999999, 10]).exists()
+fantome.name
+a.ensure_one()
+vide.ensure_one()
+(a &amp; b).ensure_one().name</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Console odoo-bin shell : P.browse([8, 10, 8]) donne res.partner(8, 10, 8) ; P.browse([0]) et P.browse([8, None]) lèvent AssertionError: Invalid falsy real id ; fantome = P.browse(999999) est vrai mais fantome.exists() est faux ; P.browse([8, 999999, 10]).exists() donne res.partner(8, 10) ; fantome.name lève MissingError: Enregistrement inexistant ou supprimé ; a.ensure_one() et vide.ensure_one() lèvent ValueError: Expected singleton ; (a &amp; b).ensure_one().name renvoie 'Joel Willis'"/>
+                    <figcaption><code>browse</code> ne vérifie rien en base ; <code>exists()</code> le fait ; <code>ensure_one()</code> exige exactement un enregistrement.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Appel</th><th>Ce qu'il fait</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>browse(ids)</code></td><td>Construit le recordset tel quel, doublons compris, <strong>sans requête</strong>. Un id qui n'existe pas donne un recordset non vide (<code>bool(fantome)</code> vaut <code>True</code>) ; l'erreur n'arrive qu'à la lecture d'un champ : <code>MissingError</code>.</td></tr>
+                        <tr><td><code>browse([0])</code>, <code>browse([8, None])</code></td><td><code>AssertionError: Invalid falsy real id</code> : un id faux (<code>0</code>, <code>None</code>, <code>False</code>) dans une liste est refusé tout de suite.</td></tr>
+                        <tr><td><code>exists()</code></td><td>Une requête, et le sous-ensemble des enregistrements encore présents, dans l'ordre d'origine. À appeler sur un id venu de l'extérieur (contexte, paramètre d'URL, autre transaction).</td></tr>
+                        <tr><td><code>ensure_one()</code></td><td>Renvoie le recordset s'il contient exactement un enregistrement, sinon <code>ValueError: Expected singleton</code>, aussi bien pour trois que pour zéro. Il s'enchaîne : <code>(a &amp; b).ensure_one().name</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="pitfall-box">
+                    <h4>Un id absent dans une liste</h4>
+                    <p>Le cas courant : <code>P.browse([vals.get('partner_id')])</code> quand la clé manque, ou une
+                        liste d'ids remplie à partir d'un <code>Many2one</code> vide. <code>browse(None)</code> ou
+                        <code>browse(False)</code> seuls donnent un recordset vide ; dans une liste, ces valeurs lèvent
+                        l'<code>AssertionError</code>. Filtrer avant : <code>P.browse([i for i in ids if i])</code>.</p>
+                </div>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Dans la branche 19.0 publique, <code>browse</code> ne contrôle pas les ids : <code>browse([0])</code>
+                        construit <code>res.partner(0,)</code> sans erreur, et le problème ne se voit que plus loin. En
+                        20, le contrôle ajouté à <code>browse</code> (<code>odoo/orm/models.py</code>) fait échouer
+                        l'appel lui-même. Un code 19 qui passait des ids vides à <code>browse</code> sans dommage
+                        visible lève désormais <code>AssertionError</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Réunir sans doublon</td><td><code>a | b</code> · <code>env['m'].union([a, b, c])</code></td></tr>
+                        <tr><td>Mettre bout à bout, doublons gardés</td><td><code>a + b</code> · <code>env['m'].concat([a, b, c])</code></td></tr>
+                        <tr><td>Ce qui est dans les deux</td><td><code>a &amp; b</code></td></tr>
+                        <tr><td>Retirer</td><td><code>a - b</code></td></tr>
+                        <tr><td>Accumuler dans une boucle</td><td>liste de morceaux, puis <code>env['m'].union(morceaux)</code></td></tr>
+                        <tr><td>Un enregistrement est-il dedans ?</td><td><code>rec in a</code></td></tr>
+                        <tr><td>Plusieurs sont-ils dedans ?</td><td><code>sous_ensemble &lt;= a</code> (pas <code>in</code>)</td></tr>
+                        <tr><td>Mêmes enregistrements, ordre indifférent</td><td><code>a == b</code></td></tr>
+                        <tr><td>Recordset vide</td><td><code>env['m']</code> · <code>if not recs:</code></td></tr>
+                        <tr><td>Id venu de l'extérieur</td><td><code>env['m'].browse(id).exists()</code></td></tr>
+                        <tr><td>Exactement un attendu</td><td><code>recs.ensure_one()</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>|</code> et <code>&amp;</code> retirent les doublons et gardent l'ordre de première apparition ; <code>-</code> garde l'ordre du premier opérande ; <code>+</code> garde tout, doublons compris.</li>
+                    <li><code>in</code> teste un seul enregistrement ; pour un sous-ensemble, <code>&lt;=</code>. <code>==</code> ignore l'ordre.</li>
+                    <li>En Odoo 20, <code>union()</code> et <code>concat()</code> s'appellent sur le recordset vide avec un seul itérable ; les anciennes formes marchent avec un WARNING, une seule fois par processus.</li>
+                    <li>Accumuler par <code>|=</code> dans une longue boucle coûte cher ; <code>union()</code> sur une liste est linéaire.</li>
+                    <li><code>browse</code> ne lit rien en base et refuse en 20 un id faux dans une liste ; <code>exists()</code> vérifie la présence ; <code>ensure_one()</code> exige un enregistrement, ni zéro ni plusieurs.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire, transaction annulée en
+                    fin de session. Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>browse</code>, <code>exists</code>, <code>ensure_one</code>, <code>__bool__</code>, <code>__contains__</code>, opérateurs <code>+ - &amp; |</code>, <code>concat</code>, <code>union</code>, comparaisons</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/netsvc.py" target="_blank" rel="noopener"><code>odoo/netsvc.py</code></a> : consignation des avertissements Python avec leur pile d'appels</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil de toutes les sorties de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/relations-modeles-odoo-20-180">Relier deux modèles Odoo 20 : les exemplaires</a></h5>
+                            <p class="small text-muted mb-0">Les champs <code>Many2one</code> qui produisent des recordsets comme <code>devis.partner_id</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/methodes-modele-odoo-66">Méthodes de modèle (version 19)</a></h5>
+                            <p class="small text-muted mb-0"><code>create</code>, <code>write</code>, <code>unlink</code> : agir sur les recordsets ainsi construits.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

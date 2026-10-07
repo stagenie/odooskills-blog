@@ -1,0 +1,542 @@
+<!--
+Article — search, search_read, search_fetch, fetch : lire vite en Odoo 20
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : search-read-fetch-odoo-20
+Meta : search, search_count, search_read, read, search_fetch, fetch, name_search en Odoo 20 : ce que chaque méthode renvoie et combien de requêtes SQL elle coûte, mesuré.
+Mots-clés cibles : odoo search vs search_read, odoo search_read fields, odoo search_count
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~11 minutes
+Captures : content/blog/screenshots/search-read-fetch-odoo-20/ (01-03)
+Preuves (base vs20_tech_o5 : sale_management + stock, démo native, fr_FR, + 45 devis x 10 lignes créés par p1_setup.py = 500 lignes ;
+  Odoo 20.0 3538ed82 ; sondes en transaction annulée sauf p1_setup) :
+  - sondes docs/blog-odoo20/captures-base-vs20_tech/o5-search-fetch/ : p1_setup.py (création, sortie collée §prérequis),
+    p8_final.py -> p8_out.txt (§1-4, §8, figures 01-02, remède §6), p10_raw.txt + sonde.py (figure 03, --log-sql),
+    p3_detail.py -> p3_out.txt (requêtes de search_read détaillées : 1 + noms affichés commande/article),
+    p5_mesure.py (mêmes comptes en superutilisateur, admin et utilisateur démo, sauf name_search), p6_out.txt (51 colonnes lues
+    par search + boucle, 5 par search_fetch(FIELDS)), p9_out.txt (première exécution : [10, 9, 9] → caches à chaud)
+  - odoo/odoo/orm/models.py : search_count :1416 (len(query)), search :1432 -> search_fetch(domain, []) :1447,
+    search_fetch :1452 (calcul des non stockés :1491), name_search :1593 (search_fetch(display_name) :1621),
+    read :2798 (load=None doc), _read_format :3014/:3028, fetch :3098 (split BIG_RECORDSET_SIZE, calcul :3148, sudo :3163),
+    _determine_fields_to_fetch :3170, search_read :5232 (search_fetch + _read_format :5260)
+  - odoo/odoo/orm/decorators.py:289 api.private (search_fetch et fetch non appelables en RPC) ; odoo/odoo/tools/constants.py:16 BIG_RECORDSET_SIZE = 10_000
+  - odoo/odoo/sql_db.py:431-432 « simple query count is always computed » (sql_log_count) ; odoo/odoo/tools/config.py:361 --log-sql = odoo.sql_db:DEBUG
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0/odoo/orm/models.py, tête 8191f184d3c7, relue le 07/10/2026) :
+    search_fetch se termine par return self._fetch_query(...) :1431 (aucun calcul) ; fetch :3781, docstring :3783
+    « Non-stored fields are mostly ignored, except for their stored dependencies », une seule requête, pas de split ;
+    _determine_fields_to_fetch suit déjà les dépendances ; search_read identique (diff vide) ; search_fetch/fetch déjà @api.private.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+  table.tmc td.num { text-align: right; font-weight: 600; white-space: nowrap; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">search, search_read, search_fetch, fetch : lire vite en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un recordset, une liste de dictionnaires, un nombre, des couples
+                    (id, nom) : l'ORM offre plusieurs façons de lire la base, et elles ne coûtent pas le même nombre de
+                    requêtes SQL. Ce que renvoie chaque méthode, ce qu'elle lit vraiment, la mesure sur 500 lignes de
+                    commande, et ce qu'Odoo 20 change à <code>fetch</code> et <code>search_fetch</code>.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Chercher, compter</h4>
+                        <p><code>search</code> (ids et prefetch), <code>search_count</code> et son <code>limit</code>, <code>name_search</code> pour un champ de saisie.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire en dictionnaires</h4>
+                        <p><code>search_read</code> et <code>read</code> : le format RPC, les many2one en <code>(id, nom)</code>, et ce que coûte ce nom.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire en une requête</h4>
+                        <p><code>search_fetch</code> et <code>fetch</code>, le comptage des requêtes avec <code>sql_log_count</code> et <code>--log-sql</code>, et le tableau mesuré.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Pour rejouer les exemples</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community de test avec les données de démonstration et les applications
+                            <strong>Ventes</strong> et <strong>Inventaire</strong>. Aucun module à écrire.</li>
+                        <li>La console : <code>odoo-bin shell -c odoo.conf -d ma_base --no-http</code>, présentée dans
+                            <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article
+                            sur la console</a>. Toutes les sorties ci-dessous y ont été relevées telles quelles ; sur ta
+                            base, les ids peuvent différer.</li>
+                        <li>La démo compte 50 lignes de commande. Pour que les mesures aient du poids, 45 devis de 10
+                            lignes ont été ajoutés : 500 lignes en tout. C'est la seule écriture validée de l'article
+                            (le script ci-dessous) ; tout le reste tourne dans une transaction annulée.</li>
+                    </ul>
+                </div>
+<pre class="language-python"><code class="language-python"># Création des lignes de mesure : 45 devis x 10 lignes (+ 50 lignes de démo = 500)
+from odoo.fields import Command
+P = env['product.product'].search([('sale_ok','=',True), ('type','=','consu')], order='id')
+C = env['res.partner'].search([('is_company','=',True)], order='id')
+vals = []
+k = 0
+for i in range(45):
+    lines = []
+    for j in range(10):
+        lines.append(Command.create({'product_id': P[k % len(P)].id, 'product_uom_qty': 1 + (k % 7)}))
+        k += 1
+    vals.append({'partner_id': C[i % len(C)].id, 'order_line': lines})
+orders = env['sale.order'].create(vals)
+print('created', len(orders), orders[0].name, orders[-1].name)
+print('lines', env['sale.order.line'].search_count([]))
+env.cr.commit()</code></pre>
+<div class="out">created 45 S00025 S00069
+lines 500</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. SEARCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>search</code> : des ids, et rien d'autre pour l'instant</h2>
+
+                <p><code>search(domain, offset=0, limit=None, order=None)</code> renvoie un recordset : les ids qui
+                    satisfont le domaine, dans l'ordre demandé (ou le <code>_order</code> du modèle). Aucun champ n'est
+                    lu à ce stade.</p>
+<pre class="language-python"><code class="language-python">SOL = env['sale.order.line']
+lines = SOL.search([('order_id.state', '=', 'sale')], order='price_subtotal desc', limit=3)
+lines
+lines.mapped(lambda l: (l.order_id.name, l.product_id.display_name, l.price_subtotal))
+SOL.search([], order='id', offset=3, limit=4).ids
+SOL.search([('product_uom_qty', '&gt;', 100)])</code></pre>
+<div class="out">sale.order.line(48, 50, 43)
+[('S00023', '[FURN_6667] Écrans anti-bruit (Noir)', 2950.0), ('S00024', "[E-COM06] Bureau d'angle avec siège à droite", 1990.0), ('S00020', "Design d'intérieur virtuel", 1800.0)]
+[4, 5, 6, 7]
+sale.order.line()</div>
+
+                <p>Dans le code d'Odoo 20, <code>search</code> tient en une ligne :
+                    <code>return self.search_fetch(domain, [], …)</code> (<code>odoo/orm/models.py</code>). Une liste de
+                    champs vide : une seule requête, qui ne ramène que la colonne <code>id</code>. Les valeurs arrivent
+                    au premier accès à un champ, et pour tout le recordset d'un coup grâce au prefetch : la boucle sur
+                    les 500 lignes coûte <strong>une</strong> requête de plus, pas 500. Cette requête lit toutes les
+                    colonnes marquées <code>prefetch=True</code> du modèle, 51 colonnes de <code>sale_order_line</code>
+                    dans cette base, même si la boucle n'en utilise que quatre. Aucun résultat n'est une erreur : le
+                    recordset vide <code>sale.order.line()</code> se teste avec <code>if lines:</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. SEARCH_COUNT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>search_count</code> : compter sans charger</h2>
+
+                <p><code>search_count(domain, limit=None)</code> rend un entier, calculé par PostgreSQL :</p>
+<pre class="language-python"><code class="language-python">SOL.search_count([])
+SOL.search_count([('order_id.state', '=', 'sale')])
+SOL.search_count([], limit=10)
+bool(SOL.search_count([('discount', '&gt;', 0)], limit=1))</code></pre>
+<div class="out">500
+39
+10
+False</div>
+
+                <p>Le <code>limit</code> fixe un plafond : la requête devient
+                    <code>SELECT COUNT(*) FROM (SELECT FROM "sale_order_line" LIMIT 10) t</code> (figure 03 plus bas),
+                    et PostgreSQL s'arrête à la dixième ligne. Pour savoir s'il existe <em>au moins un</em>
+                    enregistrement, <code>search_count(domaine, limit=1)</code> ou <code>search(domaine, limit=1)</code>
+                    évitent de compter toute la table. <code>len(SOL.search(domaine))</code> donne le même nombre, mais
+                    en ramenant tous les ids en Python : à éviter dès que seul le nombre compte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. SEARCH_READ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>search_read</code> : des dictionnaires, le format des appels RPC</h2>
+
+                <p><code>search_read(domain, fields, offset, limit, order)</code> cherche et lit en un appel, et rend
+                    une liste de dictionnaires, un par enregistrement, avec la clé <code>id</code> en plus des champs
+                    demandés :</p>
+<pre class="language-python"><code class="language-python">SOL.search_read([('order_id.state', '=', 'sale')], ['order_id', 'product_id', 'price_subtotal'], limit=2)
+SOL.search_read([('order_id.state', '=', 'sale')], ['order_id', 'product_id', 'price_subtotal'], limit=2, load=None)
+len(SOL.search_read([], limit=1)[0])</code></pre>
+<div class="out">[{'id': 50, 'order_id': (24, 'S00024'), 'product_id': (19, "[E-COM06] Bureau d'angle avec siège à droite"), 'price_subtotal': 1990.0}, {'id': 48, 'order_id': (23, 'S00023'), 'product_id': (38, '[FURN_6667] Écrans anti-bruit (Noir)'), 'price_subtotal': 2950.0}]
+[{'id': 50, 'order_id': 24, 'product_id': 19, 'price_subtotal': 1990.0}, {'id': 48, 'order_id': 23, 'product_id': 38, 'price_subtotal': 2950.0}]
+107</div>
+
+                <ul>
+                    <li><strong>Un many2one arrive en couple <code>(id, nom affiché)</code></strong>. Ce nom n'est pas
+                        une colonne de la table : Odoo le calcule (<code>display_name</code>) sur la commande et sur
+                        l'article. Avec <code>load=None</code>, il ne reste que l'id. La mesure plus bas montre ce que
+                        coûte ce confort : 9 requêtes au lieu d'une pour 500 lignes.</li>
+                    <li><strong>Sans liste de champs, tous les champs</strong> : 107 clés pour une ligne de commande,
+                        champs calculés compris. Toujours passer <code>fields</code>.</li>
+                    <li><strong>C'est la méthode des clients externes.</strong> Une application qui interroge Odoo par
+                        l'API appelle le plus souvent <code>search_read</code> : le résultat se sérialise directement en JSON. Dans le code
+                        Python d'un module, un dictionnaire est rarement utile : on travaille sur des recordsets.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. READ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>read</code> : les mêmes dictionnaires, à partir d'un recordset</h2>
+
+                <p><code>read(fields)</code> produit le même format que <code>search_read</code>, mais sur des
+                    enregistrements déjà désignés, par <code>browse</code> ou par un <code>search</code> :</p>
+<pre class="language-python"><code class="language-python">SOL.browse([1, 2]).read(['product_id', 'price_subtotal'])
+SOL.browse([1, 2]).read(['prix'])
+SOL.browse(99999).read(['name'])</code></pre>
+<div class="out">[{'id': 1, 'product_id': (38, '[FURN_6667] Écrans anti-bruit (Noir)'), 'price_subtotal': 885.0}, {'id': 2, 'product_id': (6, '[FURN_8888] Lampe de bureau'), 'price_subtotal': 725.0}]
+ValueError: Invalid field 'prix' on 'sale.order.line'
+[]</div>
+
+                <p>Un nom de champ inconnu lève <code>ValueError</code> (dernière ligne de la trace). Un id qui
+                    n'existe pas ne lève rien : il disparaît du résultat, ici une liste vide. <code>search_read</code>
+                    n'est d'ailleurs rien d'autre qu'un <code>search_fetch</code> suivi de la mise en forme
+                    de <code>read</code> (<code>_read_format</code>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. MESURER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Mesurer : compter les requêtes</h2>
+
+                <p>Le curseur tient un compteur, <code>env.cr.sql_log_count</code>, incrémenté à chaque requête quel
+                    que soit le niveau de journal (« simple query count is always computed »,
+                    <code>odoo/sql_db.py</code>). La différence avant / après un appel donne son coût. Pour une
+                    comparaison honnête, on vide d'abord le cache des enregistrements avec
+                    <code>env.invalidate_all()</code> : sinon le deuxième essai trouve tout en mémoire. La figure
+                    mesure le même travail, lire quatre champs sur les 500 lignes, avec les méthodes vues plus haut et
+                    avec <code>search_fetch</code> et <code>fetch</code>, détaillées à la section suivante.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Console odoo-bin shell : fonctions mesure (invalidate_all puis différence de env.cr.sql_log_count) et lire (quatre champs par ligne) ; 500 ids ; browse ligne à ligne 500 requêtes, search puis boucle 2, search_fetch 1, search puis fetch 2, search_read 9, search_read avec load=None 1, browse(ids).read 9, search_count 1"/>
+                    <figcaption>Le même travail, lire quatre champs sur 500 lignes de commande, de 1 à 500 requêtes SQL.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Appel (500 lignes, 4 champs)</th><th>Requêtes</th><th>Ce qui se passe</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>browse(i)</code> dans une boucle</td><td class="num">500</td><td>Un prefetch d'un seul id par ligne : une requête par ligne.</td></tr>
+                        <tr><td><code>search([])</code> puis boucle</td><td class="num">2</td><td>Les ids, puis 51 colonnes (id compris) pour les 500 lignes au premier accès.</td></tr>
+                        <tr><td><code>search_fetch([], FIELDS)</code> puis boucle</td><td class="num">1</td><td>Ids et 4 colonnes dans la même requête ; la boucle lit le cache.</td></tr>
+                        <tr><td><code>search([]).fetch(FIELDS)</code></td><td class="num">2</td><td>Les ids, puis les 4 colonnes ; la boucle qui suit ne coûte rien.</td></tr>
+                        <tr><td><code>search_read([], FIELDS)</code></td><td class="num">9</td><td>1 pour les lignes, 8 pour les noms affichés de la commande et de l'article (modèles, variantes, attributs).</td></tr>
+                        <tr><td><code>search_read([], FIELDS, load=None)</code></td><td class="num">1</td><td>Les many2one restent des ids : aucun nom à calculer.</td></tr>
+                        <tr><td><code>browse(ids).read(FIELDS)</code></td><td class="num">9</td><td>Comme <code>search_read</code>, sans la recherche (les ids sont connus).</td></tr>
+                        <tr><td><code>search_count([])</code></td><td class="num">1</td><td><code>SELECT COUNT(*)</code> : rien n'est ramené en Python.</td></tr>
+                        <tr><td><code>browse(ids).fetch(FIELDS)</code> puis <code>browse(i)</code> dans une boucle</td><td class="num">1</td><td>Le cache est rempli pour les 500 avant la boucle (section 6).</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les mêmes nombres sortent en superutilisateur (la console), avec l'administrateur et avec
+                    l'utilisateur de démonstration : sur ces lectures, les droits d'accès ne changent pas le compte.</p>
+
+                <div class="pitfall-box">
+                    <h4>La première mesure compte plus</h4>
+                    <p>Dans une console qui vient de démarrer, trois mesures successives du même
+                        <code>search_read</code> donnent <code>[10, 9, 9]</code>. La première remplit au passage des
+                        caches internes du registre, que <code>invalidate_all()</code> ne vide pas. Mesurer deux fois et
+                        garder la seconde valeur, ou faire un appel d'échauffement avant la série.</p>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. SEARCH_FETCH / FETCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>search_fetch</code> et <code>fetch</code> : chercher et lire en une requête</h2>
+
+                <p><code>search_fetch(domain, field_names, offset, limit, order)</code> fait le travail de
+                    <code>search</code> et met en cache les champs demandés dans la même requête SQL. Il rend un
+                    recordset, comme <code>search</code>. <code>fetch(field_names)</code> fait la même chose sur un
+                    recordset qu'on a déjà : il ne lit que ce qui manque au cache.</p>
+<pre class="language-python"><code class="language-python">FIELDS = ['order_id', 'product_id', 'product_uom_qty', 'price_subtotal']
+lines = SOL.search_fetch([('order_id.state', '=', 'sale')], FIELDS)   # une requête, 4 colonnes + id
+lines = SOL.search([('order_id.state', '=', 'sale')])
+lines.fetch(FIELDS)                                                   # rien ne se passe si tout est déjà en cache</code></pre>
+
+                <p>Deux différences avec <code>search</code> suivi d'une boucle : une requête au lieu de deux, et
+                    seulement les colonnes demandées (5 au lieu de 51 dans la mesure). Le second point compte quand le
+                    modèle porte de gros champs texte ou beaucoup de colonnes. Ces deux méthodes sont réservées au code
+                    Python : elles portent le décorateur <code>@api.private</code>, qui interdit leur appel par RPC.
+                    Depuis l'extérieur, l'équivalent est <code>search_read</code>.</p>
+
+                <p><code>fetch</code> sert aussi de remède au motif qui coûte le plus cher : une boucle qui fait un
+                    <code>browse</code> par id. Chaque <code>browse(i)</code> a son propre prefetch, réduit à un id,
+                    donc une requête par ligne. Un <code>fetch</code> sur l'ensemble avant la boucle remplit le cache
+                    pour toutes (fonctions <code>mesure</code> et <code>lire</code> définies en figure 01) :</p>
+<pre class="language-python"><code class="language-python">def lire_ligne_a_ligne():
+    for i in ids:
+        lire(SOL.browse(i))
+
+def avec_fetch_avant():
+    SOL.browse(ids).fetch(FIELDS)
+    lire_ligne_a_ligne()
+
+mesure(lire_ligne_a_ligne), mesure(avec_fetch_avant)</code></pre>
+<div class="out">(500, 1)</div>
+
+                <h3>Les champs non stockés sont calculés pendant l'appel</h3>
+
+                <p>En Odoo 20, <code>fetch</code> et <code>search_fetch</code> acceptent un champ calculé non stocké et
+                    le <strong>calculent</strong> avant de rendre la main, pour tous les enregistrements. Le nom affiché
+                    d'une ligne de commande en est un : il assemble le numéro de commande, l'article et le client.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Console odoo-bin shell : display_name n'est pas stocké (False) ; le nom de la première ligne est 'S00069 - [E-COM08] Boîte de rangement (Gemini Furniture)' ; la fonction apres_fetch compte les requêtes pendant fetch puis pendant une boucle browse(i).display_name sur les 500 lignes ; fetch(['display_name']) donne (15, 0), fetch des seules dépendances order_partner_id, order_id, product_id, name donne (1, 1727)"/>
+                    <figcaption><code>fetch(['display_name'])</code> calcule le champ pour les 500 lignes (15 requêtes) ; la boucle ligne à ligne n'en coûte plus aucune.</figcaption>
+                </figure>
+
+                <p>Premier appel : 15 requêtes pendant <code>fetch</code> (les lignes, puis les commandes, clients et
+                    articles nécessaires au calcul), puis 0 pendant la boucle, qui fait pourtant un <code>browse</code>
+                    par id. Second appel : on ne demande que les quatre champs stockés dont dépend
+                    <code>display_name</code>. Une requête pendant <code>fetch</code>, puis <strong>1 727</strong> pendant
+                    la boucle : chaque ligne calcule son nom seule, et va chercher seule sa commande, son article et ses
+                    variantes.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Dans la branche 19.0 publique, <code>search_fetch</code> se termine par
+                        <code>return self._fetch_query(query, fields_to_fetch)</code> et la documentation de
+                        <code>fetch</code> prévient : « Non-stored fields are mostly ignored, except for their stored
+                        dependencies ». Un champ non stocké demandé y est remplacé par ses dépendances stockées, puis
+                        laissé non calculé : c'est le second appel de la figure 02, reproduit ici sur la 20. Odoo 20
+                        ajoute aux deux méthodes un bloc « force computation of fields » qui calcule le champ en lot
+                        avant de rendre la main. Le code n'a pas à changer ; il gagne surtout là où le recordset
+                        préparé est ensuite parcouru par morceaux. Autre ajout de la 20 : <code>fetch</code> découpe
+                        les très gros recordsets en requêtes de 10 000 ids.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. LOG-SQL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Voir les requêtes : <code>--log-sql</code></h2>
+
+                <p>Pour voir les requêtes elles-mêmes, l'option <code>--log-sql</code> de <code>odoo-bin</code> passe
+                    le journal <code>odoo.sql_db</code> en DEBUG : chaque requête y apparaît avec sa durée. Combinée à
+                    <code>--log-level=warn</code> et à un <code>grep</code>, elle isole ce qui touche une table :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : sonde.py appelle search_count([], limit=10) et search_fetch sur les lignes des commandes confirmées avec product_id et price_subtotal, limit=3 ; odoo-bin shell avec --log-level=warn --log-sql filtré par grep montre SELECT COUNT(*) FROM (SELECT FROM sale_order_line LIMIT 10) t, puis un seul SELECT id, product_id, price_subtotal avec JOIN sur sale_order, WHERE state IN ('sale'), ORDER BY date_order DESC, id DESC, sequence, id LIMIT 3 ; résultats 10 et sale.order.line(50, 48, 49)"/>
+                    <figcaption><code>--log-sql</code> : le <code>COUNT</code> plafonné par <code>limit</code>, et l'unique requête de <code>search_fetch</code>, jointure et tri compris.</figcaption>
+                </figure>
+
+                <p>La requête de <code>search_fetch</code> montre tout le travail fait en base : la jointure vers
+                    <code>sale_order</code> pour le critère <code>order_id.state</code>, le tri par défaut des lignes
+                    (celui de la commande, puis <code>sequence</code>, puis <code>id</code>), le <code>LIMIT</code>, et
+                    seulement les deux colonnes demandées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. NAME_SEARCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>name_search</code> : chercher sur le nom affiché</h2>
+
+                <p><code>name_search(name='', domain=None, operator='ilike', limit=100)</code> est la recherche d'un
+                    champ many2one dans un formulaire : on tape un bout de nom, Odoo propose des couples
+                    <code>(id, nom affiché)</code>.</p>
+<pre class="language-python"><code class="language-python">env['product.product'].name_search('bureau', limit=3)
+env['res.partner'].name_search('acme')
+env['product.product'].name_search('bureau', domain=[('lst_price', '&lt;', 200)], limit=3)</code></pre>
+<div class="out">[(15, '[DESK0005] Bureau personnalisable (Blanc, Personnalisé)'), (18, '[DESK0006] Bureau personnalisable (Noir, Personnalisé)'), (19, "[E-COM06] Bureau d'angle avec siège à droite")]
+[(10, 'Acme Corporation'), (37, 'Acme Corporation, Addison Olson'), (20, 'Acme Corporation, Douglas Fletcher'), (21, 'Acme Corporation, Floyd Steward')]
+[(19, "[E-COM06] Bureau d'angle avec siège à droite"), (49, '[FURN_0001] Rangement de bureau'), (31, '[FURN_0269] Chaise de bureau noire')]</div>
+
+                <p>Dans le code d'Odoo 20, c'est un <code>search_fetch</code> sur le domaine
+                    <code>('display_name', operator, name)</code> combiné au domaine passé, qui demande
+                    <code>['display_name']</code> : le nom est donc calculé pendant la recherche. Les contacts d'une
+                    société sortent avec elle (« Acme Corporation, Addison Olson ») parce que leur nom affiché contient
+                    celui de la société.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. QUEL OUTIL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Quel outil pour quel besoin</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Méthode</th><th>Renvoie</th></tr></thead>
+                    <tbody>
+                        <tr><td>Des enregistrements à manipuler, champs lus au fil du code</td><td><code>search(domaine, order=…, limit=…)</code></td><td>recordset</td></tr>
+                        <tr><td>Des enregistrements dont on connaît d'avance les champs utiles</td><td><code>search_fetch(domaine, champs, …)</code></td><td>recordset, champs en cache</td></tr>
+                        <tr><td>Préparer un recordset déjà en main avant une boucle</td><td><code>recs.fetch(champs)</code></td><td><code>None</code> (remplit le cache)</td></tr>
+                        <tr><td>Un nombre, ou « y en a-t-il au moins un ? »</td><td><code>search_count(domaine)</code> · <code>search_count(domaine, limit=1)</code></td><td>entier</td></tr>
+                        <tr><td>Des données à sérialiser (API, JSON, export)</td><td><code>search_read(domaine, champs)</code> · <code>recs.read(champs)</code></td><td>liste de <code>dict</code></td></tr>
+                        <tr><td>Les mêmes, sans les noms des many2one</td><td><code>search_read(…, load=None)</code></td><td>liste de <code>dict</code>, ids bruts</td></tr>
+                        <tr><td>Des suggestions pour une saisie</td><td><code>name_search(texte, domain=…, limit=…)</code></td><td>liste de <code>(id, nom)</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>search</code> ne lit que les ids ; le premier accès à un champ lit toutes les colonnes préchargées, pour tout le recordset.</li>
+                    <li><code>search_count</code> compte en base ; son <code>limit</code> plafonne le comptage.</li>
+                    <li><code>search_read</code> et <code>read</code> rendent des dictionnaires ; le nom des many2one coûte des requêtes, <code>load=None</code> les supprime.</li>
+                    <li><code>search_fetch</code> et <code>fetch</code> lisent les champs choisis en une requête ; réservés au code Python (<code>@api.private</code>).</li>
+                    <li>En Odoo 20, ils calculent aussi les champs non stockés demandés, en lot : 15 + 0 requêtes au lieu de 1 + 1 727 sur le nom affiché de 500 lignes parcourues une à une.</li>
+                    <li>Mesurer avec <code>env.cr.sql_log_count</code> après <code>env.invalidate_all()</code>, deux fois ; voir les requêtes avec <code>--log-sql</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire et 450 lignes de commande
+                    ajoutées ; requêtes comptées par <code>env.cr.sql_log_count</code>. Comparaison avec la branche 19.0
+                    publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>search_count</code>, <code>search</code>, <code>search_fetch</code>, <code>name_search</code>, <code>read</code>, <code>_read_format</code>, <code>fetch</code>, <code>_determine_fields_to_fetch</code>, <code>search_read</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/decorators.py" target="_blank" rel="noopener"><code>odoo/orm/decorators.py</code></a> : <code>api.private</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/sql_db.py" target="_blank" rel="noopener"><code>odoo/sql_db.py</code></a> : <code>Cursor.execute</code> et <code>sql_log_count</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : option <code>--log-sql</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil de toutes les mesures de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/controllers-http-api-rest-odoo-74">Controllers HTTP et API (version 19)</a></h5>
+                            <p class="small text-muted mb-0">Exposer des données lues par <code>search_read</code> à une application externe.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0">Lire en <code>psql</code> les tables que l'ORM interroge.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

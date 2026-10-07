@@ -1,0 +1,626 @@
+<!--
+Article — filtered, mapped, sorted, grouped : les recordsets en Odoo 20
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : recordsets-filtered-mapped-sorted-odoo-20
+Meta : Filtrer, transformer, trier et regrouper des recordsets en Odoo 20 : filtered, mapped, sorted, grouped, chaînage, prefetch, et quand préférer search.
+Mots-clés cibles : odoo filtered, odoo mapped, odoo mapped filtered, odoo sort recordset
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~11 minutes
+Captures : content/blog/screenshots/recordsets-filtered-mapped-sorted-odoo-20/ (01-04)
+Preuves (base vs20_tech_o2 : sale_management + stock, démo native, fr_FR ; Odoo 20.0 3538ed82 ; transaction annulée) :
+  - sondes docs/blog-odoo20/captures-base-vs20_tech/o2-recordsets/p3_final.py -> p3_out.txt (§1-3, 4-10), p4_sonde.py -> p4_out.txt (§4 raccourci relationnel),
+    p5_schema.py -> p5_out.txt (figure 01), p6_verif.py -> p6_out.txt (mapped vide relationnel, filtered_domain 0 requête + ordre conservé)
+  - odoo/odoo/orm/models.py : mapped :5598, filtered :5652 (TypeError :5683, prefetch d'origine :5686), grouped :5697, filtered_domain :5723 (:5732),
+    sorted :5735 (:5763), ensure_one :5419, __add__ :6006, __sub__ :6046, __and__ :6059, __or__ :6072 (Prefetch.union)
+  - odoo/odoo/orm/utils.py:264 Prefetch / :197 PrefetchUnion ; odoo/orm/fields.py:1829 (ensure_one à la lecture) ; fields_relational.py:41 (multi-record) ; fields.py:1983 __set__
+  - addons/sale/models/sale_order.py:47 _order = "date_order desc, id desc" ; res.partner._order = 'complete_name ASC, id DESC' (sonde p2)
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0/odoo/orm/models.py, tête 8191f184d3c7, relue le 07/10/2026) :
+    filtered -> self.browse(...) :6221/:6228, filtered_domain :6273, concat :6574, __sub__ :6584, __and__ :6596, union :6619 ; browse() prend ids comme prefetch ;
+    sorted (:6304) et grouped (:6261) gardaient déjà _prefetch_ids ; Domain déjà accepté par filtered en 19 (pas un écart).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">filtered, mapped, sorted, grouped : les recordsets en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Garder les commandes confirmées, récupérer leurs clients, trier par
+                    montant, ranger par état : quatre méthodes font l'essentiel du travail sur un recordset, sans
+                    écrire une ligne de SQL. Leurs formes acceptées, ce qu'elles renvoient, le piège du chemin pointé
+                    dans <code>mapped</code>, le moment où <code>search</code> fait mieux, et ce qu'Odoo 20 change au
+                    prefetch.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Filtrer</h4>
+                        <p><code>filtered</code> avec une fonction, un nom de champ, un chemin pointé ou un objet <code>Domain</code>, et <code>filtered_domain</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Transformer</h4>
+                        <p><code>mapped</code> : liste ou recordset selon le champ, doublons retirés, et le raccourci <code>orders.partner_id</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Trier, regrouper</h4>
+                        <p><code>sorted</code> avec une clé ou une chaîne <code>'champ desc'</code>, <code>grouped</code> en dictionnaire, et l'enchaînement des quatre.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Pour rejouer les exemples</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec les données de démonstration et les applications
+                            <strong>Ventes</strong> et <strong>Inventaire</strong>. Aucun module à écrire : tout se
+                            passe sur les commandes de vente et les contacts de la démo.</li>
+                        <li>La console : <code>odoo-bin shell -c odoo.conf -d ma_base --no-http</code>. Elle est
+                            présentée dans <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article
+                            sur la console</a>. Toutes les sorties ci-dessous y ont été relevées telles quelles ; sur
+                            ta base, les ids peuvent différer.</li>
+                        <li>Rien n'est validé : la console travaille dans une transaction, qui est annulée en sortant
+                            tant que tu n'appelles pas <code>env.cr.commit()</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. RECORDSET ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Un recordset, c'est quoi</h2>
+
+                <p>Un recordset est une liste ordonnée d'ids d'un même modèle, liée à un environnement (utilisateur,
+                    société, langue). <code>search</code> en renvoie un, <code>browse</code> aussi. On le parcourt, on
+                    le découpe et on le mesure comme une liste Python :</p>
+<pre class="language-python"><code class="language-python">orders = env['sale.order'].search([], order='id', limit=8)
+orders
+orders.ids
+len(orders), orders[0], orders[-2:]
+for o in orders[:3]:
+    print(o.name, o.partner_id.name, o.state, o.amount_total)</code></pre>
+<div class="out">sale.order(1, 2, 3, 4, 5, 6, 7, 8)
+[1, 2, 3, 4, 5, 6, 7, 8]
+(8, sale.order(1,), sale.order(7, 8))
+S00001 Acme Corporation draft 2001.0
+S00002 Ready Mat draft 3389.63
+S00003 Ready Mat draft 434.13</div>
+
+                <p>Un élément pris par index ou dans une boucle est encore un recordset, d'un seul enregistrement.
+                    C'est sur lui qu'on lit un champ. Le recordset porte aussi un second jeu d'ids, invisible à
+                    l'affichage : le <strong>prefetch</strong>. Quand un champ doit être lu en base pour un
+                    enregistrement, Odoo le lit d'un coup pour tous les ids de ce jeu. La preuve, en comptant les
+                    requêtes SQL envoyées par le curseur :</p>
+<pre class="language-python"><code class="language-python">env.invalidate_all()                 # vide le cache, pour mesurer
+n = env.cr.sql_log_count
+orders[0].partner_id.name
+env.cr.sql_log_count - n
+n = env.cr.sql_log_count
+[o.partner_id.name for o in orders]
+env.cr.sql_log_count - n</code></pre>
+<div class="out">'Acme Corporation'
+2
+['Acme Corporation', 'Ready Mat', 'Ready Mat', 'Gemini Furniture', 'Acme Corporation', 'Lumber Inc', 'Gemini Furniture', 'Gemini Furniture']
+0</div>
+
+                <p>Deux requêtes pour le premier nom de client : une sur <code>sale_order</code> pour les huit
+                    commandes, une sur <code>res_partner</code> pour leurs quatre clients. La boucle sur les huit qui
+                    suit n'en coûte plus aucune. C'est pour cela qu'on écrit <code>for o in orders</code> sans crainte
+                    du « une requête par ligne ». Les méthodes qui suivent prennent un recordset et en rendent un autre
+                    (ou une liste, ou un dictionnaire), en mémoire.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : huit commandes S00001 à S00008, dont quatre à l'état sale ; filtered(lambda o: o.state == 'sale') garde sale.order(4, 6, 7, 8), dont le prefetch reste les 8 ids ; mapped('partner_id') donne res.partner(11, 17), Gemini Furniture et Lumber Inc ; mapped('partner_id.name') rend 2 noms pour 4 commandes"/>
+                    <figcaption>Le trajet d'un recordset : <code>filtered</code> garde les commandes confirmées, <code>mapped('partner_id')</code> remonte à leurs clients, sans doublon.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. FILTERED ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>filtered</code> : garder une partie du recordset</h2>
+
+                <p><code>filtered</code> renvoie les enregistrements pour lesquels le critère est vrai, dans l'ordre
+                    d'origine. Le critère prend quatre formes :</p>
+<pre class="language-python"><code class="language-python">from odoo.fields import Domain
+
+orders.filtered(lambda o: o.state == 'sale')
+orders.filtered(lambda o: o.amount_total &gt; 2000)
+orders.filtered('tag_ids')                    # le champ est-il rempli ?
+orders.filtered('partner_id.state_id')        # chemin pointé : au moins une valeur au bout
+orders.filtered(Domain('state', '=', 'draft') &amp; Domain('amount_total', '&gt;', 1000))
+orders.filtered([('state', '=', 'draft')])    # une liste : refusée</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Console odoo-bin shell : filtered par lambda sur l'état donne sale.order(4, 6, 7, 8), sur le montant sale.order(1, 2, 4), sur tag_ids sale.order(2, 3, 6, 7), sur partner_id.state_id sale.order(1, 2, 3, 5, 6), avec un Domain sale.order(1, 2) ; la liste lève TypeError: Invalid function [('state', '=', 'draft')] to filter on sale.order"/>
+                    <figcaption>Les quatre formes acceptées par <code>filtered</code>, et l'erreur d'une liste-domaine.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Critère</th><th>Ce qu'Odoo en fait</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>lambda o: …</code></td><td>Appelée sur chaque enregistrement ; le résultat est évalué comme un booléen. La forme la plus souple : tout Python est permis, y compris des champs calculés non stockés.</td></tr>
+                        <tr><td><code>'tag_ids'</code></td><td>Lit la valeur du champ : un champ vide, <code>0</code> ou <code>False</code> écarte l'enregistrement.</td></tr>
+                        <tr><td><code>'partner_id.state_id'</code></td><td>Suit le chemin et garde l'enregistrement si <strong>au moins une</strong> valeur au bout est vraie (<code>any(rec.mapped(chemin))</code>). Les commandes 4, 7 et 8 sont écartées : leur client, à Saint-Marin, n'a pas de province.</td></tr>
+                        <tr><td><code>Domain(…)</code></td><td>Un objet <code>Domain</code> (<code>from odoo.fields import Domain</code>), combinable par <code>&amp;</code>, <code>|</code>, <code>~</code>. <code>filtered</code> le passe à <code>filtered_domain</code>.</td></tr>
+                        <tr><td><code>[('state', '=', 'draft')]</code></td><td>Refusé : la trace se termine par <code>TypeError: Invalid function [('state', '=', 'draft')] to filter on sale.order</code>. Une liste n'est ni une fonction ni un nom de champ. Envelopper dans <code>Domain(…)</code> ou passer par <code>filtered_domain</code>.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. FILTERED_DOMAIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>filtered_domain</code> : un domaine, évalué en Python</h2>
+
+                <p><code>filtered_domain</code> accepte la liste-domaine habituelle, celle qu'on donnerait à
+                    <code>search</code>, chemins pointés et opérateurs compris :</p>
+<pre class="language-python"><code class="language-python">orders.filtered_domain([('state', '=', 'draft'), ('amount_total', '&gt;', 1000)])
+orders.filtered_domain([('partner_id.name', 'ilike', 'acme')])</code></pre>
+<div class="out">sale.order(1, 2)
+sale.order(1, 5)</div>
+
+                <p>Le domaine est transformé en prédicat Python et appliqué aux enregistrements déjà chargés : aucune
+                    requête de recherche n'est envoyée, et l'ordre du recordset est conservé. C'est l'outil quand le
+                    critère existe déjà sous forme de domaine (un domaine de règle, un paramètre de méthode) et que
+                    les enregistrements sont déjà en main.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. MAPPED ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>mapped</code> : une liste ou un recordset</h2>
+
+                <p><code>mapped</code> applique un nom de champ, un chemin ou une fonction à chaque enregistrement. Le
+                    type du résultat dépend de ce qu'on demande :</p>
+<pre class="language-python"><code class="language-python">orders.mapped('name')
+orders.mapped('amount_total')
+sum(orders.mapped('amount_total'))
+orders.mapped('partner_id')
+orders.mapped('partner_id.name')
+orders.mapped('order_line.product_id')
+orders.mapped(lambda o: (o.name, o.partner_id.name))
+orders.mapped(lambda o: o.partner_id.country_id)
+orders.browse().mapped('name')</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : mapped('name') donne la liste des huit numéros S00001 à S00008, mapped('amount_total') huit montants, leur somme 11561.01, mapped('partner_id') res.partner(10, 12, 11, 17), mapped('partner_id.name') quatre noms seulement, mapped('order_line.product_id') dix articles, une lambda en tuples huit couples, une lambda vers le pays res.country(233, 203), un recordset vide une liste vide"/>
+                    <figcaption>Un champ simple donne une liste par enregistrement ; un champ relationnel donne un recordset sans doublon.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Appel</th><th>Résultat</th></tr></thead>
+                    <tbody>
+                        <tr><td>champ simple (<code>'name'</code>, <code>'amount_total'</code>)</td><td>une liste, une valeur par enregistrement, doublons compris : <code>sum()</code>, <code>max()</code>, <code>set()</code> s'y appliquent.</td></tr>
+                        <tr><td>champ relationnel (<code>'partner_id'</code>, <code>'order_line.product_id'</code>)</td><td>un recordset, union des valeurs, <strong>doublons retirés</strong> : 4 clients pour 8 commandes.</td></tr>
+                        <tr><td>fonction</td><td>une liste de ses résultats ; si elle renvoie des recordsets, leur union.</td></tr>
+                        <tr><td>recordset vide</td><td><code>[]</code> pour un champ simple, un recordset vide du bon modèle pour un relationnel.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="pitfall-box">
+                    <h4>Un chemin pointé dédoublonne avant de lire</h4>
+                    <p><code>orders.mapped('partner_id.name')</code> ne rend pas un nom par commande : il suit
+                        d'abord <code>partner_id</code>, ce qui donne les 4 clients distincts, puis lit leur nom. Quatre
+                        noms pour huit commandes. Pour garder l'alignement avec les commandes (export, rapport,
+                        <code>zip</code> avec une autre liste), passer par une fonction :
+                        <code>orders.mapped(lambda o: o.partner_id.name)</code>, ou par une boucle.</p>
+                </div>
+
+                <p>Pour un champ relationnel, la lecture directe sur le recordset entier fait la même chose que
+                    <code>mapped</code>. Pour un champ simple, non :</p>
+<pre class="language-python"><code class="language-python">orders.partner_id
+orders.order_line.product_id == orders.mapped('order_line.product_id')
+orders.name</code></pre>
+<div class="out">res.partner(10, 12, 11, 17)
+True
+ValueError: Expected singleton: sale.order(1, 2, 3, 4, 5, 6, 7, 8)</div>
+                <p>(Pour l'erreur, la dernière ligne de la trace.) <code>orders.order_line.product_id</code> est
+                    l'écriture la plus courte. <code>mapped</code> reste utile pour les champs simples
+                    et les fonctions.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. SORTED ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. <code>sorted</code> : trier sans retourner en base</h2>
+
+                <p><code>sorted</code> renvoie un recordset réordonné. La clé est une fonction, ou une chaîne au
+                    format de l'attribut <code>_order</code> : champs séparés par des virgules, <code>asc</code> /
+                    <code>desc</code>, <code>nulls first</code> / <code>nulls last</code>.</p>
+<pre class="language-python"><code class="language-python">orders.sorted('amount_total desc').mapped('amount_total')
+orders.sorted(lambda o: o.amount_total, reverse=True)[:3]
+orders.sorted('partner_id, amount_total desc').mapped(lambda o: (o.partner_id.name, o.amount_total))
+orders.sorted().ids
+orders.sorted('nom')</code></pre>
+<div class="out">[3389.63, 2240.0, 2001.0, 1706.0, 862.5, 465.75, 462.0, 434.13]
+sale.order(2, 4, 1)
+[('Acme Corporation', 2001.0), ('Acme Corporation', 465.75), ('Gemini Furniture', 2240.0), ('Gemini Furniture', 1706.0), ('Gemini Furniture', 462.0), ('Lumber Inc', 862.5), ('Ready Mat', 3389.63), ('Ready Mat', 434.13)]
+[8, 7, 6, 4, 3, 5, 2, 1]
+KeyError: 'nom'</div>
+
+                <ul>
+                    <li><strong>Un <code>Many2one</code> dans la chaîne</strong> trie selon l'ordre du modèle visé :
+                        <code>'partner_id'</code> suit le <code>_order</code> de <code>res.partner</code>
+                        (<code>complete_name ASC, id DESC</code>), d'où l'ordre alphabétique des clients.</li>
+                    <li><strong>Sans clé</strong>, <code>sorted()</code> applique le <code>_order</code> du modèle :
+                        pour <code>sale.order</code>, <code>date_order desc, id desc</code>
+                        (<code>addons/sale/models/sale_order.py</code>), d'où la commande 8 en tête.</li>
+                    <li><strong><code>[:3]</code> après <code>sorted</code></strong> donne un « top 3 » en mémoire.
+                        Sur un gros volume, <code>search(…, order='amount_total desc', limit=3)</code> fait le même
+                        travail en base.</li>
+                    <li><strong>Un nom de champ inconnu</strong> lève <code>KeyError</code> : la chaîne est
+                        vérifiée, pas devinée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. GROUPED ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>grouped</code> : un dictionnaire de recordsets</h2>
+
+                <p><code>grouped</code> range les enregistrements par valeur d'une clé (nom de champ ou fonction) et
+                    renvoie un <code>dict</code> : la clé, puis le recordset des enregistrements qui la partagent.</p>
+<pre class="language-python"><code class="language-python">by_partner = orders.grouped('partner_id')
+by_partner
+{p.name: len(o) for p, o in by_partner.items()}
+orders.grouped('state')
+{k: round(sum(v.mapped('amount_total')), 2) for k, v in orders.grouped(lambda o: o.amount_total &gt; 1500).items()}</code></pre>
+<div class="out">{res.partner(10,): sale.order(1, 5), res.partner(12,): sale.order(2, 3), res.partner(11,): sale.order(4, 7, 8), res.partner(17,): sale.order(6,)}
+{'Acme Corporation': 2, 'Ready Mat': 2, 'Gemini Furniture': 3, 'Lumber Inc': 1}
+{'draft': sale.order(1, 2, 3, 5), 'sale': sale.order(4, 6, 7, 8)}
+{True: 9336.63, False: 2224.38}</div>
+
+                <p>Les clés sont les valeurs brutes du champ : un recordset pour un <code>Many2one</code>, la valeur
+                    technique pour une sélection (<code>'draft'</code>, pas « Devis »). Contrairement à
+                    <code>itertools.groupby</code>, l'ordre d'entrée n'importe pas. Et contrairement à
+                    <code>_read_group</code>, rien n'est calculé en base : <code>grouped</code> partitionne des
+                    enregistrements déjà chargés, les sommes restent à faire. Tous les recordsets du dictionnaire
+                    partagent le prefetch du recordset de départ (docstring de <code>grouped</code>) : parcourir les
+                    groupes l'un après l'autre ne relance pas une lecture par groupe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. ENCHAÎNER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Enchaîner</h2>
+
+                <p>Chaque méthode qui rend un recordset accepte la suivante. Exemple : parmi les commandes
+                    confirmées ou envoyées, les lignes d'au moins 5 unités, de la plus chère à la moins chère :</p>
+<pre class="language-python"><code class="language-python">(orders
+    .filtered(lambda o: o.state in ('sale', 'sent'))
+    .mapped('order_line')
+    .filtered(lambda l: l.product_uom_qty &gt;= 5)
+    .sorted('price_subtotal desc')
+    .mapped(lambda l: (l.order_id.name, l.product_id.display_name, l.product_uom_qty, l.price_subtotal)))</code></pre>
+<div class="out">[('S00007', '[FURN_6667] Écrans anti-bruit (Noir)', 5.0, 1475.0), ('S00004', "Design d'intérieur virtuel", 16.0, 1200.0), ('S00004', '[FURN_8888] Lampe de bureau', 10.0, 450.0)]</div>
+
+                <p>L'ordre de lecture est celui du besoin : filtrer tôt (moins d'enregistrements à transformer),
+                    passer au modèle voisin avec <code>mapped</code> sur un champ relationnel, trier, puis seulement à
+                    la fin sortir des valeurs simples. Un <code>mapped</code> vers une liste termine la chaîne : une
+                    liste n'a plus de <code>filtered</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. SEARCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Quand préférer <code>search</code></h2>
+
+                <p><code>filtered</code> travaille sur ce qui est déjà chargé. Si les enregistrements ne sont pas
+                    encore en main, chercher tout puis filtrer charge tout. Les deux écritures sur la base complète
+                    (24 commandes en démo) :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+env.invalidate_all(); n = env.cr.sql_log_count
+big = SO.search([('state', '=', 'sale'), ('amount_total', '&gt;', 1500)])
+big, env.cr.sql_log_count - n
+
+env.invalidate_all(); n = env.cr.sql_log_count
+big2 = SO.search([]).filtered(lambda o: o.state == 'sale' and o.amount_total &gt; 1500)
+big2 == big, len(SO.search([])), env.cr.sql_log_count - n</code></pre>
+<div class="out">(sale.order(24, 23, 21, 14, 7, 4, 15, 20), 1)
+(True, 24, 3)</div>
+
+                <p>Même résultat, mais la première version envoie une requête qui ne ramène que les 8 ids
+                    retenus ; la seconde lit d'abord les 24 commandes, champs compris, pour en garder 8. Sur une table
+                    de cent mille lignes, l'écart se compte en secondes et en mémoire.</p>
+                <table class="tmc">
+                    <thead><tr><th>Situation</th><th>Outil</th></tr></thead>
+                    <tbody>
+                        <tr><td>Partir de la base, critère sur des champs stockés</td><td><code>search(domaine)</code> : le filtre part en SQL, avec <code>order</code> et <code>limit</code>.</td></tr>
+                        <tr><td>Recordset déjà en main (lignes d'une commande, <code>self</code> d'une méthode)</td><td><code>filtered</code> / <code>filtered_domain</code> : pas de requête de recherche, ordre conservé.</td></tr>
+                        <tr><td>Critère sur un champ calculé non stocké, ou purement Python</td><td><code>filtered(lambda …)</code>, éventuellement après un <code>search</code> qui dégrossit.</td></tr>
+                        <tr><td>Sommes, comptages par groupe sur beaucoup de lignes</td><td><code>_read_group</code> en base plutôt que <code>grouped</code> + <code>sum</code>.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. LECTURE / ÉCRITURE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Lire et écrire sur plusieurs enregistrements</h2>
+
+                <p>Les deux sens ne se comportent pas pareil sur un recordset de plusieurs enregistrements :</p>
+<pre class="language-python"><code class="language-python">partners = env['res.partner'].search([('is_company', '=', True)], order='id', limit=3)
+partners
+partners.city
+partners.mapped('city')
+partners.comment = "Client à rappeler"
+partners.mapped('comment')</code></pre>
+<div class="out">res.partner(9, 10, 11)
+ValueError: Expected singleton: res.partner(9, 10, 11)
+['Turlock', 'Pleasant Hill', 'Serravalle']
+[Markup('&lt;p&gt;Client à rappeler&lt;/p&gt;'), Markup('&lt;p&gt;Client à rappeler&lt;/p&gt;'), Markup('&lt;p&gt;Client à rappeler&lt;/p&gt;')]</div>
+
+                <div class="pitfall-box">
+                    <h4>La lecture refuse, l'écriture passe sur tous</h4>
+                    <p>Lire un champ simple sur trois contacts lève <code>Expected singleton</code> : Odoo ne choisit
+                        pas à ta place (<code>ensure_one()</code>, <code>odoo/orm/fields.py</code>). L'affectation
+                        <code>partners.comment = …</code>, elle, ne lève rien : elle devient un <code>write</code> sur
+                        <strong>les trois</strong>. Avant une affectation, vérifier ce que contient le recordset, ou
+                        poser <code>partners.ensure_one()</code> quand un seul est attendu. (Ici, rien n'est validé :
+                        la transaction de la console a été annulée.)</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 10. PREFETCH ODOO 20 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>10. Ce que <code>filtered</code> garde du recordset d'origine</h2>
+
+                <p>Retour au prefetch de la première partie. Un recordset issu de <code>filtered</code> garde, en
+                    Odoo 20, le prefetch du recordset filtré : les 8 ids de <code>orders</code>, pas seulement les 4
+                    qu'il contient. On le voit en comparant avec un <code>browse</code> des mêmes ids, et en comptant
+                    les requêtes d'un parcours « le sous-ensemble, puis le tout » :</p>
+<pre class="language-python"><code class="language-python">orders = env['sale.order'].search([], order='id', limit=8)
+drafts = orders.filtered(lambda o: o.state == 'draft')
+drafts
+len(drafts._prefetch_ids), len(env['sale.order'].browse(drafts.ids)._prefetch_ids)
+len(set((orders - drafts)._prefetch_ids))
+
+def count(subset):
+    env.invalidate_all()
+    n = env.cr.sql_log_count
+    for o in subset:
+        o.partner_id.name
+    for o in orders:
+        o.partner_id.name
+    return env.cr.sql_log_count - n
+
+count(drafts)
+count(env['sale.order'].browse(drafts.ids))</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Console odoo-bin shell : drafts = sale.order(1, 2, 3, 5) ; prefetch de drafts 8 ids contre 4 pour browse(drafts.ids) ; prefetch de orders - drafts 8 ; fonction count qui parcourt le sous-ensemble puis les huit commandes : 2 requêtes avec drafts, 4 avec browse(drafts.ids)"/>
+                    <figcaption>Le recordset filtré prépare la lecture des 8 commandes : 2 requêtes au lieu de 4.</figcaption>
+                </figure>
+
+                <p><code>_prefetch_ids</code> est un attribut interne : à regarder pour comprendre, pas à utiliser
+                    dans un module. Avec <code>drafts</code>, la première lecture charge les 8 commandes et leurs 4
+                    clients ; la seconde boucle trouve tout en cache. Avec un <code>browse</code> des mêmes ids, la
+                    première lecture ne charge que les 4 brouillons et leurs clients, et la seconde boucle doit revenir
+                    en base pour les 4 autres commandes et les 2 autres clients. Les opérateurs <code>-</code>,
+                    <code>&amp;</code>, <code>|</code> et <code>+</code> font de même : ils fusionnent les prefetch de
+                    leurs opérandes au lieu de repartir de leurs seuls ids.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Dans la branche 19.0 publique, <code>filtered</code>, <code>filtered_domain</code> et les
+                        opérateurs <code>-</code>, <code>&amp;</code>, <code>|</code>, <code>+</code> se terminent par
+                        <code>self.browse(ids)</code>, qui prend les ids du résultat comme prefetch : le cas
+                        <code>browse(drafts.ids)</code> ci-dessus, 4 requêtes. En 20, ils construisent le résultat avec
+                        le prefetch d'origine (<code>self.__class__(self.env, ids, self._prefetch_ids)</code>) ou leur
+                        union (<code>Prefetch.union</code>). <code>sorted</code> et <code>grouped</code> le faisaient
+                        déjà en 19. Rien à changer dans le code : les mêmes appels envoient moins de requêtes quand on
+                        revient au recordset complet après un filtre.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Garder une partie</td><td><code>recs.filtered(lambda r: …)</code> · <code>recs.filtered('champ')</code> · <code>recs.filtered('a.b')</code> · <code>recs.filtered(Domain(…))</code></td></tr>
+                        <tr><td>Filtrer avec une liste-domaine</td><td><code>recs.filtered_domain([(…)])</code> (jamais <code>filtered([(…)])</code>)</td></tr>
+                        <tr><td>Valeurs d'un champ simple</td><td><code>recs.mapped('champ')</code> → liste</td></tr>
+                        <tr><td>Enregistrements liés</td><td><code>recs.partner_id</code> ou <code>recs.mapped('partner_id')</code> → recordset sans doublon</td></tr>
+                        <tr><td>Une valeur liée par enregistrement</td><td><code>recs.mapped(lambda r: r.partner_id.name)</code></td></tr>
+                        <tr><td>Trier</td><td><code>recs.sorted('champ desc, id')</code> · <code>recs.sorted(key, reverse=True)</code> · <code>recs.sorted()</code> (= <code>_order</code>)</td></tr>
+                        <tr><td>Regrouper</td><td><code>recs.grouped('champ')</code> → <code>{valeur: recordset}</code></td></tr>
+                        <tr><td>Chercher en base</td><td><code>env['modèle'].search(domaine, order=…, limit=…)</code></td></tr>
+                        <tr><td>Un seul attendu</td><td><code>recs.ensure_one()</code> avant de lire ou d'écrire</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Un recordset est une liste ordonnée d'ids plus un jeu de prefetch : un champ se lit d'un coup pour tous les ids de ce jeu.</li>
+                    <li><code>filtered</code> accepte une fonction, un nom de champ, un chemin pointé ou un <code>Domain</code> ; une liste-domaine passe par <code>filtered_domain</code>.</li>
+                    <li><code>mapped</code> rend une liste pour un champ simple, un recordset dédoublonné pour un champ relationnel ; un chemin pointé dédoublonne avant de lire.</li>
+                    <li><code>sorted</code> prend une fonction ou une chaîne <code>'champ desc'</code> ; <code>grouped</code> rend un dictionnaire de recordsets, sans agrégat.</li>
+                    <li>Partir de la base : <code>search</code>. Recordset déjà en main : <code>filtered</code>. Lire sur plusieurs enregistrements lève une erreur ; écrire s'applique à tous.</li>
+                    <li>En Odoo 20, <code>filtered</code> et les opérateurs gardent le prefetch d'origine : moins de requêtes quand on revient au recordset complet.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire, transaction annulée en
+                    fin de session ; requêtes comptées par <code>env.cr.sql_log_count</code>. Comparaison avec la
+                    branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>mapped</code>, <code>filtered</code>, <code>grouped</code>, <code>filtered_domain</code>, <code>sorted</code>, <code>_sorted_order_to_function</code>, <code>ensure_one</code>, opérateurs <code>+ - &amp; |</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/utils.py" target="_blank" rel="noopener"><code>odoo/orm/utils.py</code></a> : <code>Prefetch.union</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_relational.py" target="_blank" rel="noopener"><code>odoo/orm/fields_relational.py</code></a> : lecture d'un champ relationnel sur plusieurs enregistrements</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/models/sale_order.py" target="_blank" rel="noopener"><code>addons/sale/models/sale_order.py</code></a> : <code>_order</code> de la commande</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil de toutes les sorties de cet article.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/relations-modeles-odoo-20-180">Relier deux modèles Odoo 20 : les exemplaires</a></h5>
+                            <p class="small text-muted mb-0"><code>Many2one</code> et <code>One2many</code>, les champs que <code>mapped</code> traverse.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/methodes-modele-odoo-66">Méthodes de modèle (version 19)</a></h5>
+                            <p class="small text-muted mb-0"><code>create</code>, <code>write</code>, <code>unlink</code> : la suite naturelle des recordsets.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
