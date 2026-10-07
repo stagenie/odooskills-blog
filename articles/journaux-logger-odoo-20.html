@@ -1,0 +1,644 @@
+<!--
+Article — Journaux Odoo 20 : _logger, --log-handler, --log-sql, --log-config
+Série « La ligne de commande Odoo 20 » (blog Développement)
+Date : 2026-10-07
+Slug : journaux-logger-odoo-20
+Mot-clé cible : odoo _logger info / odoo log level / odoo logfile / odoo log sql
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16, base de démonstration (sale_management + stock, fr_FR),
+fichier de configuration sans dev_mode (--dev= sur la ligne de commande), workers = 0. 19.0 publique relue : 9db68e61 (raw GitHub, 07/10).
+Preuves :
+  - odoo-bin server --help (help_server.txt) : groupe Logging Configuration, --dev (access, qweb, reload, replica, xml).
+  - 20 odoo/tools/config.py:350-378 (options de journal), :35-44 DEFAULT_COLOR_SPEC, :696-742 load_color_options (NO_COLOR, FORCE_COLOR,
+    ODOO_PY_COLORS, section [colors]), :752 syslog/logfile exclusifs. Section [colors] + log_handler en liste dans un .conf : exécuté.
+  - 20 odoo/netsvc.py:94-106 (--log-config, .toml via tomllib, keep_odoo_default), :117-131 (SysLogHandler, WatchedFileHandler),
+    :152-162 (application des niveaux, getattr(logging, level, INFO)), :166-176 (DeprecationWarning --syslog), :181-190 PSEUDOCONFIG_MAPPER
+    (sans debug_rpc / debug_rpc_answer).
+  - 20 odoo/logging.py:110 format par défaut, :132 JSONFormatter ; odoo/http/server_log.py:36 format de la ligne HTTP, :274 logger
+    odoo.http.server ; odoo/sql_db.py:426 « [%.3f ms] query: » ; :388 coloration (pygments, absent de requirements.txt).
+  - odoo/_monkeypatches/__init__.py:57 TZ=UTC (journal à 08:32 pour 09:32 heure locale CET, journalctl).
+  - odoo/http/router.py:307 AccessError → WARNING, traceback si 'access' in dev_mode ; service/server.py:1595 reload.
+  - Exécutions (dossier de travail c5-journaux) : p1_* (niveaux, --log-level=warn, debug_rpc = info, :debug → TypeError, :DEBUGG → INFO,
+    deux --log-handler), p2 (--log-sql), p3 (--logfile : rien sur la sortie, 18 lignes dans le fichier), p4 (--syslog → journalctl,
+    DeprecationWarning), p5/p6 (--log-config JSON + keep_odoo_default, TOML sans : --log-handler/--log-level ignorés), p7 (--log-db=%d →
+    2 lignes ir.logging WARNING/ERROR), p8 (FORCE_COLOR + --log-sql sans pygments → UserWarning), s1-s5 serveur 9137 (lignes
+    odoo.http.server, --log-web [REQ]/[RES], --dev=access traceback, --dev=all Watching/AutoReload, --log-handler=werkzeug:WARNING
+    2 lignes restent / odoo.http.server:WARNING 0 ligne).
+  - 19.0 publique : config.py:322-323 (--syslog sans « deprecated »), :333-335 --log-config JSON (PRÉSENT → pas un écart),
+    :422-431 --dev sans werkzeug (retrait déjà fait en 19 → pas un écart) ; netsvc.py:242-252 json.load seul, :300 filtre sur le
+    logger 'werkzeug', :335-344 mapper avec debug_rpc ; service/server.py:128-162 lignes de requête par werkzeug (CommonRequestHandler).
+    Pas de section [colors] ni de coloration SQL dans la 19.0 publique.
+  - logrotate sans copytruncate : prouvé le 06/10 (20 et 19, serveur de démonstration E3-20 Ch.12).
+Captures : content/blog/screenshots/journaux-logger-odoo-20/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-toml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Journaux Odoo 20 : _logger, --log-handler, --log-sql, --log-config</h1>
+                <p class="lead mt-3 text-white">Un <code>_logger.info()</code> qui n'apparaît pas, un journal noyé sous les
+                    requêtes HTTP, une requête SQL qu'on voudrait voir passer : tout se règle par logger, en ligne de
+                    commande ou dans un fichier. Chaque option est montrée avec la sortie qu'elle produit vraiment, et
+                    avec ce qui a changé dans le journal d'Odoo 20.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Écrire</h4>
+                        <p><code>_logger = logging.getLogger(__name__)</code>, les niveaux, et lire une ligne du journal champ par champ.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Filtrer</h4>
+                        <p><code>--log-level</code>, <code>--log-handler</code> par module, <code>--log-sql</code>, <code>--log-web</code> et les lignes de requêtes HTTP.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Diriger</h4>
+                        <p><code>--logfile</code>, <code>--syslog</code>, <code>--log-config</code> (JSON ou TOML), la table <code>ir.logging</code> et <code>--dev</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 installé avec son <code>odoo.conf</code> : voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu</a> ou <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">sur un serveur Ubuntu</a>.
+                            Le fichier ne contient ni <code>dev_mode</code> ni réglage de journal : tout part des valeurs par défaut.</li>
+                        <li>Une base de démonstration, appelée ici <code>ma_base</code> : Ventes et Inventaire installés, en français.</li>
+                        <li>Les commandes sont lancées depuis le dossier des sources (<code>./odoo-bin</code>). Les essais passent par la
+                            console <code>odoo-bin shell</code> (voir <a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a>) :
+                            elle accepte les mêmes options de journal que le serveur.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. _logger ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>_logger</code> dans un module : la convention et les niveaux</h2>
+
+                <p>Chaque fichier Python d'un module déclare son logger en tête, avec le nom du module Python courant :</p>
+<pre class="language-python"><code class="language-python">import logging
+
+from odoo import models
+
+_logger = logging.getLogger(__name__)   # odoo.addons.mon_module.models.sale_order
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    def action_confirm(self):
+        for order in self:
+            _logger.info("Commande %s (%s) pour %s", order.name, order.state, order.partner_id.name)
+        return super().action_confirm()</code></pre>
+
+                <p>Dans le fichier <code>mon_module/models/sale_order.py</code>, <code>__name__</code> vaut
+                    <code>odoo.addons.mon_module.models.sale_order</code>. Ce nom est hiérarchique : tout réglage posé sur
+                    <code>odoo.addons.mon_module</code> s'applique aux loggers de tous les fichiers du module, et un réglage sur
+                    <code>odoo</code> à tout Odoo. C'est ce qui rend le filtrage par module possible (section 3).</p>
+
+                <p>Pour l'essayer sans écrire de module, le même logger se crée à la main dans un script passé à la console.
+                    Le fichier <code>journal.py</code> utilisé dans tout l'article :</p>
+<pre class="language-python"><code class="language-python">import logging
+_logger = logging.getLogger('odoo.addons.mon_module.models.sale_order')
+
+order = env['sale.order'].search([], order='id', limit=1)
+_logger.debug("Commande %s : %d ligne(s)", order.name, len(order.order_line))
+_logger.info("Commande %s (%s) pour %s", order.name, order.state, order.partner_id.name)
+if not order.commitment_date:
+    _logger.warning("Commande %s : aucune date de livraison promise", order.name)
+try:
+    order.amount_total / 0
+except ZeroDivisionError:
+    _logger.exception("Calcul de remise impossible pour %s", order.name)</code></pre>
+
+                <table class="tmc">
+                    <thead><tr><th>Méthode</th><th>Niveau</th><th>Pour quoi</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>_logger.debug()</code></td><td>DEBUG</td><td>Le détail utile pendant le développement. <strong>Invisible par défaut.</strong></td></tr>
+                        <tr><td><code>_logger.info()</code></td><td>INFO</td><td>Les étapes normales : un traitement lancé, un lot terminé.</td></tr>
+                        <tr><td><code>_logger.warning()</code></td><td>WARNING</td><td>Quelque chose d'anormal mais pas bloquant.</td></tr>
+                        <tr><td><code>_logger.error()</code></td><td>ERROR</td><td>Une opération qui a échoué.</td></tr>
+                        <tr><td><code>_logger.exception()</code></td><td>ERROR + traceback</td><td>Dans un <code>except</code> : ajoute la pile d'appels au message.</td></tr>
+                        <tr><td><code>_logger.critical()</code></td><td>CRITICAL</td><td>Le service ne peut plus fonctionner.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Passe les valeurs en arguments (<code>"%s", order.name</code>) plutôt qu'en f-string : le message n'est
+                    construit que si la ligne est réellement écrite, et un même message garde la même forme dans le journal,
+                    ce qui facilite un <code>grep</code>.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : premier lancement de journal.py, trois lignes INFO, WARNING et ERROR suivies du traceback ZeroDivisionError ; second lancement avec --log-handler=odoo.addons.mon_module:DEBUG, une ligne DEBUG « Commande S00001 : 3 ligne(s) » apparaît en plus"/>
+                    <figcaption>Au niveau par défaut (INFO), la ligne DEBUG n'est pas écrite. Avec <code>--log-handler=odoo.addons.mon_module:DEBUG</code>, elle apparaît, pour ce module seulement.</figcaption>
+                </figure>
+
+                <p>Le journal part sur la <strong>sortie d'erreur</strong>, d'où le <code>2&gt;&amp;1</code> avant le
+                    <code>grep</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. Lire une ligne ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Lire une ligne du journal</h2>
+<div class="out">2026-10-07 08:32:33,001 1036985 WARNING ma_base odoo.addons.mon_module.models.sale_order: Commande S00001 : aucune date de livraison promise</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Exemple</th><th>À savoir</th></tr></thead>
+                    <tbody>
+                        <tr><td>Date et heure</td><td><code>2026-10-07 08:32:33,001</code></td><td>En <strong>UTC</strong>, pas en heure locale :
+                            Odoo force <code>TZ=UTC</code> au démarrage (<code>odoo/_monkeypatches/__init__.py</code>). Ce journal a été écrit à
+                            9 h 32, heure de Paris.</td></tr>
+                        <tr><td>PID</td><td><code>1036985</code></td><td>Le processus. En <code>workers &gt; 0</code>, chaque worker a le sien :
+                            c'est le fil à suivre pour isoler une requête.</td></tr>
+                        <tr><td>Niveau</td><td><code>WARNING</code></td><td>DEBUG, INFO, WARNING, ERROR, CRITICAL.</td></tr>
+                        <tr><td>Base</td><td><code>ma_base</code></td><td><code>?</code> quand la ligne n'est liée à aucune base
+                            (démarrage, chargement de la configuration).</td></tr>
+                        <tr><td>Logger</td><td><code>odoo.addons.mon_module…</code></td><td>Le nom à reprendre dans <code>--log-handler</code>.</td></tr>
+                        <tr><td>Message</td><td>…</td><td>Suivi du traceback pour <code>_logger.exception()</code>.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Le format vient de <code>odoo/logging.py</code> :
+                    <code>%(asctime)s %(process)s %(levelname)s %(dbname)s %(name)s: %(message)s</code>. Il ne se change pas
+                    par une option simple ; c'est le rôle de <code>--log-config</code> (section 7).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. niveaux ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>--log-level</code> et <code>--log-handler</code> : régler le bruit</h2>
+
+                <p><code>--log-handler=LOGGER:NIVEAU</code> règle un logger et ses descendants. L'option se répète, et un nom
+                    vide désigne la racine (<code>:INFO</code> est la valeur par défaut) :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base \
+    --log-handler=odoo.addons.mon_module:DEBUG \
+    --log-handler=odoo.modules.loading:WARNING</code></pre>
+                <p>La première ligne fait parler ton module, la seconde fait taire les lignes « loading 69 modules… » du
+                    démarrage. Dans <code>odoo.conf</code>, la même chose s'écrit en liste séparée par des virgules :</p>
+<pre class="language-ini"><code class="language-ini">log_handler = odoo.addons.mon_module:DEBUG,odoo.modules.loading:WARNING</code></pre>
+
+                <p><code>--log-level</code> est un raccourci qui ajoute des réglages tout faits avant les tiens :</p>
+                <table class="tmc">
+                    <thead><tr><th><code>--log-level=</code></th><th>Équivaut à</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>info</code> (défaut)</td><td>rien de plus que <code>:INFO</code></td></tr>
+                        <tr><td><code>debug</code></td><td><code>odoo:DEBUG</code>, <code>odoo.sql_db:INFO</code> (tout Odoo en DEBUG, sauf le SQL)</td></tr>
+                        <tr><td><code>debug_sql</code></td><td><code>odoo.sql_db:DEBUG</code></td></tr>
+                        <tr><td><code>warn</code> / <code>error</code> / <code>critical</code></td><td><code>odoo:WARNING</code> / <code>odoo:ERROR</code> / <code>odoo:CRITICAL</code></td></tr>
+                        <tr><td><code>debug_rpc</code>, <code>debug_rpc_answer</code>, <code>test</code>, <code>notset</code></td><td>acceptés, mais <strong>sans effet</strong> : même journal qu'<code>info</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Avec <code>--log-level=warn</code>, le script de la section 1 n'écrit plus que ses lignes WARNING et ERROR,
+                    et <code>getEffectiveLevel()</code> du logger renvoie bien <code>WARNING</code>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Le niveau s'écrit en majuscules</h4>
+                    <ul>
+                        <li><code>--log-handler=odoo.addons.mon_module:debug</code> fait <strong>planter</strong> le démarrage :
+                            Odoo cherche le niveau avec <code>getattr(logging, 'debug')</code>, trouve la fonction
+                            <code>logging.debug</code> et s'arrête sur <code>TypeError: Level not an integer or a valid string:
+                            &lt;function debug …&gt;</code>.</li>
+                        <li>Une faute de frappe, <code>:DEBUGG</code>, ne plante pas : le niveau retombe sur INFO sans un mot.</li>
+                        <li><code>--log-level=debug_rpc</code>, présent dans l'aide et accepté, ne change rien (tableau ci-dessus).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. log-sql ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>--log-sql</code> : voir chaque requête</h2>
+
+                <p><code>--log-sql</code> est un raccourci pour <code>--log-handler=odoo.sql_db:DEBUG</code>. Chaque requête
+                    passe dans le journal, avec sa durée et ses paramètres déjà insérés :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin shell -c odoo.conf -d ma_base --no-http --log-sql</code></pre>
+<pre class="language-python"><code class="language-python">p = env['res.partner'].search([('name', 'ilike', 'acme')], limit=1)
+print("partenaire :", p.name, p.city)</code></pre>
+<div class="out">… DEBUG ma_base odoo.sql_db: [0.439 ms] query: SELECT "res_partner"."id" FROM "res_partner" WHERE ("res_partner"."active" IS TRUE AND "res_partner"."name" ILIKE '%acme%') ORDER BY "res_partner"."complete_name" ASC , "res_partner"."id" DESC  LIMIT 1
+… DEBUG ma_base odoo.sql_db: [0.218 ms] query: SELECT "res_partner"."id", "res_partner"."name", "res_partner"."complete_name", …
+partenaire : Acme Corporation Pleasant Hill</div>
+
+                <p>Deux requêtes : le <code>search</code> qui ne lit que les identifiants, puis la lecture des champs au premier
+                    accès à <code>p.name</code>. Lancée en console, la même commande affiche aussi le chargement du registre :
+                    54 lignes <code>odoo.sql_db</code> pour ces deux instructions. Compte donc les requêtes autour du code qui
+                    t'intéresse plutôt que sur toute la sortie ; la méthode de mesure (compteur
+                    <code>env.cr.sql_log_count</code>, comparaison de <code>search_read</code> et <code>search_fetch</code>) est
+                    dans <a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a>.</p>
+
+                <p>Les paramètres apparaissent en clair dans la requête : un journal <code>--log-sql</code> de production
+                    contient des données clients, et parfois des jetons. À activer le temps d'un diagnostic, pas en continu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. HTTP ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les lignes de requêtes HTTP et <code>--log-web</code></h2>
+
+                <p>Un serveur lancé écrit une ligne INFO par requête. Extrait du journal pendant qu'un client se connecte avec le
+                    compte portail de la démonstration, lit un contact, puis tente de lire les paramètres système :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : journal du serveur Odoo 20. Lignes odoo.http.server pour GET /web/login 200, GET /page-inexistante 404, POST /web/session/authenticate, POST call_kw res.partner search_read ; Session rotated ; WARNING odoo.http You are not allowed to access 'System Parameter' (ir.config_parameter) records, puis la ligne de la requête refusée"/>
+                    <figcaption>Logger <code>odoo.http.server</code> : une ligne par requête, avec la session, la taille de la réponse, le nombre de requêtes SQL et les temps.</figcaption>
+                </figure>
+
+                <p>Décomposition de la ligne <code>"POST /web/dataset/call_kw/res.partner/search_read#res.partner.search_read HTTP/1.1" 200 44 9 0.004 0.007 rw</code> et de son début :</p>
+                <table class="tmc">
+                    <thead><tr><th>Valeur</th><th>Sens</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>127.0.0.1</code></td><td>Adresse du client.</td></tr>
+                        <tr><td><code>lkrYr3Te</code></td><td>Début de l'identifiant de session : il suit l'utilisateur d'une requête à l'autre, et change à la connexion (ligne « Session rotated »).</td></tr>
+                        <tr><td><code>#res.partner.search_read</code></td><td>Pour un appel RPC, le modèle et la méthode appelés.</td></tr>
+                        <tr><td><code>200</code></td><td>Code HTTP. Une erreur d'accès répond 200 avec une erreur JSON : c'est la ligne WARNING juste au-dessus qui la signale.</td></tr>
+                        <tr><td><code>44</code></td><td>Taille du corps de la réponse, en octets.</td></tr>
+                        <tr><td><code>9</code></td><td>Nombre de requêtes SQL de la requête.</td></tr>
+                        <tr><td><code>0.004</code></td><td>Temps passé dans PostgreSQL, en secondes.</td></tr>
+                        <tr><td><code>0.007</code></td><td>Temps restant, passé en Python (rendu, calculs).</td></tr>
+                        <tr><td><code>rw</code></td><td>Mode du curseur : lecture-écriture (<code>rw</code>), lecture seule (<code>ro</code>) ou passé de l'un à l'autre (<code>ro-&gt;rw</code>).</td></tr>
+                    </tbody>
+                </table>
+                <p>Les trois chiffres de la fin sont le premier outil de diagnostic de lenteur : une page lente avec 900 requêtes
+                    SQL n'a pas le même problème qu'une page lente avec 10.</p>
+
+                <h3>Faire taire les lignes de requêtes</h3>
+                <p>Sur un serveur chargé, ces lignes noient le reste. Elles viennent du logger <code>odoo.http.server</code> :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf --log-handler=odoo.http.server:WARNING</code></pre>
+                <p>Essai sur deux démarrages suivis d'un appel à <code>/web/login</code> : avec
+                    <code>--log-handler=werkzeug:WARNING</code>, la recette des versions précédentes encore citée en exemple
+                    dans l'aide de <code>odoo-bin</code>, les deux lignes de requêtes restent ; avec
+                    <code>odoo.http.server:WARNING</code>, il n'en reste aucune. Les erreurs, elles, passent toujours.</p>
+
+                <h3><code>--log-web</code></h3>
+                <p><code>--log-web</code> vaut <code>--log-handler=odoo.http:DEBUG</code>. Il ajoute, pour chaque requête, une
+                    ligne <code>[REQ]</code> à l'arrivée et une ligne <code>[RES]</code> au départ, plus les messages DEBUG de la
+                    couche HTTP (sessions, géolocalisation) :</p>
+<div class="out">… DEBUG ma_base odoo.http.server: [REQ] 127.0.0.1 - - [Wed, 07 Oct 2026 08:30:31 GMT] "GET /web/login HTTP/1.1" - - 0 0 0.0 -
+… DEBUG ma_base odoo.http.server: [RES] 127.0.0.1 G2z754iZ - [07/Oct/2026 08:30:31] "GET /web/login HTTP/1.1" 200 6631 76 0.025 0.133 rw
+… INFO ma_base odoo.http.server: 127.0.0.1 G2z754iZ - [07/Oct/2026 08:30:31] "GET /web/login HTTP/1.1" 200 6631 76 0.025 0.133 rw</div>
+                <p>Utile pour repérer une requête qui arrive mais ne repart jamais : elle a son <code>[REQ]</code> et pas de <code>[RES]</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. logfile / syslog ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. <code>--logfile</code> et <code>--syslog</code> : où va le journal</h2>
+
+                <p>Sans option, le journal part sur la sortie d'erreur : c'est ce que récupère <code>journalctl</code> quand Odoo
+                    tourne en service systemd. <code>--logfile</code> l'écrit dans un fichier, et crée le dossier s'il manque :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin shell -c odoo.conf -d ma_base --no-http --logfile=logs/odoo.log &lt; journal.py</code></pre>
+                <p>Sur le terminal, il ne reste que ce que le script affiche par <code>print()</code> ; les 18 lignes du journal
+                    sont dans <code>logs/odoo.log</code>. En production, l'équivalent est <code>logfile = /var/log/odoo/odoo.log</code>
+                    dans <code>odoo.conf</code>. Odoo rouvre le fichier quand il a été déplacé : une rotation
+                    <code>logrotate</code> classique, <strong>sans</strong> <code>copytruncate</code>, suffit.</p>
+
+                <p><code>--syslog</code> envoie au démon syslog (<code>/dev/log</code>), avec un format sans date ni PID, que
+                    syslog ajoute lui-même. Odoo 20 l'annonce comme obsolète dès le démarrage :</p>
+<div class="out">Odoo Server 20.0:?:WARNING:py.warnings:&lt;argv&gt;:1: DeprecationWarning: The --syslog option is deprecated since Odoo 20, switch to --log-config and configure a syslog handler.
+Odoo Server 20.0:ma_base:INFO:odoo.registry:Registry loaded in 0.367s</div>
+                <p><code>--syslog</code> et <code>--logfile</code> s'excluent : Odoo refuse de démarrer avec les deux. Pour écrire à
+                    plusieurs endroits à la fois, il faut <code>--log-config</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. log-config ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>--log-config</code> : toute la configuration <code>logging</code> de Python</h2>
+
+                <p><code>--log-config=FICHIER</code> charge un fichier au format
+                    <a href="https://docs.python.org/3/library/logging.config.html#logging-config-dictschema" target="_blank" rel="noopener"><code>dictConfig</code></a>
+                    de Python : formats, destinations, niveaux, tout est permis. Exemple courant : garder le journal habituel à
+                    l'écran et écrire en plus les WARNING et au-delà, en JSON, dans un fichier qu'un outil de supervision lira.</p>
+<pre class="language-json"><code class="language-json">{
+  "version": 1,
+  "keep_odoo_default": true,
+  "formatters": {
+    "json": {
+      "()": "odoo.logging.JSONFormatter",
+      "record_keys": ["asctime", "levelname", "dbname", "name", "message", "exc_info"]
+    }
+  },
+  "handlers": {
+    "alertes": {
+      "class": "logging.FileHandler",
+      "filename": "alertes.jsonl",
+      "level": "WARNING",
+      "formatter": "json"
+    }
+  },
+  "root": {"handlers": ["alertes"]}
+}</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : odoo-bin shell avec --log-config=logging.json, grep -c mon_module compte 3 lignes à l'écran ; cat alertes.jsonl montre deux objets JSON, WARNING « aucune date de livraison promise » et ERROR « Calcul de remise impossible » avec le champ exc_info qui contient le traceback"/>
+                    <figcaption>Les trois lignes du module restent à l'écran ; le fichier ne reçoit que le WARNING et l'ERROR, une ligne JSON chacun, traceback compris.</figcaption>
+                </figure>
+
+                <p>Le point qui surprend : <code>"keep_odoo_default": true</code>. Sans lui, Odoo applique ton fichier et
+                    <strong>s'arrête là</strong> : pas de sortie habituelle, et <code>--log-level</code>,
+                    <code>--log-handler</code>, <code>--log-sql</code>, <code>--log-db</code> sont ignorés. L'essai est net : avec
+                    un fichier qui met <code>odoo.addons.mon_module</code> en DEBUG, ajouter
+                    <code>--log-handler=odoo.addons.mon_module:ERROR --log-level=warn</code> laisse passer les lignes DEBUG et INFO.</p>
+
+                <p>Odoo 20 accepte aussi un fichier <strong>TOML</strong>, reconnu à son extension <code>.toml</code>. Le même principe,
+                    ici sans <code>keep_odoo_default</code> : une seule sortie au format Odoo, racine en WARNING, ton module en DEBUG.</p>
+<pre class="language-toml"><code class="language-toml">version = 1
+
+[formatters.odoo]
+"()" = "odoo.logging.Formatter"
+
+[handlers.console]
+class = "logging.StreamHandler"
+formatter = "odoo"
+
+[loggers."odoo.addons.mon_module"]
+level = "DEBUG"
+
+[root]
+level = "WARNING"
+handlers = ["console"]</code></pre>
+                <p>Avec ce fichier, le démarrage n'écrit plus aucune ligne de chargement, et les quatre lignes de
+                    <code>journal.py</code>, DEBUG comprise, sortent au format habituel. <code>--log-config</code> est aussi le
+                    remplaçant annoncé de <code>--syslog</code> : un handler <code>logging.handlers.SysLogHandler</code> dans ce fichier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. ir.logging ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>--log-db</code> : le journal dans la table <code>ir.logging</code></h2>
+
+                <p><code>--log-db=NOM_DE_BASE</code> copie les lignes dans la table <code>ir_logging</code> de cette base ;
+                    <code>--log-db=%d</code> désigne la base de la requête en cours. Seules les lignes à partir de WARNING sont
+                    copiées par défaut (<code>--log-db-level</code> pour changer). Après un passage de <code>journal.py</code> avec
+                    <code>--log-db=%d</code>, en console :</p>
+<pre class="language-python"><code class="language-python">for log in env['ir.logging'].search([], order='id'):
+    print(log.id, log.type, log.level, log.dbname, log.name, log.func, log.line, "|", log.message.splitlines()[0])</code></pre>
+<div class="out">1 server WARNING ma_base odoo.addons.mon_module.models.sale_order &lt;module&gt; 6 | Commande S00001 : aucune date de livraison promise
+2 server ERROR ma_base odoo.addons.mon_module.models.sale_order &lt;module&gt; 10 | Calcul de remise impossible pour S00001</div>
+
+                <p>Chaque ligne garde le fichier, la fonction et le numéro de ligne d'origine, et le message contient le traceback.
+                    On les retrouve dans l'interface en mode développeur, Paramètres › Technique › Structure de la base de données › Journalisation. Chaque
+                    écriture ouvre sa propre connexion à PostgreSQL : garde un niveau élevé (WARNING) pour ne pas doubler la charge
+                    de la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. dev ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. <code>--dev</code> et le journal, et les couleurs</h2>
+
+                <p>Trois des modes de <code>--dev</code> touchent au journal :</p>
+                <table class="tmc">
+                    <thead><tr><th>Mode</th><th>Effet sur le journal</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>access</code></td><td>Une erreur d'accès pendant une requête HTTP est écrite avec son
+                            <strong>traceback complet</strong>. Sans ce mode, seule la ligne WARNING « You are not allowed to access… »
+                            de la figure 2 apparaît ; avec lui, la pile mène jusqu'à <code>check_access</code> et à l'appel qui l'a déclenché.</td></tr>
+                        <tr><td><code>qweb</code></td><td>En cas d'erreur de rendu QWeb, le XML compilé du gabarit est écrit dans le journal.</td></tr>
+                        <tr><td><code>reload</code></td><td>Le serveur surveille les dossiers de modules et redémarre à chaque modification ; au démarrage :
+                            <code>Watching addons folder …/odoo/addons</code> puis <code>AutoReload watcher running with inotify</code>.</td></tr>
+                    </tbody>
+                </table>
+                <p><code>--dev=all</code> active <code>access</code>, <code>qweb</code>, <code>reload</code> et <code>xml</code>.
+                    Les valeurs inconnues sont acceptées sans message : <code>--dev=werkzeug</code>, que de vieux tutoriels
+                    recommandent pour un débogueur dans le navigateur, ne fait plus rien.</p>
+
+                <h3>Les couleurs</h3>
+                <p>Le journal est coloré quand il sort sur un terminal, jamais dans un fichier. Odoo 20 se règle par une section
+                    <code>[colors]</code> d'<code>odoo.conf</code> (valeurs <code>always</code>, <code>never</code>, <code>auto</code>)
+                    et par les variables <code>NO_COLOR</code> et <code>FORCE_COLOR</code> :</p>
+<pre class="language-ini"><code class="language-ini">[colors]
+loglevel = never
+pid = always</code></pre>
+                <p>Clés reconnues : <code>pid</code>, <code>loglevel</code>, <code>session_id</code>, <code>http_request_line</code>,
+                    <code>http_response_body</code>, <code>perf</code>, <code>cursor_mode</code>, <code>sql</code>. La coloration des
+                    requêtes SQL (<code>sql</code>) demande le paquet <code>pygments</code>, qui n'est pas dans
+                    <code>requirements.txt</code> : avec <code>FORCE_COLOR=1</code> et <code>--log-sql</code> sans lui, le journal
+                    affiche une fois <code>UserWarning: Pygments needs to be installed in order to highlight SQL</code>.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <ul>
+                        <li>Les lignes de requêtes HTTP ne viennent plus du logger <code>werkzeug</code> mais de
+                            <code>odoo.http.server</code> (Odoo 20 a son propre serveur HTTP). <code>--log-handler=werkzeug:WARNING</code>
+                            ne fait plus taire les requêtes : écrire <code>odoo.http.server:WARNING</code>. La ligne gagne le début de
+                            l'identifiant de session, la taille de la réponse et le mode du curseur.</li>
+                        <li><code>--log-level=debug_rpc</code> et <code>debug_rpc_answer</code> passaient tout Odoo en DEBUG ; ils sont
+                            toujours acceptés mais sans effet. Écrire <code>--log-level=debug</code>.</li>
+                        <li><code>--syslog</code> est déclaré obsolète (avertissement au démarrage).</li>
+                        <li><code>--log-config</code> accepte un fichier TOML en plus du JSON.</li>
+                        <li>Section <code>[colors]</code>, <code>NO_COLOR</code> / <code>FORCE_COLOR</code> et coloration du SQL : nouveaux.</li>
+                        <li>Inchangés dans la 19 à jour : <code>--log-config</code> en JSON avec <code>keep_odoo_default</code>,
+                            <code>odoo.logging.JSONFormatter</code>, <code>--log-handler</code>, <code>--log-sql</code>, <code>--log-web</code>,
+                            <code>--log-db</code>. La valeur <code>werkzeug</code> de <code>--dev</code> avait déjà disparu de la 19.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Écrire depuis un module</td><td><code>_logger = logging.getLogger(__name__)</code>, <code>_logger.info("… %s", valeur)</code></td></tr>
+                        <tr><td>Voir le DEBUG d'un module</td><td><code>--log-handler=odoo.addons.mon_module:DEBUG</code> (majuscules)</td></tr>
+                        <tr><td>Tout Odoo en DEBUG</td><td><code>--log-level=debug</code></td></tr>
+                        <tr><td>Moins de bruit</td><td><code>--log-level=warn</code>, <code>--log-handler=odoo.http.server:WARNING</code></td></tr>
+                        <tr><td>Voir le SQL</td><td><code>--log-sql</code> (= <code>odoo.sql_db:DEBUG</code>)</td></tr>
+                        <tr><td>Suivre les requêtes HTTP</td><td><code>--log-web</code> : lignes <code>[REQ]</code> / <code>[RES]</code></td></tr>
+                        <tr><td>Fichier</td><td><code>--logfile=…</code> + logrotate sans <code>copytruncate</code></td></tr>
+                        <tr><td>Plusieurs destinations, JSON, syslog</td><td><code>--log-config=logging.json</code> (ou <code>.toml</code>) + <code>"keep_odoo_default": true</code></td></tr>
+                        <tr><td>Erreurs dans la base</td><td><code>--log-db=%d</code> → <code>ir.logging</code> (WARNING et au-delà)</td></tr>
+                        <tr><td>Traceback des erreurs d'accès</td><td><code>--dev=access</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Le nom du logger suit le fichier (<code>odoo.addons.mon_module.models.…</code>) : c'est lui qu'on règle avec <code>--log-handler</code>.</li>
+                    <li>Les heures du journal sont en UTC ; le PID distingue les workers ; <code>?</code> signale une ligne hors base.</li>
+                    <li>Un niveau en minuscules fait planter le démarrage, une faute de frappe retombe sur INFO, <code>debug_rpc</code> ne fait rien.</li>
+                    <li>Les requêtes HTTP sont sur <code>odoo.http.server</code>, avec nombre de requêtes SQL et temps en fin de ligne.</li>
+                    <li><code>--log-config</code> remplace toute la configuration, sauf avec <code>keep_odoo_default</code> ; Odoo 20 lit aussi le TOML.</li>
+                    <li><code>--log-sql</code> et <code>--log-db</code> sont des outils de diagnostic, pas des réglages permanents.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes exécutées le 07/10/2026 sur Odoo 20.0 (PostgreSQL 16), base de démonstration, console et
+                    serveur local. Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/netsvc.py" target="_blank" rel="noopener"><code>odoo/netsvc.py</code></a> : <code>init_logger</code>, <code>--log-config</code>, <code>--logfile</code>, <code>--syslog</code>, niveaux</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/logging.py" target="_blank" rel="noopener"><code>odoo/logging.py</code></a> : format, <code>JSONFormatter</code>, <code>PostgreSQLHandler</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/http/server_log.py" target="_blank" rel="noopener"><code>odoo/http/server_log.py</code></a> : la ligne de requête HTTP</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : options de journal, <code>--dev</code>, section <code>[colors]</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/sql_db.py" target="_blank" rel="noopener"><code>odoo/sql_db.py</code></a> : la ligne <code>query:</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a></h5>
+                            <p class="small text-muted mb-0">Compter les requêtes SQL de chaque façon de lire.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Un module Odoo 20 en ligne de commande</a></h5>
+                            <p class="small text-muted mb-0">Installer, mettre à jour, et relire le journal après coup.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Le service systemd et son fichier de journal.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

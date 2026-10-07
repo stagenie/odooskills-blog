@@ -1,0 +1,634 @@
+<!--
+Article — Données de test en masse en Odoo 20 : duplicate et populate
+Série « La ligne de commande Odoo 20 » (blog Développement)
+Date : 2026-10-07
+Slug : duplicate-populate-odoo-20
+Mot-clé cible : odoo populate / odoo generate test data / odoo duplicate data
+Tags : avance, infrastructure, guide, community
+Temps de lecture : ~13 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16 (rôle odoo non superutilisateur), base de démonstration
+(sale_management + stock, fr_FR) et une copie jetable pour populate ; faker 22.0.0 installé à part (PYTHONPATH) pour les essais fake.*.
+Preuves :
+  - odoo-bin help : duplicate « Populate database via duplication… » et populate « …synthetic data using blueprints » (sortie réelle).
+  - odoo/cli/duplicate.py:13-15 (défauts 10000 / 7 modèles), :70 (message « Populating models » conservé) ; défauts appliqués :
+    essai p04_defaults.py → factors 10000, models res.partner,product.template,account.move,sale.order,crm.lead,stock.picking,project.task.
+  - odoo/tools/duplicate.py:63 (dates réparties sur min(factor, ~4 ans) jours), :150 (session_replication_role), :164 (champs variés :
+    _rec_name, _rec_names_search, dates, trigram, index unique), :260 (MOD pour les many2one), :317 (UPDATE des lignes existantes,
+    « re-entrance »), :329 (INSERT … GENERATE_SERIES).
+  - Essai 1 (--models res.partner,sale.order --factors 10) : 1,35 s ; 46→506 contacts, 24→264 devis, 50→550 lignes, stock.picking 47 inchangé ;
+    ERROR permission denied session_replication_role + WARNING repli. Noms : 'Acme Corporation_', '…_1', courriel '…example.com_1' ;
+    S00010_1 daté 9 jours avant S00010_10 ; client Gemini Furniture_3 ; amount_total 751.0 recopié ; produits non dupliqués.
+  - Essai 2 (--factors 25,40 --sep '-') : 3,34 s ; 13 156 contacts, 10 824 devis, 22 550 lignes ; noms 'S00024_10-40' / 'Gemini Furniture_10-15'.
+    Écran : liste des devis, pager « 1-80 / 10000+ ».
+  - Addon populate : __manifest__.py (Hidden/Tools, LGPL-3, depends base, version 0.1), security/ir.access.csv (lecture, base.group_system),
+    cli/populate.py:47 (CRITICAL non installé, essai rc 1), :127 (blueprint introuvable, essai rc 1), « Multiple blueprints found » (essai) ;
+    odoo/cli/command.py:80 (commandes d'addons */cli/<nom>.py) ; blueprint.py:309-313 (_register_hook : chargement seulement si populate
+    installé/mis à jour) ; utils/loading.py:11 (dossier populate/) ; generators/__init__.py:69 (faker absent = INFO).
+  - module install populate : 3,88 s, 32 plans chargés (liste réelle t05). Sans faker : sale.benchmark_bulk_creation --scale 0.2 --seed 42
+    → 200/200/1000, 4,388 s, S00025, montants calculés ; sale.fake_sale_demo → KeyError: 'fake.postcode', rc 1, session 2 inachevée ;
+    --resume avec faker → 4,758 s (50 contacts, 10 utilisateurs, 25 produits, 10 équipes, 100 devis, 400 lignes).
+  - Plan maison essai_volume : installé, populate -b → CRITICAL introuvable ; module upgrade populate (3,15 s) charge essai_volume/populate/ventes_volume.xml ;
+    populate --seed 7 → 23,484 s, 4 sous-tâches de 1000 lignes ; S00325 'Client essai 0113' FR ; 19 devis sans ligne ; populate.model.data 200/1000/4000.
+  - odoo-bin populate --models … en 20 : « error: no such option: --models », rc 2.
+  - 19.0 publique (raw GitHub 07/10, tête 9db68e61) : odoo/cli/populate.py 200 (classe Populate, --factors/--models/--sep, tools.populate) ;
+    odoo/tools/populate.py 200 ; diff avec 20 duplicate.py/tools/duplicate.py = renommage populate→duplicate + 3 retouches internes ;
+    odoo/cli/duplicate.py 404, addons/populate/* 404, odoo/addons/base/populate/common.xml 404 (master 200).
+    _populate_factories : 17.0 odoo/models.py 2 occurrences, 18.0 0 (déjà disparu en 18 et 19 : pas un écart 19→20).
+Captures : content/blog/screenshots/duplicate-populate-odoo-20/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Données de test en masse en Odoo 20 : duplicate et populate</h1>
+                <p class="lead mt-3 text-white">Une liste qui rame à 100 000 lignes ne se voit pas sur une base de
+                    démonstration de 24 devis. Odoo 20 offre deux outils pour gonfler une base de test : la sous-commande
+                    <code>odoo-bin duplicate</code>, qui recopie l'existant en SQL, et l'addon <code>populate</code>, qui
+                    fabrique des données neuves par l'ORM à partir d'un plan. Les deux ont été lancés ici, chronomètre en main.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau avancé · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Recopier</h4>
+                        <p><code>odoo-bin duplicate --models --factors --sep</code> : des dizaines de milliers de lignes en
+                            quelques secondes, et ce que la copie fait aux noms, aux dates et aux liens.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Générer</h4>
+                        <p>L'addon <code>populate</code> : ses plans (<em>blueprints</em>) fournis, les options
+                            <code>-b</code>, <code>--scale</code>, <code>--seed</code>, <code>--resume</code>, et un plan écrit soi-même.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Choisir</h4>
+                        <p>Vitesse, réalisme, pièges : quel outil pour quel test, et pourquoi jamais sur une base de production.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 installé avec son <code>odoo.conf</code> : voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu</a>. Les commandes partent du dossier des sources, d'où <code>./odoo-bin</code>.</li>
+                        <li>Une base de démonstration avec Ventes et Inventaire, appelée ici <code>ma_base</code>, et surtout une
+                            <strong>copie jetable</strong> de cette base pour chaque essai : les deux outils écrivent
+                            directement et ne savent pas revenir en arrière (<code>createdb -T ma_base ma_base_essai</code>, plus
+                            la copie du dossier <code>filestore/ma_base</code>).</li>
+                        <li>Le shell Odoo pour compter avant et après : voir <a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. Deux outils ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Deux outils, deux approches</h2>
+
+                <p>La liste des sous-commandes d'Odoo 20 en montre deux qui se ressemblent :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin help</code></pre>
+<div class="out">    duplicate      Populate database via duplication of existing data for testing/demo purposes
+    ...
+    populate       Populate an Odoo database with synthetic data using blueprints</div>
+
+                <table class="tmc">
+                    <thead><tr><th></th><th><code>odoo-bin duplicate</code></th><th><code>odoo-bin populate</code></th></tr></thead>
+                    <tbody>
+                        <tr><td>Fourni par</td><td>le cœur (<code>odoo/cli/duplicate.py</code>)</td><td>l'addon <code>populate</code>, à installer dans la base</td></tr>
+                        <tr><td>Principe</td><td>recopie N fois les enregistrements existants, en SQL</td><td>crée des enregistrements neufs avec l'ORM, d'après un plan</td></tr>
+                        <tr><td>Point de départ</td><td>des données déjà présentes</td><td>un plan XML ou JSON (<code>populate.blueprint</code>)</td></tr>
+                        <tr><td>Réglage du volume</td><td><code>--factors</code> par modèle</td><td>les <code>count</code> du plan, multipliés par <code>--scale</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Le premier est taillé pour le volume brut, le second pour des données vraisemblables qui passent par
+                    toute la logique métier. Les sections suivantes les prennent l'un après l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. duplicate ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>odoo-bin duplicate</code> : recopier l'existant</h2>
+
+                <p>Trois options, en plus de <code>-c</code> et <code>-d</code> :</p>
+                <table class="tmc">
+                    <thead><tr><th>Option</th><th>Effet</th><th>Valeur par défaut (code source)</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>--models</code></td><td>modèles à recopier, séparés par des virgules</td><td><code>res.partner,product.template,account.move,sale.order,crm.lead,stock.picking,project.task</code></td></tr>
+                        <tr><td><code>--factors</code></td><td>nombre de copies par modèle, dans l'ordre de <code>--models</code> ; le dernier facteur vaut pour les modèles suivants</td><td><code>10000</code></td></tr>
+                        <tr><td><code>--sep</code></td><td>un caractère, placé entre le texte d'origine et le numéro de copie</td><td><code>_</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Un facteur 10 veut dire <strong>10 copies</strong> de chaque enregistrement : le modèle finit à 11 fois sa
+                    taille. Premier essai, modeste, sur les contacts et les devis :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin duplicate -c odoo.conf -d ma_base --models res.partner,sale.order --factors 10</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : odoo-bin duplicate avec --factors 10. Le journal affiche Populating models res.partner et sale.order, une ERROR permission denied to set parameter session_replication_role, un WARNING Cannot ignore Fkey constraints, puis Duplicating model res.partner, res_partner_res_partner_category_rel, sale.order, sale.order.line, account_tax_sale_order_line_rel, sale_order_tag_rel 10 times, et Populated models (total: 0.335357s)"/>
+                    <figcaption>Deux modèles demandés, six tables recopiées : les lignes de devis et les tables de liaison suivent. Le journal parle encore de « Populating ».</figcaption>
+                </figure>
+
+                <p>La commande a pris 1,35 s en tout (chargement du registre compris). Les comptes, relus dans le shell :</p>
+                <table class="tmc">
+                    <thead><tr><th>Modèle</th><th>Avant</th><th>Après <code>--factors 10</code></th></tr></thead>
+                    <tbody>
+                        <tr><td><code>res.partner</code> (actifs et archivés)</td><td>46</td><td>506</td></tr>
+                        <tr><td><code>sale.order</code></td><td>24</td><td>264</td></tr>
+                        <tr><td><code>sale.order.line</code> (non demandé)</td><td>50</td><td>550</td></tr>
+                        <tr><td><code>stock.picking</code> (non demandé)</td><td>47</td><td>47</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les lignes de devis ont suivi parce que <code>order_line</code> est un One2many copiable : sans elles, les
+                    devis recopiés seraient vides. Les livraisons, elles, restent à 47 : le One2many <code>picking_ids</code>
+                    n'est pas copiable (<code>copy=False</code>, la valeur par défaut d'un One2many), et la commande ne suit
+                    que les champs copiables.</p>
+
+                <p>Le journal affiche une <code>ERROR</code> suivie d'un <code>WARNING</code>. Pour aller plus vite, la commande tente de suspendre la
+                    vérification des clés étrangères (<code>SET session_replication_role TO replica</code>), ce que
+                    PostgreSQL ne permet qu'à un superutilisateur. Avec un rôle ordinaire, comme ici, elle annule et reprend
+                    avec les vérifications : l'<code>ERROR</code> est attendue, la copie réussit (code de sortie 0), juste
+                    moins vite. Les <code>WARNING</code> sur les tables de liaison
+                    (<code>… was marked to be varied, but no variation branch was found</code>) sont du bruit, eux aussi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. Effets sur les données ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ce que la copie fait aux données</h2>
+
+                <p><code>duplicate</code> n'appelle ni <code>create</code> ni <code>copy</code> : il écrit un
+                    <code>INSERT … SELECT … FROM table, GENERATE_SERIES(1, facteur)</code> par table
+                    (<code>odoo/tools/duplicate.py</code>). D'où sa vitesse, et quelques effets à connaître. Relecture des
+                    copies d'un devis et d'un contact dans le shell :</p>
+<pre class="language-python"><code class="language-python">for so in env['sale.order'].search([('name', '=like', 'S00010_%')], order='id', limit=4):
+    print(so.id, so.name, so.date_order, so.partner_id.name, so.amount_total)
+print(env['res.partner'].browse(10).read(['name', 'email'])[0])
+print(env['res.partner'].browse(102).read(['name', 'email'])[0])</code></pre>
+<div class="out">10 S00010_ 2026-10-07 06:16:42 Gemini Furniture_ 751.0
+34 S00010_1 2026-09-28 06:16:42 Gemini Furniture_1 751.0
+58 S00010_2 2026-09-29 06:16:42 Gemini Furniture_2 751.0
+82 S00010_3 2026-09-30 06:16:42 Gemini Furniture_3 751.0
+{'id': 10, 'name': 'Acme Corporation_', 'email': 'acme_corp@yourcompany.example.com_'}
+{'id': 102, 'name': 'Acme Corporation_2', 'email': 'acme_corp@yourcompany.example.com_2'}</div>
+
+                <ul>
+                    <li><strong>Les originaux sont renommés.</strong> Avant de copier, la commande ajoute le séparateur aux
+                        champs texte concernés <em>des enregistrements existants</em> : « Acme Corporation » devient
+                        « Acme Corporation_ », le devis S00010 devient « S00010_ ». Les copies reçoivent le séparateur et leur
+                        numéro.</li>
+                    <li><strong>Quels champs ?</strong> Le nom (<code>_rec_name</code>), les champs de recherche par nom
+                        (<code>_rec_names_search</code>), ceux qui portent un index unique ou trigramme
+                        (<code>field_needs_variation</code>). Pour un contact, le courriel en fait partie : les adresses
+                        deviennent invalides (<code>…example.com_2</code>). Les autres champs, téléphone ou rue, sont recopiés tels quels.</li>
+                    <li><strong>Les dates s'étalent</strong> vers le passé : la copie 1 de S00010 est datée 9 jours avant la
+                        copie 10, qui garde la date d'origine. L'écart total vaut le facteur en jours, plafonné à environ quatre ans.</li>
+                    <li><strong>Les liens suivent les copies</strong> : la copie 3 du devis pointe vers la copie 3 du client
+                        (<code>Gemini Furniture_3</code>), parce que les contacts ont été recopiés dans la même commande. Les
+                        produits, non recopiés, restent les mêmes.</li>
+                    <li><strong>Rien n'est recalculé</strong> : les champs calculés stockés (<code>amount_total</code> = 751.0)
+                        sont recopiés, aucune séquence n'est consommée (d'où <code>S00010_3</code> au lieu d'un nouveau numéro de devis), aucune
+                        méthode <code>create</code> surchargée ne s'exécute.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. À l'échelle ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Monter à 10 000 devis, et relancer</h2>
+
+                <p>Deuxième passe sur la même base, un facteur par modèle et un autre séparateur pour voir ce que devient
+                    une base déjà dupliquée :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin duplicate -c odoo.conf -d ma_base --models res.partner,sale.order --factors 25,40 --sep '-'</code></pre>
+
+                <p>3,34 s plus tard : 13 156 contacts (506 × 26), 10 824 devis (264 × 41) et 22 550 lignes, soit plus de
+                    46 000 enregistrements ajoutés. La liste des devis, sans le filtre « Mes devis » :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des devis Odoo 20 : le compteur affiche 1-80 / 10000+ ; lignes S00024_10-…, S00023_10-…, S00022_10-…, S00021_10-… pour le client Gemini Furniture_10-15, puis S00024_-40 à S00021_-40 pour Gemini Furniture_-15, totaux recopiés et statut Commande client"/>
+                    <figcaption>Au-delà de 10 000 enregistrements, la liste n'affiche plus le total exact : « 10000+ ». Les noms portent la trace des deux passes.</figcaption>
+                </figure>
+
+                <p>Les noms se lisent de gauche à droite : <code>S00024_10-40</code> est la copie 40 (deuxième passe) de la
+                    copie 10 (première passe) du devis S00024. La deuxième passe a d'abord ajouté <code>-</code> à tous les
+                    noms existants, puis numéroté les nouvelles copies. Côté client, <code>Gemini Furniture_-15</code> pour la
+                    copie 40 : les contacts n'ont que 25 copies, alors la commande reboucle
+                    (<code>MOD(40 - 1, 25) + 1 = 15</code>). Les liens restent valides, mais la correspondance « copie n ↔
+                    copie n » ne tient plus quand les facteurs diffèrent.</p>
+
+                <div class="pitfall-box">
+                    <h4>Jamais sans <code>--models</code> ni <code>--factors</code></h4>
+                    <p>L'aide n'affiche pas les valeurs par défaut, et elles sont lourdes : facteur <strong>10 000</strong> sur
+                        sept modèles (contacts, modèles de produit, écritures comptables, devis, pistes, transferts, tâches).
+                        Sur la petite base de démonstration, cela ferait déjà 460 000 contacts et 240 000 devis. Toujours
+                        préciser les deux options, et commencer petit.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. L'addon populate ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. L'addon <code>populate</code> : ce qu'il est</h2>
+
+                <p><code>populate</code> est un module d'Odoo S.A., licence LGPL-3, catégorie « Hidden/Tools » (absent de
+                    l'écran Applications), qui ne dépend que de <code>base</code>. Il apporte :</p>
+                <ul>
+                    <li>quatre modèles : <code>populate.blueprint</code> (les plans), <code>populate.session</code> (une
+                        exécution), <code>populate.job</code> (une étape du plan) et <code>populate.model.data</code> (la
+                        liste des enregistrements créés, par étape) ; les droits sont en lecture seule, pour l'administrateur ;</li>
+                    <li>des générateurs de valeurs : nombres et dates avec distributions (<code>normal</code>,
+                        <code>exponential</code>, <code>poisson</code>…), choix pondérés, compteurs, relations, et
+                        <code>fake.*</code> qui s'appuie sur la bibliothèque Python <code>faker</code> ;</li>
+                    <li>la sous-commande <code>odoo-bin populate</code>, rangée dans <code>addons/populate/cli/populate.py</code>.
+                        Odoo 20 cherche les sous-commandes aussi dans les modules du chemin des addons
+                        (<code>*/cli/&lt;nom&gt;.py</code>) : c'est pour cela qu'elle figure dans <code>odoo-bin help</code>
+                        même quand le module n'est installé nulle part.</li>
+                </ul>
+
+                <p>Les plans, eux, vivent dans un dossier <code>populate/</code> à la racine des modules. Odoo 20 en livre
+                    pour <code>base</code>, <code>product</code>, <code>account</code>, <code>stock</code>,
+                    <code>sale</code> et <code>project</code> : une démo réaliste (<code>…populate_demo</code>) et des
+                    bancs d'essai (<code>benchmark_…</code>). Ils ne sont chargés qu'à l'installation ou à la mise à jour
+                    de <code>populate</code> lui-même, pour les modules installés à ce moment-là.</p>
+
+                <p>Sans le module, la commande refuse net (code 1) :</p>
+<div class="out">2026-10-07 08:30:05,342 1025038 CRITICAL ma_base odoo.cli.populate: The 'populate' module must be installed before running the populate CLI command.</div>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module install populate -c odoo.conf -d ma_base
+pip install -r addons/populate/requirements.txt    # faker, pour les générateurs fake.*</code></pre>
+
+                <p>L'installation a pris 3,9 s et chargé 32 plans sur la base Ventes + Inventaire. Sans
+                    <code>faker</code>, elle passe quand même, avec une simple ligne <code>INFO</code> : « Faker library isn't
+                    installed, skipping creation of 'fake.*' generators ». La liste des plans, depuis le shell :</p>
+<pre class="language-python"><code class="language-python">for bp in env['populate.blueprint'].search([], order='id'):
+    print(bp.get_external_id()[bp.id], '|', bp.name)</code></pre>
+<div class="out">base.fake_partners | Common - Partners
+base.fake_internal_users | Common - Internal Users
+product.fake_product_demo | Product - Populate Demo
+...
+sale.benchmark_deep_order | Benchmark: Deep Sale Order
+sale.benchmark_bulk_creation | Benchmark: Bulk Sale Creation
+sale.fake_sale_demo | Sale - Populate Demo</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. Lancer un plan ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lancer un plan fourni</h2>
+
+                <table class="tmc">
+                    <thead><tr><th>Option</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>-b</code>, <code>--blueprint</code></td><td>identifiant XML du plan (<code>sale.benchmark_bulk_creation</code>) ou son nom. Les noms se répètent d'un module à l'autre : <code>-b "Benchmark: Bulk Creation"</code> s'arrête sur « Multiple blueprints found ». Préférer l'identifiant.</td></tr>
+                        <tr><td><code>--scale</code></td><td>multiplie les <code>count</code> du plan (défaut 1)</td></tr>
+                        <tr><td><code>--seed</code></td><td>graine du générateur aléatoire, enregistrée dans la session (sans elle, une graine tirée au hasard)</td></tr>
+                        <tr><td><code>-j</code>, <code>--jobs</code></td><td>nombre de processus (<code>auto</code> = tous les cœurs) ; défaut 1</td></tr>
+                        <tr><td><code>--resume</code></td><td>reprend la dernière session inachevée (ou celle dont on donne le numéro)</td></tr>
+                        <tr><td><code>--profile</code></td><td>enregistre une trace du profileur pour chaque étape</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Le banc d'essai des ventes, à 20 % :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin populate -c odoo.conf -d ma_base -b sale.benchmark_bulk_creation --scale 0.2 --seed 42 2&gt;&amp;1 | grep -E "session|Creating|executed"</code></pre>
+<div class="out">2026-10-07 08:30:25,129 1027175 INFO ma_base odoo.cli.populate: Created populate session 1
+2026-10-07 08:30:25,132 1027175 INFO ma_base odoo.addons.populate.models.job: Job 1: Creating 200 res.partner [bench_bulk_partners] - Session: 0%
+2026-10-07 08:30:25,388 1027175 INFO ma_base odoo.addons.populate.models.job: Job 2: Creating 200 sale.order [bench_bulk_orders] - Session: 33%
+2026-10-07 08:30:26,058 1027175 INFO ma_base odoo.addons.populate.models.job: Job 3: Creating 1000 sale.order.line [bench_bulk_lines] - Session: 67%
+2026-10-07 08:30:29,050 1027175 INFO ma_base odoo.addons.populate.models.session: Running VACUUM ANALYZE after populate session 1
+2026-10-07 08:30:29,517 1027175 INFO ma_base odoo.addons.populate.models.session: VACUUM ANALYZE after populate session 1 completed in 0.47s
+2026-10-07 08:30:29,519 1027175 INFO ma_base odoo.cli.populate: Blueprint 'Benchmark: Bulk Sale Creation' executed successfully in 4.388s</div>
+
+                <p>Cette fois, c'est l'ORM qui travaille : les devis reçoivent un vrai numéro de séquence (S00025,
+                    S00026…), leurs montants et taxes sont calculés, les noms de clients sont des chaînes aléatoires de
+                    16 caractères comme le plan le demande. La session se termine par un <code>VACUUM ANALYZE</code>, pour
+                    que PostgreSQL connaisse les nouveaux volumes avant tes mesures.</p>
+
+                <p>Le plan de démonstration des ventes, lui, utilise <code>fake.*</code>. Sans <code>faker</code>, il
+                    s'arrête dès la première étape :</p>
+<div class="out">2026-10-07 08:30:54,128 1029079 ERROR ma_base odoo.cli.populate: Failed to execute blueprint 'Sale - Populate Demo'
+Traceback (most recent call last):
+...
+KeyError: 'fake.postcode'</div>
+                <p>La session reste en base, inachevée. Une fois <code>faker</code> installé, <code>--resume</code> la
+                    reprend telle quelle, avec ses paramètres :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin populate -c odoo.conf -d ma_base --resume</code></pre>
+                <p>Résultat en 4,8 s (à <code>--scale 0.05</code>) : 50 sociétés, 10 vendeurs (de vrais utilisateurs
+                    internes), 25 produits, 10 équipes, 100 devis et 400 lignes, avec des noms comme « Hogan-Green » ou
+                    « Hayes Inc », des villes et des références client « PO-0318-LHHa ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. Écrire son plan ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Écrire son propre plan</h2>
+
+                <p>Un plan est un enregistrement <code>populate.blueprint</code> dont le champ <code>definition_xml</code>
+                    enchaîne des blocs <code>&lt;create&gt;</code>, <code>&lt;write&gt;</code> ou
+                    <code>&lt;function&gt;</code>. Il se range dans le dossier <code>populate/</code> d'un module, sans être
+                    cité dans le manifeste. Exemple, dans un module <code>essai_volume</code> qui dépend de <code>sale</code>,
+                    fichier <code>essai_volume/populate/ventes_volume.xml</code> :</p>
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo&gt;
+    &lt;record id="ventes_volume" model="populate.blueprint"&gt;
+        &lt;field name="name"&gt;Essai - Ventes en volume&lt;/field&gt;
+        &lt;field name="definition_xml" type="xml"&gt;
+            &lt;create model="res.partner" count="200" id="clients"&gt;
+                &lt;value name="numero" generator="misc.counter" start="1"/&gt;
+                &lt;field name="name" eval="f'Client essai {numero:04d}'"/&gt;
+                &lt;field name="is_company" eval="True"/&gt;
+                &lt;field name="country_id" domain="[('code', 'in', ['FR', 'BE', 'CH'])]"/&gt;
+            &lt;/create&gt;
+
+            &lt;create model="sale.order" count="1000" id="commandes"&gt;
+                &lt;field name="partner_id" ref="clients"/&gt;
+                &lt;field name="date_order" start="now -1y" end="now"/&gt;
+            &lt;/create&gt;
+
+            &lt;create model="sale.order.line" count="4000"&gt;
+                &lt;field name="order_id" ref="commandes"/&gt;
+                &lt;field name="product_id" domain="[('sale_ok', '=', True), ('type', '!=', 'combo')]"/&gt;
+                &lt;field name="product_uom_qty" start="1" end="20"/&gt;
+            &lt;/create&gt;
+        &lt;/field&gt;
+    &lt;/record&gt;
+&lt;/odoo&gt;</code></pre>
+
+                <ul>
+                    <li><code>id="clients"</code> nomme les enregistrements créés par un bloc ; <code>ref="clients"</code>
+                        limite un champ relationnel à ceux-là.</li>
+                    <li><code>&lt;value&gt;</code> calcule une valeur intermédiaire non enregistrée, réutilisable dans les
+                        <code>eval</code> suivants.</li>
+                    <li>Sans <code>generator</code> ni <code>eval</code>, le générateur dépend du type du champ :
+                        <code>start</code>/<code>end</code> bornent une date ou un nombre, <code>domain</code> filtre les
+                        enregistrements liés existants.</li>
+                    <li>Les champs non cités gardent leur valeur par défaut ; le prix des lignes, par exemple, vient du produit.</li>
+                </ul>
+
+                <p>Installer le module ne suffit pas : <code>populate -b essai_volume.ventes_volume</code> répond alors
+                    « Blueprint 'essai_volume.ventes_volume' was not found in the database… upgrade the 'populate' module
+                    to load its' blueprints ». Il faut recharger les plans en mettant à jour <code>populate</code> (3,2 s) :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module install essai_volume -c odoo.conf -d ma_base
+./odoo-bin module upgrade populate -c odoo.conf -d ma_base
+./odoo-bin populate -c odoo.conf -d ma_base -b essai_volume.ventes_volume --seed 7</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : odoo-bin populate -b essai_volume.ventes_volume --seed 7. Session 3 créée ; Job 10 crée 200 res.partner en 0.27s ; Job 11 crée 1000 sale.order en 3.50s ; Job 12 planifie 4 sous-tâches pour 4000 sale.order.line, chacune de 1000 lignes en 4,5 à 5,2 secondes ; Job 12 terminé en 19.25s ; VACUUM ANALYZE ; plan exécuté en 23.484s"/>
+                    <figcaption>5 200 enregistrements en 23,5 s, dont 19,3 s pour les 4 000 lignes de devis, créées en quatre lots de 1 000.</figcaption>
+                </figure>
+
+                <p>Une étape de plus de 1 000 enregistrements est découpée en sous-tâches de 1 000 au plus
+                    (<code>MAX_RECORD_COMMIT_SIZE</code>), validées une à une : c'est ce qui permet <code>--resume</code> après un <kbd>Ctrl</kbd>+<kbd>C</kbd>, et la
+                    répartition entre processus avec <code>-j</code>. Le résultat ressemble à une saisie : « S00325 · Client
+                    essai 0113 · FR », dates étalées sur l'année. Le hasard est franc : 19 des 1 000 devis n'ont reçu aucune
+                    ligne. Et chaque enregistrement créé est noté, ce qui permet de les retrouver :</p>
+<pre class="language-python"><code class="language-python">md = env['populate.model.data']
+print([(g['res_model'], g['__count'])
+       for g in md.formatted_read_group([('session_id', '=', 3)], ['res_model'], ['__count'])])</code></pre>
+<div class="out">[('res.partner', 200), ('sale.order', 1000), ('sale.order.line', 4000)]</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. Choisir ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>duplicate</code> ou <code>populate</code> ?</h2>
+
+                <table class="tmc">
+                    <thead><tr><th></th><th><code>duplicate</code></th><th><code>populate</code></th></tr></thead>
+                    <tbody>
+                        <tr><td>Vitesse mesurée</td><td>≈ 46 000 enregistrements en 3,3 s</td><td>5 200 enregistrements en 23,5 s</td></tr>
+                        <tr><td>Logique métier</td><td>aucune : pas de <code>create</code>, pas de calcul, pas de séquence</td><td>complète : l'ORM crée, calcule, numérote</td></tr>
+                        <tr><td>Réalisme</td><td>les données de la base, suffixées ; courriels invalides</td><td>valeurs générées, distributions réglables, noms crédibles avec <code>faker</code></td></tr>
+                        <tr><td>Préparation</td><td>rien</td><td>installer le module, écrire ou choisir un plan</td></tr>
+                        <tr><td>Reproductible</td><td>résultat déterministe, mais chaque passe renomme aussi les originaux</td><td>graine fixée par <code>--seed</code> et notée dans la session</td></tr>
+                        <tr><td>Bon pour</td><td>mesurer une liste, une recherche, un rapport sur de gros volumes</td><td>tester un traitement métier, une démonstration, un banc d'essai répétable</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Pour mesurer ensuite ce que coûte une requête sur ces volumes, voir
+                    <a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Jamais sur une base de production</h4>
+                    <ul>
+                        <li><code>duplicate</code> <strong>renomme les enregistrements existants</strong> : vrais clients et
+                            vrais devis compris, adresses de courriel cassées. Aucune commande ne l'annule.</li>
+                        <li><code>populate</code> crée de vrais utilisateurs internes (10 vendeurs dans le plan de démonstration des
+                            ventes à 5 %) et des contacts avec des adresses de courriel générées, mêlés aux données réelles.</li>
+                        <li>Travailler sur une copie, de préférence neutralisée (<code>odoo-bin neutralize</code>), et la jeter
+                            après les mesures.</li>
+                    </ul>
+                </div>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <ul>
+                        <li>En 19, <code>odoo-bin populate</code> <strong>était</strong> la copie SQL :
+                            <code>--models</code>, <code>--factors</code>, <code>--sep</code>. En 20, la même commande, à quelques
+                            retouches internes près, s'appelle <code>odoo-bin duplicate</code>.</li>
+                        <li>En 20, le nom <code>populate</code> désigne la commande de l'addon, à plans. Un script 19
+                            <code>odoo-bin populate --models res.partner …</code> s'arrête sur
+                            <code>error: no such option: --models</code> (code 2) : remplacer <code>populate</code> par
+                            <code>duplicate</code>.</li>
+                        <li>L'addon <code>populate</code> et les dossiers <code>populate/</code> des modules sont nouveaux :
+                            la 19 n'en a pas.</li>
+                        <li>Les anciennes méthodes <code>_populate_factories</code> des modèles avaient déjà disparu en 18 :
+                            rien à porter de ce côté.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Recopier l'existant ×(n+1)</td><td><code>./odoo-bin duplicate -c odoo.conf -d ma_base_essai --models a,b --factors n1,n2</code></td></tr>
+                        <tr><td>Changer le séparateur des noms</td><td><code>--sep '-'</code> (un seul caractère)</td></tr>
+                        <tr><td>Installer l'outil à plans</td><td><code>module install populate</code> + <code>pip install -r addons/populate/requirements.txt</code></td></tr>
+                        <tr><td>Lancer un plan</td><td><code>./odoo-bin populate -c odoo.conf -d ma_base_essai -b module.id_du_plan --scale 0.1 --seed 42</code></td></tr>
+                        <tr><td>Reprendre après une erreur ou <kbd>Ctrl</kbd>+<kbd>C</kbd></td><td><code>populate --resume</code></td></tr>
+                        <tr><td>Plan ajouté par un module</td><td><code>module upgrade populate</code> d'abord</td></tr>
+                        <tr><td>Retrouver ce qui a été créé</td><td><code>populate.model.data</code> (par session, par étape)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>duplicate</code> recopie en SQL : très rapide, sans logique métier, et il suffixe aussi les originaux.</li>
+                    <li>Un facteur n donne n copies ; les One2many copiables et les tables de liaison suivent ; les valeurs par défaut (10 000 sur 7 modèles) sont à proscrire.</li>
+                    <li><code>populate</code> est un addon (Hidden/Tools, LGPL-3) qui ajoute la commande du même nom, des plans et des générateurs ; <code>faker</code> est facultatif mais requis par les plans <code>fake.*</code>.</li>
+                    <li>Un plan vit dans le dossier <code>populate/</code> d'un module et n'est chargé qu'à la mise à jour de <code>populate</code>.</li>
+                    <li>En 19, <code>populate</code> désignait la copie SQL : en 20 c'est <code>duplicate</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes exécutées le 07/10/2026 sur Odoo 20.0 (PostgreSQL 16, rôle non superutilisateur),
+                    base de démonstration Ventes + Inventaire et copie jetable, supprimées ensuite ; durées relevées avec
+                    <code>/usr/bin/time</code> et le journal. Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/duplicate.py" target="_blank" rel="noopener"><code>odoo/cli/duplicate.py</code></a> : options et valeurs par défaut</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/duplicate.py" target="_blank" rel="noopener"><code>odoo/tools/duplicate.py</code></a> : copie SQL, champs variés, dates, liens</li>
+                    <li><a href="https://github.com/odoo/odoo/tree/20.0/addons/populate" target="_blank" rel="noopener"><code>addons/populate</code></a> : README, <code>cli/populate.py</code>, modèles et générateurs</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/populate/benchmarks.xml" target="_blank" rel="noopener"><code>addons/sale/populate/</code></a> : plans fournis pour les ventes</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/command.py" target="_blank" rel="noopener"><code>odoo/cli/command.py</code></a> : sous-commandes chargées depuis les addons</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a></h5>
+                            <p class="small text-muted mb-0"><code>module install</code> et <code>module upgrade</code>, utilisés ici pour <code>populate</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0">Copier une base avant de la gonfler.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch</a></h5>
+                            <p class="small text-muted mb-0">Lire vite, une fois la base pleine.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
