@@ -1,0 +1,653 @@
+<!--
+Article — Les domaines en Odoo 20 : opérateurs, Domain, any et chemins
+Série « L'ORM Odoo 20 en pratique » (articles techniques thématiques, blog Développement)
+Date : 2026-10-07
+Slug : domaines-odoo-20
+Meta : Écrire un domaine de recherche en Odoo 20 : liste ou classe Domain, opérateurs ilike, =like, in, child_of, any, chemins pointés, dates, combinaisons, et ce qui casse.
+Mots-clés cibles : odoo domain operators, odoo domain ilike, odoo search domain
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Captures : content/blog/screenshots/domaines-odoo-20/ (01-03)
+Preuves (base de test locale : sale_management + stock, démo native, fr_FR ; Odoo 20.0 3538ed82 ; lecture seule sauf une action serveur de sonde) :
+  - sondes docs/blog-odoo20/captures-base-*/o4-domaines/f_all.py -> f_all.out (§1 à §9), p7.py (Domain(liste ou Domain) & Domain), p4.py + p6.py (quarter_number, day_of_week :
+    search contre filtered_domain), p5_action.py + p5_rpc.py (action serveur 488 lancée par /web/action/run sur le port 9055 :
+    domaine reçu [["date_order", ">=", "2026-09-15"], ["state", "=", "sale"]]), t_B1 -> figure 01, cap1.py -> figure 02, t_B2 -> figure 03
+  - odoo/odoo/orm/domains.py : STANDARD_CONDITION_OPERATORS :80, Domain.__new__ :203, AND :302, OR :307, __and__/__or__/__invert__ :317/:325/:333,
+    __add__ :341, optimize :433, DomainCondition.checked « Invalid operator » :865, '=?' :1340, booléen « Since 20.0 » :1561, _operator_hierarchy :1795
+  - odoo/odoo/orm/fields_temporal.py:51-74 (getters Python : quarter = month // 4 + 1, day_of_week = tm_wday) ; odoo/odoo/orm/utils.py:35-46 + fields_temporal.py:98 (SQL date_part : quarter, dow) ; addons/web/static/src/core/tree_editor/virtual_operators.js:76-139 (est défini, commence par)
+  - odoo/odoo/tools/json.py:61 json_default (date :65, Domain :75) ; odoo/odoo/http/requestlib.py:342 (réponse JSON avec default=json_default)
+  - 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0, tête 8191f184d3c7, relue le 07/10/2026) : orm/domains.py '<>' :1283-1288 et '==' :1291-1296
+    réécrits + DeprecationWarning « deprecated since 19.0 » ; majuscules :818-821 abaissées + DeprecationWarning ; booléen comparé à une chaîne :1488
+    _logger.debug seulement (commentaire « make a warning » à faire) ; odoo/osv/__init__.py présent avec DeprecationWarning « Since 19.0 » ; tools/json.py:62 json_default
+    convertit déjà date et Domain (pas un écart) ; fields_temporal.py:53-54 et utils.py même quarter/dow (piège commun 19 et 20, pas un écart).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Les domaines en Odoo 20 : opérateurs, Domain, any et chemins</h1>
+                <p class="lead mt-3 text-white">Un domaine dit à Odoo quels enregistrements chercher : une liste de
+                    conditions <code>(champ, opérateur, valeur)</code>, ou un objet <code>Domain</code> qu'on combine
+                    avec <code>&amp;</code>, <code>|</code> et <code>~</code>. Les opérateurs utiles, les chemins
+                    pointés et <code>any</code>, les parties de date, l'éditeur de domaine de l'interface, et les trois
+                    écritures qu'Odoo 20 refuse désormais.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Écrire</h4>
+                        <p>Une condition, les opérateurs <code>ilike</code>, <code>=like</code>, <code>in</code>, <code>child_of</code>, <code>any</code>, les chemins et les parties de date.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Combiner</h4>
+                        <p>La classe <code>Domain</code> : <code>&amp;</code>, <code>|</code>, <code>~</code>, <code>Domain.AND</code>, <code>optimize</code>, et le passage vers une action.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Éviter</h4>
+                        <p><code>&lt;&gt;</code>, <code>==</code>, les opérateurs en majuscules, <code>odoo.osv</code> et le booléen comparé à <code>'true'</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec les données de démonstration et les applications Ventes et
+                            Inventaire : tous les exemples portent sur les contacts (<code>res.partner</code>) et les
+                            commandes (<code>sale.order</code>) de la démo, sans module à écrire.</li>
+                        <li>La console <code>odoo-bin shell</code>, présentée dans
+                            <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">l'article sur la console</a> :
+                            chaque sortie de cet article y a été obtenue. Les identifiants et les dates de ta base
+                            peuvent différer (ici, une base créée le 7 octobre 2026).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LISTE OU DOMAIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Un domaine : une liste, ou un objet <code>Domain</code></h2>
+
+                <p>La forme historique est une liste de triplets <code>(champ, opérateur, valeur)</code>. Plusieurs
+                    conditions à la suite sont reliées par un ET. Elle s'écrit partout : <code>search</code>,
+                    <code>search_count</code>, attribut <code>domain</code> d'une vue ou d'un champ, action. La
+                    seconde forme est la classe <code>Domain</code>, qui s'importe depuis <code>odoo.fields</code> :</p>
+<pre class="language-python"><code class="language-python">from odoo.fields import Domain
+
+Partner = env['res.partner']
+dom = [('is_company', '=', True), ('country_id.code', '=', 'US')]
+print(Partner.search(dom).mapped('name'))
+
+d = Domain('is_company', '=', True) &amp; Domain('country_id.code', '=', 'US')
+print(d)
+print(type(d).__name__, Partner.search(d) == Partner.search(dom))</code></pre>
+<div class="out">['Acme Corporation', 'Azure Interior', 'Lumber Inc', 'Ready Mat', 'The Jackson Group', 'Wood Corner']
+['&amp;', ('is_company', '=', True), ('country_id.code', '=', 'US')]
+DomainAnd True</div>
+
+                <p>Les deux formes donnent la même recherche. Un <code>Domain</code> s'affiche comme la liste qu'il
+                    représente, en notation préfixée : l'opérateur <code>'&amp;'</code> vient avant ses deux
+                    opérandes. C'est un arbre (<code>DomainAnd</code>, <code>DomainOr</code>, <code>DomainNot</code>,
+                    <code>DomainCondition</code>) qu'Odoo sait simplifier et valider. Le constructeur contrôle chaque
+                    condition dès sa création, avant toute requête.</p>
+
+                <p>Toute méthode qui reçoit un domaine (<code>search</code>, <code>filtered_domain</code>,
+                    <code>_read_group</code>…) accepte indifféremment la liste ou l'objet. La classe sert surtout à
+                    <strong>combiner</strong> sans se tromper de nombre d'opérateurs <code>'|'</code> (section 6).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. OPÉRATEURS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les opérateurs</h2>
+
+                <p>La liste complète est dans <code>odoo/orm/domains.py</code> (<code>STANDARD_CONDITION_OPERATORS</code>,
+                    plus les opérateurs ramenés à ceux-ci par optimisation). Ceux qu'on écrit tous les jours :</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Opérateur</th><th>Sens</th><th>Exemple</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>=</code>, <code>!=</code></td><td>égal, différent ; <code>False</code> = « non renseigné »</td><td><code>('email', '=', False)</code></td></tr>
+                        <tr><td><code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code></td><td>comparaison</td><td><code>('amount_total', '&gt;', 2000)</code></td></tr>
+                        <tr><td><code>in</code>, <code>not in</code></td><td>dans une liste de valeurs</td><td><code>('state', 'in', ['draft', 'sent'])</code></td></tr>
+                        <tr><td><code>ilike</code>, <code>not ilike</code></td><td>contient, sans tenir compte de la casse</td><td><code>('name', 'ilike', 'wood')</code></td></tr>
+                        <tr><td><code>like</code></td><td>contient, casse respectée</td><td><code>('name', 'like', 'Wood')</code></td></tr>
+                        <tr><td><code>=ilike</code>, <code>=like</code></td><td>motif SQL exact : à toi de placer <code>%</code> et <code>_</code></td><td><code>('name', '=ilike', 'wood%')</code></td></tr>
+                        <tr><td><code>=?</code></td><td>égal, ou condition ignorée si la valeur est vide</td><td><code>('user_id', '=?', user_id)</code></td></tr>
+                        <tr><td><code>child_of</code>, <code>parent_of</code></td><td>l'enregistrement et ses descendants / ses ancêtres</td><td><code>('partner_id', 'child_of', 10)</code></td></tr>
+                        <tr><td><code>any</code>, <code>not any</code></td><td>au moins un enregistrement lié vérifie / aucun ne vérifie le sous-domaine</td><td><code>('order_line', 'any', [...])</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les variantes de recherche de texte sur les noms des contacts de la démo, puis <code>in</code> et <code>False</code> :</p>
+<pre class="language-python"><code class="language-python">def names(domain):
+    return Partner.search(domain, order='name').mapped('name')
+
+print(names([('name', 'ilike', 'wood')]))
+print(names([('name', 'like', 'wood')]))
+print(names([('name', '=ilike', 'wood%')]))
+print(names([('country_id.code', 'in', ['SM', 'BE'])]))
+print(Partner.search_count([('email', '=', False)]))</code></pre>
+<div class="out">['OpenWood', 'Wood Corner']
+[]
+['Wood Corner']
+['Edwin Hansen', 'Gemini Furniture', 'Jesse Brown', 'Monica Light', 'Oscar Morgan', 'Soham Palmer']
+1</div>
+
+                <ul>
+                    <li><code>ilike</code> entoure la valeur de <code>%</code> : « wood » trouve « OpenWood » et « Wood
+                        Corner ». <code>like</code> fait de même mais respecte la casse : aucun nom ne contient « wood »
+                        en minuscules.</li>
+                    <li><code>=ilike</code> n'ajoute rien : <code>'wood%'</code> veut dire « commence par ». C'est ce
+                        qu'écrit l'opérateur « commence par » de l'éditeur de filtre (section 4).</li>
+                    <li><code>in</code> accepte une liste ; <code>('email', '=', False)</code> compte les contacts
+                        sans adresse électronique.</li>
+                </ul>
+
+                <h3>La hiérarchie : <code>child_of</code></h3>
+                <p>« Acme Corporation » (id 10 dans la démo) a trois contacts rattachés. <code>child_of</code> prend
+                    la société <strong>et</strong> ses descendants :</p>
+<pre class="language-python"><code class="language-python">print(names([('id', 'child_of', 10)]))
+Order = env['sale.order']
+print(Order.search([('partner_id', 'child_of', 10)]).mapped('name'))</code></pre>
+<div class="out">['Acme Corporation', 'Addison Olson', 'Douglas Fletcher', 'Floyd Steward']
+['S00005', 'S00001']</div>
+                <p>La seconde ligne est la forme courante : les commandes passées par la société ou par l'un de ses
+                    contacts. Ce que devient <code>child_of</code> en SQL, avec la colonne <code>parent_path</code>, est
+                    détaillé dans <a href="/blog/developpement-odoo-2/rayons-hierarchie-odoo-20-244">l'article sur les
+                    hiérarchies et <code>_parent_store</code></a>.</p>
+
+                <h3>La condition facultative : <code>=?</code></h3>
+                <p>Utile quand la valeur vient d'un paramètre qui peut être vide. Avec une valeur vide, la condition
+                    devient « vrai » ; sinon, c'est un <code>=</code> :</p>
+<pre class="language-python"><code class="language-python">user_id = False
+print(Domain('user_id', '=?', user_id).optimize(Partner))
+user_id = 2
+print(Domain('user_id', '=?', user_id).optimize(Partner))</code></pre>
+<div class="out">[(1, '=', 1)]
+[('user_id', 'in', [2])]</div>
+                <p><code>(1, '=', 1)</code> est le domaine toujours vrai (<code>Domain.TRUE</code>) ; et Odoo réécrit
+                    un <code>=</code> en <code>in</code> d'une seule valeur, sa forme interne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CHEMINS ET ANY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Chemins pointés et <code>any</code></h2>
+
+                <p>Un nom de champ peut traverser les relations : <code>'partner_id.country_id.code'</code>. Odoo le
+                    traduit en <code>any</code> imbriqués, un par relation traversée :</p>
+<pre class="language-python"><code class="language-python">print(Domain('partner_id.country_id.code', '=', 'SM').optimize(Order))</code></pre>
+<div class="out">[('partner_id', 'any', [('country_id', 'any', [('code', 'in', ['SM'])])])]</div>
+
+                <p>Sur un <code>Many2one</code>, chemin et <code>any</code> reviennent au même. Sur un
+                    <code>One2many</code> ou un <code>Many2many</code>, ils ne disent <strong>pas</strong> la même
+                    chose dès qu'il y a deux conditions. Cherche les commandes qui ont une ligne « bureau » en quantité
+                    5 ou plus :</p>
+<pre class="language-python"><code class="language-python">def orders(domain):
+    return Order.search(domain, order='name').mapped('name')
+
+print(orders([('order_line', 'any', [('product_id.name', 'ilike', 'bureau'),
+                                     ('product_uom_qty', '&gt;=', 5)])]))
+print(orders([('order_line.product_id.name', 'ilike', 'bureau'),
+              ('order_line.product_uom_qty', '&gt;=', 5)]))</code></pre>
+<div class="out">['S00001', 'S00004', 'S00019', 'S00024']
+['S00001', 'S00003', 'S00004', 'S00007', 'S00019', 'S00024']</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Console odoo-bin shell : la recherche avec order_line any renvoie S00024, S00004, S00019, S00001 ; la recherche avec deux chemins pointés renvoie en plus S00007 et S00003 ; les lignes de S00003 sont Design d'intérieur virtuel 10.0 et Chaise de bureau 1.0"/>
+                    <figcaption>Deux chemins pointés, deux conditions indépendantes : S00003 entre avec une ligne « bureau » à 1 et une autre ligne à 10.</figcaption>
+                </figure>
+
+                <ul>
+                    <li>Avec <code>any</code>, les deux conditions portent sur <strong>la même ligne</strong> : 4
+                        commandes.</li>
+                    <li>Avec deux chemins, chaque condition cherche sa propre ligne : S00003 a une « Chaise de bureau »
+                        en quantité 1 et une autre ligne en quantité 10 ; elle passe. 6 commandes.</li>
+                    <li>La question métier tranche : « une même ligne » s'écrit avec <code>any</code>.</li>
+                </ul>
+
+                <p><code>not any</code> est la négation : aucune ligne ne vérifie le sous-domaine. Ici, les commandes
+                    sans aucun article de service :</p>
+<pre class="language-python"><code class="language-python">print(len(orders([('order_line', 'not any', [('product_id.type', '=', 'service')])])))</code></pre>
+<div class="out">20</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. L'ÉDITEUR DE L'INTERFACE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le filtre personnalisé de l'interface, traduit en code</h2>
+
+                <p>L'interface écrit les mêmes domaines. Dans <strong>Ventes › Commandes</strong>, le menu de la barre
+                    de recherche propose <strong>Filtre personnalisé…</strong> : un éditeur de règles, et, en
+                    mode développeur (<code>?debug=1</code> dans l'adresse), la zone « Éditeur de code » qui montre le domaine produit. Les deux restent synchronisés : on peut
+                    coller un domaine dans la zone de code et voir les règles se construire.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Filtre personnalisé : Faire correspondre tous les règles suivantes, Statut est égal à Commande client, Lignes de commande correspond à tous de : Produit › Nom contient bureau, Quantité supérieur ou égal à 5,00 ; éditeur de code avec le domaine state = sale et order_line any product_id.name ilike bureau, product_uom_qty >= 5 ; boutons Rechercher et Ignorer"/>
+                    <figcaption>« Lignes de commande › correspond » est l'opérateur <code>any</code> ; « contient » est <code>ilike</code> ; « Produit › Nom » est un chemin pointé.</figcaption>
+                </figure>
+
+                <p>Ce filtre affiche deux commandes, S00004 et S00024 : les commandes confirmées parmi les quatre
+                    trouvées plus haut. La correspondance entre les libellés et le code :</p>
+                <table class="tmc">
+                    <thead><tr><th>Libellé de l'éditeur</th><th>Opérateur</th></tr></thead>
+                    <tbody>
+                        <tr><td>est égal à / est différent de</td><td><code>=</code> / <code>!=</code></td></tr>
+                        <tr><td>est dans / n'est pas dans</td><td><code>in</code> / <code>not in</code></td></tr>
+                        <tr><td>contient / ne contient pas</td><td><code>ilike</code> / <code>not ilike</code></td></tr>
+                        <tr><td>commence par</td><td><code>=ilike</code> avec <code>'valeur%'</code></td></tr>
+                        <tr><td>est défini / n'est pas défini</td><td><code>!=</code> / <code>=</code> <code>False</code> (sur un booléen : <code>=</code> / <code>!=</code> <code>True</code>)</td></tr>
+                        <tr><td>correspond (sur une relation)</td><td><code>any</code></td></tr>
+                        <tr><td>Faire correspondre tous / au moins un</td><td>ET (<code>&amp;</code>) / OU (<code>|</code>)</td></tr>
+                    </tbody>
+                </table>
+                <p>Le chemin inverse sert tous les jours : construire le filtre à la souris, copier le domaine de la
+                    zone de code, le coller dans un <code>search</code> ou dans l'attribut <code>domain</code> d'une
+                    action.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. DATES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les parties d'une date</h2>
+
+                <p>Un champ <code>Date</code> ou <code>Datetime</code> s'interroge aussi par morceau, avec un suffixe
+                    pointé : <code>year_number</code>, <code>quarter_number</code>, <code>month_number</code>,
+                    <code>iso_week_number</code>, <code>day_of_year</code>, <code>day_of_month</code>,
+                    <code>day_of_week</code>, et pour un <code>Datetime</code> <code>hour_number</code>,
+                    <code>minute_number</code>, <code>second_number</code>
+                    (<code>odoo/orm/fields_temporal.py</code>) :</p>
+<pre class="language-python"><code class="language-python">print(Order.search_count([('date_order.month_number', '=', 9)]))
+print(Order.search_count([('date_order.month_number', '=', 10)]))
+print(Order.search_count([('create_date.year_number', '&gt;=', 2026)]))
+print(orders([('date_order.day_of_week', '=', 1)]))</code></pre>
+<div class="out">10
+14
+24
+['S00001', 'S00002', 'S00005', 'S00019', 'S00020']</div>
+                <p>Dix commandes datées de septembre, quatorze d'octobre, toutes créées en 2026. Plus besoin de
+                    calculer un premier et un dernier jour du mois pour une recherche « tous les mois de
+                    septembre ». Les cinq commandes de la dernière ligne sont datées d'un lundi (7 septembre 2026).</p>
+
+                <div class="pitfall-box">
+                    <h4><code>search</code> et <code>filtered_domain</code> ne comptent pas pareil</h4>
+                    <p>En recherche, le morceau est calculé par PostgreSQL (<code>date_part('dow', …)</code>,
+                        <code>date_part('quarter', …)</code>) : <code>day_of_week</code> vaut 0 le dimanche, 1 le lundi. En
+                        mémoire, <code>filtered_domain</code> le calcule en Python : 0 le lundi, et le trimestre y vaut
+                        <code>mois // 4 + 1</code>, soit 3 pour octobre.</p>
+<pre class="language-python"><code class="language-python">q4 = Domain('date_order.quarter_number', '=', 4)
+print(Order.search_count(q4))
+print(len(Order.search([]).filtered_domain(q4)))</code></pre>
+<div class="out">14
+0</div>
+                    <p>Les quatorze commandes d'octobre sont au 4<sup>e</sup> trimestre pour <code>search</code>, au
+                        3<sup>e</sup> pour <code>filtered_domain</code> ; même écart sur <code>day_of_week</code>. La 19
+                        avait déjà ce comportement. Pour ces deux morceaux, garder un domaine de <code>search</code>, ou
+                        comparer à des dates.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. COMBINER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Combiner : <code>&amp;</code>, <code>|</code>, <code>~</code>, <code>Domain.AND</code></h2>
+
+                <p>Avec des listes, un OU s'écrit en notation préfixée : <code>['|', A, B]</code>, et il faut autant de
+                    <code>'|'</code> que de conditions moins une. Avec <code>Domain</code>, on écrit l'opération :</p>
+<pre class="language-python"><code class="language-python">confirmed = Domain('state', '=', 'sale')
+big = Domain('amount_total', '&gt;', 2000)
+print(confirmed &amp; big)
+print(confirmed | big)
+print(~confirmed)
+print(~big)
+print(Domain.AND([confirmed, big, Domain('partner_id.name', 'ilike', 'gemini')]))
+print(orders(confirmed &amp; big))</code></pre>
+<div class="out">['&amp;', ('state', '=', 'sale'), ('amount_total', '&gt;', 2000)]
+['|', ('state', '=', 'sale'), ('amount_total', '&gt;', 2000)]
+[('state', '!=', 'sale')]
+['!', ('amount_total', '&gt;', 2000)]
+['&amp;', '&amp;', ('state', '=', 'sale'), ('amount_total', '&gt;', 2000), ('partner_id.name', 'ilike', 'gemini')]
+['S00004', 'S00020', 'S00021', 'S00023']</div>
+
+                <ul>
+                    <li><code>~</code> retourne l'opérateur quand il a un contraire direct (<code>=</code> devient
+                        <code>!=</code>) ; sinon, il pose un <code>'!'</code> devant la condition.</li>
+                    <li><code>Domain.AND(liste)</code> et <code>Domain.OR(liste)</code> combinent un nombre quelconque de
+                        domaines, listes comprises : pratique pour ajouter des conditions dans une boucle.</li>
+                </ul>
+
+                <p>La notation préfixée et l'objet donnent la même recherche :</p>
+<pre class="language-python"><code class="language-python">print(orders(['|', ('state', '=', 'draft'), ('amount_total', '&gt;', 3000)]))
+print(orders(Domain('state', '=', 'draft') | Domain('amount_total', '&gt;', 3000)))</code></pre>
+<div class="out">['S00001', 'S00002', 'S00003', 'S00005', 'S00020', 'S00023']
+['S00001', 'S00002', 'S00003', 'S00005', 'S00020', 'S00023']</div>
+
+                <p>Deux cas limites à connaître quand la liste à combiner peut être vide :</p>
+<pre class="language-python"><code class="language-python">print(Domain.AND([]), Domain.OR([]))
+print(Domain.AND([]).is_true(), Domain.OR([]).is_false())</code></pre>
+<div class="out">[(1, '=', 1)] [(0, '=', 1)]
+True True</div>
+                <p>Un ET de rien est toujours vrai (tout est trouvé), un OU de rien est toujours faux (rien n'est
+                    trouvé). <code>is_true()</code> et <code>is_false()</code> le testent sans requête.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. OPTIMIZE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>optimize</code> : voir ce qu'Odoo comprend</h2>
+
+                <p>Avant d'interroger la base, Odoo réécrit le domaine sous une forme canonique : il fusionne les
+                    conditions sur un même champ, applique les négations, valide les champs. <code>optimize(modèle)</code>
+                    montre ce premier niveau de réécriture :</p>
+<pre class="language-python"><code class="language-python">print(Domain([('id', 'in', [1]), ('id', 'in', [1, 2])]).optimize(Order))
+print((Domain('state', 'in', ['draft', 'sent']) | Domain('state', '=', 'sale')).optimize(Order))
+print((~big).optimize(Order))
+print(Domain('date_order.month_number', '=', 9).optimize(Order))</code></pre>
+<div class="out">[('id', 'in', [1])]
+[('state', 'in', ['draft', 'sent', 'sale'])]
+[('amount_total', '&lt;=', 2000)]
+[('date_order.month_number', 'in', [9])]</div>
+                <p>Deux <code>in</code> reliés par ET deviennent leur intersection, par OU leur union ; le
+                    <code>'!'</code> devant <code>&gt;</code> devient <code>&lt;=</code>. C'est l'outil pour comprendre
+                    pourquoi un domaine trouve plus ou moins que prévu, et pour alléger un domaine envoyé au
+                    navigateur. <code>search</code> fait lui-même l'optimisation complète : inutile de l'appeler avant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. CE QUI CASSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce qu'Odoo 20 refuse</h2>
+
+                <p>Trois écritures acceptées jusqu'ici lèvent maintenant une erreur, à la construction du domaine :
+                    <code>&lt;&gt;</code> pour « différent », <code>==</code> pour « égal », et un opérateur en
+                    majuscules. Le paquet <code>odoo.osv</code>, qui portait l'ancien module <code>expression</code>,
+                    a disparu. Et comparer un booléen à une chaîne écrit un avertissement dans le journal :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Console odoo-bin shell : Partner.search avec '<>', '==' et 'ILIKE' lèvent chacun ValueError: Invalid operator in condition ; from odoo.osv import expression lève ModuleNotFoundError: No module named 'odoo.osv' ; search_count avec is_company = 'true' écrit un WARNING py.warnings DeprecationWarning: Since 20.0, compare booleans only with booleans, puis renvoie 7"/>
+                    <figcaption>Les erreurs d'Odoo 20, telles que la console les affiche (pile d'appels de l'avertissement coupée).</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Écrit</th><th>Odoo 20</th><th>Écrire</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>('id', '&lt;&gt;', 1)</code></td><td><code>ValueError: Invalid operator</code></td><td><code>('id', '!=', 1)</code></td></tr>
+                        <tr><td><code>('id', '==', 1)</code></td><td><code>ValueError: Invalid operator</code></td><td><code>('id', '=', 1)</code></td></tr>
+                        <tr><td><code>('name', 'ILIKE', 'acme')</code></td><td><code>ValueError: Invalid operator</code></td><td><code>('name', 'ilike', 'acme')</code></td></tr>
+                        <tr><td><code>from odoo.osv import expression</code></td><td><code>ModuleNotFoundError</code></td><td><code>from odoo.fields import Domain</code> ; <code>expression.AND(...)</code> → <code>Domain.AND(...)</code></td></tr>
+                        <tr><td><code>('is_company', '=', 'true')</code></td><td>marche, avec <code>DeprecationWarning</code></td><td><code>('is_company', '=', True)</code></td></tr>
+                    </tbody>
+                </table>
+
+                <p>Le booléen comparé à une chaîne mérite d'être corrigé tout de suite : Odoo
+                    convertit la chaîne avec <code>str2bool</code>, et toute chaîne qu'il ne reconnaît pas vaut
+                    <code>False</code>, avec le même avertissement :</p>
+<pre class="language-python"><code class="language-python">print(Partner.search_count([('is_company', '=', 'False')]))
+print(Partner.search_count([('is_company', '=', 'Faux')]))
+print(Partner.search_count([('is_company', '=', False)]))</code></pre>
+<div class="out">36
+36
+36</div>
+                <p>Ce genre de chaîne se glisse facilement dans un domaine écrit en XML ou stocké en texte
+                    (<code>domain="[('active', '=', 'true')]"</code>) : à chercher dans les modules portés.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>La 19 acceptait encore ces écritures en les corrigeant : <code>&lt;&gt;</code> réécrit en
+                        <code>!=</code>, <code>==</code> en <code>=</code>, l'opérateur passé en minuscules, chaque fois
+                        avec un <code>DeprecationWarning</code> « deprecated since 19.0 » (<code>odoo/orm/domains.py</code>).
+                        La comparaison d'un booléen à une chaîne n'y laissait qu'un message de niveau DEBUG, invisible
+                        par défaut. <code>odoo.osv</code> s'importait avec un avertissement, alors que
+                        <code>Domain</code> était déjà disponible dans <code>odoo.fields</code> : un module qui l'utilise
+                        se porte sans changement.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. ACTION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Un domaine dans une action</h2>
+
+                <p>Une méthode de bouton renvoie souvent une action de fenêtre avec un domaine. Un <code>Domain</code>
+                    y est accepté : la réponse JSON du serveur le convertit en liste, et les dates en chaînes
+                    <code>AAAA-MM-JJ</code> (<code>json_default</code>, <code>odoo/tools/json.py</code>). C'est le
+                    sérialiseur que la réponse applique :</p>
+<pre class="language-python"><code class="language-python">import datetime, json
+from odoo.tools import json_default
+
+recent = Domain('date_order', '&gt;=', datetime.date(2026, 9, 15)) &amp; Domain('state', '=', 'sale')
+action = {'type': 'ir.actions.act_window', 'res_model': 'sale.order', 'domain': recent}
+print(json.dumps(action['domain'], default=json_default))</code></pre>
+<div class="out">["&amp;", ["date_order", "&gt;=", "2026-09-15"], ["state", "=", "sale"]]</div>
+                <p>Vérifié de bout en bout : une action serveur qui renvoie un domaine contenant
+                    <code>datetime.date(2026, 9, 15)</code>, lancée depuis le navigateur, arrive côté client sous la
+                    forme <code>[["date_order", "&gt;=", "2026-09-15"], ["state", "=", "sale"]]</code>.</p>
+
+                <p>Le piège est ailleurs : dans le code Python qui reprend l'action pour la compléter. Un
+                    <code>Domain</code> n'est pas une liste :</p>
+<pre class="language-python"><code class="language-python">try:
+    action['domain'].append(('amount_total', '&gt;', 1000))
+except AttributeError as e:
+    print(type(e).__name__, '|', e)
+action['domain'] = list(recent)
+action['domain'].append(('amount_total', '&gt;', 1000))
+print(action['domain'])
+print(Order.search_count(action['domain']))</code></pre>
+<div class="out">AttributeError | 'DomainAnd' object has no attribute 'append'
+['&amp;', ('date_order', '&gt;=', datetime.date(2026, 9, 15)), ('state', '=', 'sale'), ('amount_total', '&gt;', 1000)]
+10</div>
+                <p>Quand une action peut être relue par un autre module (héritage d'une méthode qui fait
+                    <code>action['domain'].append(...)</code>), lui donner
+                    <code>list(domaine)</code>. Pour compléter un domaine reçu sans savoir sa forme, le plus sûr reste
+                    <code>Domain(action['domain']) &amp; Domain(...)</code>, qui accepte les deux.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Importer</td><td><code>from odoo.fields import Domain</code></td></tr>
+                        <tr><td>Contient, sans casse</td><td><code>('name', 'ilike', 'wood')</code></td></tr>
+                        <tr><td>Commence par</td><td><code>('name', '=ilike', 'wood%')</code></td></tr>
+                        <tr><td>Non renseigné</td><td><code>('email', '=', False)</code></td></tr>
+                        <tr><td>Condition facultative</td><td><code>('user_id', '=?', valeur)</code></td></tr>
+                        <tr><td>Société et ses contacts</td><td><code>('partner_id', 'child_of', id)</code></td></tr>
+                        <tr><td>Une même ligne vérifie tout</td><td><code>('order_line', 'any', [A, B])</code></td></tr>
+                        <tr><td>Aucune ligne ne vérifie</td><td><code>('order_line', 'not any', [A])</code></td></tr>
+                        <tr><td>Mois, année d'une date</td><td><code>('date_order.month_number', '=', 9)</code></td></tr>
+                        <tr><td>ET, OU, NON</td><td><code>a &amp; b</code>, <code>a | b</code>, <code>~a</code>, <code>Domain.AND([...])</code>, <code>Domain.OR([...])</code></td></tr>
+                        <tr><td>Voir la forme réécrite</td><td><code>domaine.optimize(env['modèle'])</code></td></tr>
+                        <tr><td>Différent, égal</td><td><code>!=</code>, <code>=</code> (jamais <code>&lt;&gt;</code>, <code>==</code>, ni majuscules)</td></tr>
+                        <tr><td>Domaine d'une action</td><td><code>list(domaine)</code> si un autre code le complète</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li>Un domaine est une liste de conditions <code>(champ, opérateur, valeur)</code> ou un objet <code>Domain</code> ; les méthodes de recherche acceptent les deux.</li>
+                    <li><code>ilike</code> pour « contient », <code>=ilike</code> pour un motif exact, <code>child_of</code> pour une hiérarchie, <code>=?</code> pour une condition facultative.</li>
+                    <li>Sur une relation multiple, <code>any</code> exige qu'un même enregistrement lié vérifie toutes les conditions ; des chemins pointés séparés, non.</li>
+                    <li>Les parties de date (<code>month_number</code>…) évitent de calculer des bornes ; <code>quarter_number</code> et <code>day_of_week</code> diffèrent entre <code>search</code> et <code>filtered_domain</code>.</li>
+                    <li>Odoo 20 refuse <code>&lt;&gt;</code>, <code>==</code>, les majuscules et <code>odoo.osv</code>, et avertit quand un booléen est comparé à une chaîne.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Exemples exécutés le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    Community (PostgreSQL 16), base de démonstration avec Ventes et Inventaire ; filtre personnalisé
+                    construit et capturé dans le navigateur ; action serveur lancée depuis le client web pour relever le
+                    domaine reçu. Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/domains.py" target="_blank" rel="noopener"><code>odoo/orm/domains.py</code></a> : opérateurs, classe <code>Domain</code>, <code>AND</code>/<code>OR</code>, <code>optimize</code>, contrôle des opérateurs, conversion des booléens, <code>child_of</code>/<code>parent_of</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_temporal.py" target="_blank" rel="noopener"><code>odoo/orm/fields_temporal.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/utils.py" target="_blank" rel="noopener"><code>odoo/orm/utils.py</code></a> : parties de date, en Python et en SQL</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/core/tree_editor/virtual_operators.js" target="_blank" rel="noopener"><code>addons/web/static/src/core/tree_editor/virtual_operators.js</code></a> : « commence par », « est défini » et leur traduction en domaine</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/json.py" target="_blank" rel="noopener"><code>odoo/tools/json.py</code></a> : <code>json_default</code>, conversion des dates et des domaines dans les réponses</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/rayons-hierarchie-odoo-20-244">Les rayons en Odoo 20 : une hiérarchie avec _parent_store</a></h5>
+                            <p class="small text-muted mb-0"><code>child_of</code> et <code>parent_of</code> jusqu'à la requête SQL.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Les domaines au service de la sécurité : qui voit quels enregistrements.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">L'outil de toutes les sorties de cet article.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

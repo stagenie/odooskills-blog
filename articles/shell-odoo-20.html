@@ -1,0 +1,651 @@
+<!--
+Article — Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell
+Série « L'ORM Odoo 20 en pratique » — pilier
+Date : 2026-10-07
+Slug : shell-odoo-20
+Meta : odoo-bin shell en Odoo 20 : lancer la console, lire, écrire et valider avec env.cr.commit(), scripts passés par <, installer un module, et les pièges de transaction.
+Mot-clé cible : odoo shell (odoo shell commit, odoo shell install module)
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16, base de démonstration Ventes + Inventaire en français ;
+  chaque extrait exécuté dans odoo-bin shell, sorties collées telles quelles.
+Preuves :
+  - shell.py (20.0) : variables exposées l.131-143, uid = SUPERUSER_ID l.138, self = env.user l.142, rollback avant/après l.146-148,
+    entrée non TTY = exec(stdin) l.80-82, « No environment set » l.85, ImportError avalée l.101 ; seule différence avec la 19.0
+    publique (raw GitHub, 07/10) : la ligne threading.current_thread().dbname supprimée → aucun écart visible, pas d'encadré 19.
+  - TTY (script -qfc) : bannière env/odoo/openerp/self, self.name = 'OdooBot', env.su True, lang fr_FR ; sans -d : « No environment set » ;
+    --shell-interface=ipython sans IPython dans le venv → REPL python sans message ; --shell-file : variables disponibles.
+  - --no-http : server.py:529 (threadé, stop=True → pas de http_spawn) ; PreforkServer.run :1105-1106 start() avant stop → essai
+    --workers=2 sur port occupé sans --no-http : OSError [Errno 98] Adresse déjà utilisée, exit 1 ; avec --no-http : OK.
+  - Bouton « Activate » = button_immediate_install (base/views/ir_module_views.xml:66) ; install/uninstall/upgrade → _button_immediate_function (ir_module.py:491, :673, :709).
+  - Journal sur stderr : netsvc.py:109 StreamHandler() ; 2>/dev/null ne laisse que les print().
+  - echo "expr" | shell → aucune sortie ; print() → 43. Exception dans un script → traceback, code de sortie 1.
+  - Écrire sans commit puis relire dans un nouveau processus : False ; avec env.cr.commit() : CLI-0042 (sortie 03).
+  - with_user(base.user_demo) : AccessError sur ir.config_parameter ; has_access('unlink') sale.order False vs True.
+  - button_install() : state 'to install', modèle absent, annulé par rollback. button_immediate_install() product_expiry :
+    installe product_expiry + sale_stock_product_expiry (~4 s), champ use_expiration_date visible dans la même session ;
+    button_immediate_uninstall() retire les deux. ir_module.py:645 self.env.cr.commit() puis :646 Registry.new ;
+    écriture non validée avant l'installation retrouvée en base après rollback et dans un nouveau processus (sortie 04).
+  - REPEATABLE READ : sql_db.py:795 ; autre curseur (with registry.cursor(), commit en sortie sql_db.py:334) → session lit
+    l'ancienne valeur même après invalidate_all(), la nouvelle après rollback.
+  - Transaction avortée : ForeignKeyViolation puis InFailedSqlTransaction ; rollback → 43 ; savepoint (sql_db.py:308) → 43 sans rollback.
+  - Cron : method_direct_trigger() (ir_cron.py:152, docstring « a new cursor » :155, job_cr :483) ; résultat invisible
+    avant rollback ; écriture non validée sur la même ligne → blocage, pg_stat_activity « Lock » + « idle in transaction »,
+    SIGINT sans effet, processus tué (kill -9).
+Captures : content/blog/screenshots/shell-odoo-20/ (01-04), sorties réelles rendues en image
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</h1>
+                <p class="lead mt-3 text-white"><code>odoo-bin shell</code> ouvre une console Python branchée sur une
+                    base Odoo : tout l'ORM sous la main, sans navigateur. C'est l'outil le plus rapide pour vérifier une
+                    donnée, corriger un enregistrement ou installer un module. C'est aussi le plus traître : rien n'est
+                    écrit sans <code>commit</code>, sauf quand tout l'est d'un coup. Les pièges, un par un, sur la
+                    démonstration native.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lancer</h4>
+                        <p>La console interactive ou un script passé par <code>&lt;</code>, les options utiles, ce que contiennent <code>env</code> et <code>self</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire, écrire, valider</h4>
+                        <p><code>search</code>, <code>browse</code>, <code>read</code>, puis <code>env.cr.commit()</code> et <code>env.cr.rollback()</code>, et installer un module depuis la console.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Éviter les pièges</h4>
+                        <p>Le superutilisateur, l'installation qui valide tout, l'instantané de lecture, la transaction avortée, la tâche planifiée qui bloque.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 20 installé depuis les sources, avec son fichier de configuration :
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">installer Odoo 20 sur Ubuntu</a>.</li>
+                        <li>Une base <strong>de test</strong> avec les données de démonstration, Ventes et Inventaire
+                            installés. Les exemples lisent des commandes et des contacts de la démo (Acme Corporation,
+                            Gemini Furniture…), tu peux les rejouer tels quels.</li>
+                        <li>Jamais sur une base de production pour apprendre : la console écrit avec tous les droits.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LANCER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lancer la console</h2>
+
+                <p>La sous-commande <code>shell</code> prend les mêmes options que le serveur. Trois suffisent :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin shell -c odoo.conf -d ma_base --no-http --log-level=warn</code></pre>
+
+                <table class="tmc">
+                    <thead><tr><th>Option</th><th>Pourquoi</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>-c odoo.conf</code></td><td>Le même fichier que le serveur : chemin des modules, connexion PostgreSQL. Sans lui, la console ne trouve ni tes modules ni ta base.</td></tr>
+                        <tr><td><code>-d ma_base</code></td><td>La base à ouvrir. Oubliée (et absente du fichier de configuration), la console démarre quand même, mais sans <code>env</code> : elle affiche <code>No environment set, use `./odoo-bin shell -d dbname` to get one.</code></td></tr>
+                        <tr><td><code>--no-http</code></td><td>Interdit d'ouvrir le port HTTP. Sans elle, si le fichier de configuration a <code>workers</code> &gt; 0 (cas d'un serveur de production), la console tente d'ouvrir le port du serveur qui tourne et s'arrête sur <code>OSError: [Errno 98] Adresse déjà utilisée</code>. Avec <code>workers = 0</code>, le port n'est pas ouvert de toute façon : mets l'option toujours, elle ne coûte rien.</td></tr>
+                        <tr><td><code>--log-level=warn</code></td><td>Coupe la quinzaine de lignes <code>INFO</code> du démarrage (chargement des modules, du registre). Le journal sort sur la sortie d'erreur, tes <code>print()</code> sur la sortie standard : <code>2&gt;/dev/null</code> fait le même tri.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Lancée dans un terminal, la console liste ses variables puis donne l'invite Python :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : odoo-bin shell sur la base de démonstration ; la console affiche env, odoo, openerp et self res.users(1,), puis self.name renvoie 'OdooBot', env.su et env.lang renvoient (True, 'fr_FR'), et le nombre de contacts 43"/>
+                    <figcaption>Une session interactive : <code>self</code> est l'utilisateur 1, OdooBot, en mode superutilisateur.</figcaption>
+                </figure>
+
+                <p>Deux options de confort :</p>
+                <ul>
+                    <li><code>--shell-file=raccourcis.py</code> exécute un fichier au démarrage de la session interactive
+                        (il prime sur la variable <code>PYTHONSTARTUP</code>). Pratique pour retrouver tes raccourcis :</li>
+                </ul>
+<pre class="language-python"><code class="language-python"># raccourcis.py
+Partner = env['res.partner']
+SO = env['sale.order']
+acme = Partner.search([('name', '=', 'Acme Corporation')])</code></pre>
+<div class="out">&gt;&gt;&gt; acme, SO.search_count([])
+(res.partner(10,), 24)</div>
+                <ul>
+                    <li><code>--shell-interface=ipython</code> (ou <code>ptpython</code>, <code>bpython</code>) choisit
+                        une console plus confortable, à condition que le paquet soit installé <strong>dans
+                        l'environnement Python d'Odoo</strong>. Sinon, Odoo retombe sur la console Python standard
+                        <strong>sans le moindre message</strong> : l'erreur d'import est avalée
+                        (<code>odoo/cli/shell.py</code>). Si l'invite reste <code>&gt;&gt;&gt;</code>, c'est que
+                        <code>pip install ipython</code> manque dans ce venv.</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4>Le message « AutoReload watcher running »</h4>
+                    <p>Si ton fichier de configuration contient <code>dev_mode = reload</code>, la console démarre aussi
+                        le surveillant de fichiers et écrit au journal « AutoReload watcher running with inotify » puis
+                        « Initiating shutdown ». Ce n'est pas une erreur : le serveur intégré s'arrête aussitôt et laisse la place à la console.
+                        <code>--log-level=warn</code> le fait taire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ENV ET SELF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que la console te donne : <code>env</code>, <code>self</code>, <code>odoo</code></h2>
+
+                <table class="tmc">
+                    <thead><tr><th>Variable</th><th>Contenu</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>env</code></td><td>L'environnement ORM : <code>env['sale.order']</code>, <code>env.ref('base.user_demo')</code>, <code>env.cr</code> (le curseur), <code>env.context</code>.</td></tr>
+                        <tr><td><code>self</code></td><td><code>env.user</code>, c'est-à-dire <code>res.users(1,)</code> : l'utilisateur système, nommé OdooBot, <strong>pas</strong> l'administrateur.</td></tr>
+                        <tr><td><code>odoo</code> / <code>openerp</code></td><td>Le paquet <code>odoo</code> (le second n'est qu'un ancien alias), pour <code>odoo.fields</code>, <code>odoo.tools</code>…</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Le contexte est celui de l'utilisateur 1 (langue et fuseau) :</p>
+<pre class="language-python"><code class="language-python">print(self, self.login, env.uid, env.su)
+print(env.context)</code></pre>
+<div class="out">res.users(1,) __system__ 1 True
+{'lang': 'fr_FR', 'tz': 'Europe/Brussels', 'uid': 1}</div>
+
+                <div class="pitfall-box">
+                    <h4>Piège n°1 : tu es superutilisateur</h4>
+                    <p><code>env.su</code> vaut <code>True</code> : aucun droit d'accès, aucune restriction ne s'applique.
+                        Un « ça marche dans la console » ne prouve donc rien pour un utilisateur réel. Pour vérifier ce
+                        que voit un vendeur, change d'utilisateur :</p>
+<pre class="language-python"><code class="language-python">demo = env.ref('base.user_demo')
+Param = env['ir.config_parameter']
+print("superutilisateur :", Param.search_count([]))
+try:
+    print("Marc Demo :", Param.with_user(demo).search_count([]))
+except Exception as e:
+    print(type(e).__name__, "|", str(e).splitlines()[0])
+SO = env['sale.order']
+print(SO.with_user(demo).has_access('unlink'), SO.has_access('unlink'))</code></pre>
+<div class="out">superutilisateur : 25
+AccessError | Vous n'êtes pas autorisé à accéder aux enregistrements 'Paramètres système' (ir.config_parameter).'
+False True</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Lire : un script passé par <code>&lt;</code></h2>
+
+                <p>Taper ligne à ligne convient pour une question rapide. Dès que la vérification fait plus de trois
+                    lignes, écris-la dans un fichier et donne-le à la console par l'entrée standard. Un fichier
+                    <code>lire.py</code> sur les commandes de vente de la démo :</p>
+<pre class="language-python"><code class="language-python">SO = env['sale.order']
+print(SO.search_count([]), SO.search_count([('state', '=', 'sale')]))
+orders = SO.search([('state', '=', 'sale')], order='amount_total desc', limit=3)
+for o in orders:
+    print(o.name, '|', o.partner_id.name, '|', o.amount_total, o.currency_id.name, '|', len(o.order_line), 'lignes')
+print(orders[0].order_line.mapped('product_id.display_name'))
+print(orders[0].read(['name', 'state', 'date_order']))
+print(SO.browse(999999).exists())</code></pre>
+<pre class="language-bash"><code class="language-bash">./odoo-bin shell -c odoo.conf -d ma_base --no-http --log-level=warn &lt; lire.py</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : le script lire.py passé à odoo-bin shell affiche 24 commandes dont 19 confirmées, les trois plus grosses S00023 Gemini Furniture 4350.0 USD, S00020 Joel Willis 3389.63 USD, S00004 Gemini Furniture 2240.0 USD, les articles de S00023, le résultat de read et un recordset vide sale.order()"/>
+                    <figcaption>Le script s'exécute d'une traite, la console se ferme à la fin : seuls les <code>print()</code> s'affichent.</figcaption>
+                </figure>
+
+                <ul>
+                    <li><code>search()</code> rend un <em>recordset</em> ; on lit ses champs par attribut, et les champs
+                        relationnels se suivent (<code>o.partner_id.name</code>) sans écrire de jointure.</li>
+                    <li><code>mapped('product_id.display_name')</code> parcourt un chemin sur toutes les lignes d'un coup.</li>
+                    <li><code>read()</code> rend des dictionnaires, utile pour voir les valeurs brutes.</li>
+                    <li><code>browse(999999)</code> ne vérifie rien : il fabrique un recordset sur cet identifiant.
+                        <code>exists()</code> filtre ce qui existe vraiment en base, ici rien.</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4>Piège n°2 : sans <code>print()</code>, rien ne s'affiche</h4>
+                    <p>Avec une entrée redirigée, la console ne lance pas d'invite interactive : elle lit tout le fichier
+                        et l'exécute comme un module Python (<code>exec</code>). Une expression seule n'est donc jamais
+                        affichée :</p>
+<pre class="language-bash"><code class="language-bash">echo "env['res.partner'].search_count([])" | ./odoo-bin shell -c odoo.conf -d ma_base --no-http --log-level=warn
+echo "print(env['res.partner'].search_count([]))" | ./odoo-bin shell -c odoo.conf -d ma_base --no-http --log-level=warn</code></pre>
+<div class="out">43</div>
+                    <p>La première commande n'affiche rien, la seconde 43. Même règle : <code>--shell-file</code> est
+                        ignoré dans ce mode. Si le script lève une exception, la console affiche la trace et sort avec le
+                        code 1, ce qui permet de l'enchaîner dans un script shell.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. ÉCRIRE ET VALIDER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Écrire, puis valider : <code>env.cr.commit()</code></h2>
+
+                <p>Écrire se fait comme dans un module : on affecte le champ, ou on appelle <code>write()</code>. Le
+                    script <code>ecrit.py</code> pose une référence interne sur le contact Acme Corporation :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+print("avant :", acme.ref)
+acme.ref = "CLI-0042"
+print("après :", acme.ref)</code></pre>
+
+                <p>La session affiche bien la nouvelle valeur. Puis un second script, <code>relit.py</code>, relit le
+                    contact dans un nouveau processus, et la référence n'y est pas. Il faut ajouter
+                    <code>env.cr.commit()</code> pour qu'elle soit écrite :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+acme.ref = "CLI-0042"
+env.cr.commit()
+print("validé :", acme.ref)</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : ecrit.py affiche avant False puis après CLI-0042 ; relit.py affiche en base False ; ecrit_commit.py affiche validé CLI-0042 ; relit.py affiche en base CLI-0042"/>
+                    <figcaption>Sans <code>commit</code>, l'écriture n'existe que dans la session qui l'a faite. Avec, elle est en base.</figcaption>
+                </figure>
+
+                <p>La console ouvre une transaction et ne la valide jamais d'elle-même : elle l'annule
+                    (<code>cr.rollback()</code>) juste avant de te donner la main et juste après que tu l'as rendue,
+                    que tu quittes par <kbd>Ctrl</kbd>+<kbd>D</kbd> ou que ton script se termine
+                    (<code>odoo/cli/shell.py</code>). C'est une sécurité : tu peux tout essayer, rien ne reste.
+                    Les deux commandes à retenir :</p>
+                <table class="tmc">
+                    <thead><tr><th>Commande</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>env.cr.commit()</code></td><td>Écrit en base tout ce qui a été fait depuis le dernier <code>commit</code> ou <code>rollback</code>. Définitif.</td></tr>
+                        <tr><td><code>env.cr.rollback()</code></td><td>Annule tout ce qui n'a pas été validé, et ouvre une nouvelle transaction.</td></tr>
+                        <tr><td><code>with env.cr.savepoint():</code></td><td>Un point de reprise : si le bloc lève une exception, seul ce bloc est annulé (section 7).</td></tr>
+                    </tbody>
+                </table>
+                <p>La bonne habitude pour une correction : faire, <strong>relire</strong>, puis seulement valider.
+                    Tant que le <code>commit</code> n'est pas passé, un <code>rollback</code> rattrape tout.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. INSTALLER UN MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Installer et désinstaller un module depuis la console</h2>
+
+                <p>Un module est un enregistrement de <code>ir.module.module</code>. Le bouton « Activer » de l'écran
+                    Applications appelle <code>button_immediate_install()</code> ; la console peut faire de même.
+                    Avec le module des dates d'expiration, <code>product_expiry</code> :</p>
+<pre class="language-python"><code class="language-python">Module = env['ir.module.module']
+avant = set(Module.search([('state', '=', 'installed')]).mapped('name'))
+Module.search([('name', '=', 'product_expiry')]).button_immediate_install()
+apres = set(Module.search([('state', '=', 'installed')]).mapped('name'))
+print("installés :", sorted(apres - avant))
+print('use_expiration_date' in env['product.template']._fields)</code></pre>
+<div class="out">installés : ['product_expiry', 'sale_stock_product_expiry']
+True</div>
+
+                <ul>
+                    <li>Les dépendances et les modules d'auto-installation suivent : ici le pont
+                        <code>sale_stock_product_expiry</code>, puisque Ventes et Inventaire sont déjà là.</li>
+                    <li>Odoo recharge le registre : dans la même session, <code>product.template</code> connaît déjà le
+                        nouveau champ.</li>
+                    <li>Désinstaller, c'est <code>button_immediate_uninstall()</code> sur le même enregistrement ; les
+                        modules qui en dépendent partent avec :</li>
+                </ul>
+<pre class="language-python"><code class="language-python">Module = env['ir.module.module']
+avant = set(Module.search([('state', '=', 'installed')]).mapped('name'))
+Module.search([('name', '=', 'product_expiry')]).button_immediate_uninstall()
+apres = set(Module.search([('state', '=', 'installed')]).mapped('name'))
+print("désinstallés :", sorted(avant - apres))
+print('use_expiration_date' in env['product.template']._fields)</code></pre>
+<div class="out">désinstallés : ['product_expiry', 'sale_stock_product_expiry']
+False</div>
+
+                <p>Sans le mot <em>immediate</em>, <code>button_install()</code> ne fait que <strong>marquer</strong>
+                    le module : son état passe à <code>'to install'</code>, aucun modèle n'est créé
+                    (<code>'stock.landed.cost' in env</code> reste <code>False</code> pour <code>stock_landed_costs</code>),
+                    et l'installation attend le prochain démarrage avec mise à jour.</p>
+
+                <div class="pitfall-box">
+                    <h4>Piège n°3 : l'installation valide toute ta transaction</h4>
+                    <p>Avant d'installer, <code>button_immediate_install()</code> appelle lui-même
+                        <code>self.env.cr.commit()</code>, puis recharge le registre
+                        (<code>odoo/addons/base/models/ir_module.py</code>, <code>_button_immediate_function</code>).
+                        Tout ce que la session avait écrit sans le valider part en base avec lui, et le
+                        <code>rollback</code> qui suit n'annule plus rien :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+acme.ref = "BROUILLON-7"        # un essai, jamais validé
+
+env['ir.module.module'].search([('name', '=', 'product_expiry')]).button_immediate_install()
+
+env.cr.rollback()               # on croit tout annuler…
+print("après rollback :", acme.ref)</code></pre>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Terminal : piege_install.py affiche après rollback BROUILLON-7, puis relit.py dans un nouveau processus affiche en base BROUILLON-7"/>
+                        <figcaption>L'essai « jamais validé » est en base : l'installation l'a validé au passage.</figcaption>
+                    </figure>
+                    <p>Règle simple : installer ou désinstaller dans une session <strong>propre</strong>, juste après un
+                        <code>commit</code> ou un <code>rollback</code> volontaire. Même chose pour
+                        <code>button_immediate_upgrade()</code>, qui passe par la même fonction.</p>
+                </div>
+
+                <p>Pour un déploiement, la ligne de commande reste la voie normale : les options <code>-i</code> et
+                    <code>-u</code> avec <code>--stop-after-init</code>, ou la sous-commande
+                    <code>odoo-bin module</code>. Elles font l'objet d'un article à part de la série. La console sert
+                    quand tu es déjà dedans et veux enchaîner : installer, puis vérifier aussitôt le résultat en Python.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. L'INSTANTANÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La console ne voit pas les écritures des autres</h2>
+
+                <p>Odoo ouvre ses connexions PostgreSQL en isolation <code>REPEATABLE READ</code>
+                    (<code>odoo/sql_db.py</code>) : dès sa première requête, une transaction lit un <strong>instantané</strong>
+                    figé de la base. Ce qu'un utilisateur valide dans le navigateur pendant ce temps reste invisible à la
+                    console. Pour le montrer, le script simule cet utilisateur avec une seconde connexion, validée à la
+                    sortie du bloc <code>with</code> :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+print("lu par la session :", acme.ref)
+
+# une autre connexion écrit et valide (comme le navigateur ou un second shell)
+with env.registry.cursor() as autre_cr:
+    autre_cr.execute("UPDATE res_partner SET ref = 'WEB-0007' WHERE id = %s", [acme.id])
+
+env.invalidate_all()
+print("après invalidate_all :", acme.ref)
+env.cr.rollback()
+print("après rollback :", acme.ref)</code></pre>
+<div class="out">lu par la session : False
+après invalidate_all : False
+après rollback : WEB-0007</div>
+
+                <p>Vider le cache de l'ORM (<code>invalidate_all()</code>) ne suffit pas : Odoo relit bien la base,
+                    mais dans le même instantané. Seule une nouvelle transaction, après <code>rollback()</code> ou
+                    <code>commit()</code>, voit la nouvelle valeur. Dans une session interactive qui dure, fais un
+                    <code>env.cr.rollback()</code> avant de relire une donnée que quelqu'un a pu changer entre-temps.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. TRANSACTION AVORTÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Après une erreur SQL, la transaction est morte</h2>
+
+                <p>Dans la console interactive, une exception ne ferme pas la session : tu gardes la main. Mais si
+                    l'erreur vient de PostgreSQL (clé étrangère, contrainte d'unicité…), la transaction entière est
+                    perdue et toutes les requêtes suivantes échouent :</p>
+<pre class="language-python"><code class="language-python">P = env['res.partner']
+try:
+    P.create({'name': "Contact test", 'country_id': 999999})
+    env.flush_all()
+except Exception as e:
+    print(type(e).__name__, "|", str(e).splitlines()[0])
+try:
+    print(P.search_count([]))
+except Exception as e:
+    print(type(e).__name__, "|", str(e).splitlines()[0])
+env.cr.rollback()
+print(P.search_count([]))</code></pre>
+<div class="out">ForeignKeyViolation | insert or update on table "res_partner" violates foreign key constraint "res_partner_country_id_fkey"
+InFailedSqlTransaction | current transaction is aborted, commands ignored until end of transaction block
+43</div>
+
+                <p>Le message <code>current transaction is aborted</code> ne désigne pas la requête fautive mais la
+                    suivante : la vraie cause est plus haut. Le remède, <code>env.cr.rollback()</code>, efface aussi tes
+                    écritures non validées. Pour tenter une opération risquée sans tout perdre, entoure-la d'un point de
+                    reprise :</p>
+<pre class="language-python"><code class="language-python">P = env['res.partner']
+try:
+    with env.cr.savepoint():
+        P.create({'name': "Contact test", 'country_id': 999999})
+except Exception as e:
+    print(type(e).__name__)
+print(P.search_count([]))</code></pre>
+<div class="out">ForeignKeyViolation
+43</div>
+                <p>Seul le bloc est annulé, la session continue sans <code>rollback</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. TÂCHE PLANIFIÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Lancer une tâche planifiée depuis la console</h2>
+
+                <p><code>method_direct_trigger()</code> est la méthode du bouton « Exécuter manuellement » d'une action
+                    planifiée (<code>ir.cron</code>). Elle n'exécute pas la tâche dans ta transaction : elle ouvre
+                    <strong>un nouveau curseur</strong>, comme le ferait le planificateur
+                    (<code>odoo/addons/base/models/ir_cron.py</code>). Deux conséquences.</p>
+
+                <p>Pour l'essai, une tâche dont le code écrit la référence d'Acme Corporation, créée et validée
+                    depuis la console (la tâche, lancée dans une autre transaction, doit pouvoir la lire) :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+cron = env['ir.cron'].create({
+    'name': "Sonde shell : référence Acme",
+    'model_id': env.ref('base.model_res_partner').id,
+    'state': 'code',
+    'code': f"env['res.partner'].browse({acme.id}).write({{'ref': 'CRON-0001'}})",
+    'interval_number': 1, 'interval_type': 'days',
+})
+env.cr.commit()</code></pre>
+
+                <p><strong>Le résultat t'est invisible.</strong> Dans une nouvelle session :</p>
+<pre class="language-python"><code class="language-python">acme = env['res.partner'].search([('name', '=', 'Acme Corporation')])
+cron = env['ir.cron'].search([('name', '=', "Sonde shell : référence Acme")])
+print("avant :", acme.ref)
+cron.method_direct_trigger()
+print("après la tâche :", acme.ref)
+env.cr.rollback()
+print("après rollback :", acme.ref)</code></pre>
+<div class="out">avant : False
+après la tâche : False
+après rollback : CRON-0001</div>
+                <p>C'est l'instantané de la section 6 : la tâche a validé dans sa propre transaction, la tienne ne le
+                    voit qu'après un <code>rollback</code>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Piège n°4 : la console qui se fige</h4>
+                    <p>Si ta session a modifié <strong>sans les valider</strong> les enregistrements que la tâche va
+                        écrire (ici, <code>acme.ref = "LOCAL-0001"</code> juste avant <code>method_direct_trigger()</code>),
+                        la tâche attend que ta transaction libère la ligne, et ta transaction attend la fin de la tâche.
+                        La console ne rend jamais la main. Vu depuis PostgreSQL :</p>
+<pre class="language-sql"><code class="language-sql">SELECT pid, state, wait_event_type, left(regexp_replace(query, '\s+', ' ', 'g'), 45) AS requete
+  FROM pg_stat_activity
+ WHERE datname = current_database() AND pid &lt;&gt; pg_backend_pid();</code></pre>
+<div class="out">  pid   |        state        | wait_event_type |                    requete
+--------+---------------------+-----------------+-----------------------------------------------
+ 865523 | idle in transaction | Client          |  DELETE FROM ir_cron_trigger WHERE cron_id =
+ 865524 | active              | Lock            |  UPDATE "res_partner" SET "ref" = "__tmp"."re</div>
+                    <p>La connexion de la console est « idle in transaction », celle de la tâche attend un verrou
+                        (<code>Lock</code>). Un signal d'interruption n'y change rien : il a fallu tuer le processus.
+                        La parade : <code>env.cr.commit()</code> (ou <code>rollback()</code>) avant de déclencher une
+                        tâche.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Ouvrir la console</td><td><code>odoo-bin shell -c odoo.conf -d ma_base --no-http --log-level=warn</code></td></tr>
+                        <tr><td>Exécuter un fichier</td><td><code>… &lt; script.py</code>, avec des <code>print()</code> ; code de sortie 1 en cas d'exception</td></tr>
+                        <tr><td>Raccourcis au démarrage</td><td><code>--shell-file=raccourcis.py</code> (session interactive seulement)</td></tr>
+                        <tr><td>Tester comme un utilisateur</td><td><code>env['modele'].with_user(env.ref('base.user_demo'))</code></td></tr>
+                        <tr><td>Écrire pour de bon</td><td><code>env.cr.commit()</code> ; rien n'est validé sans lui</td></tr>
+                        <tr><td>Annuler / relire du neuf</td><td><code>env.cr.rollback()</code></td></tr>
+                        <tr><td>Essai risqué</td><td><code>with env.cr.savepoint():</code></td></tr>
+                        <tr><td>Installer / désinstaller</td><td><code>button_immediate_install()</code> / <code>button_immediate_uninstall()</code> sur <code>ir.module.module</code>, dans une session propre (elles valident tout)</td></tr>
+                        <tr><td>Lancer une action planifiée</td><td><code>commit()</code> d'abord, puis <code>cron.method_direct_trigger()</code>, puis <code>rollback()</code> pour voir le résultat</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>odoo-bin shell</code> donne <code>env</code> et <code>self</code> sur une base, en superutilisateur : les droits ne s'y appliquent pas, <code>with_user()</code> les rétablit.</li>
+                    <li>Un script passé par <code>&lt;</code> s'exécute d'une traite ; seuls les <code>print()</code> s'affichent.</li>
+                    <li>La console annule tout à l'entrée et à la sortie : sans <code>env.cr.commit()</code>, rien n'est écrit.</li>
+                    <li><code>button_immediate_install()</code> installe un module depuis la console, mais valide au passage tout ce qui traînait dans la transaction.</li>
+                    <li>La session lit un instantané figé : <code>rollback()</code> pour voir les écritures des autres, celles d'une tâche planifiée comprises.</li>
+                    <li>Après une erreur SQL, la transaction est perdue jusqu'au <code>rollback()</code> ; un <code>savepoint()</code> limite les dégâts.</li>
+                </ul>
+                <p class="mb-0">Les autres articles de la série « L'ORM Odoo 20 en pratique » partent tous de cette
+                    console : recordsets, domaines, création et écriture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration Ventes + Inventaire en français ; sorties collées telles
+                    quelles. Comparaison avec la branche 19.0 publique relue le même jour : le shell lui-même n'a pas
+                    changé de comportement. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/shell.py" target="_blank" rel="noopener"><code>odoo/cli/shell.py</code></a> : variables exposées, utilisateur, <code>rollback</code> avant et après la console, exécution de l'entrée redirigée, choix de la console</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_module.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_module.py</code></a> : <code>button_install</code>, <code>button_immediate_install</code>, <code>_button_immediate_function</code> et son <code>commit</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_cron.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_cron.py</code></a> : <code>method_direct_trigger</code> et le curseur dédié de la tâche</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/sql_db.py" target="_blank" rel="noopener"><code>odoo/sql_db.py</code></a> : isolation <code>REPEATABLE READ</code>, <code>commit</code>, <code>savepoint</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/creer-premier-module-odoo-20-179">Créer son premier module Odoo 20 : le modèle Livre</a></h5>
+                            <p class="small text-muted mb-0">La série Bibliothèque : chaque étape y est vérifiée dans cette console.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/retards-cron-odoo-20-183">Les retards en Odoo 20 : compteurs et action planifiée</a></h5>
+                            <p class="small text-muted mb-0">Déclarer une action planifiée et la tester.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">odoo-bin shell : la console cachée d'Odoo</a></h5>
+                            <p class="small text-muted mb-0">La même console pour la version 19, et quinze motifs ORM.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,583 @@
+<!--
+Article — Installer, mettre à jour, désinstaller un module Odoo 20 en CLI
+Série « La ligne de commande Odoo 20 » (blog Développement)
+Date : 2026-10-07
+Slug : module-ligne-de-commande-odoo-20
+Mot-clé cible : odoo command line uninstall module / odoo -u
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~14 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82, module.py identique à la 20.0 publique b5daa9bf), PostgreSQL 16,
+base de démonstration (sale_management + stock, fr_FR) et quatre copies jetables, fichier de configuration sans dev_mode, workers = 0.
+Preuves :
+  - odoo-bin module --help / install --help / upgrade --help : sorties réelles (help_*.txt).
+  - odoo/cli/module.py:52-57 (list), :73-74 (-D), :80-81 (-n/--dry-run), :102-106 (--outdated), :110 (--no-http ajouté d'office),
+    :147-152 (show_modules : latest_version = version en base, installed_version = version sur disque), :154-232.
+  - 19.0 publique (8191f184, raw GitHub 07/10) odoo/cli/module.py : 4 sous-commandes (install, upgrade, uninstall, force-demo),
+    pas de -n ; -D/--data-dir PRÉSENT (:65) → pas présenté comme écart. --outdated présent en 19.
+  - --stop alias de --stop-after-init : 20 config.py:467 ; 19.0 publique config.py:433 = --stop-after-init seul.
+  - --no-http : server.py:529 (threadé : http_spawn seulement si test_enable ou (http_enable and not stop)) ; PreforkServer.run
+    :1105-1106 start() → socket.create_server :973 avant preload. Essai serveur sur 9057 : threadé sans --no-http rc 0 ;
+    --workers=2 rc 1 OSError Errno 98 ; --workers=2 --no-http rc 0 (t04.txt).
+  - Durées (/usr/bin/time) : module list 1,0 s ; install -n purchase 1,4 s ; module install purchase 8,2 s / 7,7 s (5 modules) ;
+    -i purchase --stop-after-init 7,3 s ; uninstall -n 1,4 s ; module uninstall purchase 5,1 s / 4,7 s ; -u sale 5,6 s (11 modules) ;
+    -u all 37,9 s (74 modules, 0 WARNING) ; base neuve -i sale_management sans démo 21,9 s (59 modules) ; force-demo 9,8 s.
+  - Désinstallation purchase : rc 0 avec 1 ligne ERROR (FK stock_package), purchase.order supprimés, tables purchase_order* supprimées,
+    stock.package PAL0000001 restant (xmlid purchase_stock) ; réinstallation immédiate : rc 1, ParseError purchase_stock_demo.xml:84
+    (stock_picking.py:685), purchase installé / purchase_stock non. Reproduit sur deux copies.
+  - Faute de frappe : -i/-u purchse → WARNING « invalid module names, ignored », rc 0 ; module install purchse → WARNING
+    « manifest not found », rc 0 ; module uninstall purchse → rien, rc 0. Module cassé : -i rc 255, module install rc 1.
+  - module uninstall base → UserError « Ces modules ne peuvent pas être désinstallés : base » (ir_module.py:676-681), rc 1.
+  - force_demo : loading.py:87-111 (UPDATE ir_module_module SET demo=True, auth_password_policy.minlength = 4).
+  - -u sale réécrit la séquence du menu sale.sale_menu_root (1 → 30, sale/views/sale_menus.xml:8), sortie shell réelle.
+  - _button_immediate_function : ir_module.py:608-646 (lock_timeout 3 s, verrou, commit).
+Captures : content/blog/screenshots/module-ligne-de-commande-odoo-20/ (01-04)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</h1>
+                <p class="lead mt-3 text-white">Pas d'écran Applications sur un serveur : on installe avec <code>-i</code>,
+                    on met à jour avec <code>-u</code>, et Odoo 20 ajoute à la sous-commande <code>odoo-bin module</code>
+                    une liste des modules et un mode « à blanc » qui montre ce qui va bouger avant de le faire. Avec,
+                    pour chaque commande, sa durée réelle et ce que son code de sortie ne dit pas.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lancer</h4>
+                        <p><code>-i</code>, <code>-u</code>, <code>--stop-after-init</code>, <code>--no-http</code>, et la sous-commande <code>odoo-bin module</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Prévoir</h4>
+                        <p><code>module list</code> et <code>--dry-run</code> : voir les modules entraînés avant d'installer, de mettre à jour ou de désinstaller.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Vérifier</h4>
+                        <p>Lire le journal, parce qu'un code de sortie 0 ne prouve rien, et mesurer ce que coûte un <code>-u all</code>.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 installé, avec son fichier de configuration <code>odoo.conf</code> (chemins des modules,
+                            accès PostgreSQL) : voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu</a> ou <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">sur un serveur Ubuntu</a>.</li>
+                        <li>Une base de démonstration, appelée ici <code>ma_base</code> : Ventes et Inventaire installés, en français.
+                            Tous les essais destructifs ont été faits sur des copies jetables ; fais de même
+                            (<code>createdb -T ma_base ma_base_essai</code> et copie du dossier <code>filestore/ma_base</code>).</li>
+                        <li>Les commandes sont lancées depuis le dossier des sources, d'où <code>./odoo-bin</code>. Les durées
+                            citées viennent d'un poste de développement, avec <code>workers = 0</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. -i / -u ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les options du serveur : <code>-i</code>, <code>-u</code>, <code>--stop-after-init</code></h2>
+
+                <p>La forme historique passe par le serveur lui-même : il charge la base, installe ou met à jour, puis
+                    continue de servir les pages. Avec <code>--stop-after-init</code>, il s'arrête dès que la base est prête :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base -i purchase --stop-after-init --no-http
+./odoo-bin -c odoo.conf -d ma_base -u sale --stop-after-init --no-http</code></pre>
+
+                <table class="tmc">
+                    <thead><tr><th>Option</th><th>Effet</th><th>Mesuré sur la base de démonstration</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>-i purchase</code></td><td>Installe le module, ses dépendances manquantes et les modules
+                            « pont » qui s'installent d'eux-mêmes (<code>auto_install</code>). Plusieurs modules : <code>-i a,b</code>.
+                            Si la base n'existe pas, elle est créée.</td><td>5 modules (<code>purchase</code>, <code>purchase_stock</code>,
+                            <code>sale_purchase</code>…), 7,3 s. Une base neuve <code>-i sale_management</code> : 59 modules, 21,9 s.</td></tr>
+                        <tr><td><code>-u sale</code></td><td>Recharge le code et les fichiers de données du module <strong>et de
+                            tous les modules installés qui en dépendent</strong>.</td><td>11 modules rechargés pour <code>sale</code>, 5,6 s.</td></tr>
+                        <tr><td><code>--stop-after-init</code></td><td>Quitte une fois la base chargée. Odoo 20 accepte aussi
+                            la forme courte <code>--stop</code>.</td><td>—</td></tr>
+                        <tr><td><code>--no-http</code></td><td>N'ouvre pas le port HTTP. Voir ci-dessous.</td><td>—</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Pourquoi <code>--no-http</code>, puisque le serveur s'arrête de toute façon ? Tout dépend du mode du
+                    serveur. En mode threadé (<code>workers = 0</code>), un lancement avec <code>--stop-after-init</code>
+                    n'ouvre jamais le port (<code>odoo/service/server.py</code>, méthode <code>start</code>). En mode
+                    multi-processus (<code>workers &gt; 0</code>, le cas d'une production), le serveur ouvre le port
+                    <strong>avant</strong> de charger la base. Si le service tourne déjà sur ce port, la commande s'arrête
+                    net, sans avoir rien mis à jour :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : trois mises à jour de mon_module alors qu'un serveur écoute déjà le port 9057. Mode threadé : code de sortie 0. Avec --workers=2 : code de sortie 1 et OSError [Errno 98] Adresse déjà utilisée. Avec --workers=2 --no-http : code de sortie 0"/>
+                    <figcaption>Un serveur tourne sur le port 9057. Seule la commande en mode multi-processus sans <code>--no-http</code> échoue.</figcaption>
+                </figure>
+
+                <p>Mets donc <code>--no-http</code> sur toute commande ponctuelle : elle ne coûte rien en mode threadé et
+                    t'évite l'erreur le jour où le fichier de configuration passe en <code>workers = 4</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. odoo-bin module ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La sous-commande <code>odoo-bin module</code></h2>
+
+                <p>Plutôt que de démarrer un serveur pour l'arrêter aussitôt, <code>odoo-bin module</code> fait une seule
+                    chose et rend la main :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module --help</code></pre>
+<div class="out">positional arguments:
+  {install,upgrade,uninstall,force-demo,list}
+                        Subcommands help
+    install             Install modules
+    upgrade             Upgrade modules
+    uninstall           Uninstall modules
+    force-demo          Install demo data (force)
+    list                List modules</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Commande</th><th>Ce qu'elle appelle</th><th>Durée mesurée</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>module install purchase</code></td><td><code>button_immediate_install()</code>, comme le bouton Activer de l'écran Applications</td><td>8,2 s (5 modules)</td></tr>
+                        <tr><td><code>module upgrade sale</code> / <code>module upgrade all</code></td><td><code>button_immediate_upgrade()</code></td><td>—</td></tr>
+                        <tr><td><code>module uninstall purchase</code></td><td><code>button_immediate_uninstall()</code></td><td>5,1 s</td></tr>
+                        <tr><td><code>module force-demo</code></td><td>charge les données de démonstration de tous les modules installés</td><td>9,8 s (59 modules)</td></tr>
+                        <tr><td><code>module list</code></td><td>lecture seule</td><td>1,0 s</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Trois règles la distinguent de <code>-i</code> et <code>-u</code> :</p>
+                <ul>
+                    <li><strong>Elle n'accepte que <code>-c</code>, <code>-d</code> et <code>-D</code></strong> (dossier de
+                        données). Tout le reste, chemins des modules, niveau de journal, mot de passe PostgreSQL, vient du
+                        fichier de configuration. <code>module list --log-level=warn</code> s'arrête sur
+                        <code>error: unrecognized arguments: --log-level=warn</code>. Seule exception : <code>--addons-path=…</code>
+                        placé <em>avant</em> le mot <code>module</code> est pris en compte.</li>
+                    <li><strong>Sans <code>-c</code>, elle ne lit pas ton <code>odoo.conf</code></strong> : elle prend les
+                        réglages par défaut et cherche PostgreSQL sur le port 5432 du socket local.</li>
+                    <li><strong>Elle ne crée pas la base</strong> : le texte d'aide renvoie à <code>odoo-bin db init</code>.
+                        Elle ajoute d'elle-même <code>--no-http</code>.</li>
+                </ul>
+
+                <p>Une installation réussie n'écrit rien sur la sortie standard : tout part dans le journal, sur la sortie
+                    d'erreur. C'est ce qui permet de filtrer proprement la sortie de <code>module list</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. module list ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>module list</code> : ce qui est installé, et à quelle version</h2>
+
+                <p>Une ligne par module installé, puis une ligne par module en attente (à installer, à mettre à jour, à
+                    retirer) s'il en reste. Le journal part sur la sortie d'erreur : <code>2&gt;/dev/null</code> laisse une
+                    liste qu'on peut passer à <code>grep</code> ou <code>wc</code>.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : module list affiche sale_management 20.0.1.0 20.0.1.0 'installed' Sales, account, stock, mail, stock_account, base_address_extended ; wc -l compte 70 modules ; grep mon_module affiche mon_module 20.0.1.1.0 20.0.1.2.0 'installed' Mon module"/>
+                    <figcaption>Les deux colonnes de version diffèrent pour <code>mon_module</code> : son manifeste est passé en 1.2 sur le disque, la base en est restée à 1.1.</figcaption>
+                </figure>
+
+                <table class="tmc">
+                    <thead><tr><th>Colonne</th><th>Contenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>Nom technique du module.</td></tr>
+                        <tr><td>2</td><td>Version <strong>enregistrée en base</strong> (champ <code>latest_version</code>) : celle de la dernière installation ou mise à jour.</td></tr>
+                        <tr><td>3</td><td>Version <strong>du manifeste sur le disque</strong> (champ <code>installed_version</code>, calculé). Un module absent du chemin des modules y affiche la valeur par défaut, pas une erreur.</td></tr>
+                        <tr><td>4</td><td>État : <code>'installed'</code>, <code>'to install'</code>, <code>'to upgrade'</code>, <code>'to remove'</code>.</td></tr>
+                        <tr><td>5</td><td>Nom court du module, en anglais.</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Les applications sortent en tête (<code>_order = 'application desc,sequence,name'</code>), puis le reste
+                    par ordre alphabétique. Le cas utile au quotidien est celui de la figure : après un <code>git pull</code>,
+                    les lignes dont les colonnes 2 et 3 diffèrent sont les modules à mettre à jour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. dry-run ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>--dry-run</code> : voir avant de faire</h2>
+
+                <p><code>install</code>, <code>upgrade</code> et <code>uninstall</code> acceptent <code>-n</code> ou
+                    <code>--dry-run</code>. Odoo marque les modules comme le ferait l'opération réelle, affiche tous ceux qui
+                    changeraient d'état, puis annule la transaction. Installer les Achats sur une base qui a Ventes et
+                    Inventaire :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module install -n purchase -c odoo.conf -d ma_base 2&gt;/dev/null</code></pre>
+<div class="out">purchase - 20.0.1.2 'to install' Purchase
+purchase_stock - 20.0.1.2 'to install' Purchase Stock
+purchase_edi_ubl_bis3 - 20.0.1.0 'to install' Import/Export electronic orders with UBL
+sale_purchase - 20.0.1.0 'to install' Sale Purchase
+sale_purchase_stock - 20.0.1.0 'to install' MTO Sale &lt;-&gt; Purchase</div>
+
+                <p>Un module demandé, cinq installés : les quatre autres sont des modules <code>auto_install</code> qui
+                    relient les Achats à ce qui est déjà là. Le tiret de la deuxième colonne dit qu'aucune version n'est
+                    encore en base. Après la simulation (1,4 s), rien n'a bougé : <code>purchase</code> est toujours
+                    <code>uninstalled</code>.</p>
+
+                <p>Pour une mise à jour, la simulation montre les modules dépendants que <code>-u</code> rechargera :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module upgrade -n stock -c odoo.conf -d ma_base 2&gt;/dev/null</code></pre>
+<div class="out">stock 20.0.1.1 20.0.1.1 'to upgrade' Inventory
+stock_account 20.0.1.1 20.0.1.1 'to upgrade' WMS Accounting
+sale_stock 20.0.1.0 20.0.1.0 'to upgrade' Sales and Warehouse Management
+sale_stock_margin 20.0.1.0 20.0.1.0 'to upgrade' Sale Stock Margin
+spreadsheet_dashboard_stock_account 20.0.1.0 20.0.1.0 'to upgrade' Spreadsheet dashboard for stock
+stock_sms 20.0.1.0 20.0.1.0 'to upgrade' Stock - SMS</div>
+
+                <p>Et l'option <code>--outdated</code> de <code>upgrade</code> ne garde que les modules dont le manifeste
+                    sur disque est plus récent que la version en base. Combinée à <code>all</code> et à <code>-n</code>,
+                    elle répond à « que faut-il mettre à jour après ce déploiement ? » :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module upgrade --outdated -n all -c odoo.conf -d ma_base 2&gt;/dev/null</code></pre>
+<div class="out">mon_module 20.0.1.0.0 20.0.1.1.0 'to upgrade' Mon module</div>
+
+                <p>Sans <code>-n</code>, la même commande met à jour ce seul module au lieu des 70 installés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. désinstaller ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Désinstaller : les dépendances partent avec</h2>
+
+                <p>Il n'y a pas d'option du serveur pour désinstaller : c'est <code>odoo-bin module uninstall</code>, ou
+                    <code>button_immediate_uninstall()</code> depuis la console. Désinstaller un module retire aussi
+                    <strong>tous les modules installés qui en dépendent</strong>, sans question. La simulation le montre :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : module uninstall --dry-run stock liste six modules 'to remove' : stock, stock_account, sale_stock, sale_stock_margin, spreadsheet_dashboard_stock_account, stock_sms ; ensuite module list compte encore 1 ligne stock et 0 ligne to remove"/>
+                    <figcaption>Retirer l'Inventaire emporterait cinq autres modules, dont le lien Ventes-Inventaire. Après la simulation, <code>stock</code> est toujours installé et rien n'est en attente.</figcaption>
+                </figure>
+
+                <p>Ce que la désinstallation réelle supprime : les enregistrements créés par les modules retirés (vues,
+                    menus, droits, groupes, modèles de courriel… et leurs données de démonstration), puis les tables et les
+                    colonnes de leurs modèles. Sur la copie où les Achats venaient d'être installés,
+                    <code>module uninstall purchase</code> a pris 4,7 s et supprimé les 13 bons de commande, les réceptions
+                    liées et les tables <code>purchase_order</code> et <code>purchase_order_line</code>. Les bons de commande
+                    saisis à la main partent de la même façon, avec la table : une sauvegarde d'abord.</p>
+
+                <p>Le journal de cette désinstallation mérite d'être lu :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Terminal : module uninstall purchase renvoie le code de sortie 0 ; grep compte 1 ligne ERROR dans le journal : bad query DELETE FROM stock_package WHERE id IN (2), violation de la clé étrangère stock_move_line_result_package_id_fkey ; suivent les suppressions de purchase.order 13, 12 à 5, 4 et 3, 2 et 1, puis Reloading registry once more after uninstalling modules"/>
+                    <figcaption>Code de sortie 0, et pourtant une erreur SQL : un colis créé par les données de démonstration de <code>purchase_stock</code> n'a pas pu être supprimé.</figcaption>
+                </figure>
+
+                <p>La désinstallation va jusqu'au bout, mais le colis <code>PAL0000001</code> reste en base, rattaché à un
+                    identifiant externe d'un module désinstallé.</p>
+
+                <div class="pitfall-box">
+                    <h4>Désinstaller n'est pas annuler</h4>
+                    <p>Sur deux copies, réinstaller les Achats juste après les avoir désinstallés a échoué (code de sortie 1) :
+                        les données de démonstration de <code>purchase_stock</code> retrouvent un transfert laissé par la
+                        première installation et s'arrêtent sur <code>UserError: Modifier le type d'opération de cet
+                        enregistrement est interdit à ce stade</code>. La base reste à moitié installée : <code>purchase</code>
+                        installé, <code>purchase_stock</code> non. Pour tester un module, travaille sur une copie de la base et
+                        jette-la ; ne compte pas sur la désinstallation pour revenir en arrière.</p>
+                </div>
+
+                <p>Deux refus, eux, sont francs (code de sortie 1, <code>UserError</code> dans le journal) :
+                    <code>module uninstall base</code> (« Ces modules ne peuvent pas être désinstallés : base ») et la
+                    désinstallation d'un module déjà désinstallé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. Lire le journal ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lire le journal : un code 0 ne prouve rien</h2>
+
+                <p>Dans un script de déploiement, on est tenté de s'arrêter au code de sortie. Voici ce qu'il vaut, essai
+                    par essai :</p>
+
+                <table class="tmc">
+                    <thead><tr><th>Commande</th><th>Code</th><th>Ce que dit le journal</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>-i purchse --stop-after-init</code> (faute de frappe)</td><td>0</td><td><code>WARNING … invalid module names, ignored: purchse</code></td></tr>
+                        <tr><td><code>-u purchse --stop-after-init</code></td><td>0</td><td>même <code>WARNING</code></td></tr>
+                        <tr><td><code>module install purchse</code></td><td>0</td><td><code>WARNING … module purchse: manifest not found</code></td></tr>
+                        <tr><td><code>module uninstall purchse</code></td><td>0</td><td>rien</td></tr>
+                        <tr><td><code>module uninstall purchase</code> (figure ci-dessus)</td><td>0</td><td>une ligne <code>ERROR … bad query</code></td></tr>
+                        <tr><td><code>-i mon_module --stop-after-init</code>, vue qui cite un champ inexistant</td><td>255</td><td><code>ParseError</code>, <code>CRITICAL … Failed to initialize database</code></td></tr>
+                        <tr><td><code>module install mon_module</code>, même module</td><td>1</td><td><code>ParseError</code>, traceback</td></tr>
+                    </tbody>
+                </table>
+
+                <p>Une erreur qui empêche le registre de se charger donne bien un code non nul. Tout le reste, nom mal
+                    tapé ou erreur pendant une désinstallation, sort en 0. La vérification utile tient en deux lignes :
+                    garder le journal, puis le relire.</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base -u sale --stop-after-init --no-http 2&gt; maj.log
+grep -E " (WARNING|ERROR|CRITICAL) " maj.log</code></pre>
+
+                <p>Et pour un module qu'on vient d'installer, <code>module list</code> confirme qu'il est bien là, avec la
+                    bonne version.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. force-demo ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. <code>force-demo</code> : ajouter la démo après coup</h2>
+
+                <p>En Odoo 20, une base n'a de données de démonstration que si on le demande (<code>--with-demo</code> à la
+                    création). Pour en ajouter à une base créée sans :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin module force-demo -c odoo.conf -d ma_base_vide</code></pre>
+
+                <p>Sur une base neuve avec Ventes (59 modules, aucune commande, 5 contacts), la commande a pris 9,8 s et
+                    laissé 20 commandes de vente et 42 contacts. Elle fait plus qu'ajouter des enregistrements
+                    (<code>odoo/modules/loading.py</code>, <code>force_demo</code>) :</p>
+                <ul>
+                    <li>elle coche « démo » sur <strong>tous</strong> les modules connus, installés ou non : un module
+                        installé plus tard viendra lui aussi avec ses données de démonstration ;</li>
+                    <li>elle ramène la longueur minimale des mots de passe (<code>auth_password_policy.minlength</code>) à 4.</li>
+                </ul>
+                <p>Réservée aux bases de formation et de test, donc.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. -u all ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>-u all</code> et ses risques</h2>
+
+                <p><code>-u all</code> (ou <code>module upgrade all</code>) recharge chaque module installé. Sur la base de
+                    démonstration avec les Achats, 74 modules, il a pris 37,9 s, sans un seul <code>WARNING</code>. Le
+                    temps n'est pas le vrai risque : une mise à jour <strong>réécrit tout ce qui vient d'un fichier de
+                    données</strong> non marqué <code>noupdate</code>. Une retouche faite dans l'interface sur une vue, un
+                    menu ou une action standard disparaît. La preuve sur le menu Ventes, dans la console :</p>
+<pre class="language-python"><code class="language-python">menu = env.ref('sale.sale_menu_root')
+print("avant :", menu.name, menu.sequence)
+menu.sequence = 1
+env.cr.commit()
+print("après écriture :", menu.sequence)</code></pre>
+<div class="out">avant : Ventes 30
+après écriture : 1</div>
+                <p>Puis <code>./odoo-bin -c odoo.conf -d ma_base -u sale --stop-after-init --no-http</code> (5,6 s), et
+                    relecture :</p>
+<div class="out">après -u sale : Ventes 30</div>
+
+                <p>La séquence est revenue à la valeur du fichier <code>sale/views/sale_menus.xml</code>. Avec
+                    <code>all</code>, c'est vrai pour tous les modules à la fois ; les enregistrements chargés en
+                    <code>noupdate="1"</code> ne sont pas touchés.</p>
+
+                <div class="pitfall-box">
+                    <h4>Avant un <code>-u all</code></h4>
+                    <ul>
+                        <li>Sauvegarder la base et le filestore.</li>
+                        <li>Préférer la liste précise : <code>module upgrade --outdated -n all</code> dit quels modules ont
+                            changé de version, puis <code>-u</code> sur ceux-là seulement.</li>
+                        <li>Garder le journal et y chercher <code>WARNING</code> et <code>ERROR</code> : le code de sortie ne
+                            suffit pas (section 6).</li>
+                        <li>Sur une production en <code>workers &gt; 0</code> : <code>--no-http</code>, ou arrêter le service
+                            pendant la mise à jour.</li>
+                    </ul>
+                </div>
+
+                <p>Une opération sur les modules ne se lance pas pendant qu'une autre tourne : Odoo pose un verrou et
+                    abandonne au bout de 3 secondes avec « Odoo is currently processing another module operation »
+                    (<code>ir_module.py</code>, <code>_button_immediate_function</code>). Et comme le bouton Activer,
+                    <code>module install</code> <strong>valide</strong> la transaction : il n'y a pas de retour arrière.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <ul>
+                        <li><code>odoo-bin module list</code> est nouveau : la 19 n'a que <code>install</code>,
+                            <code>upgrade</code>, <code>uninstall</code> et <code>force-demo</code>.</li>
+                        <li><code>-n</code> / <code>--dry-run</code> est nouveau sur <code>install</code>,
+                            <code>upgrade</code> et <code>uninstall</code>.</li>
+                        <li><code>--stop</code> est un nouvel alias de <code>--stop-after-init</code>.</li>
+                        <li>Inchangés : <code>-D/--data-dir</code> et <code>upgrade --outdated</code> existent aussi dans la
+                            19 à jour.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Installer</td><td><code>./odoo-bin -c odoo.conf -d ma_base -i mod --stop-after-init --no-http</code> ou <code>./odoo-bin module install mod -c odoo.conf -d ma_base</code></td></tr>
+                        <tr><td>Mettre à jour</td><td><code>-u mod</code> ou <code>module upgrade mod</code> (dépendants inclus)</td></tr>
+                        <tr><td>Ce qui a changé sur le disque</td><td><code>module upgrade --outdated -n all</code></td></tr>
+                        <tr><td>Désinstaller</td><td><code>module uninstall mod</code> (dépendants inclus, données et tables supprimées)</td></tr>
+                        <tr><td>Simuler</td><td><code>-n</code> sur <code>install</code>, <code>upgrade</code>, <code>uninstall</code></td></tr>
+                        <tr><td>Lister</td><td><code>module list -c odoo.conf -d ma_base 2&gt;/dev/null</code> : nom, version en base, version sur disque, état</td></tr>
+                        <tr><td>Démo après coup</td><td><code>module force-demo</code></td></tr>
+                        <tr><td>Production en <code>workers &gt; 0</code></td><td>toujours <code>--no-http</code> (sinon <code>OSError: [Errno 98]</code>)</td></tr>
+                        <tr><td>Contrôle</td><td><code>2&gt; maj.log</code> puis <code>grep -E " (WARNING|ERROR|CRITICAL) " maj.log</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>-i</code> et <code>-u</code> passent par le serveur ; <code>odoo-bin module</code> fait l'opération et rend la main, mais ne lit que <code>-c</code>, <code>-d</code> et <code>-D</code>.</li>
+                    <li><code>--no-http</code> évite l'<code>OSError: [Errno 98]</code> quand le service tourne en <code>workers &gt; 0</code>.</li>
+                    <li><code>module list</code> compare version en base et version sur disque ; <code>--dry-run</code> montre les modules entraînés sans rien changer.</li>
+                    <li>Désinstaller retire les modules dépendants, leurs données et leurs tables, et ne garantit pas une réinstallation propre.</li>
+                    <li>Un code de sortie 0 n'exclut ni un nom mal tapé ni une erreur SQL : le journal fait foi.</li>
+                    <li><code>-u all</code> réécrit les données non <code>noupdate</code> de tous les modules : sauvegarde et liste ciblée d'abord.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes exécutées le 07/10/2026 sur Odoo 20.0 (PostgreSQL 16), base de démonstration et
+                    copies jetables supprimées ensuite ; durées relevées avec <code>/usr/bin/time</code>. Comparaison avec la
+                    branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/module.py" target="_blank" rel="noopener"><code>odoo/cli/module.py</code></a> : les sous-commandes, <code>--dry-run</code>, <code>--outdated</code>, l'affichage de <code>list</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/service/server.py" target="_blank" rel="noopener"><code>odoo/service/server.py</code></a> : ouverture du port en mode threadé et en mode multi-processus</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_module.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_module.py</code></a> : <code>button_immediate_install</code>, <code>button_uninstall</code>, <code>_button_immediate_function</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/loading.py" target="_blank" rel="noopener"><code>odoo/modules/loading.py</code></a> : <code>force_demo</code>, chargement des modules</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : <code>-i</code>, <code>-u</code>, <code>--stop</code>, <code>--no-http</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Le service, son <code>odoo.conf</code> et ses <code>workers</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo</a></h5>
+                            <p class="small text-muted mb-0">Copier une base et la sauvegarder avant un essai destructif.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">La console odoo-bin shell</a></h5>
+                            <p class="small text-muted mb-0">Pour la version 19 : la console qui a servi à relire le menu ci-dessus.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

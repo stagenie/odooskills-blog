@@ -1,0 +1,605 @@
+<!--
+Article — env, with_context, sudo, with_company : l'environnement en Odoo 20
+Série « L'ORM Odoo 20 en pratique »
+Date : 2026-10-07
+Slug : env-context-sudo-odoo-20
+Meta : self.env en Odoo 20 : env.ref, env.user, env.company, with_context, sudo, with_user, with_company, force_company ignoré et invalidate_ormcache.
+Mot-clé cible : odoo with_context (odoo sudo, self.env.ref, self.env.company, context active_id)
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Sources vérifiées le 2026-10-07 : Odoo 20.0 (3538ed82), PostgreSQL 16, base de démonstration Ventes + Inventaire en français ;
+  chaque extrait exécuté dans odoo-bin shell (sondes s1 à s6), sorties collées telles quelles, rollback en fin de sonde.
+Preuves :
+  - env : environments.py:158 ref, :228 user, :236 company, :266 companies, :315-322 tz (ZoneInfo, défaut UTC), :326 lang ;
+    env.context = mappingproxy (TypeError à l'affectation, exécuté). env(user=...) → uid 2, su False (exécuté).
+  - with_context / sudo / with_user / with_company : orm/models.py:5497 / :5431 / :5458 / :5468 ; clean_context tools/misc.py:922.
+  - sudo : ir.config_parameter get_str → check_access('read') (base/models/ir_config_parameter.py:124-125) ; ligne
+    base/security/ir.access.csv:105 (group_system, crud) ; Marc Demo → AccessError (shell + écran navigateur en demo/demo) ; sudo → valeur.
+  - multi-société : ir.access « Sales Order multi-company » sans groupe [('company_id','in',company_ids)] ; demo + allowed_company_ids=[2] → 0, sudo → 24.
+  - 19.0 PUBLIQUE (raw GitHub, tête 8191f184, 07/10) : force_company → DeprecationWarning « Since 19.0, context key 'force_company'
+    is no longer supported » (models.py:6053-6058) ; 20 : bloc retiré, 0 avertissement (exécuté) → écart CONFIRMÉ.
+    env.reset() existait en 19 avec DeprecationWarning « Since 19.0, use directly transaction.reset() » (environments.py:59-62) ; 20 : AttributeError.
+    registry.clear_cache() existait en 19 (registry.py:998) ; 20 : AttributeError ; transaction.invalidate_ormcache absent de 19, présent en 20 (environments.py:833).
+    env.clear() sans avertissement en 19 (environments.py:350) ; 20 : @deprecated « Since 20.0, use transaction.clear or transaction.reset » (:379-380).
+    env.tz : pytz.timezone en 19 (environments.py:286-294) ; ZoneInfo en 20 ; « import pytz » : 16 fichiers odoo/odoo en 19 (clone), 0 dans odoo/ en 20.
+    with_company : société demandée en tête DÉJÀ en 19 (models.py:6021-6031) → pas d'encadré.
+Captures : content/blog/screenshots/env-context-sudo-odoo-20/ (01-04)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">env, with_context, sudo, with_company : l'environnement en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Chaque recordset transporte un environnement : le curseur, l'utilisateur,
+                    le contexte, le mode superutilisateur. <code>self.env.ref</code>, <code>self.env.company</code>,
+                    <code>with_context</code>, <code>sudo</code> et <code>with_company</code> ne font que lire ou
+                    changer cet environnement. Ce qu'il contient, comment le modifier sans surprise, et ce qui a
+                    disparu depuis la 19.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lire</h4>
+                        <p>Ce que porte <code>env</code> : <code>env.ref</code>, <code>env.user</code>, <code>env.company</code>, <code>env.lang</code>, <code>env.tz</code> (un <code>ZoneInfo</code>).</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Changer</h4>
+                        <p><code>with_context</code> et ses clés usuelles, <code>with_user</code>, <code>with_company</code>, et <code>sudo</code> avec ses limites.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Migrer</h4>
+                        <p><code>force_company</code> ignoré sans un mot, <code>env.reset()</code> et <code>registry.clear_cache()</code> disparus, <code>env.clear()</code> déprécié.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 <strong>de test</strong> avec les données de démonstration, Ventes et
+                            Inventaire installés : les exemples utilisent les utilisateurs, sociétés, articles et commandes
+                            de la démo, tu peux les rejouer tels quels.</li>
+                        <li>La console <code>odoo-bin shell</code> : chaque extrait est un petit script qu'on lui passe
+                            par <code>&lt;</code>, d'où les <code>print()</code>. Pour la version 19, la console est
+                            présentée dans <a href="/blog/developpement-odoo-2/odoo-bin-shell-la-console-cachee-dodoo-et-15-patterns-orm-essentiels-119">cet article</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CE QUE PORTE ENV ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ce que porte <code>env</code></h2>
+
+                <p>Un environnement, c'est quatre choses : le curseur de base de données (<code>cr</code>),
+                    l'utilisateur (<code>uid</code>), le contexte (<code>context</code>, un dictionnaire) et le drapeau
+                    superutilisateur (<code>su</code>). Tout le reste en découle : <code>env.user</code> est l'utilisateur
+                    <code>uid</code>, <code>env.company</code> sa société courante, <code>env.lang</code> et
+                    <code>env.tz</code> viennent du contexte, à défaut de l'utilisateur.</p>
+<pre class="language-python"><code class="language-python">print(type(env.cr).__name__, env.uid, env.su)
+print(env.context)
+print(env.user.name, env.company.name, env.companies.ids)
+print(env.lang, repr(env.tz))
+admin = env(user=env.ref('base.user_admin'))
+print(admin.uid, admin.su, admin.user.name, admin.is_admin())</code></pre>
+<div class="out">Cursor 1 True
+{'lang': 'fr_FR', 'tz': 'Europe/Brussels', 'uid': 1}
+OdooBot My Company (San Francisco) [1, 3, 2]
+fr_FR ZoneInfo(key='Europe/Brussels')
+2 False Mitchell Admin True</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : le script env.py passé à odoo-bin shell affiche Cursor 1 True, le contexte lang fr_FR tz Europe/Brussels uid 1, OdooBot My Company (San Francisco) [1, 3, 2], fr_FR ZoneInfo(key='Europe/Brussels'), puis 2 False Mitchell Admin True"/>
+                    <figcaption>La console tourne en OdooBot, superutilisateur ; <code>env(user=…)</code> fabrique un environnement pour Mitchell Admin, sans <code>su</code>.</figcaption>
+                </figure>
+
+                <ul>
+                    <li>Dans la console, <code>env</code> est celui d'OdooBot (uid 1) en mode superutilisateur : aucun
+                        droit n'y est vérifié. Dans une méthode, <code>self.env</code> est celui de l'utilisateur qui a
+                        cliqué, <code>su=False</code>.</li>
+                    <li><code>env.companies</code> est la liste des sociétés autorisées, la courante en tête :
+                        <code>env.company</code> vaut <code>env.companies[0]</code>.</li>
+                    <li>Appeler l'environnement, <code>env(user=…, context=…, su=…)</code>, en crée un autre sur le même
+                        curseur. Dans le code, on passe plutôt par les méthodes du recordset de la section 3.</li>
+                </ul>
+
+                <h3>Le fuseau horaire est un <code>ZoneInfo</code></h3>
+                <p><code>env.tz</code> renvoie le fuseau du contexte, sinon celui de l'utilisateur, sinon UTC. C'est un
+                    objet <code>zoneinfo.ZoneInfo</code> de la bibliothèque standard : il se passe directement en
+                    <code>tzinfo</code>, sans <code>localize()</code>.</p>
+<pre class="language-python"><code class="language-python">from datetime import datetime
+from odoo import fields
+print(datetime(2026, 10, 7, 12, 0, tzinfo=env.tz).isoformat())
+print(hasattr(env.tz, 'localize'))
+utc = datetime(2026, 10, 7, 10, 0)          # valeur stockée : UTC, sans fuseau
+print(fields.Datetime.context_timestamp(env.user, utc))</code></pre>
+<div class="out">2026-10-07T12:00:00+02:00
+False
+2026-10-07 12:00:00+02:00</div>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : plus de pytz</h4>
+                    <p>En 19, <code>env.tz</code> renvoyait un fuseau <code>pytz</code>, et le bon usage était
+                        <code>env.tz.localize(dt)</code>. En 20, c'est un <code>ZoneInfo</code> :
+                        <code>localize</code> n'existe plus (<code>AttributeError</code>), et le cœur d'Odoo n'importe
+                        plus pytz nulle part. Remplacer <code>tz.localize(dt)</code> par
+                        <code>dt.replace(tzinfo=tz)</code>, et <code>pytz.timezone(nom)</code> par
+                        <code>ZoneInfo(nom)</code>.</p>
+                </div>
+
+                <h3><code>env.ref</code> : un enregistrement par son identifiant externe</h3>
+<pre class="language-python"><code class="language-python">print(env.ref('base.user_demo'))
+print(env.ref('base.main_company').name)
+print(env.ref('product.product_product_4', raise_if_not_found=False))
+print(env.ref('base.n_existe_pas', raise_if_not_found=False))
+try:
+    env.ref('base.n_existe_pas')
+except ValueError as e:
+    print(type(e).__name__, e)
+print(env['ir.model.data']._xmlid_to_res_id('base.user_demo'))</code></pre>
+<div class="out">res.users(5,)
+My Company (San Francisco)
+product.product(13,)
+None
+ValueError External ID not found in the system: base.n_existe_pas
+5</div>
+                <p>L'identifiant s'écrit toujours <code>module.nom</code>. Sans
+                    <code>raise_if_not_found=False</code>, un identifiant absent lève <code>ValueError</code> : c'est
+                    voulu dans du code qui dépend d'une donnée de son propre module, à éviter pour une donnée d'un module
+                    facultatif. Quand seul l'id compte, <code>_xmlid_to_res_id</code> évite de construire le
+                    recordset.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. WITH_CONTEXT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>with_context</code> : les clés qui changent un résultat</h2>
+
+                <p>Le contexte est en lecture seule. Pour le changer, on demande une <strong>copie</strong> du
+                    recordset avec un autre contexte : <code>records.with_context(cle=valeur)</code> ajoute ou remplace
+                    des clés, <code>records.with_context({}, cle=valeur)</code> repart d'un contexte vide. Le recordset
+                    d'origine ne change pas.</p>
+<pre class="language-python"><code class="language-python">p = env.ref('product.product_product_4')
+print(p.name, '|', p.with_context(lang='en_US').name)
+Partner = env['res.partner']
+print(Partner.search_count([]), Partner.with_context(active_test=False).search_count([]))
+c = Partner.with_context(default_city='Lyon').create({'name': "Contact de test"})
+print(c.city)
+print(env.context)
+try:
+    env.context['lang'] = 'en_US'
+except TypeError as e:
+    print('TypeError', e)
+env.cr.rollback()</code></pre>
+<div class="out">Bureau personnalisable | Customizable Desk
+43 46
+Lyon
+{'lang': 'fr_FR', 'tz': 'Europe/Brussels', 'uid': 1}
+TypeError 'mappingproxy' object does not support item assignment</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Clé</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>lang</code></td><td>Langue des champs traduisibles lus ou écrits (<code>name</code> d'un article : « Bureau personnalisable » en <code>fr_FR</code>, « Customizable Desk » en <code>en_US</code>).</td></tr>
+                        <tr><td><code>tz</code></td><td>Fuseau de <code>env.tz</code>, donc des dates affichées et de <code>context_timestamp</code>.</td></tr>
+                        <tr><td><code>active_test</code></td><td><code>False</code> : les recherches incluent les enregistrements archivés (43 contacts actifs, 46 en tout sur la démo).</td></tr>
+                        <tr><td><code>default_&lt;champ&gt;</code></td><td>Valeur par défaut de <code>&lt;champ&gt;</code> à la création, si elle n'est pas fournie.</td></tr>
+                        <tr><td><code>active_model</code>, <code>active_id</code>, <code>active_ids</code></td><td>Posées par le client web quand une action part d'un enregistrement ou d'une sélection : l'assistant y lit sur quoi il travaille.</td></tr>
+                    </tbody>
+                </table>
+
+                <h3><code>active_ids</code> : ce que lit un assistant</h3>
+                <p>Un bouton d'action ouvert depuis une liste passe la sélection dans le contexte. L'assistant de
+                    facturation des ventes s'en sert comme valeur par défaut :
+                    <code>default=lambda self: self.env.context.get("active_ids")</code>
+                    (<code>sale/wizard/sale_make_invoice_advance.py</code>). Dans la console, on simule le clic :</p>
+<pre class="language-python"><code class="language-python">orders = env['sale.order'].search([('state', '=', 'sale')], limit=2)
+wiz = env['sale.advance.payment.inv'].with_context(active_model='sale.order', active_ids=orders.ids).create({})
+print(orders.mapped('name'), wiz.sale_order_ids.mapped('name'))
+env.cr.rollback()</code></pre>
+<div class="out">['S00024', 'S00023'] ['S00024', 'S00023']</div>
+                <p>C'est aussi la bonne façon de tester un assistant : lui donner le contexte que le client web lui
+                    aurait donné.</p>
+
+                <div class="pitfall-box">
+                    <h4>Piège : un <code>default_*</code> suit l'environnement partout</h4>
+                    <p>La clé reste dans le contexte de tous les recordsets tirés de cet environnement, y compris sur
+                        un <strong>autre modèle</strong> qui possède un champ du même nom :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import clean_context
+Partner = env['res.partner'].with_context(default_name="Fuite")
+tag = Partner.env['res.partner.category'].create({})
+print(tag.name)
+propre = Partner.with_context(clean_context(Partner.env.context))
+print(propre.env.context)
+env.cr.rollback()</code></pre>
+<div class="out">Fuite
+{'lang': 'fr_FR', 'tz': 'Europe/Brussels', 'uid': 1}</div>
+                    <p>L'étiquette créée s'appelle « Fuite ». Avant de créer autre chose dans une méthode appelée avec un
+                        contexte <code>default_*</code> (un bouton ouvert depuis une action, typiquement),
+                        <code>clean_context()</code> retire toutes les clés <code>default_</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. SUDO / WITH_USER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>with_user</code> et <code>sudo</code> : qui agit, et avec quels droits</h2>
+
+                <p>Deux méthodes, deux questions différentes. <code>with_user(user)</code> change <strong>qui</strong>
+                    agit : l'environnement devient celui de cet utilisateur, sans superutilisateur, et ses droits
+                    s'appliquent. <code>sudo()</code> ne change pas l'utilisateur : il lève seulement les contrôles
+                    d'accès (<code>su=True</code>). <code>sudo(False)</code> les rétablit.</p>
+
+                <p>Exemple qui se vérifie sur la démo : les paramètres système (<code>ir.config_parameter</code>). Une
+                    seule ligne d'accès les ouvre, au groupe Administrateur :</p>
+<pre class="language-python"><code class="language-python">for a in env['ir.access'].search([('model_id.model', '=', 'ir.config_parameter')]):
+    print(a.name, '|', a.group_id.name, '|', a.operation, '|', a.domain)
+demo = env.ref('base.user_demo')
+print(env['ir.config_parameter'].with_user(demo).has_access('read'))
+print(env['ir.config_parameter'].with_user(demo).sudo().has_access('read'))</code></pre>
+<div class="out">ir_config_parameter_system | Rôle / Administrateur | crud | False
+False
+True</div>
+
+                <p>Marc Demo, l'utilisateur de démonstration, n'est pas administrateur. Il ouvre le menu des
+                    paramètres système par son adresse :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Erreur d'accès : Vous n'êtes pas autorisé à accéder aux enregistrements 'Paramètres système' (ir.config_parameter). Cette opération est autorisée pour les groupes suivants : Rôle / Administrateur. Contactez votre administrateur pour demander l'accès si nécessaire. Bouton Fermer"/>
+                    <figcaption>Connecté en Marc Demo, la liste des paramètres système est refusée : la ligne <code>ir.access</code> ne vise que le groupe Administrateur.</figcaption>
+                </figure>
+
+                <p>La même lecture depuis la console, d'abord en Marc Demo, puis en Marc Demo avec
+                    <code>sudo()</code> :</p>
+<pre class="language-python"><code class="language-python">demo = env.ref('base.user_demo')
+Param = env['ir.config_parameter'].with_user(demo)
+print(Param.env.user.name, Param.env.su)
+try:
+    Param.get_str('database.create_date')
+except Exception as e:
+    print(type(e).__name__, e)
+print(Param.sudo().get_str('database.create_date'))
+print(Param.sudo().env.user.name, Param.sudo().env.su)</code></pre>
+<div class="out">Marc Demo False
+AccessError Vous n'êtes pas autorisé à accéder aux enregistrements 'Paramètres système' (ir.config_parameter).'
+
+Cette opération est autorisée pour les groupes suivants :
+	- Rôle / Administrateur
+
+Contactez votre administrateur pour demander l'accès si nécessaire.
+2026-10-07 06:16:06
+Marc Demo True</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : droits.py affiche Marc Demo False, puis AccessError avec le même message que l'écran, puis la date 2026-10-07 06:16:06 lue en sudo, puis Marc Demo True"/>
+                    <figcaption>Le message de l'écran est celui de l'<code>AccessError</code> levée côté serveur ; en <code>sudo()</code>, la lecture passe et l'utilisateur reste Marc Demo.</figcaption>
+                </figure>
+
+                <p>Dernière ligne : sous <code>sudo()</code>, <code>env.user</code> est toujours Marc Demo. Tout ce
+                    qui dépend de l'utilisateur (sa société, sa langue, <code>create_uid</code> et
+                    <code>write_uid</code> des enregistrements écrits) reste le sien ; seuls les contrôles sautent.</p>
+
+                <h3>Pourquoi pas <code>sudo()</code> pour le métier</h3>
+                <p><code>sudo()</code> ne lève pas qu'un refus : il lève <strong>toutes</strong> les restrictions,
+                    y compris le cloisonnement entre sociétés. Sur la démo, les commandes de vente portent une ligne
+                    <code>ir.access</code> sans groupe, donc une restriction pour tout le monde :</p>
+<pre class="language-python"><code class="language-python">demo = env.ref('base.user_demo')
+SO = env['sale.order'].with_user(demo).with_context(allowed_company_ids=[2])
+print(SO.env.company.name, '|', SO.search_count([]), '|', SO.sudo().search_count([]))
+for a in env['ir.access'].search([('model_id.model', '=', 'sale.order'), ('group_id', '=', False)]):
+    print(a.name, '|', a.operation, '|', a.domain)</code></pre>
+<div class="out">My US Company | 0 | 24
+Sales Order multi-company | crud | [('company_id', 'in', company_ids)]</div>
+                <p>Marc Demo travaille dans « My US Company » seule (c'est ce que fait le sélecteur de sociétés en
+                    haut à droite) : il ne voit aucune commande, elles sont toutes à « My Company (San Francisco) ». En
+                    <code>sudo()</code>, il en voit 24. Un calcul de chiffre d'affaires ou une recherche de document
+                    écrite en <code>sudo()</code> mélange donc les sociétés sans le dire.</p>
+
+                <div class="pitfall-box">
+                    <h4>Règle de conduite</h4>
+                    <ul>
+                        <li><code>sudo()</code> pour une donnée <strong>technique</strong> que l'utilisateur n'a pas à
+                            voir mais dont le code a besoin : un paramètre système, une séquence, un jeton.</li>
+                        <li>Le plus tard possible et sur le plus petit recordset : <code>self.env['ir.config_parameter'].sudo().get_str(…)</code>,
+                            pas un <code>self = self.sudo()</code> en tête de méthode.</li>
+                        <li>Jamais pour contourner un refus sur une donnée <strong>métier</strong> : si un vendeur doit
+                            lire une commande, c'est une ligne <code>ir.access</code> qui manque. Les droits se règlent
+                            dans <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">les droits d'accès Odoo 20</a>.</li>
+                        <li>Ne pas laisser filer un recordset <code>sudo</code> (valeur de retour, attribut, contrôleur) :
+                            le drapeau <code>su</code> reste attaché à ce recordset, et tout ce qui est lu ou écrit
+                            ensuite à travers lui échappe aux contrôles.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. WITH_COMPANY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. <code>with_company</code> et la fin de <code>force_company</code></h2>
+
+                <p><code>with_company(société)</code> place la société demandée en tête des sociétés autorisées : elle
+                    devient <code>env.company</code>, les autres restent autorisées derrière. C'est ce qui pilote les
+                    champs <strong>dépendant de la société</strong>, comme le coût d'un article
+                    (<code>standard_price</code>), qui a une valeur par société :</p>
+<pre class="language-python"><code class="language-python">import warnings
+p = env.ref('product.product_product_4')
+print(p._fields['standard_price'].company_dependent)
+p.with_company(2).standard_price = 99.0
+print(p.standard_price, '|', p.with_company(2).standard_price)
+pc = p.with_company(2)
+print(pc.env.company.name, pc.env.companies.ids, pc.env.context['allowed_company_ids'])
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter('always')
+    pf = p.with_context(force_company=2)
+    print(pf.env.company.name, '|', pf.standard_price)
+print('avertissements :', len(w))
+env.cr.rollback()</code></pre>
+<div class="out">True
+500.0 | 99.0
+My US Company [2, 1, 3] [2, 1, 3]
+My Company (San Francisco) | 500.0
+avertissements : 0</div>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Terminal : societe.py affiche True, 500.0 | 99.0, My US Company [2, 1, 3] [2, 1, 3], puis avec force_company=2 My Company (San Francisco) | 500.0 et avertissements : 0"/>
+                    <figcaption><code>with_company(2)</code> lit le coût de « My US Company » (99) ; <code>force_company=2</code> lit celui de San Francisco (500), sans un avertissement.</figcaption>
+                </figure>
+
+                <ul>
+                    <li>Le coût écrit avec <code>with_company(2)</code> ne touche que « My US Company » : San Francisco
+                        garde 500.</li>
+                    <li><code>with_company</code> ne fait que réécrire la clé <code>allowed_company_ids</code> du
+                        contexte. Avec une société que l'utilisateur n'a pas le droit d'utiliser, lire
+                        <code>env.company</code> peut lever une <code>AccessError</code> hors <code>sudo</code>
+                        (avertissement de la docstring, <code>odoo/orm/models.py</code>).</li>
+                    <li>Pour le multi-société dans un module complet (champs <code>company_id</code>, contrôles
+                        croisés), voir <a href="/blog/developpement-odoo-2/developper-un-module-multi-societe-en-odoo-19-177">le
+                        module multi-société en 19</a> : le principe n'a pas changé, mais ses règles s'écrivent en
+                        20 avec <code>ir.access</code>.</li>
+                </ul>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : <code>force_company</code> se tait</h4>
+                    <p>La clé <code>force_company</code> n'a plus d'effet depuis longtemps, mais la 19 prévenait :
+                        <code>with_context(force_company=…)</code> émettait
+                        <code>DeprecationWarning: Since 19.0, context key 'force_company' is no longer supported. Use
+                        with_company(company) instead.</code> En 20, ce contrôle a disparu de
+                        <code>with_context</code> : la clé passe, reste ignorée, et le code lit la mauvaise société sans
+                        aucune trace dans le journal. Chercher <code>force_company</code> dans tout module porté et le
+                        remplacer par <code>with_company()</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. CACHES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Vider les caches : ce qui a changé de place</h2>
+
+                <p>Deux caches distincts : celui des <strong>enregistrements</strong> (valeurs de champs déjà lues,
+                    tenu par la transaction) et celui des <strong>méthodes</strong> décorées par
+                    <code>@api.ormcache</code> (résultats calculés une fois, partagés). Leurs commandes de vidage ont
+                    bougé en 20 :</p>
+<pre class="language-python"><code class="language-python">import warnings
+for appel in ("env.registry.clear_cache()", "env.reset()"):
+    try:
+        eval(appel)
+    except AttributeError as e:
+        print(appel, '->', e)
+env.transaction.invalidate_ormcache()          # cache 'default'
+env.transaction.invalidate_ormcache('stable')  # ex. ir.config_parameter
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter('always')
+    env.clear()
+print(w[0].category.__name__, '->', w[0].message)
+env.invalidate_all()
+print("invalidate_ormcache, invalidate_all : ok")</code></pre>
+<div class="out">env.registry.clear_cache() -> 'Registry' object has no attribute 'clear_cache'
+env.reset() -> 'Environment' object has no attribute 'reset'
+DeprecationWarning -> Since 20.0, use transaction.clear or transaction.reset
+invalidate_ormcache, invalidate_all : ok</div>
+
+                <table class="tmc">
+                    <thead><tr><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>self.env.registry.clear_cache()</code></td><td><code>self.env.transaction.invalidate_ormcache()</code> (nom du cache en argument, <code>'default'</code> par défaut)</td></tr>
+                        <tr><td><code>self.env.reset()</code> (déjà déprécié en 19)</td><td><code>self.env.transaction.reset()</code>, seulement après un <code>commit</code> ou un <code>rollback</code></td></tr>
+                        <tr><td><code>self.env.clear()</code></td><td>toujours là mais déprécié : <code>self.env.transaction.clear()</code></td></tr>
+                        <tr><td><code>invalidate_all()</code>, <code>invalidate_model()</code>, <code>invalidate_recordset()</code>, <code>flush_all()</code></td><td>inchangés</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : deux <code>AttributeError</code> et un avertissement</h4>
+                    <p>En 19, <code>registry.clear_cache()</code> existait sans réserve et <code>env.reset()</code>
+                        répondait encore, avec un <code>DeprecationWarning</code>. En 20, les deux lèvent
+                        <code>AttributeError</code> : un module 19 qui les appelle casse au premier passage. Et
+                        <code>env.clear()</code>, silencieux en 19, avertit désormais. Pour une méthode en cache qui lit
+                        un paramètre système, le décorateur est <code>@api.ormcache(cache='stable')</code> : c'est le
+                        cache <code>stable</code> que vide <code>ir.config_parameter</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Un enregistrement par identifiant externe</td><td><code>self.env.ref('module.nom')</code>, <code>raise_if_not_found=False</code> si facultatif</td></tr>
+                        <tr><td>Utilisateur, société, langue, fuseau</td><td><code>self.env.user</code>, <code>self.env.company</code> / <code>companies</code>, <code>self.env.lang</code>, <code>self.env.tz</code> (<code>ZoneInfo</code>)</td></tr>
+                        <tr><td>Lire le contexte</td><td><code>self.env.context.get('active_ids')</code> (lecture seule)</td></tr>
+                        <tr><td>Changer le contexte</td><td><code>records.with_context(lang='en_US', active_test=False)</code></td></tr>
+                        <tr><td>Retirer les <code>default_*</code></td><td><code>records.with_context(clean_context(records.env.context))</code></td></tr>
+                        <tr><td>Agir comme un autre utilisateur</td><td><code>records.with_user(user)</code> (droits de cet utilisateur)</td></tr>
+                        <tr><td>Lever les contrôles d'accès</td><td><code>records.sudo()</code>, au plus près de la donnée technique</td></tr>
+                        <tr><td>Changer de société</td><td><code>records.with_company(company)</code> ; jamais <code>force_company</code></td></tr>
+                        <tr><td>Vider le cache des méthodes</td><td><code>self.env.transaction.invalidate_ormcache()</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAP ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Récapitulatif</h2>
+                <ul>
+                    <li><code>env</code> porte le curseur, l'utilisateur, le contexte et le drapeau <code>su</code> ; <code>user</code>, <code>company</code>, <code>lang</code> et <code>tz</code> en découlent.</li>
+                    <li><code>with_context</code>, <code>with_user</code>, <code>with_company</code> et <code>sudo</code> rendent une copie du recordset dans un autre environnement ; l'original ne bouge pas.</li>
+                    <li><code>sudo()</code> lève tous les contrôles, cloisonnement des sociétés compris, mais garde l'utilisateur : à réserver aux données techniques.</li>
+                    <li>En 20, <code>force_company</code> est ignoré sans avertissement, <code>env.tz</code> est un <code>ZoneInfo</code>, et les caches se vident par <code>env.transaction</code>.</li>
+                </ul>
+                <p class="mb-0">Pour la vue d'ensemble des changements de la version, voir
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">ce qui change techniquement en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Chaque extrait exécuté le 07/10/2026 dans <code>odoo-bin shell</code> sur Odoo 20.0
+                    (PostgreSQL 16), base de démonstration Ventes + Inventaire en français, transaction annulée en fin
+                    de script ; écran d'accès refusé capturé dans le navigateur avec l'utilisateur de démonstration.
+                    Comparaison avec la branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/environments.py" target="_blank" rel="noopener"><code>odoo/orm/environments.py</code></a> : <code>ref</code>, <code>user</code>, <code>company</code>, <code>companies</code>, <code>tz</code>, <code>lang</code>, <code>clear</code> déprécié, <code>Transaction.invalidate_ormcache</code>, <code>Transaction.reset</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>sudo</code>, <code>with_user</code>, <code>with_company</code>, <code>with_context</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_config_parameter.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_config_parameter.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/security/ir.access.csv" target="_blank" rel="noopener"><code>base/security/ir.access.csv</code></a> : le contrôle de lecture et la ligne d'accès</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/misc.py" target="_blank" rel="noopener"><code>odoo/tools/misc.py</code></a> : <code>clean_context</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Écrire les permissions et restrictions que <code>sudo()</code> contourne.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les autres écarts à connaître avant de porter un module.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/assistant-prolonger-odoo-20-189">L'assistant en Odoo 20 : prolonger en lot</a></h5>
+                            <p class="small text-muted mb-0">Un assistant qui lit <code>active_ids</code>, de bout en bout.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
