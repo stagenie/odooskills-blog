@@ -1,0 +1,486 @@
+<!--
+Article — Maintenance Odoo 20 : préventif et correctif en production
+Série « Production avec Odoo 20 Enterprise » (lot EE 1), article E1.4
+Date : 2026-10-12
+Slug : maintenance-preventive-production-odoo
+Mot-clé cible : maintenance préventive odoo (maintenance des équipements de production, MTBF, poste de travail bloqué)
+Tags : intermediaire, guide, enterprise
+Preuves (12/10/2026, base edu-odooskills20, Odoo 20.0+e, compte formateur) :
+  - Modules installés (ir.module.module) : maintenance (LGPL-3), maintenance_enterprise (OEEL-1), mrp_maintenance (OEEL-1),
+    hr_maintenance, stock_maintenance. CE : ls odoo/addons -> maintenance, hr_maintenance, stock_maintenance, fleet_maintenance ;
+    pas de maintenance_enterprise ni de mrp_maintenance.
+  - Champs apportés par mrp_maintenance (ir.model.data) : maintenance.equipment.workcenter_id ; maintenance.request.maintenance_for
+    (Équipement / Poste de travail), workcenter_id, production_id, workorder_id, block_workcenter (« Bloquer le poste de travail »),
+    leave_ids, recurring_leaves_count (« Congés supplémentaires à prévoir », mode développeur) ; mrp.workcenter : equipment_ids,
+    mtbf, mttr, estimated_next_failure, maintenance_count… ; mrp.production : maintenance_count, request_ids.
+  - Menus : Maintenance › Maintenance › Planification par équipement (maintenance_enterprise, gantt) et Planification par poste
+    de travail (mrp_maintenance, gantt) ; Maintenance › Équipement › Postes de travail et Machines & Outils.
+  - Équipement 9 « Scie à tronçonner : 8 dents par pouce. » (démo) : Poste de travail Assembly 1, bouton Poste de travail.
+    Modifié : Date d'effet 11/10/2026 -> 01/07/2026.
+  - OF créé : WH/MO/00013 (mrp.production 15), [D_0045_G] Stool (Green), nomenclature 9, ordre de travail 19 Assembly sur Assembly 1.
+  - Atelier, carte WH/MO/00013 : ⋮ Options (11 boutons dont Demande de maintenance et Bloquer) -> « Nouvelle demande de
+    maintenance », OF et ordre de travail préremplis, type Corrective. Demande 8 « Lame de la scie qui accroche » (Scie,
+    technicien Mitchell Admin repris de l'équipement ; workcenter_id Assembly 1 calculé). OF : bouton Maintenance 1.
+    Menu Actions de l'OF : « Demande de maintenance ».
+  - Demande 8 : étape En cours, état Terminé -> Date de clôture 12 oct. Scie : MTBF 103 j (01/07 -> 12/10, 1 panne), MTTR 0 j,
+    Dernière défaillance 12 oct., Estimation 23 janv. 2027 ; onglet Équipement d'Assembly 1 : mêmes valeurs.
+  - Demande 7 « Révision du poste Assembly 1 » : Préventive, Pour Poste de travail, Assembly 1, 12/10 10:00 -> 16:00 (Africa/Algiers),
+    Récurrente tous les 3 Mois, Pour toujours, Bloquer le poste de travail -> resource.calendar.leaves 7 sur la ressource Assembly 1.
+    Premier essai à 08:00 refusé : « Les ordres de fabrication sont déjà planifiés pour ce créneau horaire. » (OT 15 en cours).
+  - WH/MO/00013, bouton Programmer à 10:01 : Date planifiée 13 oct., 08:00 (chatter 12 oct. 09:38 -> 13 oct. 08:00) ; calendrier
+    du poste 08:00-16:00. Planification des ordres de travail (Fabrication › Planification), vue Semaine : zone grise le 12 après-midi.
+  - Demande 7 passée à Terminé (après les captures) : congé 7 supprimé, demande 9 créée le 12/01/2027 10:00-16:00, bloquante (congé 9).
+Captures : content/blog/screenshots/maintenance-preventive-production-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e1-4-maintenance/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Maintenance Odoo 20 : préventif et correctif en production</h1>
+                <p class="lead mt-3 text-white">Signaler une panne depuis l'atelier sans quitter l'ordre de travail,
+                    bloquer un poste pendant son entretien pour que la planification l'évite, suivre le temps moyen
+                    entre deux défaillances : ce que la maintenance d'Odoo 20 Enterprise ajoute à la fabrication.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Une machine qui tombe en panne au milieu d'un ordre de fabrication, c'est un opérateur qui doit
+                    prévenir la maintenance, un technicien qui doit savoir sur quel poste et pour quel ordre, et un
+                    planning qui continue d'envoyer du travail sur un poste arrêté. L'application
+                    <strong>Maintenance</strong> d'Odoo gère les équipements et les demandes d'intervention ; dans
+                    l'édition Enterprise, son lien avec la <strong>Fabrication</strong> (module Maintenance - MRP) relie
+                    chaque équipement à un poste de travail, ouvre la demande depuis l'atelier et retire du calendrier
+                    du poste le créneau d'un entretien planifié.</p>
+                <p>La maintenance elle-même, équipements, demandes correctives et préventives, récurrence, est déjà
+                    présentée dans <a href="/blog/fonctionnel-odoo-1/reparations-maintenance-odoo-227">Réparations et
+                    maintenance dans Odoo 20</a>. Le présent article part de là et ne traite que ce qui concerne la
+                    production. Les postes de travail et les ordres de travail sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                    ordres de fabrication dans Odoo 20</a>.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>rattacher un équipement à un poste de travail ;</li>
+                    <li>créer une demande de maintenance corrective depuis l'Atelier, liée à l'ordre de fabrication ;</li>
+                    <li>clore la demande et lire les indicateurs de l'équipement : MTBF, MTTR, prochaine défaillance
+                        estimée ;</li>
+                    <li>planifier une maintenance préventive récurrente qui bloque le poste de travail ;</li>
+                    <li>vérifier que la programmation des ordres de fabrication évite le créneau bloqué.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Deux chemins vers une demande de maintenance</h2>
+                <p>L'exemple utilise le poste <strong>Assembly 1</strong> de la démonstration et l'un de ses
+                    équipements, la <strong>Scie à tronçonner</strong>. Un ordre de fabrication neuf, WH/MO/00013 (un
+                    tabouret, [D_0045_G] Stool (Green), une opération Assembly de 10 minutes sur Assembly 1), sert de
+                    support ; les ordres de fabrication de la démonstration ne sont pas touchés.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma. À droite, la maintenance corrective : depuis la carte de l'ordre de travail dans l'Atelier, ⋮ Options › Demande de maintenance crée une demande corrective avec l'OF WH/MO/00013 et l'ordre de travail préremplis, équipement Scie à tronçonner. À gauche, la maintenance préventive : une demande préventive pour le poste de travail Assembly 1, récurrente tous les 3 mois, bloque le poste le 12 oct. de 10:00 à 16:00 ; programmer un OF place alors l'ordre de travail après le créneau bloqué. Les deux demandes suivent les étapes Nouvelle demande, En cours, Réparé et l'état En cours puis Terminé. Une corrective terminée alimente les indicateurs de l'équipement (MTBF, MTTR, prochaine défaillance estimée), repris dans l'onglet Équipement du poste. Une préventive terminée crée l'occurrence suivante le 12 janv. 2027 avec le même créneau bloqué et libère celui du 12 oct." style="max-width:100%; height:auto;"/>
+                    <figcaption>La corrective part de l'atelier, la préventive du planning ; leur clôture alimente les indicateurs ou la demande suivante.</figcaption>
+                </figure>
+                <p>Le schéma se lit en deux colonnes. À droite, la <strong>corrective</strong> : l'opérateur signale la
+                    panne depuis sa tablette, et la demande garde la trace de l'ordre de fabrication et de l'ordre de
+                    travail interrompus. À gauche, la <strong>préventive</strong> : un entretien planifié sur le poste
+                    entier, qui retire son créneau du calendrier du poste ; la programmation des ordres de travail en
+                    tient compte. Les deux demandes avancent ensuite de la même façon, et leur clôture produit deux
+                    effets différents : des indicateurs pour la corrective, l'occurrence suivante pour la préventive
+                    récurrente.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Rattacher les équipements aux postes de travail</h2>
+                <p>Ouvrez <strong>Maintenance › Équipement › Machines &amp; Outils</strong>, puis la Scie à tronçonner.
+                    Le formulaire porte un champ <strong>Poste de travail</strong>, ici Assembly 1, et un bouton
+                    intelligent du même nom qui ouvre la fiche du poste. Dans la démonstration, cinq des onze équipements
+                    sont déjà rattachés : la scie, le riflard et un écran à Assembly 1, la perceuse à Drill 1, un
+                    ordinateur à Assembly 2.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche équipement Scie à tronçonner : 8 dents par pouce., numéro FT/411/11112222 : catégorie Outillage de mobilier, technicien Mitchell Admin, champ Poste de travail Assembly 1 ; boutons Maintenance 1 et Poste de travail" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'équipement connaît son poste de travail ; le bouton Poste de travail ouvre la fiche du poste.</figcaption>
+                </figure>
+                <p>Dans l'onglet <strong>Informations sur le produit</strong>, renseignez la <strong>Date
+                    d'effet</strong> : la date de mise en service de l'équipement. Odoo s'en sert pour calculer le temps
+                    moyen entre défaillances (section 4). La démonstration la règle sur la date de création de la base ;
+                    pour l'exemple, elle a été ramenée au 1<sup>er</sup> juillet 2026.</p>
+                <p>Le rattachement se lit aussi depuis le poste : dans <strong>Maintenance › Équipement › Postes de
+                    travail</strong>, la fiche d'Assembly 1 gagne deux onglets, <strong>Équipement</strong> et
+                    <strong>Maintenance</strong>, et un bouton <strong>Maintenance</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Signaler une panne depuis l'Atelier</h2>
+                <p>Dans l'application <strong>Atelier</strong>, sur le poste Assembly 1, la carte de l'ordre de travail
+                    WH/MO/00013 porte en bas un bouton <strong>⋮</strong>. Il ouvre la fenêtre
+                    <strong>Options</strong>, où figure le bouton <strong>Demande de maintenance</strong>, en orange à
+                    côté de Créer une alerte qualité.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Options de l'Atelier : Enregistrer la quantité / le lot, Rebut, Modifier l'acheminement, Ajouter composant, Ouvrir l'ordre de fabrication, Mettre à jour les instructions, Update Time Spent, Créer une alerte qualité et Demande de maintenance en orange, Bloquer en rouge" style="max-width:85%; height:auto;"/>
+                    <figcaption>Les options d'un ordre de travail dans l'Atelier : Demande de maintenance est à portée de l'opérateur.</figcaption>
+                </figure>
+                <p>Le bouton ouvre une <strong>Nouvelle demande de maintenance</strong> déjà remplie : type
+                    <strong>Corrective</strong>, <strong>Ordre de fabrication</strong> WH/MO/00013 et <strong>Ordre de
+                    travail</strong> (Stool (Green) - 1 Unité(s)). L'opérateur décrit la panne et choisit
+                    l'équipement ; le technicien de l'équipement, Mitchell Admin, passe dans les
+                    <strong>Assignés</strong>. <strong>Enregistrer</strong> crée la demande dans l'étape Nouvelle
+                    demande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Nouvelle demande de maintenance : titre Lame de la scie qui accroche, Pour Équipement, Équipement Scie à tronçonner, catégorie Outillage de mobilier, type Corrective, Ordre de fabrication WH/MO/00013, Ordre de travail Stool (Green) - 1 Unité(s), équipe Maintenance interne, assigné Mitchell Admin, date planifiée 12 oct. 09:40 → 10:40" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande créée depuis l'Atelier reprend l'ordre de fabrication et l'ordre de travail en cours.</figcaption>
+                </figure>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant les applications Fabrication et Maintenance.</p>
+                <p>Le lien fonctionne dans les deux sens. Sur l'ordre de fabrication, un bouton intelligent
+                    <strong>Maintenance</strong> compte les demandes qui s'y rattachent ; et le menu
+                    <strong>Actions</strong> du formulaire propose lui aussi <strong>Demande de maintenance</strong>,
+                    pour qui travaille depuis le back-office.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Ordre de fabrication WH/MO/00013 confirmé, produit [D_0045_G] Stool (Green), nomenclature [D_0045] Stool ; boutons intelligents Aperçu, Atelier et Maintenance 1 ; boutons Produire, Programmer, Lancer, Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'ordre de fabrication affiche le nombre de demandes de maintenance qui le concernent.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Traiter et clore la demande</h2>
+                <p>Le technicien retrouve la demande dans <strong>Maintenance › Maintenance › Demandes de
+                    maintenance</strong>. La demande a une <strong>étape</strong> (Nouvelle demande, En cours, Réparé,
+                    Rebut) et un <strong>état</strong>, le bouton à droite du titre (En cours, Modifications demandées,
+                    Approuvé, Annulé, Terminé). Passez l'étape à <strong>En cours</strong> au début de l'intervention ;
+                    à la fin, choisissez l'état <strong>Terminé</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Demande Lame de la scie qui accroche à l'étape En cours, état Terminé en vert ; Pour Équipement, Scie à tronçonner, Date de clôture 12 oct., type Corrective, Ordre de fabrication WH/MO/00013, Ordre de travail Stool (Green) - 1 Unité(s), assigné Mitchell Admin" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'état Terminé pose la date de clôture ; l'ordre de fabrication reste lié à la demande.</figcaption>
+                </figure>
+                <p>C'est l'état Terminé qui clôt la demande : il fait apparaître la <strong>Date de clôture</strong>,
+                    ici le 12 octobre. Cette date compte pour la suite : les indicateurs de l'équipement se calculent
+                    sur les demandes correctives terminées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lire les indicateurs : MTBF, MTTR, prochaine défaillance</h2>
+                <p>Revenez sur la scie, onglet <strong>Maintenance</strong>. Une seule panne a été enregistrée, et les
+                    valeurs se déduisent des dates :</p>
+                <ul>
+                    <li><strong>Temps moyen entre défaillances</strong> (MTBF) : 103 jours, l'écart entre la Date
+                        d'effet (1<sup>er</sup> juillet) et la dernière défaillance (12 octobre), divisé par le nombre de
+                        pannes ;</li>
+                    <li><strong>Temps moyen de réparation</strong> (MTTR) : 0 jour, la panne ayant été signalée et close
+                        le même jour (l'unité est le jour) ;</li>
+                    <li><strong>Estimation de la prochaine défaillance</strong> : 23 janvier 2027, soit la dernière
+                        défaillance plus le MTBF.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Onglet Maintenance de la Scie à tronçonner : Temps moyen entre défaillances attendu 2 jours, Temps moyen entre défaillances 103 jours, Estimation de la prochaine défaillance 23 janv. 2027, Dernière défaillance 12 oct., Temps moyen de réparation 0 jours" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les indicateurs de la scie après une panne corrective terminée.</figcaption>
+                </figure>
+                <p>Le <strong>Temps moyen entre défaillances attendu</strong> (2 jours dans la démonstration) est une
+                    valeur saisie, la référence du fabricant par exemple ; les autres champs sont calculés. Seules les
+                    demandes <strong>correctives</strong> terminées comptent : un entretien préventif n'est pas une
+                    défaillance.</p>
+                <p>Le responsable de production retrouve ces chiffres sans quitter la fabrication : l'onglet
+                    <strong>Équipement</strong> du poste Assembly 1 liste ses équipements avec leur technicien, leur
+                    catégorie, leur MTBF, leur MTTR et la prochaine défaillance estimée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche du poste de travail Assembly 1, onglets Informations générales, Capacités par produit, Équipement, Maintenance ; onglet Équipement : Écran Samsung 15 pouces MTBF 0 MTTR 0, Scie à tronçonner MTBF 103 MTTR 0 estimation 23 janv. 2027, Riflard MTBF 0 MTTR 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le poste Assembly 1 et ses trois équipements : seule la scie a un historique de panne.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Planifier une maintenance préventive qui bloque le poste</h2>
+                <p>Un entretien planifié concerne souvent le poste entier, pas un seul outil. Ouvrez
+                    <strong>Maintenance › Maintenance › Planification par poste de travail</strong> et cliquez sur
+                    <strong>Nouveau</strong>. Le champ <strong>Pour</strong> vaut alors <strong>Poste de
+                    travail</strong> : le formulaire demande un poste au lieu d'un équipement. Renseignez :</p>
+                <ul>
+                    <li>le titre (« Révision du poste Assembly 1 ») et le <strong>Poste de travail</strong> ;</li>
+                    <li>le <strong>Type de maintenance</strong> : Préventive ;</li>
+                    <li>la <strong>Date planifiée</strong> et son heure de fin, ici le 12 octobre de 10:00 à 16:00 ;</li>
+                    <li><strong>Récurrente</strong>, tous les <strong>3 Mois</strong>, <strong>Pour toujours</strong> ;</li>
+                    <li><strong>Bloquer le poste de travail</strong>, la case propre aux demandes sur un poste.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Demande Révision du poste Assembly 1 : Pour Poste de travail, Poste de travail Assembly 1, type Préventive, équipe Maintenance interne, assigné Mitchell Admin, date planifiée 12 oct. 10:00 → 16:00, Récurrente cochée, Répéter tous les 3 Mois Pour toujours, Bloquer le poste de travail coché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une préventive sur le poste entier, tous les trois mois, qui bloque le poste pendant l'intervention.</figcaption>
+                </figure>
+                <p>L'infobulle de la case le dit : « Il n'est pas possible de planifier des ordres de travail ou
+                    d'autres maintenances sur ce poste de travail pendant cette période. » À l'enregistrement, Odoo
+                    ajoute le créneau aux absences du calendrier du poste. En mode développeur, un champ
+                    <strong>Congés supplémentaires à prévoir</strong> permet de bloquer à l'avance plusieurs
+                    occurrences futures d'une demande récurrente.</p>
+                <p>Les deux vues <strong>Planification par poste de travail</strong> et <strong>Planification par
+                    équipement</strong> présentent les demandes ouvertes sur un diagramme de Gantt, une ligne par
+                    poste ou par équipement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Gantt Planification par poste de travail, échelle Mois, filtres Ouvert et regroupement Poste de travail : lignes Poste de travail indéfini, Assembly 1, Drill 1, Assembly 2 ; une barre Révision sur Assembly 1 le 12 octobre ; total 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>La révision d'Assembly 1 sur le planning de maintenance par poste de travail.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. L'effet sur la programmation des ordres de fabrication</h2>
+                <p>Le calendrier du poste Assembly 1 va de 8:00 à 16:00 en semaine. Le 12 octobre, à 10:01, pendant la
+                    révision, l'ordre de fabrication WH/MO/00013 est programmé avec le bouton
+                    <strong>Programmer</strong>, qui cherche le premier créneau libre à partir de maintenant. Son
+                    ordre de travail de 10 minutes ne prend pas la fin de journée : la <strong>Date planifiée</strong>
+                    passe au 13 octobre, 08:00, ouverture suivante du poste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Ordre de fabrication WH/MO/00013 après Programmer : bouton Déprogrammer, Date planifiée 13 oct. 08:00 ; onglet Ordres de travail, opération Assembly sur Assembly 1, durée prévue 10 min, statut À faire ; historique 12 oct. 2026 09:38 → 13 oct. 2026 08:00 et message L'ordre de fabrication a été planifié" style="max-width:100%; height:auto;"/>
+                    <figcaption>Programmé pendant la révision, l'ordre de fabrication est reporté à l'ouverture suivante du poste.</figcaption>
+                </figure>
+                <p><strong>Fabrication › Planification › Ordres de travail › Planification</strong> rend le créneau
+                    visible : en vue Semaine, la ligne Assembly 1 est grisée l'après-midi du 12, après l'ordre de travail
+                    du tiroir qui l'occupait le matin, et l'ordre de travail du tabouret commence le 13.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Planification des ordres de travail, vue Semaine 12 au 18 octobre : ligne Assembly 1 avec la barre Drawer - 1 Unité le matin du lundi 12, zone grise sur l'après-midi du 12, barre Stool (Green) le mardi 13 ; lignes Drill 1 et Assembly 2 vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le créneau bloqué apparaît en gris ; l'ordre de travail du tabouret passe au lendemain.</figcaption>
+                </figure>
+                <p>Quand la révision est terminée (état Terminé), deux choses se produisent : le créneau du 12 octobre
+                    est rendu au poste, et la récurrence crée la demande suivante, le 12 janvier 2027 de 10:00 à 16:00,
+                    avec son propre blocage.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>La maintenance existe, son lien avec la production non</h4>
+                    <p>L'application Maintenance est incluse dans Odoo 20 Community : équipements, demandes correctives
+                        et préventives, étapes et états, récurrence, calendrier des demandes. L'onglet Maintenance de
+                        l'équipement y affiche aussi le MTBF, le MTTR et la prochaine défaillance estimée. Tout cela est
+                        présenté dans <a href="/blog/fonctionnel-odoo-1/reparations-maintenance-odoo-227">Réparations et
+                        maintenance dans Odoo 20</a>.</p>
+                    <p>Le module qui relie maintenance et fabrication n'est pas inclus dans la Community, pas plus que
+                        celui des vues de planification de la maintenance. Sans eux : pas de champ Poste de travail sur
+                        l'équipement ni d'onglets Équipement et Maintenance sur le poste, pas de demande « Pour : Poste
+                        de travail », pas de case Bloquer le poste de travail, pas de lien entre la demande et l'ordre
+                        de fabrication, et pas de diagramme de Gantt par poste ou par équipement. L'Atelier lui-même est
+                        une application Enterprise ; en Community, les ordres de travail se suivent depuis l'ordre de
+                        fabrication, voir
+                        <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                        ordres de fabrication dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un créneau déjà occupé ne se bloque pas</h4>
+                    <p>Bloquer un poste sur une période où un ordre de travail est déjà planifié est refusé, avec le
+                        message « Les ordres de fabrication sont déjà planifiés pour ce créneau horaire. ». Dans
+                        l'exemple, un ordre de travail en cours sur Assembly 1 occupait le début de matinée : la révision
+                        a dû commencer à 10:00. Déplacez d'abord l'ordre de travail, ou choisissez un autre créneau.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Terminer la préventive libère le créneau</h4>
+                    <p>À l'état Terminé, le blocage de la demande disparaît du calendrier du poste, même si la journée
+                        n'est pas finie. Passez la demande à Terminé à la fin réelle de l'intervention, pas en avance.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La Date d'effet fausse le MTBF si elle est laissée par défaut</h4>
+                    <p>Le MTBF part de la Date d'effet de l'équipement. Laissée à sa valeur par défaut (la date de
+                        création de la fiche), elle donne un temps moyen entre défaillances trop court. Saisissez la vraie
+                        date de mise en service dès la création de l'équipement.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> enregistrer une panne du riflard et la retrouver dans les indicateurs
+                        du poste.</p>
+                    <p><strong>Indication :</strong> sur l'équipement Riflard, réglez la Date d'effet sur une date passée.
+                        Depuis un ordre de fabrication confirmé qui passe par Assembly 1, ouvrez Actions › Demande de
+                        maintenance, choisissez le Riflard, enregistrez, puis passez la demande à l'état Terminé.</p>
+                    <p><strong>Critère de réussite :</strong> l'ordre de fabrication affiche un bouton Maintenance ; dans
+                        l'onglet Équipement du poste Assembly 1, la ligne Riflard montre un MTBF non nul et une estimation
+                        de la prochaine défaillance.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Enterprise, un équipement se rattache à un poste de travail, et le poste affiche ses
+                        équipements avec leurs indicateurs.</li>
+                    <li>Atelier › ⋮ Options › Demande de maintenance crée une demande corrective liée à l'ordre de
+                        fabrication et à l'ordre de travail.</li>
+                    <li>MTBF, MTTR et prochaine défaillance se calculent sur les demandes correctives terminées, à partir
+                        de la Date d'effet.</li>
+                    <li>Une préventive « Pour : Poste de travail » peut bloquer le poste : la programmation des ordres de
+                        fabrication évite alors le créneau.</li>
+                    <li>Terminer une préventive récurrente libère son créneau et crée la suivante, bloquée elle aussi.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reparations-maintenance-odoo-227">Réparations et maintenance dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : équipements, demandes, récurrence.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Postes de travail, opérations et ordres de fabrication en Community.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/programme-directeur-production-odoo-297">Programme directeur de production (PDP) dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Prévoir la demande par période et lancer les ordres de fabrication suggérés.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

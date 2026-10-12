@@ -1,0 +1,538 @@
+<!--
+Article — Contrôle qualité Odoo 20 : points de contrôle et alertes
+Série « Production avec Odoo 20 Enterprise » (lot EE 1), article E1.2
+Date : 2026-10-12
+Slug : controle-qualite-odoo
+Mot-clé cible : contrôle qualité odoo (points de contrôle, alerte qualité)
+Tags : intermediaire, guide, enterprise
+Preuves (12/10/2026, base edu-odooskills20, Odoo 20.0+e, compte formateur) :
+  - Modules installés : quality, quality_control (« Quality »), quality_mrp, quality_mrp_workorder (ir.module.module).
+  - Menus FR : Qualité › Vue d'ensemble ; Contrôle qualité › Points de contrôle / Contrôles qualité / Alertes qualité ;
+    Configuration › Équipes qualité, Étapes d'alerte qualité (ir.ui.menu 521-537).
+  - Types de contrôle (quality.point.test_type, fr) : Instructions, Prendre une photo, Enregistrer les matières consommées,
+    Enregistrer la production, Print Product Label, Print Lot/SN Label, Réussite - Échec, Mesure, Feuille de calcul.
+  - Contrôle par : Opération, Produit, Lot ; Fréquence des contrôles : Tous, Aléatoirement, Périodiquement, Sur demande (fields_get fr).
+  - Filtres : « Points qualité » = operation_id vide, « Étapes de production » = operation_id renseigné (vue de recherche
+    quality.point) ; action Points de contrôle 999 : search_default_quality_points ; idem Contrôles qualité 992.
+  - Créés par RPC : QCP00024 « Glissement du tiroir » (Réussite - Échec) et QCP00025 « Largeur de la façade » (Mesure 450 mm,
+    449-451), produit [FURN_8855] Drawer, type Manufacturing (11), nomenclature SEC-ASSEM (8), étape Testing (mrp.routing.workcenter 4).
+    Nomenclature : bouton « 3 Opérations 2 Instructions ».
+  - OF WH/MO/00011 (mrp.production 13, 1 Drawer) confirmé : contrôles QC00025 / QC00026 générés à la confirmation sur
+    l'ordre de travail Testing (mrp.workorder 15), aucun sur Packing ni Long time assembly.
+  - Atelier : carte Testing, boutons info / ✕ / ✓ (Réussite - Échec), info / ↔ (Mesure) ; ✓ -> ligne barrée « passed » ;
+    ↔ -> fenêtre « Mesure » (mm, Enregistrer / Ignorer) ; 452,5 -> fenêtre « Échec du contrôle qualité » (« Vous avez mesuré 452.50 mm
+    et la valeur devrait être comprise entre 449.00 et 451.00 mm. » + message en cas d'échec ; Confirmer la mesure / Mesure correcte) ;
+    QC00026 quality_state=fail, measure=452.5, alert_count=0 : aucune alerte automatique.
+  - Carte après échec : « failed », bouton Marquer comme terminé affiché.
+  - ⋮ Options › Créer une alerte qualité : formulaire prérempli (Produit, Poste de travail Assembly 1, Ordre de fabrication
+    WH/MO/00011, Équipe Main Quality Team) ; QA00001 (quality.alert 1) créée, check_id vide, workorder_id 15.
+  - Étapes d'alerte : Nouveau, Confirmé, Action proposée, Résolu (done=True) ; QA00001 passée à Résolu, date_close renseignée.
+  - Liste Contrôles qualité, filtre Étapes de production + Drawer : QC00026 Échec, QC00025 Réussite, Vérifié par Formateur Odoo
+    (compte connecté, pas l'opératrice Abigail Peterson sélectionnée à l'Atelier).
+  - OF : bouton intelligent « Alertes qualité 1 ».
+  - Community : ls odoo/addons | grep -c quality -> 0 ; réception en 3 étapes : odoo/addons/stock/models/stock_warehouse.py:56-59
+    (« Receive, Quality Control, then Store (3 steps) »), article en ligne 220.
+Captures : content/blog/screenshots/controle-qualite-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e1-2-qualite/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Contrôle qualité Odoo 20 : points de contrôle et alertes</h1>
+                <p class="lead mt-3 text-white">Mesurer une pièce à la bonne opération, enregistrer le résultat et
+                    traiter l'écart quand la mesure sort de la tolérance : l'application Qualité d'Odoo 20 Enterprise
+                    place ces contrôles dans le déroulement même de la fabrication.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un contrôle qualité qui vit sur une fiche papier ou dans un tableur arrive toujours trop tard : la
+                    pièce est déjà emballée quand l'écart est relevé. Dans Odoo 20 Enterprise, le responsable qualité
+                    décrit une fois pour toutes ce qu'il faut vérifier, sur quel article et à quelle opération. Odoo
+                    crée alors le contrôle au bon moment, l'opérateur le remplit sur sa tablette, et un échec peut
+                    devenir une <strong>alerte qualité</strong> suivie jusqu'à sa résolution.</p>
+                <p>Trois objets structurent l'application Qualité :</p>
+                <ul>
+                    <li>le <strong>point de contrôle</strong> : la règle (quoi vérifier, sur quel article, à quelle
+                        opération, avec quel type de test) ;</li>
+                    <li>le <strong>contrôle qualité</strong> : l'exécution de cette règle sur un ordre de fabrication
+                        ou un transfert précis, avec son résultat ;</li>
+                    <li>l'<strong>alerte qualité</strong> : le dossier ouvert quand un problème est constaté, confié à
+                        une équipe qualité et suivi par étapes.</li>
+                </ul>
+                <p>Le présent article part d'une nomenclature avec opérations et de l'application Atelier. Les
+                    nomenclatures et les ordres de fabrication sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                    ordres de fabrication dans Odoo 20</a>.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un point de contrôle rattaché à une opération de fabrication ;</li>
+                    <li>choisir le type de contrôle : réussite ou échec, mesure avec tolérance, instructions, photo ;</li>
+                    <li>exécuter les contrôles à l'Atelier, au moment de l'opération concernée ;</li>
+                    <li>transformer un contrôle échoué en alerte qualité ;</li>
+                    <li>suivre l'alerte jusqu'à l'étape Résolu, avec ses mesures correctives et préventives.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le chemin d'un contrôle qualité</h2>
+                <p>L'exemple fabrique un « Drawer » de la démonstration avec la nomenclature
+                    <strong>SEC-ASSEM</strong> : Packing sur le poste Drill 1, puis Testing et Long time assembly sur
+                    Assembly 1. Deux contrôles sont ajoutés à l'opération Testing : le glissement du tiroir
+                    (réussite ou échec) et la largeur de la façade (mesure de 450 mm, tolérée de 449 à 451 mm).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en deux parties. En haut, du point de contrôle au contrôle : point de contrôle QCP00025 Largeur de la façade, Mesure 450 mm de 449 à 451, Drawer, Manufacturing, Testing ; à la confirmation de l'OF WH/MO/00011, contrôle QC00026 sur l'ordre de travail Testing ; à l'Atelier, l'opérateur saisit la mesure ; dans la tolérance, Réussite (passed) ; sinon, 452,5 mm, Échec (failed) avec la fenêtre Échec du contrôle qualité et le message en cas d'échec. En bas, en cas d'échec, menu Options puis Créer une alerte qualité : alerte QA00001, Main Quality Team, cause première, puis étapes Nouveau, Confirmé, Action proposée avec mesures correctives et préventives, Résolu" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le point de contrôle génère le contrôle ; un échec ouvre, à la main, une alerte qualité.</figcaption>
+                </figure>
+                <p>En haut, la mécanique automatique : le point de contrôle est une règle, et c'est la
+                    <strong>confirmation de l'ordre de fabrication</strong> qui crée les contrôles, rattachés à
+                    l'ordre de travail de l'opération choisie. À l'Atelier, l'opérateur les remplit ; une mesure hors
+                    tolérance passe en Échec. En bas, la partie humaine : l'échec n'ouvre pas d'alerte de lui-même.
+                    L'opérateur la crée depuis sa carte, puis l'équipe qualité la fait avancer d'étape en étape
+                    jusqu'à <strong>Résolu</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer un point de contrôle</h2>
+                <p>Ouvrez <strong>Qualité › Contrôle qualité › Points de contrôle</strong>, puis
+                    <strong>Nouveau</strong>. Le formulaire répond à quatre questions :</p>
+                <ul>
+                    <li><strong>quoi</strong> : un titre, et dans l'onglet <strong>Instructions</strong> le geste
+                        attendu de l'opérateur ;</li>
+                    <li><strong>sur quoi</strong> : les <strong>Produits</strong> concernés ;</li>
+                    <li><strong>quand</strong> : les <strong>Opérations</strong> (type d'opération d'entrepôt :
+                        Manufacturing ici, une réception ailleurs) et, pour la fabrication, l'<strong>Opération
+                        d'ordre de travail</strong> de la nomenclature, ici Testing ;</li>
+                    <li><strong>comment</strong> : le <strong>Type</strong> de contrôle, puis la fréquence.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Point de contrôle QCP00025 Largeur de la façade : Produits [FURN_8855] Drawer, Opérations Manufacturing, Opération d'ordre de travail Testing, Contrôle par Produit, Fréquence des contrôles Tous, Type Mesure, Norme 450,00 mm, Tolérance de 449,00 à 451,00, Équipe Main Quality Team ; onglets Instructions, Attachment, Message en cas d'échec, Notes ; instruction Mesurer la largeur de la façade au pied à coulisse" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le point de contrôle « Largeur de la façade » : une mesure, une norme et sa tolérance.</figcaption>
+                </figure>
+                <p>Le type <strong>Mesure</strong> ajoute la <strong>Norme</strong>, son unité (mm) et la
+                    <strong>Tolérance</strong> : toute valeur hors de l'intervalle 449 à 451 mm sera un échec. L'onglet
+                    <strong>Message en cas d'échec</strong> contient le texte montré à l'opérateur quand cela arrive,
+                    ici « Façade hors tolérance : ne pas emballer, créer une alerte qualité ». Le second point,
+                    « Glissement du tiroir », est du type <strong>Réussite - Échec</strong> : l'opérateur répond
+                    simplement oui ou non.</p>
+                <p>La liste des types proposés par la base de démonstration couvre la plupart des besoins de
+                    l'atelier :</p>
+                <table class="tmc">
+                    <thead><tr><th>Type</th><th>Ce que fait l'opérateur</th></tr></thead>
+                    <tbody>
+                        <tr><td>Réussite - Échec</td><td>valide ou refuse, d'un bouton</td></tr>
+                        <tr><td>Mesure</td><td>saisit une valeur, comparée à la norme et à la tolérance</td></tr>
+                        <tr><td>Instructions</td><td>lit une consigne, sans résultat à saisir</td></tr>
+                        <tr><td>Prendre une photo</td><td>joint une photo de la pièce</td></tr>
+                        <tr><td>Enregistrer les matières consommées, Enregistrer la production</td><td>saisit un lot ou une quantité</td></tr>
+                        <tr><td>Print Product Label, Print Lot/SN Label</td><td>imprime une étiquette</td></tr>
+                        <tr><td>Feuille de calcul</td><td>remplit une feuille de calcul de contrôle</td></tr>
+                    </tbody>
+                </table>
+                <p>Deux réglages fixent le rythme. <strong>Contrôle par</strong> : un contrôle par
+                    <strong>Opération</strong>, par <strong>Produit</strong> ou par <strong>Lot</strong>.
+                    <strong>Fréquence des contrôles</strong> : Tous, Aléatoirement, Périodiquement ou Sur demande.
+                    L'exemple contrôle chaque produit, à chaque fois.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Retrouver les points d'une opération de fabrication</h2>
+                <p>Après enregistrement, les deux points semblent avoir disparu de la liste. Elle s'ouvre en effet avec
+                    le filtre <strong>Points qualité</strong>, qui ne garde que les points sans opération d'ordre de
+                    travail : ceux des réceptions, par exemple. Les points rattachés à une opération de nomenclature
+                    se trouvent sous le filtre <strong>Étapes de production</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste Points de contrôle filtrée sur Étapes de production et Point de contrôle Drawer : QCP00024 Glissement du tiroir, type Réussite - Échec, et QCP00025 Largeur de la façade, type Mesure, produit [FURN_8855] Drawer, opération Manufacturing, contrôle par Produit, équipe Main Quality Team" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les points rattachés à une opération de fabrication : filtre Étapes de production.</figcaption>
+                </figure>
+                <p>Côté Fabrication, la nomenclature SEC-ASSEM affiche désormais le bouton intelligent
+                    <strong>3 Opérations · 2 Instructions</strong> : les points d'une opération sont aussi les
+                    instructions de cette opération à l'atelier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le contrôle apparaît à la bonne opération</h2>
+                <p>Créez et confirmez un ordre de fabrication de 1 Drawer avec la nomenclature SEC-ASSEM, depuis
+                    <strong>Fabrication › Opérations › Ordres de fabrication</strong> ; dans la base de
+                    démonstration, il porte la référence WH/MO/00011. La confirmation génère les deux contrôles,
+                    QC00025 et QC00026, sur l'ordre de travail Testing seulement : Packing et Long time assembly n'en
+                    ont aucun.</p>
+                <p>À l'<strong>Atelier</strong>, Packing se déroule normalement sur Drill 1. Une fois Packing terminé,
+                    la carte Testing apparaît dans l'onglet <strong>Assembly 1</strong>. Démarrez-la : les deux
+                    contrôles sont listés sous l'opération, chacun avec ses boutons.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Carte Atelier WH/MO/00011 [FURN_8855] Drawer 1 Unité, opération Testing démarrée, avatar de l'opératrice et bouton PAUSE ; lignes Glissement du tiroir avec boutons information, croix rouge et coche verte, et Largeur de la façade avec boutons information et double flèche" style="max-width:70%; height:auto;"/>
+                    <figcaption>L'opération Testing à l'Atelier : les deux contrôles attendent l'opérateur.</figcaption>
+                </figure>
+                <p>Le bouton <strong>i</strong> affiche les instructions du point (« Ouvrir et fermer le tiroir trois
+                    fois : il doit coulisser sans point dur »). Pour un contrôle Réussite - Échec, la croix rouge
+                    enregistre un échec, la coche verte une réussite. Pour une mesure, la double flèche ouvre la
+                    saisie. Tant que des contrôles restent à faire, la carte ne propose pas
+                    <strong>Marquer comme terminé</strong>.</p>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant les applications Fabrication et Qualité.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un contrôle réussi</h2>
+                <p>Le tiroir coulisse bien : cliquez sur la coche verte de <strong>Glissement du tiroir</strong>. La
+                    ligne est barrée et marquée <strong>passed</strong>, et un bouton de retour remplace la croix et la
+                    coche.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Carte WH/MO/00011 Testing : Glissement du tiroir barré avec la mention passed en vert et un bouton de retour ; Largeur de la façade encore à faire, bouton double flèche mis en avant" style="max-width:70%; height:auto;"/>
+                    <figcaption>Premier contrôle réussi ; le suivant est mis en avant.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Une mesure hors tolérance</h2>
+                <p>Cliquez sur la double flèche de <strong>Largeur de la façade</strong>. La fenêtre
+                    <strong>Mesure</strong> attend la valeur, dans l'unité du point. Saisissez la largeur relevée,
+                    ici 452,5, puis <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Mesure de l'Atelier : valeur 452,5, unité mm, boutons Enregistrer et Ignorer" style="max-width:55%; height:auto;"/>
+                    <figcaption>La saisie de la mesure, dans l'unité définie sur le point de contrôle.</figcaption>
+                </figure>
+                <p>La valeur sort de la tolérance : Odoo affiche <strong>Échec du contrôle qualité</strong>, rappelle
+                    la mesure et l'intervalle attendu, puis le message en cas d'échec rédigé sur le point de
+                    contrôle.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Échec du contrôle qualité : Vous avez mesuré 452.50 mm et la valeur devrait être comprise entre 449.00 et 451.00 mm. Façade hors tolérance : ne pas emballer, créer une alerte qualité. Boutons Confirmer la mesure et Mesure correcte" style="max-width:85%; height:auto;"/>
+                    <figcaption>L'échec est signalé à l'opérateur, avec la consigne prévue par le responsable qualité.</figcaption>
+                </figure>
+                <p>La fenêtre propose <strong>Confirmer la mesure</strong> ou <strong>Mesure correcte</strong>. Le
+                    résultat est pourtant déjà enregistré à son ouverture : QC00026 est en Échec, avec la valeur
+                    452,5. Sur la carte, la ligne est barrée et marquée <strong>failed</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Carte WH/MO/00011 Testing : Glissement du tiroir passed en vert, Largeur de la façade failed en rouge, toutes deux barrées ; bouton Marquer comme terminé et bouton ⋮" style="max-width:70%; height:auto;"/>
+                    <figcaption>Les deux contrôles faits : une réussite, un échec. Le bouton Marquer comme terminé apparaît.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Marquer comme terminé</strong> apparaît alors : un contrôle échoué ne bloque pas
+                    l'opération. C'est à l'organisation de dire ce qui se passe ensuite, d'où le message en cas
+                    d'échec et l'alerte qualité.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Créer l'alerte qualité depuis l'Atelier</h2>
+                <p>Sur la carte, ouvrez le menu <strong>⋮</strong>, puis <strong>Créer une alerte qualité</strong>
+                    (bouton orange de la fenêtre Options). Le formulaire arrive prérempli avec le contexte de la
+                    carte : produit, poste de travail Assembly 1, ordre de fabrication WH/MO/00011, équipe
+                    <strong>Main Quality Team</strong>. Il reste à donner un titre, une <strong>Cause
+                    première</strong> (la démonstration propose Défaillance du poste de charge, Qualité des
+                    composants, Opération de travail, Autres) et une description de l'incident.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Alertes qualité à l'étape Nouveau : titre Façade hors tolérance : 452,5 mm ; Produit [FURN_8855] Drawer, Poste de travail Assembly 1, Ordre de fabrication WH/MO/00011, Équipe Main Quality Team, Responsable Formateur Odoo, Cause première Qualité des composants ; onglets Description, Mesures correctives, Mesures préventives, Divers ; description du contrôle échoué ; boutons Enregistrer et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'alerte qualité créée depuis la carte : le contexte de fabrication est déjà renseigné.</figcaption>
+                </figure>
+                <p><strong>Enregistrer</strong> crée l'alerte QA00001 à l'étape <strong>Nouveau</strong>. Dans le
+                    back-office, l'ordre de fabrication WH/MO/00011 affiche le bouton intelligent <strong>Alertes
+                    qualité 1</strong>, et la carte de l'équipe, dans <strong>Qualité › Vue d'ensemble</strong>,
+                    compte l'alerte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Lire les résultats des contrôles</h2>
+                <p>Le responsable qualité consulte les résultats dans <strong>Qualité › Contrôle qualité ›
+                    Contrôles qualité</strong>. Comme pour les points, la liste s'ouvre sur le filtre Contrôles
+                    qualité ; ceux des opérations de fabrication sont sous <strong>Étapes de production</strong>.
+                    Ici, en ajoutant une recherche sur le produit Drawer :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Liste Contrôles qualité filtrée sur Étapes de production et Produit Drawer : QC00026 Largeur de la façade, [FURN_8855] Drawer, 12 oct. 08:52, vérifié par Formateur Odoo, statut Échec ; QC00025 Glissement du tiroir, même produit et même date, statut Réussite" style="max-width:100%; height:auto;"/>
+                    <figcaption>Chaque contrôle garde sa date, son auteur et son statut.</figcaption>
+                </figure>
+                <p>La fiche du point de contrôle QCP00025 résume aussi ses mesures : un bouton intelligent affiche
+                    la moyenne et l'écart type des valeurs relevées (ici une seule mesure, 452,50).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Suivre l'alerte jusqu'à sa résolution</h2>
+                <p>Les alertes se traitent dans <strong>Qualité › Contrôle qualité › Alertes qualité</strong>, en
+                    kanban par étape. Les étapes de la démonstration sont <strong>Nouveau</strong>,
+                    <strong>Confirmé</strong>, <strong>Action proposée</strong> et <strong>Résolu</strong>
+                    (modifiables dans Configuration › Étapes d'alerte qualité). Ouvrez QA00001 : la barre d'étapes en
+                    haut à droite fait avancer le dossier, et deux onglets accueillent la réponse de l'équipe.</p>
+                <ul>
+                    <li><strong>Mesures correctives</strong> : ce qui règle le cas présent (mettre la façade de côté,
+                        vérifier le stock de façades) ;</li>
+                    <li><strong>Mesures préventives</strong> : ce qui empêche le retour du problème (par exemple, un
+                        contrôle de largeur à la réception des façades).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Alerte qualité Façade hors tolérance : 452,5 mm à l'étape Action proposée, barre d'étapes Nouveau, Confirmé, Action proposée ; Produit Drawer, Poste de travail Assembly 1, Ordre de fabrication WH/MO/00011, Équipe Main Quality Team, Cause première Qualité des composants ; onglet Mesures correctives : Façade mise de côté. Contrôle des façades Drawer Black en stock avant la prochaine production" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'alerte à l'étape Action proposée, avec sa mesure corrective.</figcaption>
+                </figure>
+                <p>Une fois les actions menées, la dernière étape, <strong>Résolu</strong>, se trouve sous les points
+                    de suspension de la barre d'étapes. C'est l'étape de clôture : Odoo y enregistre la date de
+                    fermeture de l'alerte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Haut de l'alerte qualité Façade hors tolérance : 452,5 mm, barre d'étapes Nouveau, Confirmé, Action proposée, Résolu, étape Résolu active ; Produit Drawer, Équipe Main Quality Team, Responsable Formateur Odoo" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'alerte résolue : le dossier est clos.</figcaption>
+                </figure>
+                <p>Le fil de discussion de l'alerte garde la trace de chaque changement d'étape, avec son auteur et
+                    son heure : c'est le dossier qui se présente lors d'un audit.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Une étape de contrôle à la réception, sans contrôle enregistré</h4>
+                    <p>Les modules de l'application Qualité ne sont pas inclus dans Odoo 20 Community : pas de point de
+                        contrôle, pas de contrôle à l'Atelier, pas d'alerte qualité. La seule ressource voisine est
+                        logistique : un entrepôt peut recevoir en trois étapes, « Recevoir, Contrôle qualité, puis
+                        stocker ». La marchandise passe alors par un emplacement de contrôle avant le stock, mais le
+                        contrôle lui-même n'est ni décrit ni enregistré dans Odoo. Ce réglage est présenté dans
+                        <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                        et livraisons en plusieurs étapes dans Odoo 20</a> ; la fabrication en Community, dans
+                        <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                        ordres de fabrication dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un échec ne crée pas d'alerte</h4>
+                    <p>Le contrôle QC00026 est passé en Échec sans qu'aucune alerte ne soit ouverte. L'alerte se crée
+                        à la main, depuis le menu ⋮ de la carte ou depuis l'application Qualité. Le message en cas
+                        d'échec du point de contrôle est le bon endroit pour dire à l'opérateur de le faire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un échec ne bloque pas l'opération</h4>
+                    <p>Après l'échec, la carte propose Marquer comme terminé : rien n'empêche l'opérateur de passer à
+                        l'opération suivante. Si une pièce non conforme ne doit pas avancer, la consigne doit figurer
+                        dans le message en cas d'échec.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les filtres par défaut masquent la fabrication</h4>
+                    <p>Points de contrôle et Contrôles qualité s'ouvrent sur des filtres qui excluent les opérations
+                        de fabrication. Un point rattaché à une opération de nomenclature ne s'y voit qu'avec le filtre
+                        Étapes de production.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les contrôles naissent à la confirmation</h4>
+                    <p>Les contrôles de WH/MO/00011 ont été générés à sa confirmation, après la création des points.
+                        Pour un ordre déjà confirmé au moment où le point est créé, vérifiez sur la carte de l'Atelier
+                        que le contrôle est bien présent avant de compter dessus.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Vérifié par : le compte connecté</h4>
+                    <p>La colonne Vérifié par de la liste des contrôles affiche l'utilisateur connecté à la tablette,
+                        ici Formateur Odoo, et non l'opératrice sélectionnée dans le panneau de l'Atelier.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> contrôler le tiroir dès la première opération et tracer un échec.</p>
+                    <p><strong>Indication :</strong> créez un point de contrôle du type Prendre une photo sur le
+                        produit Drawer, opération Manufacturing, opération d'ordre de travail Packing. Confirmez un
+                        nouvel ordre de fabrication de 1 Drawer, réalisez Packing à l'Atelier, puis échouez
+                        volontairement le contrôle Glissement du tiroir sur Testing et créez l'alerte qualité.</p>
+                    <p><strong>Critère de réussite :</strong> la carte Packing affiche le contrôle photo ; la liste
+                        Contrôles qualité (filtre Étapes de production) montre trois contrôles pour le nouvel ordre ;
+                        l'ordre de fabrication affiche Alertes qualité 1.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le point de contrôle est la règle : produit, type d'opération, opération de nomenclature,
+                        type de test, fréquence.</li>
+                    <li>La confirmation de l'ordre de fabrication crée les contrôles, sur l'ordre de travail visé.</li>
+                    <li>À l'Atelier, l'opérateur valide, refuse ou mesure ; une mesure hors tolérance est un échec,
+                        accompagné du message prévu.</li>
+                    <li>L'alerte qualité se crée à la main, depuis la carte, avec le contexte de fabrication déjà
+                        rempli.</li>
+                    <li>L'équipe qualité la mène de Nouveau à Résolu, avec mesures correctives et préventives.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : nomenclature, opérations, ordres de fabrication.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes</a></h5>
+                            <p class="small text-muted mb-0">L'étape de contrôle à la réception, en Community.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/plm-ordre-modification-odoo-295">PLM Odoo 20 : ordres de modification de nomenclature</a></h5>
+                            <p class="small text-muted mb-0">Changer une nomenclature par révision, approbation et nouvelle version.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
