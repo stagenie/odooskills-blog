@@ -1,0 +1,467 @@
+<!--
+Article — Programme directeur de production (PDP) dans Odoo 20
+Série « Production avec Odoo 20 Enterprise » (lot EE 1), article E1.5
+Date : 2026-10-12
+Slug : programme-directeur-production-odoo
+Mot-clé cible : programme directeur de production odoo (PDP, MPS, plan directeur de production, planification de la production)
+Tags : intermediaire, guide, enterprise
+Preuves (12/10/2026, base edu-odooskills20, Odoo 20.0+e, compte formateur) :
+  - Module mrp_mps (OEEL-1, « Master Production Schedule ») installé ; CE : ls odoo/addons/mrp_mps -> absent.
+  - Menus (ir.ui.menu, fr_FR) : Fabrication/Planification/PDP/Programme directeur de production ;
+    Inventaire/Opérations/Approvisionnement/Programme directeur de production (action client mrp_mps_client_action, path « mps »).
+  - Paramètres Fabrication, section Planification : case « Programme directeur de production » (module_mrp_mps),
+    « Plage horaire par défaut » Annuel/Mensuel/Hebdomadaire/Quotidien (société : month), « Nombre de périodes » 3/12/12/30.
+  - Bouton Mois du programme : Année, Mois, Semaine, Jour. Menu de recherche : Filtres / Favoris / Lignes (relevés à l'écran).
+  - mrp.production.schedule (fields_get fr) : forecast_target_qty « Stock de sécurité », min_to_replenish_qty « Minimum à
+    réapprovisionner », replenish_trigger « Déclencher le réassort » Manuelle/Automatique/Jamais, bom_id « Nomenclatures »
+    (« les composants de la nomenclature seront également importés »), is_indirect. Pas de champ max (v20).
+    Action programmée « MPS: replenish automated schedules », tous les 1 jours.
+  - Ligne créée (UI) : mrp.production.schedule 5 Table Top (produit 55, BoM 3, stock de sécurité 10, Manuelle) ; import BoM ->
+    schedule 6 Wood Panel (produit 62, un seul niveau : Ply Layer / Wear Layer non ajoutés). Demande prévue saisie : nov. 20, déc. 15.
+  - get_production_schedule_view_state : Table Top oct. starting 5 / forecast 0 / replenish 5 / stock prévu 10 ; nov. 10/20/20/10 ;
+    déc. 10/15/15/10 ; Wood Panel indirect_demand 10/40/30, replenish 0/0/30.
+    Formule vérifiée sur toutes les cellules : réassort = demande + stock de sécurité − inventaire de départ (≥ 0).
+  - Desk Combination (démo, lecture seule) : outgoing_qty (demande réelle) 36 / 99 / 0 / 80, forecast 240 en oct. ;
+    stock prévu 18 = 255 − 240 + 3 inchangé malgré la demande réelle.
+  - Bouton Commande de la ligne Table Top (titre « Réapprovisionner ») : WH/MO/00014 (mrp.production 16), 3 Table Top, origin « MPS »,
+    date planifiée 2026-10-01 00:00 (Africa/Algiers), composants réservés (6 Wood Panel). Existant déjà compté : WH/MO/00003 (1)
+    + réception de P00018 (1). Fenêtre « Réassort effectif » : Demandes de prix / 1 Reçu (1 Unité(s)) / 2 Ordres de fabrication (4 Unité(s)).
+  - route_id_placeholder : Fabriquer (Desk Combination, Table Top) ; Acheter (Office Chair Black, Corner Desk Left Sit, Drawer Black, avec fournisseur).
+    Achat = règle buy (CE odoo/addons/purchase_stock/models/stock_rule.py:59 _run_buy).
+  - Assistant mrp.mps.forecast.suggestion : based_on Demande réelle / Last Year / 30 derniers jours / 3 derniers mois / 12 derniers mois, percent_factor.
+  - Lignes Demande réelle et Réassort réel cochées pour la capture 07 (champs société mrp_mps_show_actual_demand /
+    _actual_replenishment), puis remises à False.
+  - CE : stock/views/stock_orderpoint_views.xml:165 (action Réassort), menu Inventaire/Opérations/Approvisionnement/Réassort ;
+    stock/views/product_views.xml:436 (bouton de stock -> rapport de prévision).
+Captures : content/blog/screenshots/programme-directeur-production-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e1-5-mps/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Programme directeur de production (PDP) dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Saisir la demande prévue mois par mois, fixer un stock de sécurité,
+                    laisser Odoo calculer ce qu'il faut fabriquer ou acheter, puis lancer les ordres de fabrication
+                    depuis le tableau : le programme directeur de production d'Odoo 20 Enterprise.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Les règles de réapprovisionnement réagissent à ce qui est déjà commandé. Le responsable de
+                    production, lui, doit anticiper : combien de plateaux de table faudra-t-il en novembre, en décembre,
+                    combien de panneaux de bois pour les fabriquer, et quand lancer les ordres de fabrication pour ne
+                    jamais descendre sous un stock de sécurité ? Le <strong>Programme directeur de production</strong>
+                    (PDP, module « Master Production Schedule ») répond à cette question dans un seul tableau : une
+                    ligne par produit, une colonne par période, et un bouton qui transforme le besoin calculé en ordres
+                    de fabrication ou en demandes de prix.</p>
+                <p>Les nomenclatures et les ordres de fabrication eux-mêmes sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                    ordres de fabrication dans Odoo 20</a>. Le présent article s'appuie sur eux et ne traite que la
+                    planification.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer le programme directeur de production et choisir sa période (mois, semaine…) ;</li>
+                    <li>ajouter un produit au programme, avec son stock de sécurité et les composants de sa
+                        nomenclature ;</li>
+                    <li>saisir la demande prévue et lire la quantité suggérée à réapprovisionner ;</li>
+                    <li>comparer la demande réelle à la demande prévue ;</li>
+                    <li>lancer le réapprovisionnement et retrouver l'ordre de fabrication créé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La logique d'une période</h2>
+                <p>L'exemple utilise un produit fabriqué de la démonstration qui n'est pas encore au programme :
+                    <strong>[FURN_8522] Table Top</strong>, un plateau de table fait de deux panneaux
+                    <strong>[FURN_7023] Wood Panel</strong>. Il y a 5 plateaux en stock ; l'objectif est d'en garder au
+                    moins 10, avec une demande prévue de 20 en novembre et de 15 en décembre. Les quatre lignes déjà
+                    présentes dans la démonstration ne sont pas modifiées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma d'une période du programme directeur de production, Table Top en novembre 2026 : Inventaire de départ 10, moins Demande prévue 20, plus Réassort 20, égale Stock prévu 10. La quantité suggérée se calcule ainsi : demande plus stock de sécurité moins inventaire de départ, 20 + 10 − 10 = 20. Le stock prévu devient l'inventaire de départ de décembre. Le bouton Commande (Réapprovisionner) crée un ordre de fabrication par la route Fabriquer (exemple WH/MO/00014, origine MPS) ou une demande de prix par la route Acheter. Par la nomenclature, deux Wood Panel par Table Top, le réassort donne au composant Wood Panel une prévision de la demande indirecte de 40." style="max-width:100%; height:auto;"/>
+                    <figcaption>Une période du programme : la quantité suggérée ramène le stock prévu au stock de sécurité.</figcaption>
+                </figure>
+                <p>Chaque période se lit comme une addition, de haut en bas : l'<strong>inventaire de départ</strong>,
+                    moins la <strong>demande prévue</strong>, plus le <strong>réassort</strong>, donne le
+                    <strong>stock prévu</strong> en fin de période, qui devient l'inventaire de départ de la période
+                    suivante. Odoo propose le réassort qui ramène le stock prévu au stock de sécurité : en novembre,
+                    20 + 10 − 10 = 20 plateaux. Ce réassort crée à son tour une demande sur les composants, ici
+                    40 panneaux. Le bouton <strong>Commande</strong> transforme enfin la quantité en ordre de
+                    fabrication ou en demande de prix, selon la route du produit. Les chiffres du schéma sont ceux de
+                    l'écran, section 3.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer le programme et choisir la période</h2>
+                <p>Ouvrez <strong>Fabrication › Configuration › Paramètres</strong>. Dans la section
+                    <strong>Planification</strong>, cochez <strong>Programme directeur de production</strong>
+                    (« Planifier les ordres de fabrication ou les bons de commande en fonction des prévisions ») et
+                    enregistrez. Deux réglages apparaissent :</p>
+                <ul>
+                    <li><strong>Plage horaire par défaut</strong> : la taille d'une colonne, Annuel, Mensuel,
+                        Hebdomadaire ou Quotidien ;</li>
+                    <li><strong>Nombre de périodes</strong> : combien de colonnes afficher pour chaque plage. La
+                        démonstration en affiche 12 en mensuel, soit un an d'horizon.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Paramètres de la Fabrication : case Programme directeur de production cochée, Planifier les ordres de fabrication ou les bons de commande en fonction des prévisions ; Plage horaire par défaut Mensuel sélectionné ; Nombre de périodes : Annuel 3, Mensuel 12, Hebdomadaire 12, Quotidien 30" style="max-width:70%; height:auto;"/>
+                    <figcaption>La période par défaut et le nombre de colonnes se règlent dans les paramètres de la Fabrication.</figcaption>
+                </figure>
+                <p>Le programme s'ouvre ensuite par <strong>Fabrication › Planification › PDP › Programme directeur
+                    de production</strong>, ou par <strong>Inventaire › Opérations › Approvisionnement › Programme
+                    directeur de production</strong>. Le bouton <strong>Mois</strong> du panneau de contrôle permet de
+                    basculer à tout moment en Année, Semaine ou Jour sans changer le réglage.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ajouter un produit au programme</h2>
+                <p>Cliquez sur <strong>Ajouter un produit</strong>. La fenêtre demande :</p>
+                <ul>
+                    <li>le <strong>Produit</strong>, ici [FURN_8522] Table Top ;</li>
+                    <li><strong>Nomenclatures</strong> : par défaut « Ne pas importer ». Choisir la nomenclature du
+                        plateau ajoute aussi ses composants au programme ;</li>
+                    <li>la <strong>Route</strong> : laissée vide, Odoo affiche celle qu'il utilisera, ici
+                        <strong>Fabriquer</strong> puisque le produit a une nomenclature ;</li>
+                    <li>le <strong>Stock de sécurité</strong>, « le stock libre minimum que vous souhaitez conserver
+                        pour ce produit à tout moment » : 10 ;</li>
+                    <li>le <strong>Minimum à réapprovisionner</strong> : une quantité plancher pour chaque
+                        réapprovisionnement, laissée à 0 ;</li>
+                    <li><strong>Déclencher le réassort</strong> : Manuelle (lancement depuis le programme),
+                        Automatique (une action programmée quotidienne lance les réapprovisionnements) ou Jamais.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Ajouter un produit : Produit [FURN_8522] Table Top, Demande indirecte décochée, Nomenclatures [FURN_8522] Table Top, Route Fabriquer en grisé, Stock de sécurité 10,00, Minimum à réapprovisionner 0,00, Déclencher le réassort Manuelle ; boutons Enregistrer et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le plateau entre au programme avec sa nomenclature et un stock de sécurité de 10.</figcaption>
+                </figure>
+                <p>Après <strong>Enregistrer</strong>, le programme compte deux lignes de plus : Table Top et son
+                    composant Wood Panel. La case <strong>Demande indirecte</strong> sert à marquer un produit qui
+                    n'est qu'un composant : selon son infobulle, il n'apparaît alors plus dans le filtre des
+                    prévisions.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Saisir la demande prévue et lire la suggestion</h2>
+                <p>Sur la ligne Table Top, saisissez la <strong>Demande prévue</strong> dans les cellules grisées :
+                    20 en novembre, 15 en décembre. Odoo recalcule aussitôt la ligne <strong>Réassort</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Programme directeur de production, colonnes oct. 2026 à sept. 2027. Table Top : inventaire de départ 5 puis 10 ; Demande prévue 0, 20, 15 ; Réassort 5 en vert en octobre, 20 en novembre, 15 en décembre, bouton Commande ; Stock prévu 10 partout. Wood Panel : inventaire de départ 50, 40, 0 ; Prévision de la demande indirecte 10, 40, 30 ; Réassort 0, 0, 30 ; Stock prévu 40, 0, 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le plateau et son composant : le réassort suggéré maintient 10 plateaux en stock et se répercute sur les panneaux.</figcaption>
+                </figure>
+                <p>Pour reproduire cet exemple, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Fabrication.</p>
+                <p>La ligne du plateau se lit ainsi :</p>
+                <ul>
+                    <li><strong>octobre</strong> : 5 en stock, aucune demande prévue ; il manque 5 plateaux pour
+                        atteindre le stock de sécurité, d'où un réassort de 5. La cellule est <strong>verte</strong> :
+                        ce réapprovisionnement est à lancer maintenant ;</li>
+                    <li><strong>novembre</strong> : le stock de départ vaut 10 ; 20 + 10 − 10 = 20 ;</li>
+                    <li><strong>décembre</strong> : 15 + 10 − 10 = 15. Le stock prévu reste à 10 sur toute l'année.</li>
+                </ul>
+                <p>La ligne <strong>Wood Panel</strong> ne contient pas de demande saisie : sa
+                    <strong>Prévision de la demande indirecte</strong> vient du réassort du plateau, deux panneaux par
+                    plateau (10, 40, 30). Avec 50 panneaux en stock et un stock de sécurité à 0, le programme ne
+                    propose d'en refabriquer qu'en décembre : 30.</p>
+                <p>Le crayon à côté de <strong>Demande prévue</strong> ouvre <strong>Suggérer la demande
+                    prévisionnelle</strong> : pour une période choisie, Odoo propose une quantité « basé sur »
+                    la demande réelle, l'an passé (« Last Year »), les 30 derniers jours, les 3 ou les 12 derniers mois,
+                    multipliée par un pourcentage.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Suggérer la demande prévisionnelle : Quantité prévisionnelle pour [FURN_8522] Table Top basé sur des données historiques ou sur la demande réelle ; Période oct. 2026 ; Basé sur Demande réelle x 100 % ; résultat 0,00 unités x 100 % = 0,00 unité(s) ; boutons Appliquer et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande prévue peut partir de l'historique ou de la demande réelle, avec un coefficient.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Afficher la demande réelle et le réassort réel</h2>
+                <p>Le bouton de recherche ouvre trois colonnes. <strong>Filtres</strong> isole les produits
+                    « À réapprovisionner », ceux dont le réassort est trop faible ou trop élevé, ou ceux en réassort
+                    manuel ou automatique. <strong>Lignes</strong> choisit les lignes affichées pour chaque produit :
+                    inventaire de départ, prévision de la demande, demande réelle (et celle des deux années
+                    précédentes), demande indirecte, réassort réel, stock prévu, disponible à l'engagement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Menu de recherche du programme : Filtres (Prévisions, À réapprovisionner, Demande indirecte, Réassort trop faible, Réassort trop élevé, Prévision trop faible, Réassort manuel, Réassort automatique, Pas de réassort depuis le PDP, Filtre personnalisé), Favoris, et Lignes : Inventaire de départ, Prévision de la demande, Prévision de la demande indirecte, À réapprovisionner et Stock prévu cochés ; Demande réelle, Demande réelle Année-1, Année-2, Demande réelle indirecte, Réassort réel et Disponible à l'engagement décochés" style="max-width:75%; height:auto;"/>
+                    <figcaption>Les lignes affichées se choisissent dans la colonne Lignes du menu de recherche.</figcaption>
+                </figure>
+                <p>Cochez <strong>Demande réelle</strong> et <strong>Réassort réel</strong>. Les cellules prennent la
+                    forme « Actuel / prévu ». La ligne de démonstration Desk Combination montre l'intérêt de la
+                    comparaison : 36 unités commandées par des clients pour 240 prévues en octobre, mais 99 en novembre
+                    et 80 en janvier, en rouge, alors qu'aucune demande n'y est prévue.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Programme avec les lignes Actuel / Demande prévue et Actuel / Réassort. Desk Combination : Actuel / Demande prévue 36 / 240 en octobre, 99 / 0 en novembre et 80 / 0 en janvier en rouge ; Actuel / Réassort 3 / 0 en octobre ; Stock prévu 18. Table Top : Actuel / Demande prévue 0 / 0, 0 / 20, 0 / 15 ; Actuel / Réassort 5 / 5 en octobre, 0 / 20, 0 / 15 ; Stock prévu 10" style="max-width:100%; height:auto;"/>
+                    <figcaption>Demande réelle et réassort réel en regard des prévisions ; le rouge signale une demande réelle sans prévision suffisante.</figcaption>
+                </figure>
+                <p>La demande réelle est, selon l'infobulle, « la demande confirmée, basée sur les commandes clients
+                    confirmées ». Elle informe le planificateur mais ne remplace pas la prévision dans le calcul : le
+                    stock prévu de Desk Combination reste à 18 en novembre malgré les 99 unités commandées. C'est à
+                    lui d'ajuster la demande prévue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Lancer le réapprovisionnement</h2>
+                <p>Sur la ligne Réassort du plateau, le bouton <strong>Commande</strong> (infobulle
+                    « Réapprovisionner ») lance les réapprovisionnements à faire maintenant, ici celui d'octobre. Pour
+                    plusieurs produits à la fois, cochez leurs cases et utilisez le bouton <strong>Commande</strong>
+                    du panneau de contrôle. La cellule d'octobre passe du vert au gris : le réapprovisionnement est en
+                    cours.</p>
+                <p>Un clic sur la quantité réelle (le « 5 » de « 5 / 5 ») ouvre le <strong>Réassort
+                    effectif</strong> de la période : les demandes de prix, les réceptions et les ordres de fabrication
+                    qui couvrent le besoin.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Réassort effectif [FURN_8522] Table Top oct. 2026 (2026-10-01 - 2026-10-31) : boutons Demandes de prix, 1 Reçu (1 Unité(s)), 2 Ordres de fabrication (4 Unité(s)) ; bouton Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le réassort d'octobre : une réception attendue et deux ordres de fabrication, 5 plateaux au total.</figcaption>
+                </figure>
+                <p>Le détail explique la quantité lancée. Deux plateaux étaient déjà attendus : un ordre de
+                    fabrication de la démonstration (WH/MO/00003) et une réception d'achat. Le programme n'a donc
+                    créé qu'un ordre de <strong>3</strong> plateaux, <strong>WH/MO/00014</strong>, pour atteindre les 5
+                    du réassort. Il se trouve dans <strong>Fabrication › Opérations › Ordres de fabrication</strong>,
+                    confirmé, avec MPS comme document d'origine (onglet Divers) et ses 6 panneaux de bois réservés.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Ordre de fabrication WH/MO/00014 à l'état Confirmé : produit [FURN_8522] Table Top, nomenclature [FURN_8522] Table Top, quantité 3,00 à produire, Date planifiée 1 oct., 00:00 en rouge, statut des composants Disponible ; onglet Composants : [FURN_7023] Wood Panel, Disponible, à consommer 6,00 ; historique Ordre de fabrication créé" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'ordre de fabrication créé par le programme, daté du début de la période.</figcaption>
+                </figure>
+                <p>Pour un produit dont la route est <strong>Acheter</strong>, comme les trois lignes de
+                    démonstration qui ont un fournisseur (Office Chair Black, Corner Desk Left Sit, Drawer Black), le
+                    même bouton crée une demande de prix au fournisseur, qui se suit ensuite dans les Achats.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Pas de programme directeur, des règles de réapprovisionnement</h4>
+                    <p>Le module du programme directeur de production n'est pas inclus dans Odoo 20 Community : pas de
+                        tableau par période, pas de demande prévue saisie à l'avance, pas de demande indirecte calculée
+                        sur les composants.</p>
+                    <p>La Community planifie à partir des <strong>règles de réapprovisionnement</strong> : un minimum et
+                        un maximum par produit, et l'écran <strong>Inventaire › Opérations › Approvisionnement ›
+                        Réassort</strong> qui propose de commander ou de fabriquer quand le stock prévu passe sous le
+                        minimum. La méthode est présentée dans
+                        <a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans
+                        Odoo 20</a>. Sur la fiche produit, le bouton de stock affiche la quantité en stock et la
+                        quantité prévue, et ouvre le rapport de prévision, mouvement par mouvement. Les ordres de
+                        fabrication se créent et se suivent comme dans
+                        <a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et
+                        ordres de fabrication dans Odoo 20</a>.</p>
+                    <p>La différence tient à l'horizon : une règle min/max réagit à la demande déjà enregistrée, le
+                        programme directeur part d'une prévision saisie mois par mois.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La demande réelle n'entre pas dans le calcul</h4>
+                    <p>Le réassort suggéré dépend de la demande <em>prévue</em>. Des commandes clients au-delà de la
+                        prévision s'affichent en rouge dans la ligne Demande réelle, mais ne changent ni le réassort ni
+                        le stock prévu. Affichez la demande réelle et relevez la prévision quand elle est dépassée.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'ordre de fabrication est daté du début de la période</h4>
+                    <p>En vue mensuelle, l'ordre lancé pour octobre a reçu la date planifiée du 1<sup>er</sup> octobre à
+                        00:00, déjà passée le jour du lancement : elle s'affiche en rouge. Programmez l'ordre (bouton
+                        Programmer) ou réglez sa date avant de le mettre en production.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un seul niveau de composants importé</h4>
+                    <p>Importer la nomenclature du plateau a ajouté Wood Panel, mais pas les composants de Wood Panel,
+                        qui a lui-même une nomenclature. Pour planifier un niveau de plus, ajoutez Wood Panel avec sa
+                        propre nomenclature.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le réassort compte ce qui est déjà attendu</h4>
+                    <p>Le programme déduit les ordres de fabrication, les réceptions et les demandes de prix existants
+                        de la quantité à lancer. Un ordre de 3 pour une suggestion de 5 n'est pas une erreur : vérifiez le
+                        Réassort effectif avant d'en créer un autre à la main.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir une hausse de la prévision se propager du plateau aux panneaux.</p>
+                    <p><strong>Indication :</strong> sur la ligne Table Top, remplacez la demande prévue de décembre
+                        (15) par 25.</p>
+                    <p><strong>Critère de réussite :</strong> le réassort de décembre du plateau passe à 25 et son stock
+                        prévu reste à 10 ; sur la ligne Wood Panel, la prévision de la demande indirecte de décembre
+                        passe à 50, et le réassort suggéré aussi.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le programme directeur de production est un module Enterprise : Fabrication › Planification ›
+                        PDP › Programme directeur de production.</li>
+                    <li>Chaque période : inventaire de départ − demande prévue + réassort = stock prévu.</li>
+                    <li>Le réassort suggéré ramène le stock prévu au stock de sécurité ; il se répercute en demande
+                        indirecte sur les composants importés avec la nomenclature.</li>
+                    <li>La demande réelle s'affiche à côté de la prévision mais n'entre pas dans le calcul.</li>
+                    <li>Le bouton Commande crée un ordre de fabrication (route Fabriquer) ou une demande de prix (route
+                        Acheter), déduction faite de ce qui est déjà attendu.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : nomenclatures, ordres de fabrication et de travail.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Règles min/max et écran Réassort, la planification de la Community.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/atelier-ordres-de-travail-odoo-293">Atelier Odoo 20 : exécuter les ordres de travail</a></h5>
+                            <p class="small text-muted mb-0">Démarrer, mettre en pause et terminer les ordres de travail sur la tablette d'atelier.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
