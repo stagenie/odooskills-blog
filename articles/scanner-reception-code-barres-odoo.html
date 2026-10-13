@@ -1,0 +1,519 @@
+<!--
+Article — Scanner une réception avec l'application Code-barres d'Odoo 20 Enterprise
+Série « Code-barres avec Odoo 20 Enterprise » (lot EE 3), article E3.1
+Date : 2026-10-13
+Slug : scanner-reception-code-barres-odoo
+Mot-clé cible : scanner une réception odoo, application code-barres odoo
+Tags : intermediaire, stock, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur, société 1 My Company (San Francisco)) :
+  - Modules installés : stock_barcode (OEEL-1), stock_barcode_mrp, stock_barcode_quality_control, stock_barcode_quality_mrp,
+    product_barcodelookup (OEEL-1) ; barcodes, barcodes_gs1_nomenclature (LGPL-3). CE : odoo/addons/stock_barcode absent.
+  - Inventaire › Configuration › Paramètres, section Code-barres : « Lecteur de codes-barres » coché, Nomenclature
+    « Default Nomenclature », liens Configurer les codes-barres des produits / Imprimer les codes-barres des commandes et des
+    types d'opération / Imprimer les commandes de codes-barres ; « Base de données stock code-barres » (barcodelookup.com) non coché.
+  - Accueil /odoo/barcode : « Lecteur de codes-barres », bandeau fiche de démonstration (/stock_barcode/static/img/barcodes_demo.pdf)
+    et codes-barres (/stock_barcode/print_inventory_commands?barcode_type=barcode_commands_and_operation_types), bouton
+    « Install Barcode PWA », boutons Opérations / Compter l'inventaire. Clic sur l'image (sans caméra) : « Aucun accès à votre
+    caméra », champ « Saisir un code-barres » + Appliquer. Frappe clavier rapide « WH/IN/00020 » + Entrée sur l'accueil :
+    transfert ouvert (comportement d'un lecteur-clavier).
+  - Opérations (vue téléphone 412x915) : RÉCEPTIONS, BONS DE LIVRAISON, MANUFACTURING.
+  - Créé : P00021 (Wood Corner, Office Chair + Drawer) confirmée puis ANNULÉE (WH/IN/00020 annulée : la démo y attachait
+    3 contrôles qualité produit). P00022 (Wood Corner, 5 Office Chair Black + 4 Table Leg) → WH/IN/00021 validée (essai :
+    3 chaises + 1 pied, lot TL-20261013) + reliquat WH/IN/00022 resté prêt (2 chaises, 3 pieds).
+    P00023 (id 23, Wood Corner, 5 [FURN_0269] Office Chair Black 120,50 + 4 [FURN_2333] Table Leg 8,00, total 639,30 $) →
+    WH/IN/00023 (picking 95) : 3 chaises scannées (3/5), code 1234567890128 → « Ce produit n'existe pas. », Table Leg →
+    « Scanner un numéro de lot », lot TL-2026-A ×4 → 4/4 ; Valider → « Transfert incomplet » (Terminé 3/5, Reliquat 2 ;
+    Créer un reliquat / Aucun reliquat / Ignorer) → Créer un reliquat → « Le transfert a été validé / Le reliquat suivant est
+    créé : WH/IN/00024 ». WH/IN/00024 (picking 96) : 2 chaises → « Appuyez sur Valider ou scannez un autre produit » →
+    validé sans fenêtre. P00023 : Entièrement reçu, Reçu 5 et 4. stock.lot 24 TL-2026-A (4).
+  - Contrôle qualité démo QCP00023 « Reception quality check » (toutes réceptions, pass/fail) : bouton CONTRÔLES QUALITÉ ;
+    la validation n'est pas bloquée ; QC00057 reste à faire sur WH/IN/00024 terminé (quality_check_todo True).
+  - Scans faits puis navigateur fermé : non enregistrés (rechargement → 0/5) ; sortie par la flèche : enregistrés.
+  - Engrenage du transfert : Imprimer les opérations de transfert / le bon de livraison / les étiquettes ; Contrôle qualité,
+    See Allocation, Annuler le transfert.
+  - Feuille des commandes (PDF, 2 pages) : MAIN MENU, DISCARD, VALIDATE, CANCEL, PRINT PICKING OPERATION, PRINT DELIVERY SLIP,
+    PUT IN PACK, UNPACK, SCRAP, RECORD COMPONENTS, RETURN, WAIT A REVIEW ; page 2 : types WHIN, WHOUT, WHMANUF.
+    Fiche démo : section « Internal transfer (activate Storage Locations) ». Type « Transferts internes » (WH/INT) archivé
+    sur la base (Emplacements de stockage inactif) : transfert interne non traité.
+  - CE : odoo/addons/stock/wizard/stock_backorder_confirmation.py (même choix Créer un reliquat / Aucun reliquat au back-office).
+Captures : content/blog/screenshots/scanner-reception-code-barres-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e3-1-reception/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Scanner une réception avec Code-barres dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Ouvrir la réception d'un scan, compter les produits en les scannant,
+                    saisir les lots à la volée, puis valider : l'application Code-barres d'Odoo 20 Enterprise contrôle
+                    chaque quantité face au bon de commande et propose un reliquat quand il en manque.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Le camion du fournisseur est à quai. Le magasinier doit vérifier que ce qui arrive correspond à ce qui a
+                    été commandé, noter le lot des articles suivis et signaler ce qui manque, sans retourner au bureau
+                    pour cocher des lignes. L'application <strong>Code-barres</strong> d'Odoo 20 Enterprise met la
+                    réception dans un terminal de poche ou un téléphone : chaque scan compte une unité, et l'écran montre
+                    à tout moment l'écart avec la commande.</p>
+                <p>La réception reste celle de l'application Inventaire : même document, mêmes quantités, même
+                    reliquat. Ce que l'application ajoute, c'est la manière de la traiter. Les exemples portent sur
+                    l'entrepôt de démonstration de la société <strong>My Company (San Francisco)</strong>, réglé en
+                    réception en une étape (du fournisseur directement au stock).</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>trouver le réglage qui active l'application et ouvrir son écran d'accueil ;</li>
+                    <li>ouvrir une réception par un scan, ou la choisir dans les opérations ;</li>
+                    <li>compter les produits au scan et saisir un numéro de lot à la réception ;</li>
+                    <li>reconnaître ce que l'application refuse : un code inconnu ;</li>
+                    <li>valider une réception incomplète en créant un reliquat, puis traiter ce reliquat.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Du scan à la validation</h2>
+                <p>Une réception traitée au scanner suit toujours le même chemin. Les références entre parenthèses
+                    sont celles de l'exemple de cet article.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : scanner la réception (WH/IN/00023) ou passer par Opérations, Réceptions ; puis Scanner un produit ; code reconnu ? Non : message Ce produit n'existe pas, rien n'est compté, retour au scan. Oui, sans suivi : la ligne du produit gagne une unité (3/5). Oui, suivi par lot : message Scanner un numéro de lot, lot scanné (TL-2026-A) une unité, chaque nouveau scan du lot une unité de plus. Puis Valider : si tout est compté, Le transfert a été validé ; s'il manque des quantités, fenêtre Transfert incomplet (Terminé 3 / 5, Reliquat 2) avec Créer un reliquat, réception validée et reliquat WH/IN/00024 créé pour le reste, ou Aucun reliquat, réception validée et produits restants non traités" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le chemin d'une réception dans l'application Code-barres, du premier scan à la validation.</figcaption>
+                </figure>
+                <p>Le scan sert à la fois de saisie et de contrôle. Un code connu ajoute une unité à la ligne du produit ;
+                    un code inconnu est refusé sans rien changer ; un produit suivi par lot réclame son numéro de lot
+                    avant d'être compté. Au moment de valider, Odoo compare le compté à l'attendu : tout y est, la
+                    réception se termine ; il en manque, une fenêtre demande quoi faire du reste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le réglage et l'écran d'accueil</h2>
+                <p>L'application s'active dans <strong>Inventaire › Configuration › Paramètres</strong>, section
+                    <strong>Code-barres</strong> : case <strong>Lecteur de codes-barres</strong>. Sur la base de
+                    démonstration, elle est déjà cochée, avec la nomenclature <strong>Default Nomenclature</strong>
+                    (la règle de lecture des codes). Le même bloc mène aux codes-barres des produits et aux feuilles
+                    imprimables présentées plus bas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Section Code-barres des paramètres d'Inventaire : case Lecteur de codes-barres cochée, Traiter les opérations plus rapidement en utilisant les codes-barres, Nomenclature des codes-barres Default Nomenclature, liens Configurer les codes-barres des produits, Imprimer les codes-barres des commandes et des types d'opération, Imprimer les commandes de codes-barres ; à droite, case Base de données stock code-barres non cochée, Créez facilement des produits en les scannant à l'aide de barcodelookup.com dans code-barres" style="max-width:100%; height:auto;"/>
+                    <figcaption>Inventaire › Configuration › Paramètres : le réglage « Lecteur de codes-barres ».</figcaption>
+                </figure>
+                <p>L'application <strong>Code-barres</strong> s'ouvre
+                    sur l'écran <strong>Lecteur de codes-barres</strong>, pensé pour un écran de téléphone : les captures
+                    de cet article sont prises dans ce format. Il rappelle ce qu'un scan peut ouvrir (un produit, un
+                    numéro de suivi, un transfert, un contact, un type d'opération) et propose deux boutons,
+                    <strong>Opérations</strong> et <strong>Compter l'inventaire</strong>. Le bouton en haut à droite,
+                    intitulé « Install Barcode PWA », installe l'application sur l'appareil comme une application web.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran Lecteur de codes-barres en format téléphone : bandeau Imprimez la fiche de données de démonstration pour tester, ou les codes-barres pour les opérations ; icône d'appareil photo, Aucun accès à votre caméra, Modifier l'accès pour scanner ; champ de saisie contenant WH/IN/00023 et bouton Appliquer ; liste Scannez un produit ou son emballage pour le localiser, un numéro de suivi pour trouver un transfert, un transfert pour l'ouvrir, Scan a contact to see their pending transfers, un type d'opération pour le démarrer" style="max-width:40%; height:auto;"/>
+                    <figcaption>L'accueil, vu sur un poste sans caméra : le code se saisit dans le champ « Saisir un code-barres » (vue téléphone).</figcaption>
+                </figure>
+                <p>D'où vient le « scan » ? Un lecteur de codes-barres branché ou appairé se comporte comme un clavier :
+                    il tape le code très vite, puis Entrée. Sur la base de démonstration, une telle frappe de la
+                    référence d'une réception, faite sur l'écran d'accueil, a bien ouvert la réception. L'application sait aussi lire un code avec la caméra de
+                    l'appareil, si l'accès lui en est donné. Sur un poste qui n'a ni lecteur ni caméra autorisée, un clic sur
+                    l'image du code-barres affiche « Aucun accès à votre caméra » et un champ <strong>Saisir un
+                    code-barres</strong> : le code saisi puis <strong>Appliquer</strong> a le même effet qu'un scan.
+                    C'est ce champ qui a servi pour tout l'exemple qui suit.</p>
+                <p>Le bouton <strong>Opérations</strong> liste les types d'opération avec le nombre de transferts à
+                    traiter. Toucher <strong>Réceptions</strong> ouvre la liste des réceptions prêtes, où un scan sert
+                    alors de filtre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écran Opérations en format téléphone : bandeau Scanner ou toucher, cartes RÉCEPTIONS 10, BONS DE LIVRAISON 31, MANUFACTURING 8" style="max-width:40%; height:auto;"/>
+                    <figcaption>Les opérations de l'entrepôt de démonstration, avec le nombre de transferts à traiter (vue téléphone).</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La commande de l'exemple</h2>
+                <p>L'exemple part d'un bon de commande ordinaire, créé et confirmé dans l'application Achats comme le
+                    décrit <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la
+                    demande de prix à la facture dans Odoo 20</a>. P00023, chez Wood Corner, porte sur deux produits de démonstration
+                    qui ont chacun un code-barres :</p>
+                <table class="tmc">
+                    <thead><tr><th>Produit</th><th>Code-barres</th><th>Suivi</th><th>Quantité</th></tr></thead>
+                    <tbody>
+                        <tr><td>[FURN_0269] Office Chair Black</td><td>6016478556349</td><td>aucun</td><td>5</td></tr>
+                        <tr><td>[FURN_2333] Table Leg</td><td>10133785575281</td><td>par lot</td><td>4</td></tr>
+                    </tbody>
+                </table>
+                <p>La confirmation crée la réception <strong>WH/IN/00023</strong>, à l'état Prêt. Rien n'est à préparer
+                    de plus pour le scanner : le code-barres de chaque produit est saisi sur sa fiche (champ
+                    Code-barres), et celui de la réception est sa référence.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ouvrir la réception et compter</h2>
+                <p>Scannez la référence <code>WH/IN/00023</code> depuis l'accueil (ou touchez la réception dans
+                    Opérations › Réceptions). L'écran de la réception affiche une ligne par produit, avec le compteur
+                    <strong>fait / attendu</strong> : 0/5 pour les chaises, 0/4 pour les pieds. En haut, la consigne du
+                    moment : <strong>Scanner un produit</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Réception WH/IN/00023 - P00023, Wood Corner, en format téléphone : en haut, Aucun accès à votre caméra et le champ Saisir un code-barres avec Appliquer ; ligne FURN_0269 Office Chair Black 0/5 avec bouton +5 ; ligne FURN_2333 Table Leg avec icône de lot, boutons + et crayon, 0/4 et +4" style="max-width:40%; height:auto;"/>
+                    <figcaption>La réception ouverte : chaque ligne part de zéro face à la quantité commandée (vue téléphone).</figcaption>
+                </figure>
+                <p>Scannez trois fois la chaise (<code>6016478556349</code>). La ligne s'encadre et passe à
+                    <strong>3/5</strong>. Les boutons de la ligne corrigent sans scanner : <strong>-1</strong>,
+                    <strong>+1</strong>, et <strong>+2</strong> pour compléter d'un coup le reste attendu ; le crayon
+                    ouvre le détail de la ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Réception WH/IN/00023 après trois scans de la chaise : consigne Scanner un produit ; ligne FURN_0269 Office Chair Black encadrée, 3/5, boutons -1, +1 et +2 ; ligne FURN_2333 Table Leg 0/4" style="max-width:40%; height:auto;"/>
+                    <figcaption>Trois scans, trois chaises : la ligne affiche 3/5 (vue téléphone).</figcaption>
+                </figure>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant les applications Inventaire et Code-barres.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un code inconnu</h2>
+                <p>Un carton porte parfois un code que la base ne connaît pas : celui d'un autre article, ou une
+                    étiquette du transporteur. Le scan d'un tel code (ici <code>1234567890128</code>) affiche la
+                    notification <strong>Ce produit n'existe pas.</strong> et ne change aucune ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Réception WH/IN/00023 en format téléphone, lignes inchangées, notification rouge en bas de l'écran : Ce produit n'existe pas." style="max-width:35%; height:auto;"/>
+                    <figcaption>Un code absent de la base est refusé : rien n'est compté (vue téléphone).</figcaption>
+                </figure>
+                <p>C'est le contrôle le plus utile du scanner : une erreur de produit est signalée au quai, et non à
+                    l'inventaire suivant. Le magasinier met l'article de côté ; s'il s'agit d'un produit attendu dont la
+                    fiche n'a pas de code-barres, le code est à ajouter sur la fiche avant de reprendre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Un produit suivi par lot</h2>
+                <p>Scannez maintenant un pied de table (<code>10133785575281</code>). Le produit est suivi par lot :
+                    la ligne s'encadre mais reste à 0/4, et la consigne devient <strong>Scanner un numéro de lot</strong>.
+                    Scannez l'étiquette de lot du fournisseur, ici <code>TL-2026-A</code> : le lot s'inscrit sous le
+                    produit, la ligne passe à 1/4 et la consigne devient <strong>Scanner plus de numéros de lot</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Deux écrans côte à côte de la réception WH/IN/00023. À gauche, consigne Scanner un numéro de lot, ligne FURN_2333 Table Leg encadrée à 0/4 avec boutons +1 et +4. À droite, consigne Scanner plus de numéros de lot, ligne Table Leg avec le lot TL-2026-A, 1/4, boutons -1, +1 et +3 ; la ligne Office Chair Black reste à 3/5" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le produit scanné réclame son lot ; le lot scanné compte la première unité (vue téléphone).</figcaption>
+                </figure>
+                <p>Chaque nouveau scan du même lot ajoute une unité. Après trois scans de plus, la ligne affiche
+                    <strong>4/4</strong> en vert et se replie : le chevron la déplie pour revoir le détail du lot.
+                    Le lot TL-2026-A n'existait pas : la réception l'a enregistré, avec ses quatre pieds, parce que
+                    le type d'opération Réceptions autorise la création de nouveaux lots.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Réception WH/IN/00023 : ligne Office Chair Black 3/5 avec bouton +2 ; ligne FURN_2333 Table Leg encadrée de vert, 4/4 en vert, bouton chevron pour déplier" style="max-width:40%; height:auto;"/>
+                    <figcaption>Les quatre pieds sont comptés : la ligne complète passe au vert (vue téléphone).</figcaption>
+                </figure>
+                <p>Le suivi par lot lui-même (traçabilité, dates de péremption) est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et
+                    dates de péremption dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Valider une réception incomplète</h2>
+                <p>Le fournisseur n'a livré que trois chaises sur cinq. Touchez <strong>Valider</strong>. Odoo compare
+                    le compté à l'attendu et ouvre la fenêtre <strong>Transfert incomplet</strong> : pour chaque produit
+                    en écart, ce qui est fait (Terminé : 3 / 5) et ce qui reste (Reliquat : 2).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Transfert incomplet : Créez un reliquat si vous prévoyez de traiter les produits restants plus tard. Ne créez pas de reliquat si vous ne voulez pas traiter les produits restants. Office Chair Black, Terminé 3 / 5, Reliquat 2 ; boutons Créer un reliquat, Aucun reliquat, Ignorer" style="max-width:45%; height:auto;"/>
+                    <figcaption>La fenêtre « Transfert incomplet » : l'écart par produit et trois choix.</figcaption>
+                </figure>
+                <p>Le texte de la fenêtre explique le choix : <strong>Créer un reliquat</strong> si les produits
+                    restants seront reçus plus tard, <strong>Aucun reliquat</strong> s'ils ne seront pas traités. Le reste de la commande est attendu : cliquez sur
+                    <strong>Créer un reliquat</strong>. La réception est validée, l'application revient à l'accueil et
+                    la notification donne la référence du reliquat.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Notification verte : Le transfert a été validé. Le reliquat suivant est créé : WH/IN/00024" style="max-width:45%; height:auto;"/>
+                    <figcaption>Réception validée, reliquat WH/IN/00024 créé pour les deux chaises manquantes.</figcaption>
+                </figure>
+                <p>WH/IN/00023 est terminée avec trois chaises et quatre pieds du lot TL-2026-A, entrés en stock.
+                    Le reliquat <strong>WH/IN/00024</strong>, à l'état Prêt, attend les deux chaises restantes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Traiter le reliquat</h2>
+                <p>À l'arrivée des deux chaises, scannez <code>WH/IN/00024</code> : la réception ne contient plus que
+                    la ligne Office Chair Black, 0/2. Deux scans de la chaise la passent à 2/2, et la consigne devient
+                    <strong>Appuyez sur Valider ou scannez un autre produit</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Reliquat WH/IN/00024 - P00023, Wood Corner : consigne Appuyez sur Valider ou scannez un autre produit, case cochée ; ligne FURN_0269 Office Chair Black encadrée de vert, 2/2, bouton -1" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le reliquat complet : la consigne invite à valider (vue téléphone).</figcaption>
+                </figure>
+                <p><strong>Valider</strong> termine cette fois la réception sans fenêtre, avec la seule notification
+                    « Le transfert a été validé ». Côté achats, le bon de commande P00023 affiche le statut de réception
+                    <strong>Entièrement reçu</strong> et, ligne par ligne, la colonne <strong>Reçu</strong> égale à la
+                    quantité commandée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Bon de commande P00023, fournisseur Wood Corner, statut de la réception Entièrement reçu ; lignes [FURN_0269] Office Chair Black quantité 5,00, reçu 5,00, facturé 0,00, prix 120,50, montant 602,50 $ ; [FURN_2333] Table Leg quantité 4,00, reçu 4,00, facturé 0,00, prix 8,00, taxe 15 %, montant 32,00 $ ; total 639,30 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon de commande après les deux réceptions : tout est reçu, rien n'est encore facturé.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Les codes-barres de commande</h2>
+                <p>Le scanner ne lit pas que des produits. Le lien <strong>Imprimer les commandes de codes-barres</strong>
+                    du réglage (ou le lien « codes-barres » du bandeau d'accueil) produit une feuille PDF : sa première
+                    page porte un code par action, avec un libellé en anglais (VALIDATE, CANCEL, DISCARD, MAIN MENU,
+                    PUT IN PACK, SCRAP, RETURN…) ; la seconde, un code par type d'opération de l'entrepôt (WHIN pour les
+                    réceptions, WHOUT pour les livraisons, WHMANUF pour la fabrication). Affichée au poste de réception,
+                    elle évite de lâcher le scanner pour toucher l'écran.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Première page de la feuille des commandes de codes-barres : MAIN MENU, DISCARD, VALIDATE, CANCEL, PRINT PICKING OPERATION, PRINT DELIVERY SLIP, PUT IN PACK, UNPACK, SCRAP, RECORD COMPONENTS, RETURN, WAIT A REVIEW, chacun avec son code-barres" style="max-width:55%; height:auto;"/>
+                    <figcaption>La feuille imprimable des commandes : un code-barres par action.</figcaption>
+                </figure>
+                <p>Le lien <strong>fiche de données de démonstration</strong> du bandeau d'accueil fournit, lui, une
+                    feuille d'exercice sur les produits de démonstration. Elle comprend un scénario de transfert interne,
+                    marqué « activate Storage Locations » : sur la base de démonstration, le type d'opération
+                    Transferts internes reste archivé tant que le réglage <strong>Emplacements de stockage</strong>
+                    n'est pas coché. Le présent article ne l'active pas et s'en tient à la réception, le cas le plus
+                    courant d'un entrepôt à emplacement unique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Les mêmes réceptions, sans l'écran de scan</h4>
+                    <p>L'application Code-barres n'existe pas dans Odoo 20 Community : son module n'est pas fourni avec
+                        l'édition. Les réceptions, les reliquats et les lots, eux, en font partie. Le magasinier saisit
+                        les quantités et les lots dans le formulaire de la réception, puis clique sur Valider ; une
+                        quantité incomplète ouvre la même question « Créer un reliquat » ou « Aucun reliquat ». Ce qui
+                        manque, c'est le contrôle au scan : rien ne signale un article inconnu ni ne compte unité par
+                        unité. Le parcours complet, y compris les réceptions en plusieurs étapes, est présenté dans
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                        et livraisons en plusieurs étapes dans Odoo 20</a>, et le suivi des lots dans
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots,
+                        numéros de série et dates de péremption dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Quitter la réception par la flèche de retour</h4>
+                    <p>Pendant la préparation de cet article, des scans faits puis la fenêtre du navigateur fermée sans
+                        quitter la réception n'ont pas été retrouvés : à la réouverture, la ligne était revenue à 0. En
+                        quittant par la flèche de retour, en haut à gauche, les quantités ont été conservées, la partie
+                        déjà comptée apparaissant sur une ligne séparée de la partie restante. Sortez toujours par cette
+                        flèche ou par Valider.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le bouton Contrôles qualité ne bloque pas la validation</h4>
+                    <p>La base de démonstration contient un point de contrôle « Reception quality check » sur toutes les
+                        réceptions : d'où le bouton vert <strong>CONTRÔLES QUALITÉ</strong> en bas de l'écran. Les deux
+                        réceptions de l'exemple ont pourtant été validées sans passer ce contrôle, et le contrôle du
+                        reliquat est resté à faire après validation. Si le contrôle doit précéder l'entrée en stock,
+                        c'est une consigne à donner au magasinier ; les contrôles eux-mêmes sont présentés dans
+                        <a href="/blog/fonctionnel-odoo-1/controle-qualite-odoo-294">Contrôle qualité Odoo 20 : points de contrôle et alertes</a>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un code inconnu ne crée pas de produit</h4>
+                    <p>Le message « Ce produit n'existe pas. » n'ouvre aucune fiche. La création d'un produit au scan
+                        passe par l'option <strong>Base de données stock code-barres</strong> (service barcodelookup.com),
+                        non cochée sur la base de démonstration et non testée ici.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> recevoir au scanner une commande livrée en deux fois.</p>
+                    <p><strong>Indication :</strong> confirmez un bon de commande de deux produits de démonstration ayant
+                        un code-barres, dont un suivi par lot. Dans Code-barres, ouvrez la réception en saisissant sa
+                        référence, scannez une partie seulement du premier produit, le second produit puis un numéro de
+                        lot de votre choix pour toute sa quantité, et validez en créant un reliquat.</p>
+                    <p><strong>Critère de réussite :</strong> la notification indique le reliquat créé ; ce reliquat ne
+                        contient que le reste du premier produit ; une fois traité, le bon de commande affiche
+                        Entièrement reçu.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le réglage Lecteur de codes-barres (Inventaire › Paramètres › Code-barres) active l'application.</li>
+                    <li>Scanner la référence d'une réception l'ouvre ; sans lecteur ni caméra, le champ « Saisir un
+                        code-barres » en tient lieu.</li>
+                    <li>Chaque scan ajoute une unité à la ligne ; un code inconnu est refusé (« Ce produit n'existe
+                        pas. »).</li>
+                    <li>Un produit suivi par lot réclame son numéro de lot ; un lot nouveau est enregistré à la
+                        réception.</li>
+                    <li>Valider une réception incomplète ouvre « Transfert incomplet » : Créer un reliquat garde le
+                        reste attendu.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : réceptions, rangement et livraisons depuis le back-office.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et dates de péremption dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Activer le suivi, tracer un lot de la réception à la livraison.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/inventaire-code-barres-odoo-305">Inventaire au scanner avec Code-barres dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Compter le stock au scanner, puis appliquer l'inventaire et retrouver les écarts.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
