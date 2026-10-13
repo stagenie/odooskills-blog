@@ -1,0 +1,507 @@
+<!--
+Article — Location de matériel dans Odoo 20 : l'app Location
+Série « Ventes récurrentes et signature avec Odoo 20 Enterprise » (lot EE 4), article E4.2
+Date : 2026-10-13
+Slug : location-materiel-odoo
+Mot-clé cible : location odoo, gestion location matériel odoo
+Tags : intermediaire, ventes, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur (uid 8, Ventes administrateur), société 1 My Company (San Francisco)) :
+  - Modules (ir.module.module) : sale_renting « Rental », sale_stock_renting « Rental Stock Management », sale_renting_planning,
+    sale_management_renting… installés, OEEL-1. CE : aucun dossier odoo/addons/*rent* ; aucun champ rent_periodicity / is_rental
+    dans odoo/addons (grep).
+  - Menus (ir.ui.menu) : Location › Commandes (Commandes, Clients), Planifier, Produits (Produits, Attributs, Catégories, Listes de
+    prix), Analyse, Configuration (Paramètres, Modèles de devis, En-têtes/Pieds de page). Actions : /odoo/rental, /odoo/rental-products,
+    /odoo/rental-schedule (Gantt « Locations prévues » sur sale.order.line, groupé par produit), Analyse = sale.rental.report.
+  - Paramètres › Location : Retraits et retours « Availabilities » (calendrier 40 hours/week), Produits, Devis, Inventaire
+    « Transferts de produits de location » (décoché, aide « Activez l'utilisation des livraisons et des réceptions pour les commandes
+    de location. »). Aucun réglage de frais de retard ; fields_get de res.config.settings, res.company, product.template,
+    sale.order.line : aucun champ extra/late fee (seulement is_late, late_availability, display_late).
+  - Démo : 4 produits de location (Chambre de luxe 250 $/Nuit, Imprimante 30 $/Heure, Projecteur 20 $/Heure, Vélo premium
+    100 $/Semaine) ; S00035-S00038 lus, non modifiés. Produit : onglet Ventes, bloc LOCATION = Périodicité (Heures, Jours, Nuits,
+    Semaines), Enlèvement, Retour ; onglet Prix sans colonne de période.
+  - Produit « Groupe électrogène » (template 84, RENT-DAY) créé à l'écran depuis Location › Produits : défauts Ventes coché, Biens,
+    suivi Par quantité, Politique Quantités commandées, Périodicité Jours, Enlèvement 9h, Retour 18h ; prix 80 $, catégorie Location ;
+    Quantité disponible 2 saisie à l'écran (ajustement « Quantité de produit mise à jour »).
+  - S00047 Wood Corner, liste « Tarif en dollars » (id 6, créée par E4.1 ; la liste « Par défaut » est en DZD), Période de location
+    13 oct. 09:00 → 15 oct. 18:00 : ligne « 3 Jours », 2 × 240 = 480 $ HT, 552 $ TTC ; widget Disponibilité « Disponible pour la
+    location 13/10/2026 au 15/10/2026 : 2 ». Confirmer → badge « Enlèvement tardif » (début passé), boutons Créer une facture,
+    Enlèvement. Vendeur = Formateur Odoo ; res.partner.user_id de Wood Corner et contacts resté vide.
+  - Enlèvement : fenêtre « Valider un enlèvement » (Produit, Réservé, Enlevé) → Enlevé, Délivré 2 ; chatter « Enlèvement : … 2.0
+    Unité(s) » ; stock.move « Mouvement de location : S00047 » WH/Stock → Customers/Rental (lieu de location société), sans
+    transfert (picking_ids vide) ; qty_in_rent 2, qty_available 0. Retour : « Valider un retour » (Enlevé, Retourné) → Retourné,
+    « R: 2,00 », mouvement inverse Customers/Rental → WH/Stock.
+  - Facture FAC/2026/00006 (S00047) : ligne « 3 Jours », 2 × 240, 552 $ TTC, comptabilisée, non envoyée.
+  - S00048 The Jackson Group, 9 oct. 09:00 → 12 oct. 18:00 : « 4 Jours », 320 $ ; Disponibilité « 09/10/2026 au 12/10/2026 : 0 »
+    (stock entré le 13) ; enlèvement : message « Certains produits ne sont pas disponibles en quantité suffisante pour être
+    retirés. », validation acceptée → badge « Retour tardif », date de retour en rouge, filtre « En retard » (2 : S00048, S00036) ;
+    retour le 13 → Retourné, aucune ligne ni montant ajouté (320 $ inchangé), aucune fenêtre. S00048 non facturée.
+    S00049 (doublon créé par erreur de script, même contenu) annulée.
+  - Planning : barres par produit ; S00036 et S00048 marquées d'un coin rouge ; couleurs différentes selon le statut.
+  - Courriels : aucun mail.mail créé (dernier id 145 avant et après).
+Captures : content/blog/screenshots/location-materiel-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e4-2-location/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child, .ce-box ul { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Location de matériel dans Odoo 20 : l'app Location</h1>
+                <p class="lead mt-3 text-white">Produit louable, prix par période, commande de location, enlèvement,
+                    retour, planning et retards : l'application Location d'Odoo 20 Enterprise, pas à pas, avec ce
+                    qu'elle fait du stock.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un groupe électrogène, un projecteur, un vélo : louer du matériel, c'est vendre du temps sur un
+                    objet qui doit revenir. Il faut savoir s'il est libre sur les dates demandées, le remettre au
+                    client, constater son retour et repérer celui qui tarde. Une commande de vente ordinaire ne sait
+                    rien de tout cela. Odoo 20 Enterprise le traite dans l'application <strong>Location</strong> : la
+                    commande porte une <strong>période de location</strong>, le prix se calcule sur la durée, et deux
+                    boutons, <strong>Enlèvement</strong> et <strong>Retour</strong>, suivent le matériel jusque dans
+                    le stock.</p>
+                <p>La commande de location reste une commande de vente : sa facture et ses lignes suivent le circuit
+                    présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande
+                    dans Odoo 20</a>. Le présent article traite de ce que l'application ajoute. Les exemples portent
+                    sur la société de démonstration <strong>My Company (San Francisco)</strong> et ses clients Wood
+                    Corner et The Jackson Group ; le produit et les deux commandes ont été créés pour l'article.</p>
+
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un produit de location, avec sa périodicité, son prix et ses heures d'enlèvement et de
+                        retour ;</li>
+                    <li>établir une commande de location sur une période et vérifier la disponibilité du matériel ;</li>
+                    <li>enregistrer l'enlèvement et le retour, et lire leur effet sur le stock ;</li>
+                    <li>suivre les locations dans le planning et repérer les retards ;</li>
+                    <li>facturer une location.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours d'une location</h2>
+                <p>Avant la mise en œuvre, le schéma ci-dessous résume les étapes et les statuts qu'affiche l'écran.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du parcours d'une location. Le produit de location (périodicité, prix de vente par période, heures d'enlèvement et de retour) alimente le devis de location, qui porte une période de location ; le prix de la ligne vaut le nombre de périodes multiplié par le prix. Confirmer mène au statut Réservé, ou Enlèvement tardif si le début est passé. Le bouton Enlèvement mène à Enlevé, avec un mouvement de location de WH/Stock vers Customers/Rental. Si la date de retour est dépassée, la commande passe en Retour tardif, filtre En retard, sans frais ajouté. Le bouton Retour mène à Retourné, avec le mouvement inverse vers WH/Stock, puis à la facture client" style="max-width:50%; height:auto;"/>
+                    <figcaption>Du produit à la facture : les statuts d'une commande de location et leur effet sur le
+                        stock.</figcaption>
+                </figure>
+                <p>Le produit se règle une fois. Chaque commande confirmée réserve le matériel sur sa période, puis
+                    change de statut à chaque geste du magasinier : <strong>Enlevé</strong> quand le client emporte le
+                    matériel, <strong>Retourné</strong> quand il le rapporte. Chacun de ces gestes déplace la quantité
+                    entre le stock et un emplacement de location. Une date dépassée se signale d'elle-même : enlèvement
+                    tardif avant le retrait, retour tardif après. La facture, elle, peut être créée à tout moment
+                    depuis la commande, comme pour une vente.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le produit de location</h2>
+                <p>Ouvrez <strong>Location › Produits › Produits</strong>, puis <strong>Nouveau</strong>. La base de
+                    démonstration en contient quatre, dont la carte affiche le prix et sa période : Projecteur,
+                    20 $ / Heure ; Vélo premium, 100 $ / Semaine… Depuis ce menu, le nouveau produit est d'office un
+                    article de <strong>Biens</strong> suivi en stock (<strong>Par quantité</strong>), vendu, avec la
+                    politique de facturation <strong>Quantités commandées</strong>.</p>
+                <p>Le produit de l'article, « Groupe électrogène », reçoit un <strong>Prix de vente</strong> de 80 $, la
+                    catégorie Location de la démonstration et la référence RENT-DAY. Une fois le produit enregistré, le
+                    champ <strong>Quantité disponible</strong> accepte une saisie : 2, pour deux appareils en stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Produit Groupe électrogène, référence RENT-DAY : case Ventes cochée, Achats et Abonnements décochés ; onglet Informations générales : Type de produit Biens, Politique de facturation Quantités commandées, Suivi Par quantité, Quantité disponible 2,00 ; Prix de vente 80,00 $ par Unité(s), taxe 15 %, Coût 0,00 $, Catégorie Location ; bouton intelligent 2 Disponible, 2 Prévu(e)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un produit de location : un bien suivi en stock, avec deux appareils disponibles.</figcaption>
+                </figure>
+                <p>Ce qui en fait un produit de location se trouve dans l'onglet <strong>Ventes</strong>, bloc
+                    <strong>LOCATION</strong>. La <strong>Périodicité</strong> (Heures, Jours, Nuits ou Semaines) dit à
+                    quoi s'applique le prix de vente : ici, 80 $ par jour. <strong>Enlèvement</strong> et
+                    <strong>Retour</strong> sont les heures de retrait et de retour du produit, 9h et 18h d'origine.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Onglet Ventes du produit : blocs Ventes incitatives et croisées, Brève description, Notes de frais services et matériaux ; bloc LOCATION avec Périodicité Jours, Enlèvement 9h, Retour 18h" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bloc Location : la période qui donne son sens au prix, et les heures de retrait et de retour.</figcaption>
+                </figure>
+                <p>Le prix est donc unique par produit, exprimé pour une période. L'onglet Prix ne
+                    connaît pas de colonne de période : un tarif à la semaine demande un produit de périodicité
+                    Semaines, comme le Vélo premium de la démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le devis de location</h2>
+                <p>Dans <strong>Location › Commandes › Commandes</strong>, le bouton <strong>Nouveau</strong> déroule
+                    un menu : <strong>Nouveau devis</strong>, ou l'un des modèles de devis de la base. Choisissez Nouveau
+                    devis, puis renseignez le client (Wood Corner), la <strong>Liste de prix</strong> et la
+                    <strong>Période de location</strong>, du 13 octobre à 9h au 15 octobre à 18h. Ajoutez ensuite une
+                    ligne de 2 Groupe électrogène.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Devis de location Nouveau : client Wood Corner, Expiration 12 nov., Période de location 13 oct. 09:00 vers 15 oct. 18:00, Liste de prix Tarif en dollars (USD) ; ligne [RENT-DAY] Groupe électrogène, 3 Jours, quantité 2,00 avec une icône de disponibilité, prix unitaire 240,00, taxe 15 %, montant 480,00 $ ; total 552,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis de location : une période en tête, une durée sur la ligne.</figcaption>
+                </figure>
+                <p>La ligne précise la durée facturée, « 3 Jours », et son prix unitaire vaut cette durée multipliée par
+                    le prix du produit : 3 × 80 = 240 $ par appareil, 480 $ pour les deux. La période couvre deux jours
+                    et neuf heures : le jour entamé est compté. Changer la période recalcule la ligne.</p>
+                <p>L'icône à côté de la quantité ouvre la <strong>Disponibilité</strong> du produit sur la période du
+                    devis : 2 appareils disponibles pour la location du 13/10/2026 au 15/10/2026, et un lien
+                    <strong>Voir les locations</strong> vers le planning.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Disponibilité : Disponible pour la location 13/10/2026 au 15/10/2026, 2 ; lien Voir les locations" style="max-width:35%; height:auto;"/>
+                    <figcaption>La disponibilité se lit sur la période de la commande, pas sur le stock du jour.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Confirmer : le matériel est réservé</h2>
+                <p><strong>Confirmer</strong> transforme le devis en commande, S00047. Deux boutons apparaissent :
+                    <strong>Créer une facture</strong> et <strong>Enlèvement</strong>. En haut à droite, un badge
+                    donne le statut de la location. Une commande dont l'enlèvement est à venir affiche
+                    <strong>Réservé</strong>, comme la commande de démonstration S00038. Ici, l'heure de début (9h) est
+                    déjà passée au moment de la confirmation : le badge annonce <strong>Enlèvement tardif</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Commande de location S00047, étape Commande client, badge Enlèvement tardif ; boutons Créer une facture, Enlèvement, Envoyer, Aperçu, Annuler ; client Wood Corner, Période de location 13 oct. 09:00 vers 15 oct. 18:00, Liste de prix Tarif en dollars (USD) ; ligne Groupe électrogène, 3 Jours, quantité 2,00, délivré 0,00, facturé 0,00, prix unitaire 240,00, montant 480,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande confirmée : le matériel est retenu sur la période, en attente d'enlèvement.</figcaption>
+                </figure>
+                <p>Pour reproduire ce parcours, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Location.</p>
+                <p>La liste des commandes de location rassemble ces statuts dans une colonne <strong>Statut</strong>
+                    et dans des compteurs en tête de liste : Aujourd'hui, Pickups, Returns, En retard, À confirmer,
+                    À facturer. Un clic sur un compteur filtre la liste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'enlèvement, et ce qu'il fait du stock</h2>
+                <p>Quand le client emporte le matériel, cliquez sur <strong>Enlèvement</strong>. La fenêtre
+                    <strong>Valider un enlèvement</strong> liste chaque produit avec la quantité réservée et la quantité
+                    enlevée, préremplie.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Valider un enlèvement : colonnes Produit, Réservé, Enlevé ; ligne [RENT-DAY] Groupe électrogène, réservé 2,00, enlevé 2,00 ; boutons Valider et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'enlèvement confirme ce qui sort réellement.</figcaption>
+                </figure>
+                <p><strong>Valider</strong> fait passer la commande au statut <strong>Enlevé</strong> ; la colonne
+                    Délivré de la ligne vaut 2 et le chatter note l'enlèvement. Le bouton <strong>Retour</strong>
+                    remplace Enlèvement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Commande S00047, badge Enlevé ; boutons Créer une facture, Retour, Envoyer, Aperçu, Annuler ; ligne Groupe électrogène, 3 Jours, quantité 2,00, délivré 2,00, facturé 0,00, montant 480,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après l'enlèvement : statut Enlevé, quantité délivrée, bouton Retour.</figcaption>
+                </figure>
+                <p>Côté stock, l'enlèvement ne crée pas de bon de livraison. Il passe un <strong>Mouvement de
+                    location</strong> qui déplace les appareils de l'entrepôt (WH/Stock) vers un emplacement propre à la
+                    location, Customers/Rental. Le produit compte alors 0 disponible et 2 « En location ». L'historique
+                    des mouvements du produit (bouton intelligent Entrée / Sortie) le montre ligne à ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Historique des mouvements du Groupe électrogène, filtre Terminé : Mouvement de location S00048 de Customers/Rental vers WH/Stock 1,00 ; Mouvement de location S00048 de WH/Stock vers Customers/Rental 1,00 ; Mouvement de location S00047 de Customers/Rental vers WH/Stock 2,00 ; Mouvement de location S00047 de WH/Stock vers Customers/Rental 2,00 ; Quantité de produit mise à jour, de Inventory adjustment vers WH/Stock 2,00 ; tous Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Chaque enlèvement et chaque retour laisse un mouvement de location dans le stock.</figcaption>
+                </figure>
+                <p>La capture montre déjà les deux commandes de l'article, enlevées puis rendues. Pour qu'Odoo prépare
+                    de vrais bons de livraison et de réception, le réglage <strong>Location › Configuration ›
+                    Paramètres › Transferts de produits de location</strong> « active l'utilisation des livraisons et
+                    des réceptions pour les commandes de location » ; il est décoché sur la base utilisée ici.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le planning des locations</h2>
+                <p>Le menu <strong>Location › Planifier</strong> ouvre les <strong>Locations prévues</strong> : un
+                    diagramme de Gantt avec une ligne par produit et une barre par commande, du début au retour. C'est
+                    là que le responsable du parc voit d'un coup d'œil ce qui est dehors, ce qui part demain et où
+                    placer une nouvelle demande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Locations prévues en Gantt, octobre 2026, regroupé par produit : ligne Groupe électrogène avec The Jackson Group S00048 du 9 au 12, coin rouge, et Wood Corner S00047 du 13 au 15 ; ligne Projecteur avec Wood Corner S00037 du 8 au 18 et Acme Corporation S00036 du 8 au 12, coin rouge ; ligne Chambre de luxe avec un devis Acme Corporation hachuré ; ligne Imprimante avec Acme Corporation S00038 du 14 au 18 ; ligne Vélo premium vide ; colonne du 13 surlignée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le planning des locations : une ligne par produit, une barre par commande.</figcaption>
+                </figure>
+                <p>La couleur de la barre suit le statut : le devis S00035 est hachuré, la commande réservée S00038 est
+                    en bleu, S00047, déjà rendue, a changé de teinte. Un coin rouge marque les locations en retard,
+                    S00036 et S00048.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le retour et la facture</h2>
+                <p>Au retour du matériel, le bouton <strong>Retour</strong> ouvre la fenêtre <strong>Valider un
+                    retour</strong>, sur le même modèle : quantité enlevée, quantité retournée. Validée, elle fait
+                    passer la commande au statut <strong>Retourné</strong>. Sous la quantité délivrée, la ligne indique
+                    « R: 2,00 », la quantité rendue, et un mouvement de location ramène les deux appareils de
+                    Customers/Rental vers WH/Stock : ils redeviennent disponibles.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Commande S00047, badge Retourné ; boutons Créer une facture, Envoyer, Aperçu, Annuler ; ligne Groupe électrogène, 3 Jours, quantité 2,00, délivré 2,00, R: 2,00, facturé 0,00, montant 480,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La location rendue : statut Retourné et quantité retournée sur la ligne.</figcaption>
+                </figure>
+                <p>Reste à facturer. <strong>Créer une facture</strong> ouvre la fenêtre habituelle des ventes (Facture
+                    normale, Acompte) ; <strong>Créer brouillon</strong> produit la facture, qui reprend la ligne et sa
+                    durée, « 3 Jours ». Confirmée, elle prend son numéro, FAC/2026/00006, et se traite ensuite comme
+                    toute facture client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Facture client FAC/2026/00006 (S00047) à l'état Comptabilisé : boutons Envoyer, Imprimer, Payer, Aperçu, Avoir, Remettre en brouillon ; client Wood Corner, date de facturation et échéance 13 oct., devise USD ; ligne [RENT-DAY] Groupe électrogène, 3 Jours, compte 400000 Product Sales, quantité 2,00, prix 240,00, taxe 15 %, montant 480,00 $ ; total 552,00 $, montant dû 552,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture de la location, avec la durée louée sur la ligne.</figcaption>
+                </figure>
+                <p>Avec la politique Quantités commandées du produit, la facture peut aussi être émise dès la
+                    confirmation, avant l'enlèvement : le bouton est présent à chaque statut.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Repérer les retards</h2>
+                <p>Pour l'exemple, une seconde commande a été saisie pour The Jackson Group, S00048 : un Groupe
+                    électrogène du 9 octobre à 9h au 12 octobre à 18h, soit « 4 Jours » et 320 $. Elle a été confirmée
+                    et enlevée, puis la date de retour est passée sans retour.</p>
+                <p>Le compteur <strong>En retard</strong> de la liste des commandes en tient le compte et filtre la
+                    liste : S00048 et la commande de démonstration S00036, toutes deux enlevées, dont la date de retour
+                    s'affiche en rouge.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Liste Locations filtrée sur En retard : compteurs Aujourd'hui 0, Pickups 1, Returns 3, En retard 2, À confirmer 1, À facturer 4 ; S00048 The Jackson Group, Enlevé, enlèvement 9 oct. 09:00, retour 12 oct. 18:00 en rouge, 368,00 $, À facturer ; S00036 Acme Corporation, Enlevé, enlèvement 8 oct. 09:00, retour 12 oct. 18:00 en rouge, 742 791,10 DA, À facturer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le filtre En retard : les locations enlevées dont la date de retour est dépassée.</figcaption>
+                </figure>
+                <p>Sur la commande, le badge passe à <strong>Retour tardif</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Commande S00048, badge Retour tardif ; boutons Créer une facture, Retour, Envoyer, Aperçu, Annuler ; client The Jackson Group, Période de location 9 oct. 09:00 vers 12 oct. 18:00, Liste de prix Tarif en dollars (USD) ; ligne Groupe électrogène, 4 Jours, quantité 1,00, délivré 1,00, prix unitaire 320,00, montant 320,00 $ ; total 368,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une location en retard : le badge Retour tardif, le montant inchangé.</figcaption>
+                </figure>
+                <p>Le retard est signalé, pas facturé. Le retour de S00048, validé le 13 octobre, soit le lendemain de
+                    la date prévue, a fait passer la commande au statut Retourné sans ouvrir de fenêtre ni ajouter de
+                    ligne : elle reste à 320 $ hors taxes. Les paramètres de la Location ne proposent d'ailleurs aucun
+                    réglage de frais de retard. Des frais pour le jour supplémentaire relèvent donc d'une décision
+                    commerciale, à reporter à la main avant de facturer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Une vente qui part et ne revient pas</h4>
+                    <p>L'application Location n'existe pas dans Odoo 20 Community : aucun module de location
+                        (<code>sale_renting</code>, <code>sale_stock_renting</code>) n'y figure, et un produit n'y a ni
+                        périodicité ni heures d'enlèvement. La Community vend, livre et facture, comme le montre
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer
+                        et facturer une commande dans Odoo 20</a> : la livraison sort le produit du stock pour de bon.</p>
+                    <p>Pour louer, il faut y vendre la durée comme une quantité, suivre les dates à part et organiser
+                        le retour par un transfert manuel : sans période sur la commande, sans calcul de disponibilité
+                        sur des dates, sans planning des locations ni signalement des retards.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Toute période entamée est due</h4>
+                    <p>Le prix se calcule sur le nombre de périodes, arrondi au-dessus : du 13 à 9h au 15 à 18h,
+                        Odoo compte 3 jours ; du 9 à 9h au 12 à 18h, 4 jours. Quelques heures de plus sur la période
+                        ajoutent une journée entière. Vérifiez la ligne « N Jours » du devis avant de
+                        l'envoyer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La disponibilité se lit sur des dates</h4>
+                    <p>Pour S00048, dont la période commençait le 9 octobre, la disponibilité affichait 0 : les appareils
+                        n'ont été entrés en stock que le 13. L'enlèvement a prévenu que « certains produits ne sont pas
+                        disponibles en quantité suffisante pour être retirés », puis a été accepté. Le message ne bloque
+                        pas : contrôlez la disponibilité avant de valider.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Aucun frais de retard automatique</h4>
+                    <p>Un retour tardif ne change ni la durée ni le montant de la commande. Si un retard se facture,
+                        ajoutez-le vous-même avant de créer la facture.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La devise vient de la liste de prix</h4>
+                    <p>Les commandes de démonstration de la base utilisée ici sont en dinars, la seule liste de prix
+                        d'origine n'étant pas en dollars ; une liste « Tarif en dollars » a été choisie sur les commandes
+                        de l'article. Contrôlez le champ <strong>Liste de prix</strong> du devis : le total de la liste
+                        des commandes additionne, après conversion, des commandes de devises différentes.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> suivre une location jusqu'au stock.</p>
+                    <p><strong>Indication :</strong> créez une commande de location d'un Groupe électrogène de 9h le premier jour
+                        à 18h le troisième, confirmez-la, validez l'enlèvement puis le retour. Ouvrez ensuite le produit et son
+                        historique des mouvements (bouton intelligent Entrée / Sortie).</p>
+                    <p><strong>Critère de réussite :</strong> la ligne affiche « 3 Jours » et 240 $, la commande finit
+                        au statut Retourné, et l'historique contient deux nouveaux mouvements de location, l'un vers
+                        Customers/Rental, l'autre vers WH/Stock.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'application Location (Enterprise) ajoute à la commande de vente une période de location et un
+                        statut : Réservé, Enlevé, Retourné, avec Enlèvement tardif et Retour tardif.</li>
+                    <li>Un produit de location a une périodicité (heures, jours, nuits, semaines) ; le prix de la ligne
+                        vaut le nombre de périodes, arrondi au-dessus, multiplié par le prix.</li>
+                    <li>L'enlèvement et le retour déplacent la quantité entre WH/Stock et l'emplacement
+                        Customers/Rental ; les bons de livraison sont une option des paramètres.</li>
+                    <li>Le planning Locations prévues montre une barre par commande et par produit.</li>
+                    <li>Les retards sont signalés (filtre En retard, badge), jamais facturés automatiquement.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : livraison, reliquat et facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Devises, règles de prix et remises sur les commandes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/signature-electronique-odoo-314">Signature électronique dans Odoo 20 : l'app Signature</a></h5>
+                            <p class="small text-muted mb-0">Faire signer un PDF en ligne : rôles, ordre des signataires, certificat.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
