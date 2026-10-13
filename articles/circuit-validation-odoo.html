@@ -1,0 +1,474 @@
+<!--
+Article — Circuit de validation dans Odoo 20 : l'app Validations
+Série « Ressources humaines avec Odoo 20 Enterprise » (lot EE 8), article E8.5
+Date : 2026-10-13
+Slug : circuit-validation-odoo
+Mot-clé cible : workflow validation odoo, circuit d'approbation odoo
+Tags : intermediaire, rh, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur (uid 8, groupe Validations administrateur), société 1 My Company (San Francisco)) :
+  - Modules : approvals « Approvals », approvals_purchase, approvals_purchase_stock installés, OEEL-1 (ir.module.module) ;
+    documents_approvals non installé. Menu racine « Validations » : Tableau de bord, Mes validations (Mes demandes),
+    Manager (Validations à examiner, Toutes les validations), Configuration (Catégories de validation, Produits).
+    CE : odoo/addons/approvals* absent.
+  - Démo : 9 catégories (Voyage d'affaires … Créer des demandes de prix), toutes non modifiées ; 2 demandes démo « À soumettre » intactes.
+    La catégorie démo « Créer des demandes de prix » n'a aucun validateur : message « Votre validation minimale dépasse le total
+    des approbateurs par défaut. »
+  - Formulaire catégorie (approval.category) : Créer des demandes de prix (create_rfq), Séquence automatisée + Code de préfixe,
+    onglet Options : Document Requis/Facultatif ; Contact, Date, Période, Produit, Quantité, Montant, Référence, Emplacement
+    Requis/Facultatif/Aucun ; Validateurs : case « Manager de l'employé » (booléen ; aide : le manager devient approbateur
+    obligatoire), liste Utilisateur + Requis, Validation minimale. Aucun champ d'ordre des approbateurs (pas de champ sequence
+    sur approval.category.approver, rien à l'écran).
+    Créer des demandes de prix coché → Produit et Quantité passent en Requis, grisés.
+  - Catégorie 10 « Demande de formation » créée à l'écran (Montant et Période requis, Contact facultatif, séquence FORM,
+    validateurs Formateur Odoo requis + Mitchell Admin, minimum 1). Catégorie 11 « Achat de fournitures » (Créer des demandes
+    de prix, validateur Formateur Odoo requis, minimum 1).
+  - Demandeur modifiable sur la demande ; sujet généré FORM00001… ; le demandeur Mitchell Admin reste aussi approbateur de sa
+    propre demande (ligne À approuver).
+  - Soumettre → Soumis, une activité « Validation » par approbateur (boutons Approuver / Refuser dans l'activité) ;
+    Manager › Validations à examiner liste la demande ; carte du tableau de bord « À examiner : 1 ».
+  - FORM00001 (1 200, 16-17/11) : Approuver par le formateur (requis) → Approuvé ; ligne Mitchell Admin reste « À approuver »,
+    son activité est supprimée ; bouton Retirer.
+  - FORM00002 (3 500, 7-11/12) : Refuser par le formateur → Refusée, sans motif demandé.
+  - FORM00004 : catégorie passée à minimum 2 le temps de l'essai (RPC), approbation du formateur → reste Soumis (pending),
+    ligne Mitchell Admin À approuver ; minimum remis à 1.
+  - Demande d'achat « Fournitures du bureau administratif » : fournisseur proposé par ligne (Office Chair Black : Wood Corner
+    120,50 retenu sur Ready Mat 130,50) ; Approuvé → bouton « Créer des demandes de prix » (pas de création automatique) ;
+    lignes AJOUTÉES aux demandes de prix démo en brouillon P00008 (Wood Corner) et P00015 (Ready Mat), dont l'origine est
+    remplacée ; message « Les produits suivants ont été ajoutés aux demandes de prix ». Demande « Bureau d'angle pour l'accueil »
+    (Corner Desk Right Sit, The Jackson Group, aucun brouillon existant) → nouvelle demande de prix P00024, 145 $, brouillon,
+    non envoyée.
+  - Courriels : 125-132 vers Mitchell Admin (admin@example.com) en exception (limite quotidienne de 5) ; aucun vers le formateur.
+    Bannière « Vous avez atteint la limite quotidienne d'e-mails » à l'écran.
+  - CE : purchase/models/res_company.py:33-39 po_double_validation + montant ; purchase_order.py:1332-1341 _approval_allowed
+    (responsable des achats) ; libellé fr « Validation du bon de commande » ; hr_holidays/models/hr_work_entry_type.py:66-70
+    validation des congés Aucune / responsable RH / approbateur de l'employé / les deux ; hr_expense (article 231).
+Captures : content/blog/screenshots/circuit-validation-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e8-5-validations/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child, .ce-box ul { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Circuit de validation dans Odoo 20 : l'app Validations</h1>
+                <p class="lead mt-3 text-white">Définir qui doit approuver quoi, soumettre une demande, l'approuver ou la
+                    refuser, puis transformer une demande d'achat approuvée en demande de prix : le circuit d'approbation
+                    d'Odoo 20 Enterprise, pas à pas.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Une formation à financer, un contrat à faire signer, des fournitures à commander : beaucoup de
+                    demandes internes n'ont pas d'application à elles et circulent par courriel, sans trace de qui a dit
+                    oui. Odoo 20 Enterprise leur offre un circuit commun, l'application <strong>Validations</strong>
+                    (module « Approvals ») : chaque type de demande devient une <strong>catégorie</strong>, avec ses
+                    champs, ses approbateurs et son nombre minimal d'accords ; chaque demande garde l'historique de
+                    sa décision.</p>
+                <p>Les circuits propres à une application, comme les notes de frais, sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">Notes de frais dans Odoo 20</a> ; le
+                    présent article traite des demandes qui n'ont pas d'application dédiée, et de la demande d'achat,
+                    qui débouche sur une demande de prix. Les exemples portent sur la société de démonstration
+                    <strong>My Company (San Francisco)</strong>, avec Mitchell Admin comme demandeur.</p>
+
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une catégorie de validation : champs demandés, approbateurs, approbateurs requis, validation
+                        minimale ;</li>
+                    <li>soumettre une demande et la retrouver du côté de l'approbateur ;</li>
+                    <li>approuver ou refuser, et lire l'état de chaque approbateur ;</li>
+                    <li>créer des demandes de prix à partir d'une demande d'achat approuvée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le circuit d'une demande</h2>
+                <p>Tout part de la catégorie : c'est elle qui fixe ce que le demandeur remplit et qui doit donner son
+                    accord.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du circuit d'une demande de validation. Catégorie de validation (Configuration) : champs Requis, Facultatif ou Aucun, Validateurs, case Requis, Validation minimale. Demande à l'état À soumettre : Demandeur, champs de la catégorie. Soumettre : état Soumis, une activité Validation par approbateur, liste Manager › Validations à examiner. Refuser mène à Refusée. Approuver mène à la question : approbateurs requis d'accord et Validation minimale atteinte ? Non : la demande reste Soumis. Oui : Approuvé. Pour une catégorie avec Créer des demandes de prix : bouton Créer des demandes de prix, puis demande de prix en brouillon par fournisseur, ou lignes ajoutées à une demande de prix en brouillon du même fournisseur" style="max-width:50%; height:auto;"/>
+                    <figcaption>Le circuit d'une demande, de la catégorie à la demande de prix.</figcaption>
+                </figure>
+                <p>Le demandeur remplit une demande, puis la soumet ; chaque approbateur reçoit alors une activité. Un
+                    refus clôt la demande. Une approbation ne suffit pas toujours : la demande ne passe à Approuvé que
+                    lorsque les approbateurs marqués <strong>Requis</strong> ont approuvé et que le nombre d'accords fixé
+                    par la <strong>Validation minimale</strong> est atteint. Pour une demande d'achat, l'approbation
+                    ouvre une dernière étape, manuelle : la création des demandes de prix.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le tableau de bord des catégories</h2>
+                <p>L'application s'ouvre sur son <strong>Tableau de bord</strong> : une carte par catégorie, avec un
+                    bouton <strong>Nouvelle demande</strong> et un compteur <strong>À examiner</strong>. La base de
+                    démonstration fournit neuf catégories, du Voyage d'affaires à Créer des demandes de prix ; deux
+                    catégories ont été ajoutées pour cet article, Demande de formation et Achat de fournitures.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Tableau de bord de l'application Validations : onze cartes, dont Voyage d'affaires, Articles empruntés, Validation générale, Validation de contrats, Demande de paiement, Demande de location de voiture, Récompense du référencement d'emplois, Approvisionnement, Créer des demandes de prix, Demande de formation (À examiner : 1) et Achat de fournitures ; chaque carte porte un bouton Nouvelle demande" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une carte par catégorie : on y crée une demande, on y voit ce qui attend un avis.</figcaption>
+                </figure>
+                <p>Le menu <strong>Mes validations › Mes demandes</strong> liste les demandes de l'utilisateur ; le menu
+                    <strong>Manager</strong> regroupe <strong>Validations à examiner</strong> et <strong>Toutes les
+                    validations</strong> ; les catégories se règlent dans <strong>Configuration › Catégories de
+                    validation</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer une catégorie de validation</h2>
+                <p>Ouvrez <strong>Configuration › Catégories de validation</strong>, puis <strong>Nouveau</strong>.
+                    Donnez un nom à la catégorie, ici « Demande de formation ». La case <strong>Séquence
+                    automatisée</strong>, avec son <strong>Code de préfixe</strong> (FORM), numérote les demandes à
+                    la place d'un sujet saisi à la main : FORM00001, FORM00002…</p>
+                <p>La colonne <strong>Configuration</strong> de l'onglet Options règle chaque champ de la demande :
+                    <strong>Requis</strong>, <strong>Facultatif</strong> ou <strong>Aucun</strong> (masqué). Pour une
+                    formation, le Montant et la Période sont requis, le Contact (l'organisme) est facultatif ; les
+                    autres champs sont masqués. La ligne <strong>Document</strong> exige ou non une pièce jointe.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Catégorie de validation Demande de formation : Créer des demandes de prix décoché, Séquence automatisée cochée, Code de préfixe FORM ; onglet Options, colonne Configuration : Document Facultatif, Contact Facultatif, Date Aucun, Période Requis, Produit Aucun, Quantité Aucun, Montant Requis, Référence Aucun, Emplacement Aucun ; colonne Validateurs : Manager de l'employé décoché, Formateur Odoo avec la case Requis cochée, Mitchell Admin sans Requis, Validation minimale 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>La catégorie fixe les champs de la demande et la liste des approbateurs.</figcaption>
+                </figure>
+                <p>Pour reproduire ces réglages, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Validations.</p>
+                <p>La colonne <strong>Validateurs</strong> porte trois réglages :</p>
+                <ul>
+                    <li><strong>Manager de l'employé</strong> : cochée, elle ajoute le manager de l'employé du demandeur
+                        comme approbateur obligatoire, en plus des utilisateurs de la liste ;</li>
+                    <li>la liste des <strong>utilisateurs</strong> approbateurs, chacun avec une case
+                        <strong>Requis</strong> : un approbateur requis doit approuver pour que la demande soit
+                        approuvée ;</li>
+                    <li><strong>Validation minimale</strong> : le nombre d'accords nécessaires.</li>
+                </ul>
+                <p>Ici, le compte utilisé pour l'article (Formateur Odoo) est requis, Mitchell Admin ne l'est pas, et un
+                    accord suffit. L'écran ne propose pas d'ordre de passage entre approbateurs : tous reçoivent la
+                    demande en même temps. Une validation minimale supérieure au nombre d'approbateurs est signalée sous
+                    le champ : « Votre validation minimale dépasse le total des approbateurs par défaut. » C'est le cas
+                    de la catégorie de démonstration Créer des demandes de prix, livrée sans approbateur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Soumettre une demande</h2>
+                <p>Depuis la carte Demande de formation, <strong>Nouvelle demande</strong> ouvre un formulaire limité aux
+                    champs de la catégorie : <strong>Demandeur</strong>, Période, Contact, Montant, et l'onglet
+                    Description. Le demandeur est l'utilisateur connecté, mais le champ se modifie : la demande de cet
+                    article est faite au nom de Mitchell Admin, pour une formation de deux jours à 1 200 $.</p>
+                <p>Enregistrée, la demande est <strong>À soumettre</strong> et prend son numéro, FORM00001. Le bouton
+                    <strong>Soumettre</strong> la passe à l'état <strong>Soumis</strong> : chaque approbateur reçoit une
+                    activité <strong>Validation</strong>, et un courriel l'en avertit.</p>
+                <p>Côté approbateur, la demande apparaît dans <strong>Manager › Validations à examiner</strong> et dans
+                    le compteur À examiner de la carte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste Validations à examiner : une ligne FORM00003, demandeur Mitchell Admin, catégorie Demande de formation, début de la demande 23 nov. 09:00, demande à 23 nov. 17:00, statut Soumis" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les demandes qui attendent l'avis de l'utilisateur connecté.</figcaption>
+                </figure>
+                <p>La demande ouverte affiche les boutons <strong>Approuver</strong> et <strong>Refuser</strong>, réservés
+                    aux approbateurs qui n'ont pas encore répondu. L'onglet <strong>Approbateur(s)</strong> donne l'état
+                    de chacun ; les mêmes boutons figurent sur l'activité, dans le chatter.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Demande FORM00003 à l'état Soumis : boutons Approuver, Refuser, Joindre un document ; Demandeur Mitchell Admin, Catégorie Demande de formation, Période 23 nov. 09:00 à 17:00, Montant 800,00 ; onglet Approbateur(s) : Formateur Odoo Requis À approuver, Mitchell Admin À approuver ; Activités planifiées : Validation pour Formateur Odoo avec Approuver et Refuser, Validation pour Mitchell Admin" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une demande soumise : un état et une activité par approbateur.</figcaption>
+                </figure>
+                <p>Mitchell Admin figure parmi les approbateurs de sa propre demande : Odoo ne retire pas le demandeur
+                    de la liste de la catégorie (voir les points de vigilance).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Approuver ou refuser</h2>
+                <p>Sur FORM00001, l'approbateur requis clique sur <strong>Approuver</strong>. La demande passe aussitôt à
+                    <strong>Approuvé</strong> : l'approbateur requis a donné son accord et la validation minimale, fixée à
+                    1, est atteinte. La ligne de Mitchell Admin reste « À approuver », mais son activité disparaît : son
+                    avis n'est plus attendu.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Demande FORM00001 à l'état Approuvé : boutons Retirer et Joindre un document ; Demandeur Mitchell Admin, Période 16 nov. 09:00 au 17 nov. 17:00, Montant 1 200,00 ; onglet Approbateur(s) : Formateur Odoo Requis Approuvé en vert, Mitchell Admin À approuver ; chatter : Changement du statut de validation, Soumis vers Approuvé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un accord de l'approbateur requis suffit ici : la demande est approuvée.</figcaption>
+                </figure>
+                <p>Le chatter garde chaque changement d'état, avec son auteur et son heure ; le demandeur reçoit un
+                    message « La demande FORM00001 pour Mitchell Admin a été approuvée ».</p>
+                <p>La validation minimale change la donne. Pour le vérifier, la catégorie a été passée le temps d'un
+                    essai à une validation minimale de 2 : après l'accord du seul approbateur requis, la demande est
+                    restée <strong>Soumis</strong>, en attente du second accord. La valeur est ensuite revenue à 1.</p>
+                <p>Le refus, lui, ne demande ni motif ni confirmation. Sur FORM00002, une formation de cinq jours à
+                    3 500 $, <strong>Refuser</strong> fait passer la demande à <strong>Refusée</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Demande FORM00002 à l'état Refusée : Demandeur Mitchell Admin, Période 7 déc. 09:00 au 11 déc. 17:00, Montant 3 500,00 ; onglet Approbateur(s) : Formateur Odoo Requis Refusée en rouge, Mitchell Admin À approuver" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un refus de l'approbateur requis : la demande est refusée.</figcaption>
+                </figure>
+                <p>Pour garder la raison du refus, écrivez-la dans le chatter avant de cliquer : le bouton ne la demande
+                    pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. La demande d'achat et ses demandes de prix</h2>
+                <p>Avec le module d'achat des Validations, une catégorie peut aboutir à une demande de prix. Créez la
+                    catégorie « Achat de fournitures » et cochez <strong>Créer des demandes de prix</strong> : les lignes
+                    <strong>Produit</strong> et <strong>Quantité</strong> passent d'office à Requis et se grisent. Le
+                    formateur en est l'approbateur requis, avec une validation minimale de 1.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Catégorie de validation Achat de fournitures : Créer des demandes de prix coché, Séquence automatisée décochée ; Configuration : Document Facultatif, Contact, Date, Période Aucun, Produit et Quantité Requis grisés, Montant, Référence, Emplacement Aucun ; Validateurs : Manager de l'employé décoché, Formateur Odoo Requis, Validation minimale 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>« Créer des demandes de prix » impose les produits et les quantités.</figcaption>
+                </figure>
+                <p>La demande comporte alors un onglet <strong>Produits</strong> : une ligne par produit, avec la
+                    quantité et un <strong>Fournisseur</strong> proposé d'après les prix fournisseurs de l'article. Pour
+                    la chaise Office Chair Black, Odoo a retenu Wood Corner (120,50 $) plutôt que Ready Mat (130,50 $) ;
+                    la proposition se change sur la ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Demande Fournitures du bureau administratif à l'état À soumettre, Demandeur Mitchell Admin, Catégorie Achat de fournitures ; onglet Produits : Office Chair Black, quantité 4,00, fournisseur Wood Corner 120,50 $ ; Desk Organizer, quantité 10,00, fournisseur Ready Mat 24,99 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une demande d'achat : produits, quantités et fournisseur proposé.</figcaption>
+                </figure>
+                <p>Une fois la demande approuvée, rien n'est encore créé côté Achats : un bouton <strong>Créer des
+                    demandes de prix</strong> apparaît sur la demande. Pour une seconde demande, un bureau d'angle
+                    Corner Desk Right Sit chez The Jackson Group, il a créé la demande de prix P00024, en brouillon.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Achats, demande de prix P00024 à l'état Demande de prix : fournisseur The Jackson Group, devise USD, livrer à Réceptions ; ligne Corner Desk Right Sit, quantité 1,00, prix unitaire 145,00, montant 145,00 $ ; boutons Envoyer une demande de prix, Confirmer la commande, Imprimer, Annuler" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande de prix créée par la validation, en brouillon.</figcaption>
+                </figure>
+                <p>La demande de prix suit ensuite le circuit des Achats : l'acheteur l'envoie au fournisseur (cela n'a
+                    pas été fait ici), puis la confirme en bon de commande. Le bouton intelligent <strong>Bons de
+                    commande fournisseur</strong> de la demande de validation y mène.</p>
+                <p>Pour la première demande, le résultat a été différent. La base contenait déjà des demandes de prix en
+                    brouillon chez Wood Corner et Ready Mat : au lieu de créer deux demandes neuves, Odoo a
+                    <strong>ajouté les lignes</strong> à P00008 et P00015, et l'a écrit dans le chatter.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Demande Fournitures du bureau administratif à l'état Approuvé, bouton intelligent Bons de commande fournisseur 2 ; chatter : Les produits suivants ont été ajoutés aux demandes de prix : RFQ P00008 : 4.0 Office Chair Black ; RFQ P00015 : 10.0 Desk Organizer ; puis Changement du statut de validation, Soumis vers Approuvé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les produits rejoignent des demandes de prix déjà ouvertes chez les mêmes fournisseurs.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Des validations par application, pas de circuit générique</h4>
+                    <p>L'application Validations n'existe pas dans Odoo 20 Community. La Community garde les circuits
+                        intégrés à certaines applications :</p>
+                    <ul>
+                        <li>les <strong>notes de frais</strong>, approuvées par le responsable de l'employé, avec un
+                            plafond par poste, présentées dans
+                            <a href="https://odooskills.com/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">Notes de
+                            frais dans Odoo 20</a> ;</li>
+                        <li>les <strong>congés</strong>, dont chaque type se valide par le responsable RH, par
+                            l'approbateur de l'employé, par les deux ou sans validation ;</li>
+                        <li>les <strong>achats</strong>, avec l'option « Validation du bon de commande » : au-delà d'un
+                            montant, la commande attend l'accord d'un responsable des achats.</li>
+                    </ul>
+                    <p>Il n'y a en revanche ni catégorie de demande libre, ni liste d'approbateurs requis, ni validation
+                        minimale, ni demande d'achat qui crée elle-même ses demandes de prix.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le demandeur peut approuver sa propre demande</h4>
+                    <p>Les approbateurs viennent de la catégorie, sans exception pour le demandeur : quand Mitchell Admin
+                        demande, il figure parmi les approbateurs de sa propre demande, avec l'état À approuver et une
+                        activité de validation. Rien à l'écran ne l'en exclut : désignez au moins un approbateur requis
+                        distinct des demandeurs habituels.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les lignes d'achat rejoignent les brouillons existants</h4>
+                    <p>Créer des demandes de prix ajoute les produits à une demande de prix en brouillon du même
+                        fournisseur, s'il en existe une, et y inscrit la demande de validation comme origine. Relisez les
+                        demandes de prix en brouillon avant de les envoyer : elles peuvent mêler plusieurs besoins.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le refus est immédiat et sans motif</h4>
+                    <p>Refuser ne demande ni confirmation ni raison. Notez la raison dans le chatter : le demandeur ne
+                        reçoit sinon qu'un message de refus.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Chaque étape envoie des courriels</h4>
+                    <p>Une soumission envoie un courriel par approbateur, une décision un courriel au demandeur. Sur une
+                        base d'essai, limitée à quelques messages par jour, la limite est vite atteinte : Odoo l'annonce
+                        par un bandeau, et les messages suivants ne partent pas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> constater l'effet de la validation minimale.</p>
+                    <p><strong>Indication :</strong> créez une catégorie avec deux approbateurs, vous-même (Requis) et
+                        Mitchell Admin, et une validation minimale de 2. Soumettez une demande dans cette catégorie, puis
+                        approuvez-la.</p>
+                    <p><strong>Critère de réussite :</strong> après votre accord, la demande reste à l'état Soumis, votre
+                        ligne est Approuvé et celle de Mitchell Admin À approuver.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'application Validations (Enterprise) donne un circuit d'approbation à toute demande interne,
+                        organisée en catégories.</li>
+                    <li>La catégorie fixe les champs demandés (Requis, Facultatif, Aucun), les approbateurs, ceux qui sont
+                        requis et la validation minimale.</li>
+                    <li>Une demande n'est approuvée que si les approbateurs requis ont approuvé et que la validation
+                        minimale est atteinte ; un refus la clôt.</li>
+                    <li>Une catégorie « Créer des demandes de prix » transforme la demande approuvée en demandes de prix,
+                        par un bouton, en brouillon.</li>
+                    <li>La Community garde les validations des notes de frais, des congés et des bons de commande, sans
+                        circuit générique.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">Notes de frais dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : soumettre, approuver et rembourser une dépense.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la demande de prix à la facture dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">De la demande de prix à la facture fournisseur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/bulletin-de-paie-odoo-307">Paie dans Odoo 20 : du lot de paie au bulletin</a></h5>
+                            <p class="small text-muted mb-0">Calculer, valider et payer un lot de paie, du contrat au bulletin.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

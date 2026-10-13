@@ -1,0 +1,461 @@
+<!--
+Article — Planning des congés dans Odoo 20 : la vue Gantt
+Série « Ressources humaines avec Odoo 20 Enterprise » (lot EE 8), article E8.3
+Date : 2026-10-13
+Slug : planning-conges-gantt-odoo
+Mot-clé cible : planning congés odoo, calendrier des absences odoo
+Tags : intermediaire, rh, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur (administrateur Congés), société 1 My Company (San Francisco)) :
+  - Modules : hr_holidays « Time Off » LGPL-3 ; hr_holidays_gantt « Time off Gantt » OEEL-1 installé (avec web_gantt, hr_gantt OEEL-1).
+    CE : odoo/addons/hr_holidays_gantt et web_gantt absents.
+  - Actions (RPC ir.actions.act_window) : Vue d'ensemble (time-off-overview, hr.leave.report.calendar) view_mode « gantt,calendar »,
+    contexte search_default_groupby_employee_id ; Management › Congés (time-off-approval, hr.leave) « list,kanban,gantt,form,calendar,activity ».
+    CE : report/hr_leave_report_calendar.xml:158 view_mode « calendar » ; views/hr_leave_views.xml:965 « list,kanban,form,calendar,activity ».
+    Action 1134 « Congés » (hr.leave, gantt) = menu Paie › Congés. Employés (action 384) : kanban,list,form,activity,graph,pivot (pas de Gantt).
+  - Vues Gantt (ir.ui.view) : hr.leave.report.calendar.view.gantt (default_range month, default_group_by employee_id, groups_limit 20,
+    color employee_id, total_row, display_unavailability) ; hr.leave.gantt (scales week,month,quarter, color = type, decoration-info
+    état confirm/validate1, progress_bar employee_id, multi_create_view).
+  - Écran : échelles Jour/Semaine/Mois/Trimestre/Année + plage de dates + Appliquer ; regroupements Employé, Poste, Type d'entrée de travail,
+    Département ; filtres Mon équipe, Mon département, Absent aujourd'hui, Approuvé, Refusée, Exclure refusées, En attente de validation.
+    Colonne d'heures (Management) : 176h mois complet, Anita Oliver 112h (8 j), Marc Demo 152h puis 136h après validation (2 j).
+  - Création par sélection de cases (Marc Demo 19-20/10, « 2 sélectionné(s) », Appliquer) : fenêtre type (« Legal leave employee (20 days left) »),
+    Matin → Après-midi, « 2,00 day(s) », description, Ajouter / Ignorer ; sélection sur plusieurs lignes possible (« 6 sélectionné(s) », non appliquée).
+    hr.leave 14 créé directement « Approuvé », chatter « Le congé a été automatiquement approuvé » (CE hr_leave.py:1631-1636 : créateur officier).
+    Remis « À approuver » par Retour à la validation (action_back_to_approval, RPC) pour suivre le circuit.
+  - Encart du formulaire « Research & Development Overlaps · 1 team members on holiday during this period · View Overlaps »
+    (CE static/src/leave_stats/leave_stats.xml:28-43 ; le lien ouvre une vue Gantt, leave_stats.js:111-122).
+  - Regroupement Département > Employé : compteur 2 sur la ligne R&D les 19-20/10 (Ronnie Hart + Marc Demo) ; après déplacement, 1.
+    Vue d'ensemble : la demande À approuver a la même barre pleine qu'un congé approuvé (fenêtre : « À approuver ») ; Management : barre hachurée.
+  - Glisser-déposer (Management, Gantt) : notification « Élément replanifié » + Undo ; un premier dépôt sur 30-31/10 (ven.-sam.) a donné 1 jour,
+    corrigé à 29-30/10 (2 jours). Ciseaux (o_hr_holidays_gantt_pill_split_tool) entre deux jours d'une barre : un clic a coupé hr.leave 14
+    en 14 + 16 (chatter : Date de fin 20 → 19 oct.) ; recollé par RPC (16 supprimé, 14 remis au 20/10).
+  - Fenêtre de barre (Management) : type, Matin/Après-midi, durée, description, Approuver / Refuser / Supprimer. Approuver (officier, type
+    « both ») : À approuver → Approuvé en un clic (CE hr_leave.py:1964-1976), activité « Validation des congés » de Mitchell Admin close.
+  - Données créées : hr.leave 14 Marc Demo Legal leave employee 29-30/10/2026 approuvé ; hr.leave 15 Ronnie Hart Congé de formation 26-27/10
+    créé puis refusé (paie d'octobre validée : « Payslip for the month is already validated ») ; mail.mail 114-116 vers Mitchell Admin
+    (admin@example.com) en exception (limite quotidienne de 5 messages de la base d'essai). 5 allocations de démo à valider non touchées.
+Captures : content/blog/screenshots/planning-conges-gantt-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e8-3-gantt/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Planning des congés dans Odoo 20 : la vue Gantt</h1>
+                <p class="lead mt-3 text-white">Voir d'un coup d'œil qui est absent et quand, repérer deux absences qui se
+                    chevauchent dans un même service, poser ou déplacer un congé à la souris, puis le valider : la vue
+                    Gantt des Congés d'Odoo 20 Enterprise, pas à pas.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Valider un congé, c'est d'abord vérifier que le service tiendra pendant l'absence. Une liste de demandes
+                    ne le montre pas : il faut voir les absences de toute l'équipe sur une même frise. Dans Odoo 20
+                    Enterprise, l'application <strong>Congés</strong> reçoit pour cela une <strong>vue Gantt</strong> (module
+                    « Time off Gantt ») : une ligne par employé, une colonne par jour, une barre par congé, et une ligne
+                    <strong>Total</strong> qui compte les absents de chaque période.</p>
+                <p>Les types de congés, les allocations et la demande de l'employé sont présentés dans
+                    <a href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences dans Odoo 20</a> ;
+                    le présent article part de là et se place du côté du responsable qui planifie. Les exemples portent sur
+                    la société de démonstration <strong>My Company (San Francisco)</strong>, et surtout sur le service
+                    Research &amp; Development : Anita Oliver, Marc Demo et Ronnie Hart.</p>
+
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire la vue d'ensemble des congés en Gantt et changer d'échelle ;</li>
+                    <li>poser un congé directement depuis le Gantt, en sélectionnant des cases ;</li>
+                    <li>regrouper les absences par service et repérer un chevauchement avant de valider ;</li>
+                    <li>déplacer une demande à la souris, puis l'approuver sans quitter le planning.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Du planning à la validation</h2>
+                <p>La vue Gantt intervient entre la demande et la décision du responsable.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : une demande déposée par l'employé, à l'état À approuver, apparaît dans Management › Congés, vue Gantt, en barre hachurée, avec le filtre En attente de ma signature. Question : chevauchement dans le département ? Vue d'ensemble regroupée par Département, encart Overlaps du formulaire. Si oui : glisser la barre sur d'autres jours, Élément replanifié, puis nouvelle vérification. Si non : Approuver, depuis la fenêtre de la barre ou le formulaire. Résultat : Approuvé, barre pleine dans la Vue d'ensemble, compteur du département et ligne Total. En pointillé, un congé saisi par un responsable des congés (cases du Gantt + Appliquer, ou formulaire) est approuvé d'office, avec le message Le congé a été automatiquement approuvé" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le parcours d'une demande de congé dans le Gantt d'Odoo 20 Enterprise.</figcaption>
+                </figure>
+                <p>Le chemin principal part d'une demande d'employé : elle attend dans le Gantt du responsable, qui vérifie
+                    les absences du même service, déplace la demande si deux absences se gênent, puis l'approuve. Le chemin
+                    en pointillé est celui d'un congé saisi par le responsable lui-même : Odoo l'approuve d'office, la
+                    vérification se fait donc avant de cliquer. Les sections suivantes suivent ce parcours.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire la vue d'ensemble</h2>
+                <p>Ouvrez <strong>Congés › Vue d'ensemble</strong>. En Enterprise, l'écran « Tous les congés » s'ouvre
+                    en Gantt sur le mois en cours, regroupé par employé ; le bouton de droite bascule vers le calendrier.
+                    Chaque barre porte le code du type de congé et sa durée : PTO pour Legal leave employee, STO pour
+                    Guaranted monthly wage illness, CTO pour Congé compensatoire. La colonne du jour est surlignée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Vue d'ensemble des congés en Gantt, octobre 2026, regroupée par employé, 1-20 / 26 : week-ends repliés en colonnes étroites avec deux flèches, colonne du 13 surlignée. Anita Oliver : PTO 3 days du 5 au 7 et PTO à partir du 22 ; Marc Demo : STO 3 days du 5 au 7 et PTO 2 days les 19 et 20 ; Mitchell Admin : CTO 3 days du 5 au 7. Les lignes Aka Foster et Cherry Nelson sont grisées sur tout le mois" style="max-width:100%; height:auto;"/>
+                    <figcaption>Qui est absent quand : une ligne par employé, une barre par congé.</figcaption>
+                </figure>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Congés.</p>
+                <p>Les cases grises signalent les jours où l'employé n'a pas de travail prévu : les week-ends, mais aussi
+                    tout le mois pour Aka Foster et Cherry Nelson sur la base de démonstration. Les week-ends sans congé se
+                    replient en colonnes étroites, que les petites flèches déplient. La liste s'affiche par pages de vingt
+                    employés (« 1-20 / 26 ») : les flèches du haut passent aux suivants. La barre de Marc Demo des 19 et
+                    20 octobre est une demande qui attend encore une réponse (étape 3).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Changer d'échelle et de période</h2>
+                <p>Le bouton <strong>Mois</strong> ouvre le choix de l'échelle : Jour, Semaine, Mois, Trimestre ou Année.
+                    Dessous, deux dates et <strong>Appliquer</strong> affichent une période libre, par exemple les six
+                    semaines d'été. Les flèches avancent ou reculent d'une période, <strong>Aujourd'hui</strong> revient au
+                    jour courant.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Menu du bouton Mois de la vue Gantt : Jour, Semaine, Mois (coché), Trimestre, Année ; dessous, une plage de dates 01/10/2026 → 31/10/2026 et un bouton Appliquer" style="max-width:45%; height:auto;"/>
+                    <figcaption>Les échelles du Gantt et la période sur mesure.</figcaption>
+                </figure>
+                <p>Le mois convient au suivi courant ; le trimestre ou l'année servent à préparer les grandes périodes de
+                    congés, quand il faut voir plusieurs semaines d'un seul regard.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Poser un congé depuis le Gantt</h2>
+                <p>Le planning qui permet d'agir est celui de <strong>Management › Congés</strong>. L'écran s'ouvre en liste
+                    sur le filtre <strong>En attente de ma signature</strong> ; le dernier bouton de vues, à droite, affiche
+                    le Gantt. À côté du nom de chaque employé, une colonne donne ses heures de travail prévues sur la
+                    période, congés déduits : 176 h pour un mois complet, 112 h pour Anita Oliver, absente huit jours.</p>
+                <p>Retirez le filtre pour voir toute l'équipe, puis cliquez sur une case ou faites glisser la souris sur
+                    plusieurs : ici, les 19 et 20 octobre sur la ligne de Marc Demo. Le haut de l'écran affiche « 2
+                    sélectionné(s) » et un bouton <strong>Appliquer</strong>, qui ouvre une petite fenêtre : le type de
+                    congé, avec le solde restant (« Legal leave employee (20 days left) »), la demi-journée de début et de
+                    fin, la durée calculée et une description.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Gantt de Management › Congés, octobre 2026 : deux cases sélectionnées en turquoise sur la ligne Marc Demo les 19 et 20, en haut 2 sélectionné(s) et Appliquer. Fenêtre ouverte sous Appliquer : PTO Legal leave employee (20 days left), Matin → Après-midi, 2,00 day(s), description Congés de fin octobre, boutons Ajouter et Ignorer. À gauche, la colonne des heures : 176h, Anita Oliver 112h, Marc Demo 152h" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux jours sélectionnés sur la ligne de Marc Demo, et la fenêtre de saisie.</figcaption>
+                </figure>
+                <p>La sélection peut aussi couvrir plusieurs lignes : trois jours tirés sur deux employés donnent « 6
+                    sélectionné(s) », et Appliquer ouvre la même fenêtre, avec une durée de 3,00 day(s). Cette sélection
+                    à plusieurs employés n'a pas été enregistrée sur la base de démonstration.</p>
+                <p><strong>Ajouter</strong> crée le congé. Comme il est saisi par un responsable des congés, Odoo
+                    l'approuve aussitôt, et le chatter le dit : « Le congé a été automatiquement approuvé ». Les demandes
+                    déposées par les employés eux-mêmes arrivent, elles, à l'état <strong>À approuver</strong>. Pour suivre
+                    ce circuit, la demande de Marc Demo a été remise à l'état À approuver, comme si elle venait de lui, par
+                    le bouton <strong>Retour à la validation</strong> du formulaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Repérer un chevauchement dans le service</h2>
+                <p>Un chevauchement compte surtout au sein d'un même service. Revenez à la <strong>Vue d'ensemble</strong>,
+                    ouvrez le menu de la barre de recherche et, dans <strong>Regrouper par</strong>, choisissez
+                    <strong>Département</strong> puis <strong>Employé</strong>. Seuls les employés qui ont un congé dans
+                    la période restent affichés, rangés sous leur service.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Vue d'ensemble regroupée par Département > Employé, octobre 2026 : groupe Management avec Mitchell Admin (CTO 3 days du 5 au 7) et Sharlene Rhodes (PTO 6 days du 9 au 16), compteur 1 sur ces périodes ; groupe Management / Research & Development avec Anita Oliver (PTO 3 days du 5 au 7), Marc Demo (STO 3 days du 5 au 7, PTO 2 days les 19 et 20) et Ronnie Hart (PTO 5 days du 14 au 20), compteur 2 du 5 au 7, 1 du 14 au 16, 2 les 19 et 20. Ligne Total : 3, 1, 2, 1, 2" style="max-width:100%; height:auto;"/>
+                    <figcaption>Regroupé par service : le compteur passe à 2 en Research &amp; Development les 19 et 20.</figcaption>
+                </figure>
+                <p>Chaque ligne de service porte un compteur : le nombre de ses employés absents en même temps, période par
+                    période. En Research &amp; Development, il vaut 1 du 14 au 16 octobre (Ronnie Hart seul), puis 2 les 19
+                    et 20 : la demande de Marc Demo tombe pendant le congé de Ronnie Hart. La ligne
+                    <strong>Total</strong>, en bas, fait le même compte pour tous les services affichés. Les filtres
+                    <strong>Mon équipe</strong> et <strong>Mon département</strong> réduisent l'écran à ce qui concerne le
+                    responsable connecté.</p>
+                <p>Le formulaire de la demande donne la même alerte. Ouvrez-la depuis Management › Congés : à droite, sous
+                    le résumé de l'année, un encadré bleu annonce le chevauchement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Formulaire de la demande de Marc Demo, état À approuver (barre d'état À approuver, Deuxième validation, Approuvé), boutons Approuver et Refuser : type PTO Legal leave employee, dates 19 oct. → 20 oct., Matin → Après-midi, 2,00 day(s), description Congés de fin octobre. À droite, Résumé 2026 : Guaranted monthly wage illness 6 jours ; encadré bleu Research & Development Overlaps : 1 team members on holiday during this period, lien View Overlaps" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'encadré « Overlaps » : un collègue du service est déjà absent sur ces dates.</figcaption>
+                </figure>
+                <p>Le libellé est resté en anglais : « Research &amp; Development Overlaps », « 1 team members on holiday
+                    during this period ». Le lien <strong>View Overlaps</strong> ouvre un Gantt limité aux congés qui se
+                    chevauchent.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Déplacer la demande à la souris</h2>
+                <p>Après accord avec l'employé, la demande peut glisser vers des jours libres. Dans le Gantt de
+                    Management › Congés, saisissez la barre et déposez-la sur les nouvelles dates : ici les 29 et 30
+                    octobre, quand aucun autre membre de Research &amp; Development n'est absent. La barre reste hachurée,
+                    car la demande est toujours à approuver, et une notification confirme « Élément replanifié », avec un
+                    bouton <strong>Undo</strong> pour annuler.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Gantt de Management › Congés filtré sur En attente de ma signature : ligne Marc Demo, barre hachurée PTO 2 days les 29 et 30 octobre, ligne Total à 1 sur ces deux jours ; notification Élément replanifié avec le bouton Undo" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande déplacée aux 29 et 30 octobre, toujours en attente.</figcaption>
+                </figure>
+                <p>Les dates de la demande et sa durée sont recalculées au dépôt, et le chatter garde la trace de l'ancienne
+                    et de la nouvelle date. Le bord gauche ou droit d'une barre se tire aussi pour allonger ou raccourcir
+                    un congé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Approuver depuis le planning</h2>
+                <p>Un clic sur la barre ouvre une fenêtre de modification rapide : type, demi-journées, durée,
+                    description, et trois boutons, <strong>Approuver</strong>, <strong>Refuser</strong> et
+                    <strong>Supprimer</strong>. Il n'est donc pas nécessaire d'ouvrir le formulaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre de la barre Marc Demo - 2 jours : type PTO Legal leave employee, Matin → Après-midi, 2,00 day(s), description Congés de fin octobre ; boutons Approuver (vert), Refuser et Supprimer (rouges), icônes d'agrandissement et de fermeture" style="max-width:55%; height:auto;"/>
+                    <figcaption>Approuver, refuser ou supprimer directement depuis la barre.</figcaption>
+                </figure>
+                <p>Le type Legal leave employee demande deux validations (la barre d'état du formulaire montre l'étape
+                    Deuxième validation). Le compte qui approuve ici est responsable des congés : un seul clic sur
+                    <strong>Approuver</strong> fait passer la demande de À approuver à <strong>Approuvé</strong>, et
+                    l'activité « Validation des congés » prévue pour Mitchell Admin, le manager de Marc Demo, se ferme.
+                    Un manager qui n'a pas ce droit ne fait que la première validation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Vue d'ensemble regroupée par Département > Employé, du 11 au 31 octobre : en Research & Development, Ronnie Hart PTO 5 days du 14 au 20, Anita Oliver PTO 5 days du 22 au 28, Marc Demo PTO 2 days les 29 et 30, compteur du service à 1 sur chaque période ; en Management, Sharlene Rhodes PTO 6 days jusqu'au 16, Mitchell Admin et Sharlene Rhodes STO 3 days du 26 au 28, compteur 2 ; ligne Total 1, 2, 1, 1, 3, 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après déplacement et validation : plus d'absences simultanées en Research &amp; Development.</figcaption>
+                </figure>
+                <p>La vue d'ensemble regroupée par service le confirme : en Research &amp; Development, le compteur ne
+                    dépasse plus 1 sur le mois. Dans Management › Congés, la colonne d'heures de Marc Demo passe de 152 h à
+                    136 h, deux journées de huit heures de moins.</p>
+                <p>Le même Gantt des congés se retrouve dans l'application Paie, au menu <strong>Paie › Congés</strong>,
+                    pour contrôler les absences avant de préparer les bulletins. L'application Employés, elle, n'a pas de
+                    vue Gantt sur la base de démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Un calendrier, pas de Gantt</h4>
+                    <p>Le moteur Gantt et le module des congés en Gantt ne font pas partie d'Odoo 20 Community. La
+                        Vue d'ensemble y est un <strong>calendrier</strong> mensuel, une couleur par employé, et Management ›
+                        Congés propose la liste, le kanban et le calendrier. Les demandes, les deux niveaux de validation,
+                        l'approbation automatique d'un congé saisi par un responsable et l'encadré « Overlaps » du
+                        formulaire sont dans la Community ; le lien View Overlaps, lui, demande une vue Gantt. Sans Gantt,
+                        pas de sélection de cases sur plusieurs employés, pas de compteur par service ni de ligne Total,
+                        pas de glisser-déposer d'une barre. Le parcours Community complet est présenté dans
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences
+                        dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un congé saisi par le responsable est approuvé d'office</h4>
+                    <p>Depuis le Gantt comme depuis le formulaire, un congé créé par un responsable des congés est
+                        aussitôt approuvé, sans passer par À approuver. Vérifiez donc le compteur du service
+                        <em>avant</em> d'appuyer sur Ajouter.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Dans la vue d'ensemble, une demande en attente ressemble à un congé approuvé</h4>
+                    <p>La barre de la demande de Marc Demo y est pleine, comme les autres ; seule la fenêtre qui
+                        s'ouvre au clic indique « À approuver ». Pour distinguer les deux, utilisez le filtre
+                        <strong>En attente de validation</strong>, ou le Gantt de Management › Congés, où les demandes en
+                        attente sont hachurées.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Déposer une barre sur un week-end change sa durée</h4>
+                    <p>Une demande de deux jours déposée sur un vendredi et un samedi ne compte plus qu'un jour : le
+                        samedi n'est pas travaillé. Relisez la durée affichée sur la barre après chaque déplacement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les ciseaux coupent une demande en deux</h4>
+                    <p>Au survol d'une barre de plusieurs jours, des ciseaux apparaissent à la limite entre deux jours.
+                        Un clic à cet endroit coupe la demande en deux demandes distinctes, chacune avec ses propres
+                        dates. Pour ouvrir la fenêtre de la barre, cliquez plutôt près de son début.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_10" alt="Barre PTO 2 days survolée dans le Gantt : un trait vertical marque la limite entre les deux jours et une paire de ciseaux s'affiche dessous ; plus bas, une autre barre STO 3 days" style="max-width:60%; height:auto;"/>
+                        <figcaption>Les ciseaux, à la limite entre deux jours d'une barre.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> trouver un créneau sans chevauchement pour un employé du service
+                        Research &amp; Development.</p>
+                    <p><strong>Indication :</strong> dans la Vue d'ensemble regroupée par Département puis Employé,
+                        passez à l'échelle Trimestre et repérez une semaine où le compteur de Research &amp; Development
+                        est vide. Dans le Gantt de Management › Congés, sélectionnez trois jours de cette semaine sur la
+                        ligne d'Anita Oliver, choisissez Legal leave employee et cliquez sur Ajouter.</p>
+                    <p><strong>Critère de réussite :</strong> la barre d'Anita Oliver apparaît dans la Vue d'ensemble et le
+                        compteur de Research &amp; Development reste à 1 sur ces trois jours.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Enterprise, la Vue d'ensemble des congés s'ouvre en Gantt : une ligne par employé, une barre par
+                        congé, une ligne Total des absents.</li>
+                    <li>Regroupée par Département, elle affiche un compteur par service : un 2 signale deux absents en
+                        même temps.</li>
+                    <li>Le Gantt de Management › Congés permet de poser un congé sur une sélection de cases, de déplacer
+                        une barre et d'approuver depuis la barre.</li>
+                    <li>Un congé saisi par un responsable des congés est approuvé d'office ; les demandes des employés
+                        attendent, hachurées.</li>
+                    <li>La Community garde le calendrier, les demandes, la validation et l'encadré « Overlaps », sans la
+                        vue Gantt.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : types, allocations, demande et validation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les départements et les managers sur lesquels repose le regroupement.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/cooptation-parrainage-odoo-310">Cooptation dans Odoo 20 : l'application Recommandations</a></h5>
+                            <p class="small text-muted mb-0">Faire recommander des candidats par les salariés, suivre les points et les récompenses.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
