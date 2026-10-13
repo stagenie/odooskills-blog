@@ -1,0 +1,491 @@
+<!--
+Article — Rapprochement bancaire automatique dans Odoo 20 Enterprise
+Série « Comptabilité avec Odoo 20 Enterprise » (lot EE 2), article E2.1
+Date : 2026-10-12
+Slug : rapprochement-bancaire-automatique-odoo
+Mot-clé cible : rapprochement bancaire odoo (import de relevé, modèles de rapprochement)
+Tags : intermediaire, comptabilite, guide, enterprise
+Preuves (12/10/2026, base edu-odooskills20, Odoo 20.0+e, compte formateur, société FR Company id 4) :
+  - Modules (ir.module.module) : accountant / account_accountant (OEEL-1), account_online_synchronization (OEEL-1),
+    account_bank_statement_import + _csv, _ofx, _camt installés ; _qif non installé.
+  - Tableau de bord, carte Banque (journal BNK1, id 38) : boutons Transactions et « 9 à réconcilier » ; menu ⋮ :
+    Voir (Transactions, Relevés, Paiements, Analysis), Nouveau (Importer un fichier, Paiement client, Paiement fournisseur,
+    Dépôt par lot), Lettrage (Modèles, Matching Rules, Rapport), Connecter la banque, Configuration.
+  - Écran « Réconciliation bancaire » (/odoo/accounting/38/reconciliation, vue kanban o_bank_rec_widget_kanban_view) :
+    lignes groupées par relevé (« Aucun relevé bancaire » sinon), boutons Partenaire / Compte / ⋮ ; « Lettrer 1 » +
+    Client / Fournisseur quand le partenaire est connu ; ⋮ : Lettrer, Charger les notes de crédit, modèles applicables
+    à la ligne, Gérer modèles, Supprimer transaction. Bouton Nouveau : saisie en ligne (date, libellé, Partenaire, montant,
+    Modèle de lettrage ; Ajouter & Nouveau / Ajouter & Fermer / Ignorer).
+  - Modèles de rapprochement (/odoo/accounting/38/reconciliation-models, filtre « Crée par l'utilisateur ») : démo
+    Virements internes, Frais bancaires (libellé contient « Bank Fees »), Line with Bank Fees (contient « BRT »),
+    Owner's Current Account, tous Manuel. Matching Rules : liste vide.
+  - Créé : modèle « Commissions bancaires » (account.reconcile.model 19 ; journal Banque, Libellé Contient COMMISSION,
+    contrepartie 627800 Pourcentage du solde 100, libellé Commission bancaire), passé Manuel → Automatisée par le
+    bouton « Automatiser » (chatter : « Manuel → Automatisée (Déclencher) »).
+  - Créé : facture FAC/2026/00010 (account.move 123, Wood Corner, 1 200 HT + 20 % S = 1 440,00 €, 30 jours, comptabilisée).
+  - Import CSV releve-banque-2026-10-12.csv (UTF-8 avec BOM, « ; », décimale virgule, séparateur des milliers « Pas de
+    séparateur ») : 3 lignes 49-51, relevé « BNK1 Relevé 2026-10-12 » (statement 8, solde initial 6 678,00, final 8 090,50).
+    Dès l'import : ligne 49 partenaire Wood Corner retrouvé, lettrée avec FAC/2026/00010 (payment_state paid, « Payé le
+    12/10/2026 », Montant dû 0,00 €) ; lignes 50 (-18,00) et 51 (-9,50) rapprochées sur 627800 par le modèle. Aucune
+    matching rule n'existait.
+  - Premier essai sans BOM : en-tête « Libellé » affiché « Libell√© » ; séparateur des milliers proposé « Virgule ».
+  - Créé : facture FAC/2026/00011 (account.move 140, Ready Mat, 400 HT + 20 % = 480,00 €, comptabilisée) et ligne de
+    relevé 52 « VIR SEPA RECU REF 4471 » 480,00 € (sans relevé) : non rapprochée ; bouton Partenaire → Ready Mat →
+    ligne aussitôt lettrée avec FAC/2026/00011.
+  - « Lettrer 1 » sur la ligne démo LightsUp 738,75 € : fenêtre « Rechercher : Écritures comptables à lettrer », filtre
+    Partenaire LightsUp, FAC/2026/00008 750,00 €, Solde -738,75 € (fermée sans valider).
+  - Après : carte Banque « 9 à réconcilier » (les 9 lignes de démo), Solde 8 686,43 €.
+  - Community : account/models/account_reconcile_model.py (modèle défini, aucune méthode d'application) ;
+    account/views/account_journal_dashboard_view.xml:93-110 (menus réservés à group_account_basic) ; article 216.
+Captures : content/blog/screenshots/rapprochement-bancaire-automatique-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e2-1-rapprochement/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Rapprochement bancaire automatique dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Importer le relevé de la banque, laisser Odoo retrouver les factures
+                    réglées et passer seul les frais bancaires, puis traiter à la main ce qui reste : l'application
+                    Comptabilité d'Odoo 20 Enterprise fait du rapprochement une liste de lignes à vider.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Chaque mois, la responsable comptable reçoit le relevé de la banque et doit pouvoir dire, ligne à
+                    ligne, à quoi correspond chaque mouvement : le règlement de telle facture, une commission, un loyer.
+                    Tant que ce travail n'est pas fait, une facture « payée » n'est qu'une déclaration. Dans Odoo 20
+                    Enterprise, l'application <strong>Comptabilité</strong> importe le relevé, rapproche d'elle-même
+                    ce qu'elle reconnaît et présente le reste dans un écran de travail unique.</p>
+                <p>Le relevé arrive par fichier (CSV, OFX ou CAMT sur la base de démonstration) ; le menu de la banque
+                    propose aussi <strong>Connecter la banque</strong>, la synchronisation en ligne, que le présent
+                    article n'utilise pas. Les exemples portent sur la société de démonstration <strong>FR
+                    Company</strong> (plan comptable français, montants en euros), journal <strong>Banque</strong>.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>trouver l'écran de rapprochement et lire ses lignes ;</li>
+                    <li>créer un modèle de rapprochement qui passe automatiquement les commissions bancaires ;</li>
+                    <li>importer un relevé au format CSV et régler les options d'import ;</li>
+                    <li>reconnaître ce qu'Odoo rapproche seul : facture citée dans le libellé, modèle automatisé ;</li>
+                    <li>traiter une ligne sans référence avec les boutons Partenaire, Lettrer et ⋮.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Du relevé bancaire au rapprochement</h2>
+                <p>Le relevé importé crée des <strong>lignes de relevé</strong> dans le journal Banque. Chaque ligne
+                    suit l'un des chemins ci-dessous ; les exemples entre parenthèses sont ceux de la suite de
+                    l'article.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : relevé de la banque en fichier CSV, OFX ou CAMT, importé par Banque, menu ⋮, Importer un fichier, qui crée le relevé BNK1. Pour chaque ligne de relevé, trois cas. Le libellé cite une facture ouverte (FAC/2026/00010) : ligne lettrée avec la facture, partenaire retrouvé. Le libellé répond à un modèle Automatisée (COMMISSION) : contrepartie passée sur le compte du modèle. Aucune correspondance (VIR SEPA RECU REF 4471) : ligne à réconcilier avec les boutons Partenaire, Compte et ⋮ ; Partenaire Ready Mat, facture ouverte proposée et lettrée (FAC/2026/00011) ; ⋮ modèle manuel ou Compte, contrepartie sur le compte choisi. Résultats : ligne rapprochée avec coche verte, facture Payé et montant dû 0,00 €, ou charge comptabilisée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les trois chemins d'une ligne de relevé, de l'import à la coche verte.</figcaption>
+                </figure>
+                <p>À gauche et au centre, le travail fait sans intervention : une ligne dont le libellé cite le
+                    numéro d'une facture ouverte est lettrée avec elle, et une ligne qui répond à un modèle de
+                    rapprochement <strong>Automatisée</strong> reçoit sa contrepartie. À droite, ce qui reste à
+                    traiter : la comptable désigne le partenaire, le compte ou un modèle manuel. Dans tous les cas,
+                    l'aboutissement est le même, une ligne marquée d'une coche verte et, pour une facture, le statut
+                    <strong>Payé</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le point d'entrée : la carte Banque</h2>
+                <p>Ouvrez <strong>Comptabilité › Tableau de bord</strong>. La carte <strong>Banque</strong> affiche le
+                    solde du journal et un bouton <strong>9 à réconcilier</strong> : la base de démonstration contient
+                    neuf lignes de relevé non rapprochées. Ce bouton ouvre l'écran <strong>Réconciliation
+                    bancaire</strong>. Le menu <strong>⋮</strong> de la carte regroupe le reste du sujet.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Carte Banque du tableau de bord avec les boutons Transactions et 9 à réconcilier, menu ⋮ ouvert : colonne Voir (Transactions, Relevés, Paiements, Analysis), colonne Nouveau (Importer un fichier, Paiement client, Paiement fournisseur, Dépôt par lot), colonne Lettrage (Modèles, Matching Rules, Rapport), puis Supprimer des favoris, Connecter la banque, Configuration" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le menu ⋮ de la carte Banque : import de fichier, modèles de rapprochement, connexion bancaire.</figcaption>
+                </figure>
+                <p>Trois entrées servent dans cet article : <strong>Nouveau › Importer un fichier</strong> pour le
+                    relevé, <strong>Lettrage › Modèles</strong> pour les règles de rapprochement et, plus loin,
+                    <strong>Lettrage › Matching Rules</strong>, les règles de correspondance avec les factures. Les
+                    modèles de rapprochement n'apparaissent pas dans le menu Configuration de l'application : on y
+                    accède depuis cette carte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Un modèle de rapprochement pour les commissions</h2>
+                <p>Les commissions de la banque reviennent tous les mois, toujours sur le même compte de charge. Un
+                    <strong>modèle de rapprochement</strong> évite de les traiter une par une. Ouvrez <strong>Lettrage ›
+                    Modèles</strong> : la démonstration en fournit quatre (Virements internes, Frais bancaires, Line
+                    with Bank Fees, Owner's Current Account), tous en déclenchement <strong>Manuel</strong>. Cliquez sur
+                    <strong>Nouveau</strong> et remplissez :</p>
+                <ul>
+                    <li><strong>Nom</strong> : Commissions bancaires ;</li>
+                    <li><strong>Journaux</strong> : Banque (vide, le modèle vaut pour tous les journaux de banque et de
+                        trésorerie) ;</li>
+                    <li><strong>Libellé</strong> : Contient, <code>COMMISSION</code> ; les conditions
+                        <strong>Partenaires</strong> et <strong>Montant</strong> restent libres ;</li>
+                    <li>onglet <strong>Éléments de contrepartie</strong> : une ligne sur le compte 627800,
+                        <strong>Type de montant</strong> Pourcentage du solde, <strong>Montant</strong> 100,
+                        <strong>Libellé</strong> Commission bancaire.</li>
+                </ul>
+                <p>Un nouveau modèle est en <strong>Manuel</strong> : il est seulement proposé dans le menu ⋮ des
+                    lignes qui répondent à ses conditions. Le bouton <strong>Automatiser</strong>, en haut du
+                    formulaire, le passe en <strong>Automatisée</strong> : il s'appliquera alors sans intervention.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Modèle de rapprochement Commissions bancaires, barre d'état Manuel puis Automatisée active, bouton Définir manuellement ; Journaux Banque, Partenaires Tous les partenaires, Montant N'importe quel montant, Libellé Contient COMMISSION ; onglet Éléments de contrepartie : compte 627800 Missions, Type de montant Pourcentage du solde, Montant 100, Libellé Commission bancaire" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le modèle « Commissions bancaires », passé en Automatisée.</figcaption>
+                </figure>
+                <p>Une fois automatisé, le bouton devient <strong>Définir manuellement</strong>, et le fil de
+                    discussion du modèle note le changement « Manuel → Automatisée ». Le type de montant
+                    <strong>Pourcentage du solde</strong> à 100 passe la totalité de la ligne sur le compte ; les autres
+                    types (Fixe, Pourcentage des lignes de relevé, Depuis le libellé) servent à découper une ligne, par
+                    exemple un encaissement net de frais.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Importer le relevé</h2>
+                <p>L'exemple part d'une facture client ordinaire, FAC/2026/00010 pour Wood Corner : 1 200,00 € hors
+                    taxes, 1 440,00 € TTC, échéance à 30 jours. Le relevé du jour, exporté de la banque au format CSV,
+                    contient trois lignes :</p>
+                <table class="tmc">
+                    <thead><tr><th>Date</th><th>Libellé</th><th>Montant</th></tr></thead>
+                    <tbody>
+                        <tr><td>12/10/2026</td><td>VIR SEPA WOOD CORNER FAC/2026/00010</td><td>1440,00</td></tr>
+                        <tr><td>12/10/2026</td><td>COMMISSION TENUE DE COMPTE</td><td>-18,00</td></tr>
+                        <tr><td>12/10/2026</td><td>COMMISSION VIREMENT ETRANGER</td><td>-9,50</td></tr>
+                    </tbody>
+                </table>
+                <p>Dans le menu ⋮ de la carte Banque, choisissez <strong>Importer un fichier</strong> et sélectionnez
+                    le fichier. Pour un CSV, Odoo ouvre l'écran d'import : il associe chaque colonne du fichier à un
+                    champ (Date, Libellé, Montant) et détecte le séparateur et le format de date. Vérifiez le bloc
+                    <strong>Formatage</strong>, puis cliquez sur <strong>Tester</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écran d'import du fichier releve-banque-2026-10-12.csv : message Tout semble correct ; Formatage : Encodage utf-8, Séparateur Point-virgule, Délimiteur guillemet, Séparateur des milliers Pas de séparateur, Séparateur décimal Virgule, Format de date DD/MM/YYYY ; colonnes Date (12/10/2026), Libellé (VIR SEPA WOOD CORNER FAC/2026/00010) et Montant (1440,00) associées aux champs Date, Libellé et Montant ; boutons Importer, Tester, Charger à nouveau" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'import CSV : colonnes associées, formatage vérifié, test réussi.</figcaption>
+                </figure>
+                <p>Le test affiche <strong>Tout semble correct.</strong> Cliquez alors sur <strong>Importer</strong>.
+                    Les modules d'import OFX et CAMT sont également installés sur la base de démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce qu'Odoo rapproche seul</h2>
+                <p>L'import se termine sur l'écran de rapprochement. Les trois lignes forment le relevé
+                    <strong>BNK1 Relevé 2026-10-12</strong> (solde de fin 8 090,50 €) et portent déjà une coche
+                    verte :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Écran Réconciliation bancaire après l'import : Solde actuel 8 206,43 € ; relevé BNK1 Relevé 2026-10-12, 8 090,50 € : ligne Wood Corner VIR SEPA WOOD CORNER FAC/2026/00010, coche verte FAC/2026/00010, 1 440,00 € ; ligne COMMISSION TENUE DE COMPTE, coche verte 627800 Missions, -18,00 € ; ligne COMMISSION VIREMENT ETRANGER, coche verte 627800 Missions, -9,50 € ; entre elles, les lignes de démonstration sans relevé avec leurs boutons Partenaire, Compte, ⋮ ou Lettrer 1 et Client" style="max-width:100%; height:auto;"/>
+                    <figcaption>Juste après l'import : les trois lignes du relevé sont rapprochées, les lignes de démonstration attendent.</figcaption>
+                </figure>
+                <ul>
+                    <li>le virement de 1 440,00 € : Odoo a lu « FAC/2026/00010 » dans le libellé, retrouvé le
+                        partenaire <strong>Wood Corner</strong> et lettré la ligne avec la facture. Aucune règle n'a été
+                        écrite pour cela : la liste <strong>Matching Rules</strong> de la base est vide ;</li>
+                    <li>les deux commissions : le modèle « Commissions bancaires » les a passées sur le compte
+                        <strong>627800</strong>.</li>
+                </ul>
+                <p>Les lignes de démonstration, sans relevé, restent sous le titre « Aucun relevé bancaire » avec
+                    leurs boutons : c'est la partie qui demande une décision.</p>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Comptabilité.</p>
+                <p>Côté facture, le résultat est immédiat : FAC/2026/00010 porte le bandeau
+                    <strong>Payé</strong>, avec la mention « Payé le 12/10/2026 » et un montant dû nul.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Bas de la facture client FAC/2026/00010 : ligne Installation et réglage du mobilier, compte 706000 Ventes de prestations de services, 1,00 × 1 200,00, taxe 20% S, 1 200,00 € ; Montant hors taxes 1 200,00 €, TVA 20% 240,00 €, Total 1 440,00 €, Payé le 12/10/2026 1 440,00 €, Montant dû 0,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture réglée par la ligne de relevé : montant dû 0,00 €.</figcaption>
+                </figure>
+                <p>Le lettrage s'est fait directement avec la ligne de relevé : aucun paiement n'a été saisi à la main
+                    au préalable.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Une ligne sans référence : désigner le partenaire</h2>
+                <p>Tous les clients ne recopient pas le numéro de facture. Une seconde facture, FAC/2026/00011 pour
+                    Ready Mat (480,00 € TTC), est réglée par un virement dont le libellé ne dit rien d'utile :
+                    « VIR SEPA RECU REF 4471 ». Une telle ligne se saisit aussi à la main : le bouton
+                    <strong>Nouveau</strong> de l'écran de rapprochement ouvre une ligne de saisie (date, libellé,
+                    partenaire, montant, modèle de lettrage). Sans partenaire ni référence, Odoo ne propose rien :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Ligne de relevé sous le titre Aucun relevé bancaire : 12 oct., VIR SEPA RECU REF 4471, boutons Partenaire, Compte et ⋮, 480,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une ligne sans référence ni partenaire : trois boutons, aucune proposition.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Partenaire</strong> et choisissez <strong>Ready Mat</strong> dans la liste. Sur
+                    la base de démonstration, Ready Mat n'a qu'une facture ouverte, du même montant : Odoo la lettre
+                    aussitôt, et la ligne passe à la coche verte avec la référence FAC/2026/00011.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="La même ligne après le choix du partenaire : Ready Mat VIR SEPA RECU REF 4471, coche verte FAC/2026/00011, 480,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le partenaire désigné, la facture correspondante est lettrée.</figcaption>
+                </figure>
+                <p>Quand le partenaire est connu mais que le rapprochement n'est pas évident, la ligne affiche
+                    <strong>Lettrer</strong> suivi d'un compteur (1 ici, la seule écriture ouverte du partenaire), et un bouton
+                    <strong>Client</strong> ou <strong>Fournisseur</strong>. C'est le cas, dans la démonstration, d'un
+                    encaissement de 738,75 € de LightsUp face à une facture de 750,00 €. <strong>Lettrer</strong> ouvre
+                    la liste des écritures à lettrer de ce partenaire ; la comptable coche celle qui convient et
+                    clique sur <strong>Sélectionner</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Rechercher : Écritures comptables à lettrer, filtre Partenaire LightsUp ; en tête, 12 oct. INV/2026/00008, Solde -738,75 € ; une écriture : 12 oct., FAC/2026/00008, LightsUp, Montant dû 750,00 €, lien Vue ; boutons Sélectionner et Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Lettrer à la main : les écritures ouvertes du partenaire, face au solde de la ligne.</figcaption>
+                </figure>
+                <p>La fenêtre affiche « Solde : -738,75 € » pour la ligne, face à une facture de 750,00 € : l'écart de 11,25 € reste à
+                    traiter par la comptable. La présente section ne valide pas ce lettrage et laisse la ligne de
+                    démonstration non rapprochée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les modèles manuels, dans le menu ⋮ de la ligne</h2>
+                <p>Le bouton <strong>⋮</strong> d'une ligne non rapprochée propose <strong>Lettrer</strong>,
+                    <strong>Charger les notes de crédit</strong>, puis les modèles de rapprochement en déclenchement
+                    Manuel qui conviennent à cette ligne, et enfin <strong>Gérer modèles</strong> et
+                    <strong>Supprimer transaction</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Ligne de démonstration R:9772938 10/07 AX 9415116318 T:5 BRT: 100,00 C/ croip, 96,67 €, menu ⋮ ouvert : Lettrer, Charger les notes de crédit, puis Virements internes, Line with Bank Fees, Owner's Current Account, puis Gérer modèles, Supprimer transaction" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le menu ⋮ d'une ligne : seuls les modèles dont les conditions sont remplies y figurent.</figcaption>
+                </figure>
+                <p>Sur cette ligne, dont le libellé contient « BRT », le menu propose <strong>Line with Bank
+                    Fees</strong> (condition : le libellé contient « BRT ») et les deux modèles sans condition, Virements
+                    internes et Owner's Current Account. Le modèle <strong>Frais bancaires</strong>, dont la condition
+                    est un libellé contenant « Bank Fees », n'y figure pas. Un modèle manuel est donc un raccourci de
+                    saisie ciblé : un clic remplit la contrepartie prévue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Pas d'écran de rapprochement dans Facturation</h4>
+                    <p>Avec l'application Facturation d'Odoo 20 Community, les relevés et l'écran de rapprochement ne
+                        sont pas accessibles dans la configuration standard : les menus de la carte Banque qui y mènent
+                        sont réservés à un groupe que seule la comptabilité Enterprise attribue. Le modèle de
+                        rapprochement existe bien dans le code de la Community, mais aucun écran ne l'applique. Le
+                        contrôle se fait alors en pointant la liste des paiements contre le relevé reçu de la banque,
+                        comme le montre
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés
+                        bancaires et rapprochement dans Odoo 20 Community</a>. L'enregistrement des paiements eux-mêmes
+                        est présenté dans
+                        <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo
+                        20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le séparateur des milliers proposé à l'import</h4>
+                    <p>Sur le fichier de l'exemple, l'écran d'import proposait « Virgule » à la fois comme séparateur
+                        des milliers et comme séparateur décimal. Avec des montants écrits « 1440,00 », choisissez
+                        <strong>Pas de séparateur</strong> pour les milliers, puis <strong>Tester</strong> avant
+                        d'importer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les accents de l'en-tête</h4>
+                    <p>Un premier essai avec un fichier UTF-8 sans marque d'ordre des octets (BOM) a affiché l'en-tête
+                        « Libellé » mal décodé, alors que l'encodage indiqué était utf-8. Le même fichier enregistré en
+                        « UTF-8 avec BOM » s'est lu correctement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un modèle automatisé ne demande pas confirmation</h4>
+                    <p>Les deux commissions ont été comptabilisées dès l'import. Une condition trop large (un mot
+                        fréquent dans les libellés) passerait aussi en charge des lignes qui n'en sont pas. Restreignez
+                        le libellé, le journal ou le montant, et gardez en Manuel les modèles dont le résultat doit être
+                        relu.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les libellés du plan de démonstration</h4>
+                    <p>Dans le plan comptable de la société de démonstration, le compte 627800 s'intitule « Missions »,
+                        et le modèle de démonstration « Frais bancaires » pointe vers 601000 « Matières premières et
+                        fournitures ». Vérifiez le compte de chaque modèle par rapport au plan de votre société.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire rapprocher une facture dès l'import du relevé.</p>
+                    <p><strong>Indication :</strong> créez et comptabilisez une facture client datée du jour, puis
+                        préparez un fichier CSV d'une ligne (Date, Libellé, Montant) dont le libellé cite le numéro de
+                        cette facture et dont le montant est son total TTC. Importez-le par Banque › ⋮ › Importer un
+                        fichier, en réglant le séparateur des milliers sur Pas de séparateur.</p>
+                    <p><strong>Critère de réussite :</strong> à la fin de l'import, la ligne porte la coche verte et le
+                        numéro de la facture ; la facture affiche Payé et un montant dû de 0,00 €.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La carte Banque du tableau de bord mène à tout : réconciliation, import de fichier, modèles.</li>
+                    <li>L'import CSV passe par l'écran d'import d'Odoo : vérifier séparateurs et format de date, puis
+                        Tester.</li>
+                    <li>Une ligne dont le libellé cite une facture ouverte est lettrée dès l'import, partenaire
+                        compris.</li>
+                    <li>Un modèle de rapprochement Automatisée comptabilise seul les frais récurrents ; en Manuel, il
+                        apparaît dans le menu ⋮ des lignes qu'il concerne.</li>
+                    <li>Pour le reste, désigner le partenaire, lettrer, ou choisir un compte : la ligne passe à la coche
+                        verte et la facture à Payé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et rapprochement dans Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : journal de banque et pointage des paiements.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Enregistrer un paiement et suivre les factures impayées.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/relances-paiement-automatiques-odoo-299">Relances de paiement automatiques dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Niveaux de relance par jours de retard, envoi automatique et relance manuelle.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

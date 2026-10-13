@@ -1,0 +1,464 @@
+<!--
+Article — Relances de paiement automatiques dans Odoo 20 Enterprise
+Série « Comptabilité avec Odoo 20 Enterprise » (lot EE 2), article E2.2
+Date : 2026-10-12
+Slug : relances-paiement-automatiques-odoo
+Mot-clé cible : relance paiement odoo (rappels de facture, relances clients automatiques)
+Tags : intermediaire, comptabilite, guide, enterprise
+Preuves (12/10/2026, base edu-odooskills20, Odoo 20.0+e, compte formateur, société FR Company id 4) :
+  - Module account_followup installé (OEEL-1) ; snailmail_account_followup, whatsapp_account_followup non installés.
+    Community : odoo/addons/account_followup absent ; seul le champ no_followup « No Reminder » existe en CE
+    (account/models/account_move.py:352, account_move_line.py:540), sans moteur de relance.
+  - Avant : 0 niveau de relance visible pour FR Company ; Paramètres › Comptabilité › Factures clients, case
+    « Rappels automatiques de facture » décochée ; fiche client : « Les "Rappels de facture automatiques" sont
+    actuellement désactivés. »
+  - Case cochée + Enregistrer : lien « Gérez vos rappels automatiques » ; 3 niveaux créés (account_followup.followup.line
+    7, 8, 9 : 7 / 15 / 30 jours après, E-mail coché, modèles Rappel / Second rappel / Dernier rappel) ; res.company 4
+    automatic_invoice_reminder = True. Menu : Configuration › Rappels de facture (/odoo/follow-up-levels).
+  - Créé : niveau 10 « 45 jours après », E-mail décoché, Planifier une activité (Type Appeler, Résumé « Appeler le
+    client : facture impayée à 45 jours », Responsable « Responsable du rappel ») ; Type d'activité et Résumé obligatoires.
+    Responsable : Responsable du rappel / Vendeur / Responsable du compte. Moment du rappel : avant / après.
+  - Fiche client, onglet Comptabilité, bloc RELANCES DE FACTURES : barre des niveaux, Rappels Automatique / Manuel
+    (aide : « 'Manuel' met en pause tous les rappels automatiques et les mises à jour de niveau »), Prochain rappel,
+    Responsable. Bouton « Éléments ouverts » → rapport filtré sur le client, colonne « Aucun rappel » (interrupteur =
+    account.move.line.no_followup), échéances dépassées en rouge, boutons Imprimer / Envoyer.
+  - Créé : FAC/2026/00012 (account.move 143, LightsUp, 24/09/2026, échéance 24/09/2026, 500 HT + 20 % = 600,00 €,
+    comptabilisée, impayée).
+  - Envoi manuel (Éléments ouverts › Envoyer) : fenêtre « Envoyer un rappel à LightsUp », Destinataires LightsUp,
+    Sujet « FR Company Relance – LightsUp », modèle « Rapport de relance », PDF 10122026_Customer-Statement.pdf ;
+    « Imprimer & Envoyer » → message 3520 vers lightsup@example.com ; niveau inchangé (followup_line_id False).
+  - ⚙ › « - Traiter les rappels automatiques » sur LightsUp : message 3521 « Factures en attente » (modèle Rappel,
+    solde 600,00 €, PDF joint), mail.mail 24 sortant vers LightsUp ; niveau « 7 jours après » posé sur la fiche et sur la
+    ligne de FAC/2026/00012 (retard 18 jours : le premier niveau, pas le deuxième) ; Date du dernier rappel 12/10/2026.
+    Second traitement le même jour : aucun envoi, niveau inchangé.
+  - Corps du modèle Rappel : « votre compte chez  présente » (nom de société vide pour un client sans société).
+  - Action programmée « Relance du rapport de compte ; Exécution de la relance » (ir.cron 59), quotidienne.
+  - Modifiés : Acme Corporation (13) et OpenWood (16) passés en Rappels « Manuel » (adresses de courriel hors example.com).
+  - Interrupteur Aucun rappel de FAC/2026/00008 activé (no_followup True) puis désactivé (False).
+Captures : content/blog/screenshots/relances-paiement-automatiques-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e2-2-relances/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Relances de paiement automatiques dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Définir des niveaux de relance, laisser Odoo envoyer le bon courriel
+                    au bon moment, relancer un client à la main et mettre de côté ceux qui ne doivent pas l'être :
+                    les rappels de facture de l'application Comptabilité d'Odoo 20 Enterprise.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Une facture échue que personne ne réclame a peu de chances d'être payée. Relancer chaque client à la
+                    bonne date, avec les mots justes, puis passer au téléphone quand les courriels restent sans réponse :
+                    c'est un travail régulier, que l'application <strong>Comptabilité</strong> d'Odoo 20 Enterprise
+                    organise en <strong>niveaux de relance</strong>. Odoo calcule le retard de chaque facture,
+                    choisit le niveau atteint et exécute ses actions : courriel, SMS ou activité à planifier.</p>
+                <p>L'écran parle de <strong>rappels</strong> (« Rappels de facture », « Rappels automatiques de
+                    facture ») : le présent article emploie les deux mots. Les exemples portent sur la société de
+                    démonstration <strong>FR Company</strong> (plan comptable français, montants en euros).</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les rappels automatiques et lire les niveaux créés par Odoo ;</li>
+                    <li>ajouter un niveau qui planifie un appel au lieu d'un courriel ;</li>
+                    <li>lire le rapport des éléments ouverts d'un client ;</li>
+                    <li>déclencher le rappel automatique d'un client et en vérifier le résultat ;</li>
+                    <li>envoyer une relance à la main et exclure un client ou une facture des rappels.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours d'une facture échue</h2>
+                <p>Une facture dont l'échéance est dépassée passe par deux filtres avant d'être relancée : le
+                    réglage du client, puis celui de la facture elle-même.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : facture client comptabilisée, échéance dépassée. Fiche client, Rappels : Manuel, aucun rappel automatique, envoi à la main depuis Éléments ouverts ; Automatique, puis question : ligne de facture Aucun rappel activé ? Oui : facture exclue des rappels. Non : traitement des rappels par l'action programmée quotidienne ou par le menu ⚙ Traiter les rappels automatiques ; niveau suivant atteint, 7, 15, 30 jours après (Rappels de facture) ; actions du niveau : e-mail (modèles Rappel, Second rappel, Dernier rappel), SMS, activité ; rappel dans le fil de discussion du client, relevé PDF joint, niveau noté sur la fiche" style="max-width:70%; height:auto;"/>
+                    <figcaption>Du retard de paiement au rappel envoyé : les deux interrupteurs, puis le niveau.</figcaption>
+                </figure>
+                <p>Un client réglé sur <strong>Manuel</strong> ne reçoit jamais de rappel automatique ; il se relance
+                    à la main. Pour un client <strong>Automatique</strong>, chaque facture peut encore être exclue par
+                    son interrupteur <strong>Aucun rappel</strong>. Les factures restantes sont traitées une fois par
+                    jour par une action programmée, ou sur demande depuis la fiche du client : Odoo passe alors au
+                    niveau suivant et exécute ses actions. Le résultat se lit dans le fil de discussion du client et
+                    dans le bloc des relances de sa fiche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les rappels automatiques</h2>
+                <p>Ouvrez <strong>Comptabilité › Configuration › Paramètres</strong>, section <strong>Factures
+                    clients</strong>. Sur la base de démonstration, la case <strong>Rappels automatiques de
+                    facture</strong> est décochée, et la fiche de chaque client l'indique : « Les "Rappels de facture
+                    automatiques" sont actuellement désactivés. » Cochez la case, puis cliquez sur
+                    <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Réglage Rappels automatiques de facture coché, description Envoyer des rappels pour les factures et le relevé client, lien Gérez vos rappels automatiques" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le réglage activé fait apparaître le lien vers les niveaux de relance.</figcaption>
+                </figure>
+                <p>Le réglage est propre à la société. À l'enregistrement, Odoo crée trois niveaux de relance pour
+                    FR Company, et le lien <strong>Gérez vos rappels automatiques</strong> y mène.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les niveaux de relance</h2>
+                <p>Les niveaux se trouvent aussi dans <strong>Comptabilité › Configuration › Rappels de
+                    facture</strong>. Chaque ligne indique un retard en jours, le moment du rappel (avant ou après
+                    l'échéance) et les actions cochées : <strong>E-mail</strong>, <strong>SMS</strong>,
+                    <strong>Activité</strong>.</p>
+                <table class="tmc">
+                    <thead><tr><th>Niveau créé par Odoo</th><th>Action</th><th>Modèle d'e-mail</th></tr></thead>
+                    <tbody>
+                        <tr><td>7 jours après</td><td>E-mail</td><td>Rappel</td></tr>
+                        <tr><td>15 jours après</td><td>E-mail</td><td>Second rappel</td></tr>
+                        <tr><td>30 jours après</td><td>E-mail</td><td>Dernier rappel</td></tr>
+                    </tbody>
+                </table>
+                <p>La fermeté monte d'un modèle à l'autre : le premier rappelle le solde impayé, le dernier annonce un
+                    « troisième et dernier rappel ». Le formulaire d'un niveau se lit comme une phrase :
+                    <strong>Rappel</strong> 7 <strong>jours après</strong>, suivi de deux onglets,
+                    <strong>Notifications</strong> (E-mail, SMS, Modèle d'e-mail) et <strong>Activité</strong>.</p>
+                <p>Au-delà de 30 jours, un courriel de plus a peu d'effet ; mieux vaut un appel. Cliquez sur
+                    <strong>Nouveau</strong>, saisissez 45 jours après, décochez <strong>E-mail</strong> dans
+                    l'onglet Notifications, puis dans l'onglet <strong>Activité</strong> cochez <strong>Planifier une
+                    activité</strong> :</p>
+                <ul>
+                    <li><strong>Type d'activité</strong> : Appeler ;</li>
+                    <li><strong>Résumé</strong> : Appeler le client : facture impayée à 45 jours ;</li>
+                    <li><strong>Responsable</strong> : Responsable du rappel (les autres choix sont Vendeur, celui de
+                        la facture, et Responsable du compte, le vendeur de la fiche client).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Niveau Rappel 45 jours après, onglet Activité : Planifier une activité coché, Responsable Responsable du rappel, Type d'activité Appeler, Résumé Appeler le client : facture impayée à 45 jours, zone Notes d'activité" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un quatrième niveau qui planifie un appel au lieu d'envoyer un courriel.</figcaption>
+                </figure>
+                <p>Type d'activité et Résumé sont obligatoires dès que la case est cochée : sans eux, Odoo refuse
+                    d'enregistrer (« Champs obligatoires manquants »). La liste compte désormais quatre niveaux.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste Rappels de facture : 7 après, 15 après et 30 après avec E-mail coché ; 45 après sans e-mail ni SMS, Activité Appeler" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les quatre niveaux : trois courriels de plus en plus fermes, puis un appel.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le rapport de relance d'un client</h2>
+                <p>L'exemple porte sur le client de démonstration <strong>LightsUp</strong>, avec deux factures
+                    ouvertes : FAC/2026/00012 (600,00 €, échue le 24/09/2026, soit 18 jours de retard) et
+                    FAC/2026/00008 (750,00 €, échéance du jour). Ouvrez la fiche du client (<strong>Comptabilité ›
+                    Clients › Clients</strong>), puis le bouton intelligent <strong>Éléments ouverts</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Rapport Éléments ouverts filtré sur LightsUp, 1 350,00 € : FAC/2026/00012, facturée le 24/09/2026, échéance 24/09/2026 en rouge, 600,00 €, résiduel 600,00 € ; FAC/2026/00008, 12/10/2026, échéance 12/10/2026, 750,00 € ; colonne Aucun rappel avec un interrupteur par facture, désactivé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les éléments ouverts d'un client : l'échéance dépassée en rouge, un interrupteur par facture.</figcaption>
+                </figure>
+                <p>Le rapport liste les factures non soldées du client, avec leur date, leur échéance (en rouge
+                    quand elle est dépassée) et le résiduel. Deux boutons en tête : <strong>Imprimer</strong> produit
+                    le relevé en PDF, <strong>Envoyer</strong> l'adresse au client (section 5). La colonne
+                    <strong>Aucun rappel</strong> sert à l'exclusion d'une facture (section 6).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le rappel automatique</h2>
+                <p>Une action programmée quotidienne traite les rappels de tous les clients en mode Automatique. Pour
+                    ne pas attendre son passage, la fiche du client propose le traitement immédiat : ouvrez le menu
+                    <strong>⚙</strong> (Actions) de la fiche LightsUp et choisissez <strong>Traiter les rappels
+                    automatiques</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Menu Actions de la fiche client : Modifier les propriétés, Dupliquer, Archiver, Supprimer, Envoyer un SMS, Télécharger (vCard), Privacy Lookup, Enrich, Donner accès au portail, - Traiter les rappels automatiques" style="max-width:45%; height:auto;"/>
+                    <figcaption>Le traitement à la demande, depuis le menu Actions de la fiche client.</figcaption>
+                </figure>
+                <p>Odoo exécute les actions du niveau atteint. Pour LightsUp, un courriel part avec le modèle
+                    <strong>Rappel</strong> ; une copie apparaît dans le fil de discussion du client, relevé PDF
+                    joint.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Message du fil de discussion de LightsUp, envoyé par courriel : titre Factures en attente, Bonjour LightsUp, rappel du paiement non reçu, solde impayé de 600,00 €, relevé des factures impayées en pièce jointe, signature Mitchell Admin, pièce jointe 10122026_Customer-Statement.pdf" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le rappel envoyé : le solde échu seulement, et le relevé en pièce jointe.</figcaption>
+                </figure>
+                <p>Pour reproduire ces manipulations, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Comptabilité.</p>
+                <p>Le montant réclamé est de 600,00 € : seule la facture échue compte, FAC/2026/00008 n'étant pas
+                    encore en retard. Le bloc <strong>Relances de factures</strong> de l'onglet
+                    <strong>Comptabilité</strong> de la fiche montre le niveau atteint.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Bloc Relances de factures de LightsUp : barre des niveaux 7 jours après (mis en évidence), 15 jours après, 30 jours après, 45 jours après ; Rappels Automatique coché ; Prochain rappel et Responsable vides" style="max-width:70%; height:auto;"/>
+                    <figcaption>Après le traitement : le client est au niveau « 7 jours après ».</figcaption>
+                </figure>
+                <p>Le retard de FAC/2026/00012 dépasse pourtant 15 jours : le premier traitement applique le
+                    <strong>premier</strong> niveau, et les niveaux se succèdent ensuite un par un. Le niveau est
+                    aussi noté sur la facture elle-même. Un second traitement le même jour n'envoie rien de plus.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Envoyer une relance à la main</h2>
+                <p>Un client au téléphone demande l'état de son compte, ou un client est en mode Manuel : la relance
+                    part alors du rapport. Dans <strong>Éléments ouverts</strong>, cliquez sur
+                    <strong>Envoyer</strong>. La fenêtre « Envoyer un rappel à LightsUp » propose les destinataires
+                    (le client, modifiable), le sujet, un texte tiré du modèle <strong>Rapport de relance</strong> et
+                    le relevé en PDF.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Envoyer un rappel à LightsUp : Destinataires LightsUp, Sujet FR Company Relance – LightsUp, texte Bonjour LightsUp, Veuillez trouver ci-joint la liste de vos factures ouvertes, signature Mitchell Admin, pièce jointe 10122026_Customer-Statement.pdf ; boutons Imprimer &amp; Envoyer et Ignorer, Modèle d'e-mail Rapport de relance" style="max-width:100%; height:auto;"/>
+                    <figcaption>La relance manuelle : le relevé des factures ouvertes, joint au courriel.</figcaption>
+                </figure>
+                <p><strong>Imprimer &amp; Envoyer</strong> envoie le courriel et le note dans le fil de discussion du
+                    client. Cet envoi ne change pas le niveau de relance : il reste un geste ponctuel, en dehors de la
+                    progression automatique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Exclure un client ou une facture</h2>
+                <p>Certains clients ne doivent pas recevoir de rappel automatique : un grand compte suivi
+                    personnellement, un litige en cours. Dans l'onglet <strong>Comptabilité</strong> de la fiche,
+                    passez <strong>Rappels</strong> sur <strong>Manuel</strong>. L'aide du champ le précise :
+                    « 'Manuel' met en pause tous les rappels automatiques et les mises à jour de niveau pour ce
+                    partenaire. »</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Bloc Relances de factures du client OpenWood : barre des niveaux 7, 15, 30 et 45 jours après, aucun mis en évidence ; Rappels Manuel coché ; Prochain rappel et Responsable vides" style="max-width:70%; height:auto;"/>
+                    <figcaption>Un client en mode Manuel : plus aucun rappel automatique.</figcaption>
+                </figure>
+                <p>Pour n'écarter qu'une facture (un montant contesté, un échéancier convenu), activez son
+                    interrupteur <strong>Aucun rappel</strong> dans le rapport des éléments ouverts. La facture reste
+                    dans le rapport, mais n'est plus relancée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Rapport Éléments ouverts de LightsUp : interrupteur Aucun rappel activé (vert) sur FAC/2026/00008, désactivé sur FAC/2026/00012" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une seule facture exclue des rappels, l'autre continue d'être relancée.</figcaption>
+                </figure>
+                <p>Le champ <strong>Prochain rappel</strong> de la fiche sert à repousser les relances : son aide
+                    indique qu'« aucune action de rappel ne sera effectuée avant cette date ». Le champ
+                    <strong>Responsable</strong> désigne la personne à qui sont confiées les activités de relance.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Pas de niveaux de relance dans Facturation</h4>
+                    <p>Le module des relances n'existe pas dans Odoo 20 Community : pas de réglage « Rappels
+                        automatiques de facture », pas de niveaux, pas de rapport d'éléments ouverts par client. Le
+                        code de la Community garde seulement le champ « No Reminder » sur les écritures, sans rien
+                        qui l'utilise. La relance y reste un geste manuel : filtrer les factures <strong>En
+                        retard</strong>, les regrouper par client, puis renvoyer les factures et planifier une
+                        activité, comme le montre
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements
+                        et relances dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Activer le réglage, c'est lancer les envois</h4>
+                    <p>Dès l'enregistrement du réglage, tous les clients sont en mode Automatique, et l'action
+                        programmée suivante enverra les rappels de toutes les factures en retard. Sur une base qui
+                        contient des adresses réelles, passez d'abord en Manuel les clients à ne pas relancer, et
+                        vérifiez les niveaux et leurs modèles avant le premier passage.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Relire les modèles avant le premier envoi</h4>
+                    <p>Sur la base de démonstration, le courriel du niveau Rappel affiche « votre compte chez
+                        présente un solde impayé » : le nom de la société manque pour ce client. Ouvrez chaque modèle
+                        (onglet Notifications du niveau) et adaptez le texte à la société avant d'activer les envois.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le premier niveau d'abord</h4>
+                    <p>Un client déjà très en retard ne reçoit pas directement le dernier rappel : il commence au
+                        premier niveau. Pour un retard ancien, un appel ou une relance manuelle reste plus adapté que
+                        la progression automatique.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire relancer automatiquement une facture échue.</p>
+                    <p><strong>Indication :</strong> créez et comptabilisez une facture client datée de plus de
+                        7 jours, avec une échéance le même jour, pour un client de démonstration dont l'adresse se
+                        termine par example.com. Sur la fiche du client, ouvrez ⚙ › Traiter les rappels
+                        automatiques.</p>
+                    <p><strong>Critère de réussite :</strong> le fil de discussion du client montre le courriel
+                        « Factures en attente » avec le relevé joint, et le bloc Relances de factures met en évidence
+                        le niveau « 7 jours après ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le réglage Rappels automatiques de facture crée trois niveaux : 7, 15 et 30 jours après
+                        l'échéance, chacun avec son modèle de courriel.</li>
+                    <li>Un niveau peut envoyer un courriel, un SMS ou planifier une activité, comme un appel.</li>
+                    <li>Le rapport Éléments ouverts d'un client sert à lire, imprimer et envoyer le relevé.</li>
+                    <li>Le traitement automatique passe d'un niveau au suivant ; l'envoi manuel ne change pas le
+                        niveau.</li>
+                    <li>Rappels Manuel met un client à l'écart ; l'interrupteur Aucun rappel écarte une facture.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : paiements et suivi des retards à la main.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Créer, comptabiliser et corriger une facture client.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/numeriser-factures-fournisseurs-ocr-odoo-300">Numériser les factures fournisseurs avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Laisser l'OCR remplir la facture fournisseur depuis le PDF, puis la vérifier.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
