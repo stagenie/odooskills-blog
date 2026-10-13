@@ -1,0 +1,550 @@
+<!--
+Article — Préparer par lots et vagues au scanner avec l'application Code-barres d'Odoo 20 Enterprise
+Série « Code-barres avec Odoo 20 Enterprise » (lot EE 3), article E3.3
+Date : 2026-10-13
+Slug : preparer-lots-vagues-scanner-odoo
+Mot-clé cible : batch picking odoo scanner, préparation par vagues odoo code-barres
+Tags : intermediaire, stock, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur, société 1 My Company (San Francisco)) :
+  - Inventaire › Configuration › Paramètres : « Transferts par lot, vague & cluster » NON coché au départ (capture avant),
+    coché et enregistré pour l'article (groupe stock.group_stock_picking_batch, id 29). CE : stock/models/res_config_settings.py:19.
+  - Code-barres › Opérations › BONS DE LIVRAISON : onglets « Transfers » et « Lots » (URL …/barcode-batches). Carte de lot :
+    nom, description, « N Lines », « In progress », type d'opération, date, avatar du responsable.
+  - Créé : S00030 (Acme Corporation, 2 E-COM07 Large Cabinet + 1 E-COM11 Cabinet with Doors) → WH/OUT/00073 ;
+    S00031 (Lumber Inc, 3 E-COM07 + 2 FURN_0098 Customizable Desk (White, Aluminium)) → WH/OUT/00074 ;
+    S00032 (Ready Mat, 1 E-COM11 + 1 FURN_0098) → WH/OUT/00075. Stock libre avant : E-COM07 277, E-COM11 136, FURN_0098 55 (RPC).
+    Livraisons › Actions › Add to batch (fenêtre identique à la CE) → BATCH/WH/OUT/00003 (id 3) « Tournée scanner du 13/10 »,
+    Responsable Formateur Odoo, In progress. Lots démo 00001 / 00002 non touchés.
+  - Lot ouvert dans Code-barres (client action « Barcode Batch Picking ») : une ligne par article et par livraison, référence
+    WH/OUT sous le nom (icône camion), liseré de couleur par livraison (00073 rouge, 00074 vert, 00075 bleu).
+  - Scans (champ « Saisir un code-barres ») : Large Cabinet → 1/2 sur la ligne 00073 ; 5 scans → 00073 2/2 puis 00074 3/3 ;
+    6e scan → ligne rouge supplémentaire « 1 » sur WH/OUT/00074 avec corbeille (aucune fenêtre) ; corbeille → ligne retirée.
+    Pedal Bin (hors lot) → fenêtre « Ajouter un produit supplémentaire ? » (Ok / Ignorer) ; essai Ok (abandonné, navigateur
+    fermé) : ligne ajoutée sur WH/OUT/00073 ; Ignorer : rien. Code inconnu → « Ce produit n'existe pas. » ; scan de
+    « WH/OUT/00075 » dans le lot → « Ce produit n'existe pas. ». Ligne touchée avant le scan → le scan va à cette ligne
+    (Desk → WH/OUT/00075 1/1). À la réouverture, la ligne 00074 Desk 1/2 est scindée : 0/1 en tête + 1/1.
+  - Scans non enregistrés si le navigateur est fermé sans la flèche de retour (RPC picked False) ; sortie par la flèche :
+    move lines picked True.
+  - Valider → « Transfert incomplet » (Customizable Desk (White, Aluminium), Terminé 0 / 1, Reliquat 1 ; aucune référence de
+    livraison) → Créer un reliquat → fenêtre « SMS » (stock_sms, CE : odoo/addons/stock_sms/wizard/confirm_stock_sms.py) →
+    « Désactiver SMS » (SMS au client si téléphone : stock_sms/models/stock_picking.py:46-49 ; res.company 1 stock_text_confirmation False, aucun sms.sms). Résultat RPC : lot done ; 00073, 00074,
+    00075 done ; reliquat WH/OUT/00076 (S00031, 1 Desk) Prêt, sans lot ; S00031 delivery_status partial.
+  - Engrenage du lot : Imprimer › Print Batch Transfer, Print Product Labels ; Opérations › Rebut, Cancel Batch Transfer.
+  - Vague : S00033 (Azure Interior, 4 E-COM11 + 1 FURN_0098) → WH/OUT/00077 ; S00034 (Gemini Furniture, 2 E-COM11 + 1 E-COM07)
+    → WH/OUT/00078 ; lignes E-COM11 → assistant stock.add.to.wave (même assistant que Detailed Moves › Add to Batch de la CE),
+    nouveau lot, responsable Formateur Odoo → BATCH/WH/OUT/00004 is_wave True, transferts créés WH/OUT/00079 (4) et 00080 (2) ;
+    description « Vague Cabinet with Doors ». Dans Code-barres : même onglet Lots, rien ne la distingue d'un lot. 6 scans →
+    4/4 et 2/2, consigne « Appuyez sur Valider ou scannez un autre produit » ; Valider → lot done, 00079 et 00080 done ;
+    00077 et 00078 (restes) Prêt.
+  - Réglages : Emplacements de stockage inactif, non activé. Paramètres du type WH/OUT (RPC) : barcode_allow_extra_product True,
+    restrict_scan_product False.
+  - CE : odoo/addons/stock_barcode absent ; lots et vagues dans stock (jumeau 262).
+Captures : content/blog/screenshots/preparer-lots-vagues-scanner-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e3-3-preparation/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Préparer par lots et vagues au scanner dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une tournée, plusieurs commandes, un seul écran de scan : l'application
+                    Code-barres d'Odoo 20 Enterprise range chaque article scanné dans la bonne livraison du lot, signale
+                    ce qui est en trop et crée le reliquat de ce qui manque.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Le lot de préparation (<em>batch picking</em>) réunit plusieurs livraisons dans une seule tournée. Sur
+                    papier, le préparateur prend la liste du lot, ramasse, puis répartit les articles entre les colis des
+                    clients, et c'est là que naissent les erreurs : une armoire dans le mauvais carton, une commande à
+                    laquelle il manque une pièce. Avec l'application <strong>Code-barres</strong> d'Odoo 20 Enterprise, le
+                    préparateur scanne chaque article et l'écran lui dit à quelle livraison il appartient. Un article en
+                    trop ou étranger au lot est signalé tout de suite, et la validation crée le reliquat de ce qui n'a pas
+                    été trouvé.</p>
+                <p>Le lot et la vague restent ceux de l'application Inventaire : leur création, leur liste de préparation
+                    imprimée et le regroupement automatique sont décrits dans l'article Community cité en fin de page. Le
+                    présent article part d'un lot déjà créé et apporte ce que le scanner ajoute. Les exemples portent sur
+                    l'entrepôt de démonstration de la société <strong>My Company (San Francisco)</strong>, livraison en une
+                    étape, sans emplacements de stockage.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>trouver les lots et les vagues dans l'application Code-barres ;</li>
+                    <li>lire l'écran d'un lot : quelle ligne revient à quelle livraison ;</li>
+                    <li>scanner un lot, et diriger un article vers une livraison précise ;</li>
+                    <li>reconnaître un article en trop ou étranger au lot, et le retirer ;</li>
+                    <li>valider un lot incomplet et retrouver le reliquat ;</li>
+                    <li>préparer une vague au scanner.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Du lot à la validation</h2>
+                <p>Le lot se crée au bureau, dans Inventaire ; il se prépare dans le rayon, dans Code-barres. Le schéma
+                    suit le lot de l'exemple, de sa création à sa validation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : livraisons prêtes WH/OUT/00073, 00074, 00075, regroupées par Actions › Add to batch dans le lot BATCH/WH/OUT/00003 Tournée scanner du 13/10 avec un responsable ; dans Code-barres › Opérations › Bons de livraison, onglet Lots, le lot s'ouvre ; une ligne par article et par livraison, avec la référence WH/OUT et la couleur de la livraison ; Scanner un produit ; article attendu dans le lot ? oui : quantité ajoutée à la première ligne incomplète, ou à la ligne touchée avant le scan ; en trop : ligne rouge en plus, corbeille pour la retirer ; absent du lot : fenêtre Ajouter un produit supplémentaire ?, Ok ou Ignorer. Valider : tout est scanné, lot Terminé et chaque livraison Terminé ; il manque des articles, fenêtre Transfert incomplet, Créer un reliquat ou Aucun reliquat ; Créer un reliquat : livraisons Terminé plus un reliquat Prêt, hors du lot" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le lot de l'exemple, de sa création à sa validation au scanner.</figcaption>
+                </figure>
+                <p>Le scanner ne regroupe rien : il prépare ce que le lot contient. Chaque scan est attribué à une ligne,
+                    et chaque ligne appartient à une seule livraison. À la validation, Odoo valide chaque livraison du lot
+                    séparément ; ce qui manque part dans un reliquat, livraison par livraison, et ce reliquat ne reste pas
+                    dans le lot.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le réglage et le lot de l'exemple</h2>
+                <p>Les lots demandent une case dans <strong>Inventaire › Configuration › Paramètres</strong>, bloc
+                    Opérations : <strong>Transferts par lot, vague &amp; cluster</strong>. Sur la base de l'exemple, elle
+                    n'était pas cochée ; elle l'a été pour cet article, puis enregistrée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Case Transferts par lot, vague &amp; cluster cochée, avec le texte Optimisez vos transferts en regroupant les opérations et en attribuant des tâches aux travailleurs" style="max-width:55%; height:auto;"/>
+                    <figcaption>Le réglage des lots, des vagues et des clusters, coché.</figcaption>
+                </figure>
+                <p>Trois commandes de démonstration ont ensuite été confirmées dans Ventes, avec des articles stockés en
+                    quantité suffisante (vérifié avant de commencer, pour ne prendre le stock d'aucune autre livraison) :</p>
+                <table class="tmc">
+                    <thead><tr><th>Livraison</th><th>Client</th><th>Articles</th></tr></thead>
+                    <tbody>
+                        <tr><td>WH/OUT/00073</td><td>Acme Corporation</td><td>2 Large Cabinet, 1 Cabinet with Doors</td></tr>
+                        <tr><td>WH/OUT/00074</td><td>Lumber Inc</td><td>3 Large Cabinet, 2 Customizable Desk (White, Aluminium)</td></tr>
+                        <tr><td>WH/OUT/00075</td><td>Ready Mat</td><td>1 Cabinet with Doors, 1 Customizable Desk (White, Aluminium)</td></tr>
+                    </tbody>
+                </table>
+                <p>Les trois livraisons, toutes Prêt, ont été regroupées depuis <strong>Inventaire › Opérations ›
+                    Livraisons</strong>, par <strong>Actions › Add to batch</strong> : un nouveau lot, décrit
+                    « Tournée scanner du 13/10 », attribué au compte qui préparera. Odoo l'a numéroté
+                    <strong>BATCH/WH/OUT/00003</strong>. La fenêtre est la même qu'en Community.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Trouver le lot dans Code-barres</h2>
+                <p>Dans l'application <strong>Code-barres</strong>, touchez <strong>Opérations</strong>, puis la carte
+                    <strong>BONS DE LIVRAISON</strong>. L'écran a deux onglets : <strong>Transfers</strong>, les livraisons
+                    une par une, et <strong>Lots</strong>, les lots en cours. L'écran est pensé pour un téléphone ou un
+                    terminal de poche ; les captures sont prises dans ce format.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran Bons de livraison de Code-barres en format téléphone, onglet Lots : BATCH/WH/OUT/00003, Tournée scanner du 13/10, 6 Lines, In progress, 13 oct. 08:57, avatar du responsable ; BATCH/WH/OUT/00002, 3 Lines ; BATCH/WH/OUT/00001, 2 Lines, sans responsable" style="max-width:40%; height:auto;"/>
+                    <figcaption>L'onglet Lots : la tournée de l'exemple et les deux lots de démonstration (vue téléphone).</figcaption>
+                </figure>
+                <p>Chaque carte donne le numéro du lot, sa description, son nombre de lignes (« 6 Lines » : une ligne par
+                    article et par livraison), son état, sa date et son responsable. Les deux autres lots sont ceux de la
+                    démonstration, sans responsable.</p>
+                <p>Touchez le lot. Chaque ligne porte, sous le nom de l'article, la référence de sa livraison, précédée
+                    d'un camion, et un liseré de couleur à gauche : rouge pour WH/OUT/00073, vert pour 00074, bleu pour
+                    00075. Deux livraisons qui commandent le même article ont chacune leur ligne : les deux Cabinet with
+                    Doors en tête de liste vont à deux clients différents.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Lot BATCH/WH/OUT/00003 ouvert en format téléphone, consigne Scanner un produit ; lignes E-COM11 Cabinet with Doors WH/OUT/00073 0/1 liseré rouge, E-COM11 Cabinet with Doors WH/OUT/00075 0/1 liseré bleu, FURN_0098 Customizable Desk (White, Aluminium) WH/OUT/00074 0/2 liseré vert, FURN_0098 WH/OUT/00075 0/1, E-COM07 Large Cabinet WH/OUT/00073 ; boutons Ajouter un produit et Valider" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le lot ouvert : chaque ligne dit sa livraison, par sa référence et sa couleur (vue téléphone).</figcaption>
+                </figure>
+                <p>Comme pour une réception, le scan vient d'un lecteur branché, de la caméra de l'appareil ou, sur un
+                    poste qui n'a ni l'un ni l'autre, du champ <strong>Saisir un code-barres</strong> qui s'ouvre d'un clic
+                    sur l'icône de code-barres. C'est ce champ qui a servi pour l'exemple.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Scanner : à quelle livraison va l'article ?</h2>
+                <p>Scannez une première armoire Large Cabinet (<code>6016478556509</code>). Odoo choisit la ligne :
+                    l'écran défile jusqu'à elle, l'encadre, et sa quantité passe à <strong>1/2</strong>. C'est la ligne de
+                    WH/OUT/00073, liseré rouge : l'armoire va dans le colis d'Acme Corporation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Lot BATCH/WH/OUT/00003 en format téléphone après un scan : ligne E-COM07 Large Cabinet WH/OUT/00073 encadrée, quantité 1/2, boutons -1 et +1 ; dessous, ligne E-COM07 Large Cabinet WH/OUT/00074 à 0/3" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le premier scan remplit la ligne de WH/OUT/00073 (vue téléphone).</figcaption>
+                </figure>
+                <p>Pour reproduire cette préparation, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant les applications Ventes, Inventaire et Code-barres.</p>
+                <p>Quatre scans de plus : la ligne de WH/OUT/00073 passe à <strong>2/2</strong> et se colore en vert, puis
+                    les scans suivants remplissent celle de WH/OUT/00074, jusqu'à <strong>3/3</strong>. La règle observée
+                    est simple : un scan va à la première ligne de cet article encore incomplète, dans l'ordre de l'écran.
+                    Le préparateur pose donc l'armoire dans le colis dont la ligne vient de s'encadrer.</p>
+                <p>Cette règle ne convient pas toujours : le préparateur peut avoir en main le bureau destiné à Ready Mat,
+                    pas celui de Lumber Inc. Touchez alors la ligne voulue avant de scanner. Dans l'exemple, la ligne
+                    Customizable Desk de WH/OUT/00075 a été touchée, puis le bureau scanné
+                    (<code>6016478556431</code>) : il est allé à cette ligne, qui affiche <strong>1/1</strong>, alors que
+                    celle de WH/OUT/00074 attendait encore.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Lot en format téléphone : en haut, une ligne à 1/2 avec bouton +1 ; ligne FURN_0098 Customizable Desk (White, Aluminium) WH/OUT/00075 encadrée en vert, 1/1, bouton -1 ; lignes E-COM07 Large Cabinet WH/OUT/00073 2/2 et WH/OUT/00074 3/3 sur fond vert" style="max-width:40%; height:auto;"/>
+                    <figcaption>La ligne touchée reçoit le scan suivant : le bureau va à WH/OUT/00075 (vue téléphone).</figcaption>
+                </figure>
+                <p>Scanner la référence d'une livraison (<code>WH/OUT/00075</code>) à l'intérieur du lot ne sert pas à
+                    choisir la livraison : l'essai a affiché « Ce produit n'existe pas. ». C'est en touchant la ligne qu'on
+                    dirige le scan.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un article en trop, un article étranger au lot</h2>
+                <p>Les cinq armoires attendues sont scannées. Un sixième scan de la même armoire n'ouvre aucune fenêtre :
+                    Odoo ajoute une ligne en plus, sur fond rouge, rattachée ici à WH/OUT/00074, avec une quantité sans
+                    objectif (« 1 ») et une corbeille.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Lot en format téléphone : lignes Large Cabinet WH/OUT/00073 2/2 et WH/OUT/00074 3/3 en vert ; dessous, ligne supplémentaire E-COM07 Large Cabinet WH/OUT/00074 encadrée en rouge, quantité 1, bouton corbeille rouge, boutons -1 et +1" style="max-width:40%; height:auto;"/>
+                    <figcaption>Une armoire de trop : ligne rouge, à retirer par la corbeille (vue téléphone).</figcaption>
+                </figure>
+                <p>Le rouge dit au préparateur de reposer l'article. La corbeille retire la ligne ; sans cela, la livraison
+                    de Lumber Inc partirait avec une armoire de plus que la commande.</p>
+                <p>Un article qu'aucune livraison du lot ne commande est traité autrement. Le scan d'une poubelle Pedal Bin
+                    (<code>6016478556493</code>) ouvre la fenêtre <strong>Ajouter un produit supplémentaire ?</strong> :
+                    « Les produits scannés suivants ne sont pas réservés pour ce transfert ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Ajouter un produit supplémentaire ? : Les produits scannés suivants ne sont pas réservés pour ce transfert. Êtes-vous sûr de vouloir les ajouter ? ; case cochée [E-COM10] Pedal Bin, quantité 1 ; boutons Ok et Ignorer" style="max-width:45%; height:auto;"/>
+                    <figcaption>Un article étranger au lot demande une confirmation.</figcaption>
+                </figure>
+                <p><strong>Ignorer</strong> ferme la fenêtre sans rien ajouter : c'est le bon choix pour un article pris
+                    par erreur, et celui de l'exemple. Lors d'un essai préalable, <strong>Ok</strong> a ajouté la poubelle
+                    comme ligne en trop sur WH/OUT/00073, la livraison d'Acme Corporation, que le client ne l'ait pas
+                    commandée ou non. Un code que la base ne connaît pas affiche, comme ailleurs, « Ce produit n'existe
+                    pas. ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Valider un lot incomplet</h2>
+                <p>Un bureau de Lumber Inc reste introuvable : sa ligne affiche 1/2. Les deux Cabinet with Doors et le
+                    bureau de Ready Mat sont scannés, tout le reste est complet. Le préparateur quitte l'écran par la flèche
+                    de retour, puis y revient : la ligne incomplète a été scindée en une ligne 1/1, scannée, et une ligne
+                    0/1, remontée en tête de liste. Touchez <strong>Valider</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Transfert incomplet : Créez un reliquat si vous prévoyez de traiter les produits restants plus tard. Ne créez pas de reliquat si vous ne voulez pas traiter les produits restants. Customizable Desk (White, Aluminium), Terminé : 0 / 1 en rouge, Reliquat: 1 ; boutons Créer un reliquat, Aucun reliquat, Ignorer" style="max-width:45%; height:auto;"/>
+                    <figcaption>La validation d'un lot incomplet : la même fenêtre que pour une livraison seule.</figcaption>
+                </figure>
+                <p>La fenêtre <strong>Transfert incomplet</strong> nomme l'article manquant et la quantité, mais pas la
+                    livraison : c'est l'écran du lot, avec la référence de la ligne restée à 0/1, qui dit qu'il s'agit de
+                    WH/OUT/00074. <strong>Créer un reliquat</strong> garde le bureau à livrer plus tard ;
+                    <strong>Aucun reliquat</strong> l'abandonne ; <strong>Ignorer</strong> revient au scan. L'exemple crée
+                    le reliquat.</p>
+                <p>À la première validation d'une livraison, la base de l'exemple a ensuite affiché une fenêtre
+                    <strong>SMS</strong> : le réglage de confirmation des livraisons par SMS était actif pour la société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre SMS : Vous êtes sur le point de confirmer cet ordre de livraison par SMS. Cette fonctionnalité peut aisément être désactivée depuis la configuration de l'inventaire ou en cliquant sur Désactiver SMS. Boutons Confirmer, Désactiver SMS, Ignorer" style="max-width:40%; height:auto;"/>
+                    <figcaption>La confirmation par SMS, proposée à la première validation (vue téléphone, haut et bas de l'écran).</figcaption>
+                </figure>
+                <p><strong>Confirmer</strong> envoie un SMS de confirmation au client de chaque livraison validée ; <strong>Désactiver SMS</strong> coupe
+                    le réglage pour la société et valide sans envoi. Les numéros des clients de démonstration ayant l'air de
+                    vrais numéros, l'exemple a choisi Désactiver SMS. Dans les deux cas, la validation se poursuit.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ce que la validation a fait</h2>
+                <p>Le lot BATCH/WH/OUT/00003 passe à Terminé, et ses trois livraisons avec lui. Dans <strong>Inventaire ›
+                    Opérations › Livraisons</strong>, une recherche sur les commandes de l'exemple montre le résultat :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Liste des livraisons : WH/OUT/00073 Acme Corporation S00030 BATCH/WH/OUT/00003 Terminé ; WH/OUT/00076 Lumber Inc Aujourd'hui S00031 sans lot Prêt ; WH/OUT/00074 Lumber Inc S00031 BATCH/WH/OUT/00003 Terminé ; WH/OUT/00075 Ready Mat S00032 BATCH/WH/OUT/00003 Terminé ; WH/OUT/00079 Azure Interior S00033 BATCH/WH/OUT/00004 Terminé ; WH/OUT/00077 Azure Interior S00033 Prêt ; WH/OUT/00080 Gemini Furniture S00034 BATCH/WH/OUT/00004 Terminé ; WH/OUT/00078 Gemini Furniture S00034 Prêt" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les livraisons après validation du lot (00003) et de la vague (00004) : terminées, et ce qui reste à livrer.</figcaption>
+                </figure>
+                <ul>
+                    <li>WH/OUT/00073 et WH/OUT/00075 sont <strong>Terminé</strong> : leurs commandes sont entièrement
+                        livrées.</li>
+                    <li>WH/OUT/00074 est <strong>Terminé</strong> avec un seul bureau sur deux. Le second est parti dans le
+                        reliquat <strong>WH/OUT/00076</strong>, Prêt, pour la même commande S00031, désormais partiellement
+                        livrée.</li>
+                    <li>Le reliquat n'est dans aucun lot : la colonne Batch Transfer est vide. Il rejoindra une prochaine
+                        tournée par Add to batch, ou sera préparé seul.</li>
+                </ul>
+                <p>Les quatre dernières lignes de la liste concernent la vague de la section suivante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Préparer une vague au scanner</h2>
+                <p>La vague regroupe des lignes plutôt que des livraisons : toutes les Cabinet with Doors du jour, par
+                    exemple, quel que soit le client. Elle se crée au bureau, depuis les mouvements détaillés et
+                    <strong>Add to Batch</strong>, comme le décrit l'article Community. Pour l'exemple, deux nouvelles
+                    commandes ont été confirmées : Azure Interior (4 Cabinet with Doors et un bureau) et Gemini Furniture
+                    (2 Cabinet with Doors et une armoire). Leurs seules lignes Cabinet with Doors ont formé la vague
+                    <strong>BATCH/WH/OUT/00004</strong>, décrite « Vague Cabinet with Doors ». Odoo a détaché ces lignes
+                    dans deux nouveaux transferts, WH/OUT/00079 et WH/OUT/00080 ; le bureau et l'armoire sont restés dans
+                    les livraisons d'origine, WH/OUT/00077 et WH/OUT/00078.</p>
+                <p>Dans Code-barres, la vague apparaît dans le même onglet <strong>Lots</strong>, avec la même carte : rien
+                    ne la distingue d'un lot, sinon sa description. Elle se scanne de la même façon. Six scans de la
+                    Cabinet with Doors (<code>6016478556523</code>) remplissent 4/4 puis 2/2, et la consigne devient
+                    <strong>Appuyez sur Valider ou scannez un autre produit</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Vague BATCH/WH/OUT/00004 en format téléphone : consigne cochée Appuyez sur Valider ou scannez un autre produit ; ligne E-COM11 Cabinet with Doors WH/OUT/00079 4/4 liseré rouge ; ligne E-COM11 Cabinet with Doors WH/OUT/00080 2/2 encadrée, liseré turquoise, bouton -1" style="max-width:40%; height:auto;"/>
+                    <figcaption>La vague : un seul article, deux transferts, tout est scanné (vue téléphone).</figcaption>
+                </figure>
+                <p><strong>Valider</strong> termine la vague sans fenêtre, puisque rien ne manque : WH/OUT/00079 et
+                    WH/OUT/00080 passent à Terminé (figure précédente). Les livraisons WH/OUT/00077 et WH/OUT/00078 restent
+                    Prêt pour le reste des deux commandes : la vague a scindé chaque commande en deux livraisons.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Le menu du lot</h2>
+                <p>L'engrenage, en haut à droite de l'écran du lot, regroupe les actions qui ne passent pas par le scan.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Menu du lot BATCH/WH/OUT/00003 en format téléphone : section Imprimer avec Print Batch Transfer et Print Product Labels ; section Opérations avec Rebut et Cancel Batch Transfer en rouge" style="max-width:40%; height:auto;"/>
+                    <figcaption>L'engrenage du lot : impressions et opérations (vue téléphone).</figcaption>
+                </figure>
+                <ul>
+                    <li>sous <strong>Imprimer</strong> : Print Batch Transfer (le lot) et Print Product Labels (les
+                        étiquettes des articles) ;</li>
+                    <li>sous <strong>Opérations</strong> : Rebut, pour un article abîmé, et Cancel Batch Transfer, pour
+                        annuler le lot.</li>
+                </ul>
+                <p>Ces actions n'ont pas été utilisées dans l'exemple. La base n'a pas l'option <strong>Emplacements de
+                    stockage</strong> : l'écran ne demande aucun emplacement d'origine, et le présent article ne décrit pas
+                    la préparation allée par allée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Les mêmes lots, préparés sur papier</h4>
+                    <p>Odoo 20 Community contient tout le reste : la case Transferts par lot, vague &amp; cluster, les lots
+                        et les vagues, l'action Add to batch, la liste de préparation imprimée, la validation du lot en un
+                        clic et le regroupement automatique par client ou par article. L'application Code-barres, elle,
+                        n'est pas fournie avec l'édition. Le préparateur suit la liste imprimée et saisit les quantités dans
+                        le lot, au clavier. Ce qui manque, c'est le contrôle au moment du geste : l'écran qui dit à quelle
+                        livraison va l'article, la ligne rouge d'un article en trop, la fenêtre d'un article étranger au
+                        lot. La création et le paramétrage des lots et des vagues sont présentés dans
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/preparer-lots-vagues-odoo-262">Préparer par
+                        lots et vagues (batch picking) dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le scan va à la première ligne incomplète</h4>
+                    <p>Si le préparateur a deux colis ouverts pour le même article, l'écran choisit pour lui : la première
+                        ligne incomplète de la liste. Il pose l'article dans le colis de la ligne qui s'encadre, ou il touche
+                        d'abord la ligne de son choix.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Ok ajoute à une livraison qui ne l'a pas commandé</h4>
+                    <p>Un article étranger au lot, accepté par Ok, part dans une livraison du lot comme ligne en trop. Le
+                        client le recevra. Ignorer, ou la corbeille de la ligne, l'en retire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Sortir par la flèche de retour</h4>
+                    <p>Pendant la préparation de cet article, des scans faits puis le navigateur fermé sans quitter
+                        l'écran ont été perdus : à la réouverture, toutes les lignes étaient revenues à zéro. Les scans
+                        quittés par la flèche de retour ont été conservés.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La fenêtre SMS, à la première validation</h4>
+                    <p>Confirmer envoie un SMS au client de chaque livraison validée. Sur une base de test dont les clients ont des
+                        numéros d'apparence réelle, préférez Désactiver SMS ; le réglage se rétablit dans les paramètres
+                        d'Inventaire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le reliquat quitte le lot</h4>
+                    <p>Après validation, le reliquat est une livraison Prêt sans lot. Une liste des livraisons Prêt sans lot
+                        montre ce qu'il reste à ramasser à la prochaine tournée.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> préparer au scanner un lot de deux livraisons qui partagent un article, et
+                        laisser un reliquat.</p>
+                    <p><strong>Indication :</strong> confirmez deux commandes de démonstration contenant toutes deux un
+                        article stocké en quantité et doté d'un code-barres. Regroupez leurs livraisons par Actions › Add
+                        to batch, en vous désignant responsable. Dans Code-barres › Opérations › Bons de livraison, onglet
+                        Lots, ouvrez le lot, touchez la ligne de la seconde livraison et scannez l'article partagé, puis
+                        scannez tout sauf une unité, et validez avec Créer un reliquat.</p>
+                    <p><strong>Critère de réussite :</strong> le lot est Terminé, ses deux livraisons aussi, et la liste des
+                        livraisons montre un reliquat Prêt, sans lot, pour la commande à laquelle il manque l'unité.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les lots et les vagues se trouvent dans Code-barres › Opérations › Bons de livraison, onglet Lots,
+                        une fois la case Transferts par lot, vague &amp; cluster cochée.</li>
+                    <li>Chaque ligne du lot porte la référence et la couleur de sa livraison ; un scan va à la première
+                        ligne incomplète, ou à la ligne touchée avant le scan.</li>
+                    <li>Un article en trop crée une ligne rouge à retirer par la corbeille ; un article étranger au lot
+                        demande une confirmation, à refuser par Ignorer.</li>
+                    <li>La validation d'un lot incomplet ouvre Transfert incomplet ; le reliquat est une livraison Prêt,
+                        hors du lot.</li>
+                    <li>Une vague se scanne comme un lot ; elle laisse dans les livraisons d'origine ce qu'elle n'a pas
+                        pris.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/preparer-lots-vagues-odoo-262">Préparer par lots et vagues (batch picking) dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : créer les lots et les vagues, à la main ou automatiquement.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et livraisons en plusieurs étapes dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Prélever, emballer, expédier : les étapes qu'un lot peut regrouper.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/scanner-reception-code-barres-odoo-304">Scanner une réception avec Code-barres dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Recevoir une commande fournisseur au scanner : produits, lots, reliquat et validation.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

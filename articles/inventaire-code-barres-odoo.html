@@ -1,0 +1,505 @@
+<!--
+Article — Inventaire au scanner avec l'application Code-barres d'Odoo 20 Enterprise
+Série « Code-barres avec Odoo 20 Enterprise » (lot EE 3), article E3.2
+Date : 2026-10-13
+Slug : inventaire-code-barres-odoo
+Mot-clé cible : inventaire code-barres odoo, comptage stock scanner odoo
+Tags : intermediaire, stock, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur, société 1 My Company (San Francisco)) :
+  - Accueil Code-barres : bouton « Compter l’inventaire » → /odoo/barcode/action-336, écran « Inventaire physique ».
+    Sans demande : vide, consigne « Scanner un produit », boutons « Ajouter un produit » / « Confirmer (0) ».
+    Engrenage : case « Compter parmi les emplacements entiers » (non cochée, non testée) ; « Imprimer inventaire » →
+    PDF « Feuille de comptage d'inventaire » (Produit, Lot/numéro de série, Quantité vide).
+  - Inventaire physique (back-office /odoo/physical-inventory), FURN_0097 (quant 9, 50) + E-COM10 (quant 4, 6) :
+    Demander un inventaire → « Demande d’inventaire » (Attribuer à, placeholder « Tout le monde » ; Planifié le/à 13 oct. ;
+    Afficher la quantité prévue décochée) → Formateur Odoo, 13 oct. Les 2 lignes apparaissent dans Code-barres avec « ? ».
+  - Scans (champ « Saisir un code-barres ») : Pedal Bin ×5 → 5, Confirmer (1) ; crayon → fiche (quantité, 0/-1/+1,
+    Ignorer/Confirmer), FURN_0097 = 50. Acoustic Bloc Screens (White) FURN_6666 (0 en stock) ×2 → ligne ajoutée, 2 (quant 121
+    créé). Stool Top (Gray) FURN_1245_GR : consigne « Scan lot numbers for product Stool Top (Gray) to change their quantity »,
+    ligne lot SN0012022 « ? » ; scan du lot → 1 ; fiche + champ « Numéro de série / lot » → 20.
+  - Comptes enregistrés à la volée (RPC stock.quant inventory_quantity_set True) ; lignes ajoutées puis navigateur fermé
+    sans flèche de retour : perdues (aucun quant 37, Stool non compté à la réouverture).
+  - Back-office filtre À appliquer : Pedal Bin 6/5/-1, Desk 50/50/0, Stool SN0012022 20/20/0, Acoustic 0/2/+2, toutes
+    « Formateur Odoo », 13 oct. (lignes hors demande comprises).
+  - Confirmer (4) → « Confirmer l’ajustement d’inventaire », Motif par défaut « Physical Inventory », boutons Appliquer
+    maintenant / En attente de révision / Ignorer. Motif « Comptage au scanner du 13/10 » + Appliquer maintenant →
+    notification « Le comptage de l'inventaire a été mis à jour », retour accueil. stock.move 242-245 (is_inventory, done) :
+    Acoustic Inventory adjustment → WH/Stock 2 ; Pedal Bin WH/Stock → Inventory adjustment 1 ; Desk 0 ; Stool 0 (lot).
+    Quants : compté effacé, utilisateur vide, inventory_date 2026-12-31.
+  - En attente de révision (Desk recompté 50) : ligne gardée dans Code-barres et dans À appliquer ; Appliquer de la ligne
+    (back-office) sans fenêtre → stock.move 246 « Quantité de produit confirmée (Formateur Odoo) », 0.
+  - Réglages : Emplacements de stockage inactif (lignes sans emplacement, WH/Stock seul) ; aucun réglage modifié.
+  - CE : odoo/addons/stock_barcode absent ; stock/views/stock_quant_views.xml:285-287 (Apply, Request a Count).
+Captures : content/blog/screenshots/inventaire-code-barres-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e3-2-inventaire/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Inventaire au scanner avec Code-barres dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Compter le stock en scannant les produits et leurs lots, puis corriger
+                    l'écart d'un geste : l'écran « Inventaire physique » de l'application Code-barres d'Odoo 20 Enterprise,
+                    des comptages demandés par le responsable à la trace laissée dans l'historique des mouvements.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Recompter le stock est une tâche de rayon : le magasinier passe d'un article à l'autre, compte, note,
+                    puis quelqu'un ressaisit les chiffres au bureau. L'application <strong>Code-barres</strong> d'Odoo 20
+                    Enterprise supprime la ressaisie. Le magasinier scanne le produit, puis son lot s'il en a un, et chaque
+                    scan compte une unité. Le responsable retrouve aussitôt les quantités et les écarts, puis les applique,
+                    ou laisse le magasinier les appliquer lui-même.</p>
+                <p>Le comptage reste celui de l'écran <strong>Inventaire physique</strong> de l'application Inventaire :
+                    mêmes lignes de stock, mêmes demandes de comptage, même correction par un mouvement vers ou depuis
+                    l'emplacement d'ajustement. Ce que l'application ajoute, c'est l'écran de comptage au scanner. Les
+                    exemples portent sur l'entrepôt de démonstration de la société <strong>My Company (San
+                    Francisco)</strong>, qui n'a qu'un emplacement de stock, WH/Stock.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>demander un comptage à un utilisateur et le retrouver dans Code-barres ;</li>
+                    <li>compter au scan, corriger une quantité, et compter un produit que personne n'a demandé ;</li>
+                    <li>compter un produit suivi par lot ;</li>
+                    <li>appliquer l'inventaire avec un motif, ou le laisser en attente de révision ;</li>
+                    <li>retrouver chaque écart dans l'historique des mouvements.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le cycle d'un comptage au scanner</h2>
+                <p>Un comptage part d'une demande du responsable, ou d'un simple scan dans le rayon. Il se termine
+                    toujours par la même correction du stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du cycle de comptage : le responsable, dans Inventaire physique, utilise Demander un inventaire (Attribuer à, Planifié le/à) ; dans Code-barres, Compter l'inventaire affiche les lignes demandées avec une quantité ?. Un comptage libre part du scan d'un produit non demandé. Scanner un produit : chaque scan ajoute 1, le crayon permet de saisir la quantité. Produit suivi par lot ? Oui : scanner le numéro de lot, une ligne par lot. Puis quantité comptée enregistrée, en sortant par la flèche de retour. Confirmer (n) avec un Motif de l'inventaire : Appliquer maintenant corrige le stock, un mouvement par ligne, manque de WH/Stock vers Inventory adjustment, surplus de Inventory adjustment vers WH/Stock ; En attente de révision garde le comptage, écart visible dans Inventaire physique (À appliquer), jusqu'à ce que le responsable clique Appliquer" style="max-width:60%; height:auto;"/>
+                    <figcaption>Du comptage demandé (ou libre) à la correction du stock.</figcaption>
+                </figure>
+                <p>Le scan alimente une <strong>quantité comptée</strong> ; il ne touche pas encore au stock. La
+                    correction n'a lieu qu'à la confirmation, et elle peut attendre le feu vert du responsable. Dans les
+                    deux cas, chaque ligne comptée produit un mouvement entre l'emplacement compté et l'emplacement
+                    virtuel <em>Inventory adjustment</em> : vers lui pour un manque, depuis lui pour un surplus, et un
+                    mouvement à zéro quand le compte est juste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Demander un comptage</h2>
+                <p>Le responsable choisit ce qui doit être compté. Dans <strong>Inventaire › Opérations › Inventaire
+                    physique</strong>, il recherche les articles, coche leurs lignes et clique sur <strong>Demander un
+                    inventaire</strong>. L'exemple retient deux articles de démonstration : le bureau
+                    [FURN_0097] Customizable Desk (Black, Steel), 50 en stock, et la poubelle [E-COM10] Pedal Bin, 6 en
+                    stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Demande d'inventaire : Attribuer à Formateur Odoo, Planifié le/à 13 oct. (info-bulle 13/10/2026), case Afficher la quantité prévue décochée ; boutons Confirmer et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Demander un inventaire : l'utilisateur qui comptera et la date du comptage.</figcaption>
+                </figure>
+                <p><strong>Attribuer à</strong> désigne l'utilisateur chargé du comptage ; laissé vide, le champ
+                    affiche « Tout le monde ». <strong>Planifié le/à</strong> fixe la date, ici le jour même. La case
+                    <strong>Afficher la quantité prévue</strong>, restée décochée, cache le chiffre attendu à celui qui
+                    compte. Après <strong>Confirmer</strong>, les deux lignes portent l'utilisateur et la date du 13 oct.
+                    La demande elle-même, ses filtres et la date d'inventaire annuelle sont détaillés dans le jumeau
+                    Community cité en fin d'article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ouvrir « Compter l'inventaire »</h2>
+                <p>Dans l'application <strong>Code-barres</strong>, l'accueil propose deux boutons :
+                    <strong>Opérations</strong> et <strong>Compter l'inventaire</strong>. Le second ouvre l'écran
+                    <strong>Inventaire physique</strong>, pensé pour un téléphone ou un terminal de poche ; les captures
+                    sont prises dans ce format. Les deux lignes demandées au compte connecté y sont déjà, avec un point
+                    d'interrogation à la place de la quantité : rien n'est compté, et le stock attendu n'est pas
+                    affiché.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran Inventaire physique de Code-barres en format téléphone : consigne Scanner un produit ; ligne FURN_0097 Customizable Desk (Black, Steel) avec image, crayon et quantité ? ; ligne E-COM10 Pedal Bin avec quantité ?" style="max-width:40%; height:auto;"/>
+                    <figcaption>Les comptages demandés, prêts à être scannés : la quantité est encore « ? » (vue téléphone).</figcaption>
+                </figure>
+                <p>Sans demande, l'écran s'ouvre vide, avec la seule consigne <strong>Scanner un produit</strong> et
+                    les boutons <strong>Ajouter un produit</strong> et <strong>Confirmer (0)</strong> : il sert alors au
+                    comptage libre (section 4).</p>
+                <p>Comme pour une réception, le scan vient d'un lecteur branché qui tape le code puis Entrée, de la
+                    caméra de l'appareil, ou, sur un poste qui n'a ni l'un ni l'autre, du champ <strong>Saisir un
+                    code-barres</strong> qui s'ouvre d'un clic sur l'icône de code-barres. C'est ce champ qui a servi
+                    pour l'exemple.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Compter en scannant</h2>
+                <p>Scannez le code-barres de la poubelle (<code>6016478556493</code>) une fois par article trouvé en
+                    rayon. Au premier scan, la ligne s'encadre, la quantité passe à 1 et le bouton du bas devient
+                    <strong>Confirmer (1)</strong> : il compte les lignes comptées, pas les unités. Le rayon contient
+                    cinq poubelles : après cinq scans, la ligne affiche <strong>5</strong>. Les boutons
+                    <strong>-1</strong> et <strong>+1</strong> corrigent un scan de trop ou de moins.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écran Inventaire physique : ligne Customizable Desk toujours à ? ; ligne E-COM10 Pedal Bin encadrée, quantité 5, boutons -1 et +1" style="max-width:40%; height:auto;"/>
+                    <figcaption>Cinq scans, cinq poubelles comptées (vue téléphone).</figcaption>
+                </figure>
+                <p>Scanner cinquante bureaux un par un n'a pas de sens. Scannez-en un, puis touchez le crayon de la
+                    ligne : une fiche s'ouvre, avec le produit, sa photo et un champ de quantité. Saisissez
+                    <strong>50</strong> et touchez <strong>Confirmer</strong>. Les boutons <strong>0</strong>,
+                    <strong>-1</strong> et <strong>+1</strong> de la fiche remettent à zéro ou ajustent.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fiche de ligne en format téléphone : FURN_0097 Customizable Desk (Black, Steel), photo du bureau, champ de quantité 50, boutons 0, -1, +1 ; en bas, Ignorer et Confirmer" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le crayon de la ligne : saisir directement la quantité comptée (vue téléphone).</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un produit absent du stock, un produit suivi par lot</h2>
+                <p>Le magasinier tombe sur deux écrans acoustiques blancs, [FURN_6666] Acoustic Bloc Screens (White),
+                    que le stock donne à zéro et que personne n'a demandé de compter. Il les scanne
+                    (<code>40164785566121</code>) : une ligne s'ajoute à la liste, et deux scans la portent à 2. C'est le
+                    comptage libre : tout produit scanné entre dans l'inventaire. Le bouton <strong>Ajouter un
+                    produit</strong> fait de même pour un article sans étiquette, choisi par son nom.</p>
+                <p>Vient ensuite un dessus de tabouret, [FURN_1245_GR] Stool Top (Gray), suivi par lot. Le scan du produit
+                    (<code>20133785575275</code>) fait apparaître la ligne de son lot en stock, <strong>SN0012022</strong>,
+                    avec « ? », et la consigne demande, en anglais à l'écran, de scanner les numéros de lot (« Scan lot
+                    numbers for product Stool Top (Gray) to change their quantity »). Le scan de l'étiquette de lot compte
+                    la première unité.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Deux écrans Inventaire physique côte à côte. À gauche, consigne Scan lot numbers for product Stool Top (Gray) to change their quantity ; lignes Customizable Desk 50 et Acoustic Bloc Screens (White) 2 ; ligne FURN_1245_GR Stool Top (Gray), lot SN0012022, quantité ?, boutons 0 et +1. À droite, après le scan du lot, consigne Scanner un produit ; ligne Stool Top (Gray) lot SN0012022 encadrée à 1, boutons -1 et +1" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le produit suivi par lot réclame son numéro de lot ; le lot scanné compte une unité (vue téléphone).</figcaption>
+                </figure>
+                <p>Chaque lot a sa propre ligne : deux lots du même produit se comptent séparément. Pour les vingt
+                    dessus de tabouret du lot, le crayon de la ligne ouvre la même fiche que plus haut, avec en plus le
+                    champ <strong>Numéro de série / lot</strong> ; la quantité 20 s'y saisit. Le suivi par lot lui-même
+                    est présenté dans <a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de
+                    série et dates de péremption dans Odoo 20</a>.</p>
+                <p>Avant de confirmer, quittez l'écran par la flèche de retour, en haut à gauche, et revenez-y : les
+                    quatre lignes sont là, avec leurs quantités, et le bouton indique <strong>Confirmer (4)</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Écran Inventaire physique avec quatre lignes comptées : FURN_0097 Customizable Desk (Black, Steel) 50, E-COM10 Pedal Bin 5, FURN_1245_GR Stool Top (Gray) lot SN0012022 20, FURN_6666 Acoustic Bloc Screens (White) 2 ; boutons Ajouter un produit et Confirmer (4)" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le comptage terminé : quatre lignes, dont une hors demande (vue téléphone).</figcaption>
+                </figure>
+                <p>Pour reproduire ce comptage, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant les applications Inventaire et Code-barres.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Lire les écarts avant d'appliquer</h2>
+                <p>L'écran du scanner montre ce qui a été compté, jamais l'écart : c'est voulu, le magasinier n'a pas à
+                    connaître le stock attendu. Le responsable, lui, voit tout de suite le résultat dans
+                    <strong>Inventaire › Opérations › Inventaire physique</strong>, filtre <strong>À appliquer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste Inventaire physique filtrée À appliquer : Pedal Bin, planifié 13 oct., utilisateur Formateur Odoo, disponible 6,00, compté 5,00, différence -1,00 en rouge ; Customizable Desk (Black, Steel) 50,00 compté 50,00 différence 0,00 ; Stool Top (Gray) lot SN0012022 20,00 compté 20,00 différence 0,00 ; Acoustic Bloc Screens (White) disponible 0,00 compté 2,00 différence 2,00 en vert ; boutons Historique, Appliquer, Effacer sur chaque ligne" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les comptages faits au scanner, vus du bureau : un manque, deux comptes justes, un surplus.</figcaption>
+                </figure>
+                <p>Une poubelle manque (−1), deux écrans acoustiques sont en trop (+2), le bureau et le lot de
+                    tabourets sont justes. Les lignes comptées hors demande portent elles aussi le compte connecté et la
+                    date du jour. Rien n'a encore bougé dans le stock : la colonne Disponible garde 6 et 0.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Confirmer : appliquer maintenant ou attendre la révision</h2>
+                <p>De retour dans Code-barres, touchez <strong>Confirmer (4)</strong>. La fenêtre <strong>Confirmer
+                    l'ajustement d'inventaire</strong> demande un <strong>Motif de l'inventaire</strong>, prérempli en
+                    anglais « Physical Inventory ». Remplacez-le par un texte qui dira quelque chose dans six mois : il
+                    deviendra la référence des mouvements. L'exemple utilise « Comptage au scanner du 13/10 ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Confirmer l'ajustement d'inventaire : Motif de l'inventaire Comptage au scanner du 13/10 ; boutons Appliquer maintenant, En attente de révision, Ignorer" style="max-width:45%; height:auto;"/>
+                    <figcaption>Deux façons de conclure : appliquer tout de suite, ou laisser le responsable valider.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Appliquer maintenant</strong> corrige le stock sur-le-champ. L'application revient à
+                        l'accueil et confirme « Le comptage de l'inventaire a été mis à jour ».</li>
+                    <li><strong>En attente de révision</strong> garde les quantités comptées sans toucher au stock. Les
+                        lignes restent dans l'écran du scanner, et dans la liste À appliquer du responsable, qui les
+                        applique par le bouton <strong>Appliquer</strong> de la ligne. Essayé sur le bureau recompté à 50,
+                        ce chemin a produit un mouvement à zéro nommé « Quantité de produit confirmée », suivi du nom de
+                        l'utilisateur : appliquée ligne par ligne, la correction ne reprend pas le motif.</li>
+                    <li><strong>Ignorer</strong> ferme la fenêtre sans rien appliquer.</li>
+                </ul>
+                <p>L'exemple choisit <strong>Appliquer maintenant</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Notification verte : Le comptage de l'inventaire a été mis à jour" style="max-width:45%; height:auto;"/>
+                    <figcaption>L'inventaire est appliqué.</figcaption>
+                </figure>
+                <p>Le stock vaut désormais 5 poubelles et 2 écrans acoustiques. Les lignes ont perdu leur utilisateur et
+                    leur quantité comptée, et leur date de comptage suivante est revenue au 31 déc., la date d'inventaire
+                    annuelle de la société.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Retrouver les écarts dans l'historique</h2>
+                <p>Ouvrez <strong>Inventaire › Analyse › Historique des mouvements</strong> et recherchez le motif dans
+                    le champ <strong>Référence</strong>. Le comptage entier revient : quatre mouvements terminés, un par
+                    ligne comptée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Historique des mouvements, référence Comptage au scanner du 13/10, 13 oct. 08:44 : Stool Top (Gray) lot SN0012022 de WH/Stock vers Inventory adjustment 0,00 ; Pedal Bin de WH/Stock vers Inventory adjustment 1,00 en rouge ; Customizable Desk (Black, Steel) de WH/Stock vers Inventory adjustment 0,00 ; Acoustic Bloc Screens (White) de Inventory adjustment vers WH/Stock 2,00 en vert ; statut Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un mouvement par ligne comptée, sous la référence du motif.</figcaption>
+                </figure>
+                <p>Le manque d'une poubelle part de WH/Stock vers <em>Inventory adjustment</em> (colonne Vers tronquée
+                    à l'écran) ; le surplus des deux écrans fait le chemin inverse. Les deux comptes justes laissent un
+                    mouvement à zéro : la preuve que l'article a été vérifié ce jour-là. Le numéro de lot figure sur la
+                    ligne du tabouret. Depuis l'écran Inventaire physique, le bouton <strong>Historique</strong> d'une
+                    ligne ouvre la même liste, limitée à cet article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Le menu de l'écran et les emplacements</h2>
+                <p>L'engrenage de l'écran Inventaire physique propose deux choses :</p>
+                <ul>
+                    <li><strong>Imprimer inventaire</strong> télécharge une « Feuille de comptage d'inventaire » (PDF)
+                        des lignes affichées : produit, lot, et une colonne Quantité laissée vide, à remplir à la main si
+                        le scanner tombe en panne ;</li>
+                    <li>une case <strong>Compter parmi les emplacements entiers</strong>, non cochée et non utilisée
+                        ici.</li>
+                </ul>
+                <p>La base de démonstration n'a pas l'option <strong>Emplacements de stockage</strong> (Inventaire ›
+                    Configuration › Paramètres) : l'écran ne montre aucun emplacement, et tout le comptage porte sur
+                    WH/Stock. Un entrepôt organisé en allées et étagères active d'abord cette option ; le présent article
+                    ne l'a pas fait et ne décrit donc pas le comptage emplacement par emplacement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Le même inventaire, saisi au clavier</h4>
+                    <p>L'application Code-barres n'existe pas dans Odoo 20 Community : son module n'est pas fourni avec
+                        l'édition. L'écran Inventaire physique, lui, en fait partie, avec Demander un inventaire, les
+                        colonnes Compté et Différence, l'application avec un motif et l'emplacement d'ajustement. Le
+                        magasinier y saisit les quantités ligne par ligne, d'après une feuille de comptage. Ce qui
+                        manque, c'est l'écran de comptage au scanner : pas de comptage unité par unité, pas de produit
+                        ajouté d'un scan. Le parcours complet sans scanner, conflits et comptages cycliques compris, est
+                        présenté dans
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/inventaire-physique-odoo-250">Inventaire
+                        physique et comptages réguliers dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sortir par la flèche de retour</h4>
+                    <p>Pendant la préparation de cet article, deux lignes ajoutées au scan (l'écran acoustique et le lot
+                        de tabourets) ont disparu après la fermeture du navigateur sans quitter l'écran : à la
+                        réouverture, elles n'y étaient plus, et aucune quantité comptée n'était enregistrée. Les
+                        comptages quittés par la flèche de retour, ou validés dans la fiche du crayon, ont été conservés.
+                        Le même comportement a été constaté sur les réceptions.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un scan compte, il ne corrige pas</h4>
+                    <p>Tant que Confirmer n'a pas été touché (ou que le responsable n'a pas appliqué la ligne), le stock
+                        ne bouge pas. Une liste À appliquer qui s'allonge signale des comptages oubliés : à appliquer, ou
+                        à effacer par le bouton <strong>Effacer</strong> de la ligne.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un écart négatif peut toucher une livraison</h4>
+                    <p>Un manque appliqué retire du stock. Avant d'appliquer un manque, vérifiez qu'aucune livraison prête
+                        n'attend l'article : l'exemple a choisi des articles qu'aucune livraison ni fabrication en cours
+                        n'utilisait.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> compter au scanner trois articles, dont un avec un écart, et retrouver
+                        la correction.</p>
+                    <p><strong>Indication :</strong> demandez un inventaire de deux articles de démonstration ayant un
+                        code-barres, attribué à votre compte et planifié aujourd'hui. Dans Code-barres, ouvrez Compter
+                        l'inventaire, comptez-les au scan (l'un avec une unité de moins que le stock), scannez un
+                        troisième article non demandé, puis confirmez avec un motif à vous et Appliquer maintenant.</p>
+                    <p><strong>Critère de réussite :</strong> l'historique des mouvements, recherché sur votre motif,
+                        montre trois mouvements terminés, dont un de 1 vers Inventory adjustment.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Code-barres › Compter l'inventaire ouvre l'écran Inventaire physique au scanner ; les comptages
+                        demandés au compte connecté y sont déjà.</li>
+                    <li>Chaque scan ajoute une unité ; le crayon saisit une quantité ; tout produit scanné entre dans le
+                        comptage, même absent du stock.</li>
+                    <li>Un produit suivi par lot se compte lot par lot, en scannant le numéro de lot.</li>
+                    <li>Confirmer demande un motif : Appliquer maintenant corrige le stock, En attente de révision laisse
+                        le responsable appliquer.</li>
+                    <li>Chaque ligne comptée laisse un mouvement vers ou depuis Inventory adjustment, sous la référence du
+                        motif.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/inventaire-physique-odoo-250">Inventaire physique et comptages réguliers dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : comptage, conflits et comptages cycliques sans scanner.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et dates de péremption dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Activer le suivi, tracer un lot de la réception à la livraison.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/preparer-lots-vagues-scanner-odoo-306">Préparer par lots et vagues au scanner dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Préparer plusieurs livraisons d'un coup au scanner, en lot ou en vague.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
