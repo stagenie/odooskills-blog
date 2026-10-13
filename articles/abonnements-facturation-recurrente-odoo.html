@@ -1,0 +1,547 @@
+<!--
+Article — Abonnements dans Odoo 20 : la facturation récurrente
+Série « Ventes récurrentes et signature avec Odoo 20 Enterprise » (lot EE 4), article E4.1
+Date : 2026-10-13
+Slug : abonnements-facturation-recurrente-odoo
+Mot-clé cible : abonnement odoo, facturation récurrente odoo
+Tags : intermediaire, ventes, guide, enterprise
+Preuves (13/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur (uid 8, Ventes administrateur), société 1 My Company (San Francisco)) :
+  - Modules : sale_subscription « Subscriptions », crm_sale_subscription, sale_subscription_stock installés, OEEL-1 (ir.module.module).
+    CE : aucun module sale_subscription dans odoo/addons ; aucun champ recurring_invoice / is_subscription dans odoo/addons
+    (grep) ; odoo/addons/mysubscription est l'abonnement Odoo de la base elle-même (client action « My Subscription »), sans rapport.
+  - Menus (ir.ui.menu) : Abonnements › Abonnements (Abonnements, Devis, À renouveler, Ventes incitatives, Clients) ; Produits
+    (Produits, Listes de prix) ; Analyse (Abonnements, Rétention, Répartition du MRR, Ligne de temps du MRR) ; Configuration
+    (Paramètres, Plans récurrents, Modèles de devis, Motifs de résiliation, Types d'activités, Plans d'activité).
+  - Démo : plans Mensuel, 6 mois, Annuel (résiliation automatique 15 jours) ; S00039-S00042 lus, non modifiés par l'article.
+    Bouton Nouveau de la liste = menu « Nouveau devis » + modèles de devis (Office Furniture, Couple's Room + Spa Package,
+    Monthly Cleaning, Yearly Cleaning).
+  - Plan « Trimestriel » (id 4) créé à l'écran : 3 Mois, Résiliable coché (option « À la date » / « Fin de période »),
+    Modèle d'e-mail de facture « Facture : Envoi » par défaut (aide : « Laissez-le vide si vous ne voulez pas envoyer d'e-mail
+    automatiquement »). Aides des champs lues par fields_get.
+  - Produit « Maintenance de poste de travail » (template 83) créé à l'écran : case Abonnements cochée d'office depuis le menu
+    Produits de l'app, Service, onglet Prix (colonnes Planifier, Liste de prix, Quantité minimale, Prix unitaire) : Mensuel 20 $,
+    Trimestriel 54 $, Annuel 200 $. Politique « Prépayé/Prix fixe », texte « La commande récurrente incluant ce produit sera
+    facturée au début de la période ».
+  - Liste de prix « Tarif en dollars » (id 6, USD, séquence 50) créée par RPC : la seule liste de la société 1 (« Par défaut »)
+    est en DZD sur cette base ; S00001-S00042 sont en DZD.
+  - S00043 Wood Corner, Trimestriel, 5 postes : devis « Devis d'abonnement », MRR 90 $ (270 / 3) ; Confirmer → En cours,
+    Date de début et Prochaine facture 13 oct. ; boutons Créer une facture, Envoyer, Aperçu, Annuler, Vente incitative,
+    Renouveler, Résilier. Vendeur passé à Mitchell Admin (onglet Autres informations).
+  - Créer une facture → fenêtre « Créer facture(s) » (Facture normale / Acompte…) → Créer brouillon → FAC/2026/00003,
+    ligne « 3 mois 13/10/2026 au 12/01/2027 », 270 $ HT, 310,50 $ TTC, confirmée ; Prochaine facture 13 oct. → 13 janv. 2027
+    (chatter). Facture non envoyée.
+  - Action planifiée « Sale Subscription: generate recurring invoices and payments » (ir.cron 92, quotidienne) : exécutée à
+    13:05 UTC, a créé et comptabilisé FAC/2026/00001 (S00040) et FAC/2026/00002 (S00039), is_move_sent=True, message
+    « Here is your invoice » au client ; Prochaine facture avancée (13 oct. 2027 / 13 nov. 2026). Pas déclenchée par l'article.
+  - Vente incitative → S00044 « Vente incitative », lignes reprises à 0, ligne « (*) Ces produits récurrents bénéficient d'une
+    remise en fonction de la période au prorata du 13/10/2026 au 12/01/2027 » ; 3 postes → 162 $, MRR 54 $ ; Confirmer →
+    S00043 : « Quantité commandée : 5.0 -> 8.0 », MRR 90 → 144 $, « La vente incitative S00044 a été confirmée ». S00044
+    facturée FAC/2026/00004 (162 $ HT, 186,30 $ TTC).
+  - Renouveler → S00045 « Devis de renouvellement », A partir du 13 janv. 2027, 8 postes à 54 ; plan → Annuel : prix 200,
+    1 600 $, MRR 133,33 $ ; Confirmer → S00045 En cours ; S00043 Renouvelé, Jusqu'au 13 janv. 2027, Motif « L'abonnement a été
+    renouvelé avec un nouveau plan », Verrouillé (chatter).
+  - Résilier sur S00045 (non facturé) : « Vous ne pouvez pas résilier un contrat qui n'a pas été facturé. Veuillez annuler le
+    contrat dans ce cas. »
+  - S00046 Joel Willis, Mensuel, 2 postes, 40 $ : confirmée, FAC/2026/00005 confirmée, Résilier → fenêtre Quand (date du jour) /
+    Motif (10 motifs de démo) → « Je ne l'utilise pas » → Perte, Date de fin 13 oct., bouton Rouvrir (non cliqué).
+  - sale.order.log (Analyse › Répartition du MRR) : S00043 Nouveau +90, Expansion +54, Transfert −144 ; S00045 Transfert +144,
+    Contraction −10,67 ; S00046 Nouveau +40, Attrition −40. Types : Nouveau, Expansion, Contraction, Attrition, Transfert.
+  - À la confirmation de S00043, le vendeur (Mitchell Admin) a été inscrit comme vendeur de Wood Corner et de ses 3 contacts
+    (res.partner.user_id, write 13:10:49, courriels « Vous avez été assigné à Wood Corner… ») ; CE : sale_order.py:679-685 ne fait
+    que lire partner.user_id. Remis à vide par RPC après l'article.
+  - Courriels : 134-141, 144-145 vers Mitchell Admin (admin@example.com) en exception (limite quotidienne de 5).
+Captures : content/blog/screenshots/abonnements-facturation-recurrente-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e4-1-abonnements/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child, .ce-box ul { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Abonnements dans Odoo 20 : la facturation récurrente</h1>
+                <p class="lead mt-3 text-white">Plan récurrent, produit d'abonnement, facture de chaque période, vente
+                    incitative, renouvellement, résiliation et revenu récurrent mensuel (MRR) : l'application Abonnements
+                    d'Odoo 20 Enterprise, pas à pas.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / CONTEXTE / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un contrat de maintenance, une licence, un service mensuel : la vente ne s'arrête pas à la première
+                    facture, elle revient à chaque période. Refaire une commande chaque mois finit par produire des oublis
+                    et des écarts de prix. Odoo 20 Enterprise traite ce besoin dans l'application
+                    <strong>Abonnements</strong> : la commande devient un contrat qui porte un <strong>plan
+                    récurrent</strong>, sait à quelle date tombe la prochaine facture et calcule le revenu récurrent
+                    mensuel, le <strong>MRR</strong>.</p>
+                <p>La commande d'abonnement reste une commande de vente : devis, confirmation et facture suivent le
+                    circuit présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande confirmée dans
+                    Odoo 20</a>. Le présent article traite de ce que l'application ajoute. Les exemples portent sur la
+                    société de démonstration <strong>My Company (San Francisco)</strong> et ses clients Wood Corner et
+                    Joel Willis ; le produit, le plan trimestriel et les prix ont été créés pour l'article.</p>
+
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer un plan récurrent et un produit d'abonnement avec un prix par plan ;</li>
+                    <li>confirmer une commande d'abonnement et facturer sa première période ;</li>
+                    <li>ajouter des quantités en cours de contrat par une vente incitative ;</li>
+                    <li>renouveler un abonnement, éventuellement sur un autre plan, ou le résilier avec un motif ;</li>
+                    <li>lire l'évolution du revenu récurrent dans l'analyse du MRR.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La vie d'un abonnement</h2>
+                <p>Avant la mise en œuvre, le schéma ci-dessous résume les étapes et les états qu'affiche l'écran.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la vie d'un abonnement. Le plan récurrent (période de facturation, résiliation automatique) et le produit d'abonnement (onglet Prix, un prix par plan) alimentent le devis d'abonnement (client, plan, lignes). Confirmer le passe En cours, MRR Nouveau. Depuis En cours : Créer une facture ou l'action planifiée quotidienne produit la facture de la période et fait avancer la Prochaine facture d'une période ; Vente incitative crée un devis au prorata de la période, dont la confirmation ajoute les lignes, MRR Expansion ; Renouveler crée un devis de renouvellement à partir de la Prochaine facture, dont la confirmation rend l'ancien contrat Renouvelé et le nouveau En cours, MRR Transfert ; Résilier, pour un contrat déjà facturé, mène à Perte avec un motif de résiliation, MRR Attrition" style="max-width:85%; height:auto;"/>
+                    <figcaption>Du plan récurrent à la résiliation : les étapes d'un abonnement et leur trace dans le MRR.</figcaption>
+                </figure>
+                <p>Le plan et le produit se règlent une fois. Chaque commande confirmée passe ensuite à l'état
+                    <strong>En cours</strong> et se facture période après période. Trois boutons font évoluer le
+                    contrat : <strong>Vente incitative</strong> ajoute des lignes en cours de route,
+                    <strong>Renouveler</strong> prépare le contrat suivant, <strong>Résilier</strong> l'arrête. Chacun de
+                    ces événements est inscrit dans l'analyse du MRR avec son type : Nouveau, Expansion, Transfert,
+                    Attrition, ou Contraction quand le revenu mensuel baisse.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le plan récurrent</h2>
+                <p>Le plan fixe le rythme de facturation. La base de démonstration en fournit trois, Mensuel, 6 mois et
+                    Annuel, dans <strong>Abonnements › Configuration › Plans récurrents</strong>. Pour un contrat facturé
+                    chaque trimestre, cliquez sur <strong>Nouveau</strong>, nommez le plan « Trimestriel » et réglez la
+                    <strong>Période de facturation</strong> sur 3 Mois.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Plan récurrent Trimestriel : section Détails avec Période de facturation 3 Mois, Alignement sur le début de période décoché, Résiliation automatique 15 Jours, Modèle d'e-mail de facture Facture : Envoi ; section Self-service avec Résiliable coché et l'option À la date, Suspendable, Ajouter des produits et Renouveler décochés, Plans optionnels vide ; onglet Tarification vide" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un plan trimestriel : rythme de facturation, envoi de la facture et options laissées au client.</figcaption>
+                </figure>
+                <p>Les autres réglages du plan :</p>
+                <ul>
+                    <li><strong>Alignement sur le début de période</strong> : toutes les factures tombent le premier jour
+                        de la période au lieu de la date anniversaire du contrat ;</li>
+                    <li><strong>Résiliation automatique</strong> (15 jours par défaut) : un abonnement en retard de
+                        renouvellement, par exemple impayé, est clôturé passé ce délai ;</li>
+                    <li><strong>Modèle d'e-mail de facture</strong> : le courriel qui accompagne chaque facture
+                        automatique ; vide, aucune facture n'est envoyée automatiquement ;</li>
+                    <li>la colonne <strong>Self-service</strong> décide de ce que le client peut faire lui-même depuis son
+                        espace en ligne : résilier (à la date ou en fin de période), suspendre, ajouter des produits,
+                        renouveler, ou passer à l'un des plans optionnels.</li>
+                </ul>
+                <p>L'onglet <strong>Tarification</strong> du plan liste les prix que les produits ont pour ce plan ; il se
+                    remplit tout seul quand un produit reçoit un prix pour ce plan (étape suivante).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le produit d'abonnement</h2>
+                <p>Ouvrez <strong>Abonnements › Produits › Produits</strong>, puis <strong>Nouveau</strong>. Depuis ce
+                    menu, la case <strong>Abonnements</strong> est cochée d'office : c'est elle qui fait du produit un
+                    produit d'abonnement. Le produit de l'article, « Maintenance de poste de travail », est un
+                    <strong>Service</strong> ; Odoo lui donne la politique de facturation Prépayé/Prix fixe et précise que
+                    « la commande récurrente incluant ce produit sera facturée au début de la période ».</p>
+                <p>Le prix dépend du plan. L'onglet <strong>Prix</strong> reçoit une ligne par plan (la colonne s'intitule
+                    « Planifier » à l'écran), avec, au besoin, une liste de prix et une quantité minimale : 20 $ par mois,
+                    54 $ par trimestre, 200 $ par an, par poste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Produit Maintenance de poste de travail, cases Ventes, Achats et Abonnements cochées ; onglet Prix : lignes Mensuel 20,00 $, Trimestriel 54,00 $, Annuel 200,00 $, quantité minimale 0,00, sans liste de prix ; lien Ajouter un prix" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un prix par plan : le même service coûte moins cher par mois sur un plan plus long.</figcaption>
+                </figure>
+                <p>Le prix trimestriel est plus bas que trois mois (54 $ contre 60 $), le prix annuel plus bas encore :
+                    un tarif par plan récompense ainsi un engagement plus long, sans remise à saisir sur la commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La commande d'abonnement</h2>
+                <p>Dans <strong>Abonnements › Abonnements</strong>, le bouton <strong>Nouveau</strong> déroule un menu :
+                    <strong>Nouveau devis</strong>, ou l'un des modèles de devis de la base (Monthly Cleaning, Yearly
+                    Cleaning…). Choisissez Nouveau devis, puis renseignez le client (Wood Corner), le <strong>Plan
+                    récurrent</strong> (Trimestriel) et une ligne de 5 postes de Maintenance de poste de travail. Le prix
+                    unitaire de 54 $ vient de l'onglet Prix du produit.</p>
+                <p>Le devis porte l'étiquette <strong>Devis d'abonnement</strong> et, sous les totaux, deux montants
+                    propres aux abonnements : <strong>Récurrent</strong> (270 $, le montant de chaque période) et
+                    <strong>MRR</strong> (90 $, le même montant ramené au mois). Il s'envoie comme n'importe quel
+                    devis. <strong>Confirmer</strong> le transforme en abonnement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Abonnement S00043 à l'état En cours, bouton intelligent MRR 90,00 $ ; boutons Créer une facture, Envoyer, Aperçu, Annuler, Vente incitative, Renouveler, Résilier ; client Wood Corner, Plan récurrent Trimestriel, À partir du 13 oct., Prochaine facture 13 oct., Liste de prix Tarif en dollars (USD) ; ligne Maintenance de poste de travail, quantité 5,00, délivré 0,00, facturé 0,00, prix unitaire 54,00, taxe 15 %, montant 270,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'abonnement confirmé : En cours, avec sa prochaine facture et son MRR.</figcaption>
+                </figure>
+                <p>Pour reproduire ce parcours, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Abonnements.</p>
+                <p>La confirmation renseigne la <strong>Date de début</strong> (« À partir du ») et la <strong>Prochaine
+                    facture</strong>, toutes deux au jour même : la première période est due tout de suite. L'état passe
+                    de Devis à <strong>En cours</strong>, et une ligne de boutons propre aux abonnements apparaît. Le champ
+                    <strong>Jusqu'au</strong> reste vide : sans date de fin, le contrat se poursuit jusqu'à sa
+                    résiliation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. La facture de chaque période</h2>
+                <p>Le bouton <strong>Créer une facture</strong> ouvre la fenêtre habituelle des ventes (Facture normale,
+                    Acompte) ; <strong>Créer brouillon</strong> produit la facture de la période. Sa ligne précise la
+                    période couverte, « 3 mois 13/10/2026 au 12/01/2027 ». Confirmée, la facture prend son numéro,
+                    FAC/2026/00003, et reste à envoyer et à encaisser comme toute facture client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Facture client FAC/2026/00003 (S00043) à l'état Comptabilisé : boutons Envoyer, Imprimer, Payer, Aperçu, Avoir, Remettre en brouillon ; client Wood Corner, date de facturation et échéance 13 oct., devise USD ; ligne Maintenance de poste de travail, 3 mois 13/10/2026 au 12/01/2027, compte 400000 Product Sales, quantité 5,00, prix 54,00, taxe 15 %, montant 270,00 $ ; total 310,50 $, montant dû 310,50 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture de la première période, avec les dates qu'elle couvre.</figcaption>
+                </figure>
+                <p>Sur l'abonnement, la <strong>Prochaine facture</strong> avance d'une période : du 13 octobre 2026 au
+                    13 janvier 2027.</p>
+                <p>À l'échéance, personne n'a besoin de cliquer. Une action planifiée quotidienne, « Sale Subscription:
+                    generate recurring invoices and payments », facture chaque abonnement dont la prochaine facture est
+                    échue. Sur la base de démonstration, son passage a créé et confirmé les factures des abonnements
+                    S00039 et S00040, les a envoyées au client avec le modèle de courriel du plan, puis a avancé leur
+                    prochaine facture d'un mois et d'un an.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. La vente incitative : ajouter en cours de contrat</h2>
+                <p>Le client équipe trois postes de plus. Plutôt qu'un second contrat, le bouton <strong>Vente
+                    incitative</strong> crée un devis rattaché à l'abonnement, S00044, étiqueté <strong>Vente
+                    incitative</strong>. Il reprend les lignes du contrat à quantité nulle : saisissez 3 sur la ligne
+                    Maintenance de poste de travail, ou ajoutez un autre produit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Devis S00044 étiqueté Vente incitative, rattaché à S00043 : client Wood Corner, Plan récurrent Trimestriel, À partir du 13 oct. ; ligne Maintenance de poste de travail (*), quantité 3,00, prix unitaire 54,00, montant 162,00 $ ; note : (*) Ces produits récurrents bénéficient d'une remise en fonction de la période au prorata du 13/10/2026 au 12/01/2027 ; total 186,30 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis de vente incitative, calculé au prorata de la période en cours.</figcaption>
+                </figure>
+                <p>La note de bas de ligne annonce le calcul : le prix est réduit <strong>au prorata</strong> du temps qui
+                    reste dans la période déjà facturée, ici du 13/10/2026 au 12/01/2027. Comme la vente incitative a été
+                    faite le premier jour de la période, il reste toute la période et la remise vaut zéro : 3 × 54 $ =
+                    162 $. Plus tard dans le trimestre, la remise croît avec le temps déjà écoulé.</p>
+                <p>À la confirmation, les postes rejoignent le contrat. L'abonnement S00043 passe de 5 à 8 postes, son MRR
+                    de 90 $ à 144 $, et son chatter note « La vente incitative S00044 a été confirmée ». La date de
+                    prochaine facture ne bouge pas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Abonnement S00043 En cours après la vente incitative : boutons intelligents Factures clients 1, Historique de ventes 2, MRR 144,00 $ ; Plan récurrent Trimestriel, À partir du 13 oct., Prochaine facture 13 janv. 2027, Liste de prix Tarif en dollars (USD)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après la vente incitative : même contrat, même échéance, MRR de 144 $.</figcaption>
+                </figure>
+                <p>Le complément de la période se facture depuis la vente incitative elle-même, par Créer une facture :
+                    FAC/2026/00004, 162 $ hors taxes. Le bouton intelligent <strong>Historique de ventes</strong> de
+                    l'abonnement regroupe la commande d'origine et ses ventes incitatives.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Renouveler, éventuellement sur un autre plan</h2>
+                <p>Un abonnement sans date de fin se poursuit seul. Le renouvellement sert à changer les conditions du
+                    contrat suivant : le plan, les prix, les lignes. Le bouton <strong>Renouveler</strong> crée un
+                    <strong>Devis de renouvellement</strong>, S00045, qui commence à la prochaine facture du contrat en
+                    cours (13 janvier 2027) et reprend ses 8 postes.</p>
+                <p>Ici, Wood Corner passe au plan annuel. Changez le Plan récurrent pour Annuel : le prix unitaire
+                    devient aussitôt celui de l'onglet Prix du produit, 200 $, soit 1 600 $ par an et un MRR de
+                    133,33 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Devis S00045 étiqueté Devis de renouvellement, rattaché à S00043 : client Wood Corner, Plan récurrent Annuel, À partir du 13 janv. 2027, Liste de prix Tarif en dollars (USD) ; ligne Maintenance de poste de travail, quantité 8,00, prix unitaire 200,00, montant 1 600,00 $ ; total 1 840,00 $, MRR 133,33 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le devis de renouvellement passé au plan annuel : le prix suit le plan.</figcaption>
+                </figure>
+                <p>Confirmé, le renouvellement devient l'abonnement <strong>En cours</strong>. L'ancien contrat S00043 passe
+                    à l'état <strong>Renouvelé</strong> : il est verrouillé, se termine le 13 janvier 2027 et reçoit le
+                    motif « L'abonnement a été renouvelé avec un nouveau plan ». Le trimestre déjà facturé reste couvert
+                    par l'ancien contrat ; le nouveau se facturera à partir de sa date de début.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Abonnement S00043 à l'état Renouvelé : boutons Créer une facture, Envoyer, Aperçu seulement ; Plan récurrent Trimestriel, À partir du 13 oct., Jusqu'au 13 janv. 2027, Motif de résiliation L'abonnement a été renouvelé avec un nouveau plan ; boutons intelligents Factures clients 2, Historique de ventes 3, MRR 144,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'ancien contrat, renouvelé : une date de fin et un motif, plus de bouton Résilier.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Résilier un abonnement</h2>
+                <p>La résiliation s'applique à un contrat qui a déjà été facturé. Pour l'exemple, un second abonnement a
+                    été confirmé et facturé pour Joel Willis, S00046 : 2 postes sur le plan Mensuel, 40 $ par mois. Le
+                    bouton <strong>Résilier</strong> ouvre une fenêtre à deux champs : <strong>Quand</strong> (la date de
+                    fin, proposée au jour même) et <strong>Motif</strong>, à choisir parmi les motifs de résiliation de
+                    la configuration (L'abonnement est trop cher, Je ne l'utilise pas, Fin du contrat…).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Résilier : Quand 13 oct., Motif Je ne l'utilise pas ; boutons Soumettre et Ignorer" style="max-width:60%; height:auto;"/>
+                    <figcaption>La résiliation demande une date et un motif.</figcaption>
+                </figure>
+                <p><strong>Soumettre</strong> fait passer l'abonnement à l'état <strong>Perte</strong>, avec sa date de fin
+                    et son motif. Le bouton <strong>Rouvrir</strong> prend la place de Résilier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Abonnement S00046 à l'état Perte : boutons Créer une facture, Envoyer, Aperçu, Annuler, Renouveler, Rouvrir ; client Joel Willis, Plan récurrent Mensuel, À partir du 13 oct., Jusqu'au 13 oct., Motif de résiliation Je ne l'utilise pas, Liste de prix Tarif en dollars (USD) ; boutons intelligents Factures clients 1, MRR 40,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un abonnement résilié : état Perte, date de fin et motif.</figcaption>
+                </figure>
+                <p>Les motifs se gèrent dans <strong>Configuration › Motifs de résiliation</strong>. Ils servent à
+                    l'analyse : savoir combien de clients partent parce que l'abonnement est trop cher, et combien parce
+                    qu'ils ne s'en servent pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Suivre le revenu récurrent</h2>
+                <p>Le menu <strong>Analyse</strong> réunit quatre rapports : Abonnements, Rétention, <strong>Répartition
+                    du MRR</strong> et Ligne de temps du MRR. La Répartition du MRR s'ouvre en graphique par mois et par
+                    type d'événement ; en vue liste, filtrée sur les trois contrats de l'article, elle rejoue toute
+                    l'histoire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Répartition du MRR en vue liste, filtre Abonnement S00043 ou S00045 ou S00046 : S00046 Attrition -40,00 $ nouveau MRR 0,00 ; S00046 Nouveau 40,00 $ ; S00045 Contraction -10,67 $ nouveau MRR 133,33 $ ; S00045 Transfert 144,00 $ ; S00043 Transfert -144,00 $ nouveau MRR 0,00 ; S00043 Expansion 54,00 $ nouveau MRR 144,00 $ ; S00043 Nouveau 90,00 $ ; total 133,33 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Chaque événement de l'abonnement, avec sa variation de MRR.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Type d'événement</th><th>Ce qui l'a produit ici</th><th>Variation du MRR</th></tr></thead>
+                    <tbody>
+                        <tr><td>Nouveau</td><td>confirmation de S00043, puis de S00046</td><td>+90 $, +40 $</td></tr>
+                        <tr><td>Expansion</td><td>vente incitative S00044 (3 postes)</td><td>+54 $</td></tr>
+                        <tr><td>Transfert</td><td>renouvellement : le MRR quitte S00043 et passe à S00045</td><td>−144 $ / +144 $</td></tr>
+                        <tr><td>Contraction</td><td>passage au plan annuel, moins cher par mois</td><td>−10,67 $</td></tr>
+                        <tr><td>Attrition</td><td>résiliation de S00046</td><td>−40 $</td></tr>
+                    </tbody>
+                </table>
+                <p>Le total de la colonne, 133,33 $, est le revenu récurrent mensuel qui reste : celui du contrat annuel
+                    de Wood Corner. Le transfert ne crée ni ne perd de revenu, il le déplace d'un contrat à l'autre ; un
+                    renouvellement n'est donc pas compté comme un nouveau client. Le rapport <strong>Rétention</strong>
+                    croise, de son côté, le mois du premier contrat et la date de fin des abonnements.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Des commandes ponctuelles, pas de contrat récurrent</h4>
+                    <p>L'application Abonnements n'existe pas dans Odoo 20 Community : le module <code>sale_subscription</code>
+                        n'y figure pas, et un produit n'y a pas de case Abonnements. La Community vend et facture une
+                        commande à la fois, du devis à la facture, comme le montre
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la
+                        commande confirmée dans Odoo 20</a>.</p>
+                    <p>Pour un service facturé chaque mois, il faut donc y recréer une commande ou une facture à chaque
+                        période, sans plan récurrent, sans date de prochaine facture, sans vente incitative au prorata, sans
+                        renouvellement ni motif de résiliation, et sans calcul du MRR.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un contrat jamais facturé ne se résilie pas</h4>
+                    <p>Sur un abonnement confirmé mais pas encore facturé, comme un renouvellement qui commence plus tard,
+                        Résilier refuse : « Vous ne pouvez pas résilier un contrat qui n'a pas été facturé. Veuillez annuler
+                        le contrat dans ce cas. » Le bouton <strong>Annuler</strong> est alors la seule issue.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le vendeur de l'abonnement devient celui du client</h4>
+                    <p>À la confirmation, si le client n'a pas de vendeur, celui de l'abonnement est inscrit sur la fiche du
+                        client et sur celles de ses contacts, et chacun de ces changements lui est notifié. Choisissez le
+                        bon vendeur avant de confirmer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les factures automatiques partent par courriel</h4>
+                    <p>L'action planifiée facture et envoie : le modèle d'e-mail du plan part au client dès la facture
+                        créée, et une autre action planifiée relance les abonnements sans moyen de paiement enregistré.
+                        Vérifiez les adresses des clients avant la première échéance, ou videz le modèle d'e-mail du plan
+                        pour envoyer les factures à la main.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La devise vient de la liste de prix</h4>
+                    <p>Le prix d'un plan s'applique dans la devise de la liste de prix de la commande. Sur la base utilisée
+                        ici, la liste par défaut n'était pas en dollars : une liste « Tarif en dollars » a été créée et
+                        choisie sur les commandes. Contrôlez le champ <strong>Liste de prix</strong> du devis avant de
+                        confirmer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> constater l'effet d'une vente incitative sur le MRR.</p>
+                    <p><strong>Indication :</strong> créez un abonnement mensuel de 2 postes de Maintenance de poste de
+                        travail pour un client de démonstration, confirmez-le et facturez-le. Faites ensuite une vente
+                        incitative d'un poste, confirmez-la, puis ouvrez Analyse › Répartition du MRR en vue liste.</p>
+                    <p><strong>Critère de réussite :</strong> l'abonnement compte 3 postes et un MRR de 60 $, et la liste
+                        montre une ligne Nouveau de 40 $ suivie d'une ligne Expansion de 20 $.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'application Abonnements (Enterprise) fait d'une commande de vente un contrat récurrent, réglé par
+                        un plan récurrent.</li>
+                    <li>Un produit d'abonnement porte un prix par plan ; changer de plan sur un devis change le prix.</li>
+                    <li>Chaque facture couvre une période et fait avancer la prochaine facture ; une action planifiée
+                        quotidienne facture les échéances et envoie les factures.</li>
+                    <li>Vente incitative ajoute des lignes au prorata, Renouveler prépare le contrat suivant, Résilier
+                        clôt un contrat facturé avec un motif.</li>
+                    <li>La Répartition du MRR classe chaque événement : Nouveau, Expansion, Contraction, Transfert,
+                        Attrition.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande confirmée dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le jumeau Community : créer, envoyer et confirmer un devis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et remises dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Devises, règles de prix et remises sur les commandes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/location-materiel-odoo-313">Location de matériel dans Odoo 20 : l'app Location</a></h5>
+                            <p class="small text-muted mb-0">Louer du matériel : réservation, enlèvement, retour et planning des locations.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
