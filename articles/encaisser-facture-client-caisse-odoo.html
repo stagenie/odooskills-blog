@@ -1,0 +1,466 @@
+<!--
+Article — Encaisser une facture client à la caisse avec Odoo 20
+Série « Point de vente avec Odoo 20 Enterprise » (lot EE 10), article E10.3
+Date : 2026-10-14
+Slug : encaisser-facture-client-caisse-odoo
+Mot-clé cible : odoo pos payer facture, régler dû client point de vente odoo
+Tags : intermediaire, guide, enterprise, pos
+Preuves (14/10/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur uid 8, société 1 My Company (San Francisco)) :
+  - pos_settle_due (OEEL-1, « Point of Sale Settle Due », « Settle partner's due in the POS UI. »), dépend de point_of_sale et
+    account_followup. button_immediate_install : 405 -> 406 modules, seul pos_settle_due ajouté. Ajoute le champ
+    res.partner.invoices_amount_due et la vue liste due_account_move_list_view. Aucun réglage de caisse.
+  - Caisse Magasin de meubles (config 1, USD, sans liste de prix) : session 9 « Magasin de meubles/00003 » ouverte (fond 51,49),
+    puis fermée (compté 789,79, écart 0). Session 10 vide en contrôle d'ouverture, créée en revenant à l'écran de connexion,
+    supprimée par pos.session.delete_opening_control_session.
+  - Client Wood Corner (partner 12) : FAC/2026/00006 (552,00, location S00047) et FAC/2026/00004 (186,30) réglées en espèces
+    par Régler les factures. RPC account.move.settle_invoices_from_pos ; notification « Invoice(s) settled successfully. » ;
+    aucun écran de reçu, aucun pos.order créé. Pièces CSH1/2026/00005 (id 244) et CSH1/2026/00006 (245), journal
+    « Espèces Magasin de meubles » : 101501 au débit, 121000 Accounts Receivable au crédit, libellé « Settling invoice FAC/... »,
+    lignes de relevé 66 et 67 liées à la session 9 (relevé 17), lettrage immédiat (factures paid, total_due 1048,80 -> 310,50).
+  - Montant partiel (100 sur 186,30) : « Restant 86,30 », bouton Valider avec la classe disabled. Retour -> « Cancel Settlement ».
+  - Fermeture : Cash entrant/sortant +738,30 (deux lignes Settling invoice), aucune pièce de clôture POSC créée.
+  - CE : pos_settle_due absent de odoo/addons ; Compte client (pay_later) facture la vente (point_of_sale/models/pos_order.py:177-181).
+  - Aucun mail.mail créé (dernier 217).
+Captures : content/blog/screenshots/encaisser-facture-client-caisse-odoo/ (scripts docs/blog-odoo20/captures-base-edu/e10-3-facture-caisse/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child, .ce-box ul { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Encaisser une facture client à la caisse avec Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un client passe en magasin pour payer une facture restée ouverte :
+                    Odoo 20 Enterprise affiche son dû à la caisse, laisse choisir les factures à régler, encaisse le
+                    montant et lettre aussitôt la facture en comptabilité.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), octobre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU / OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un client professionnel a été facturé depuis les ventes ou la location, et il préfère régler au
+                    comptoir, en espèces ou par carte. Sans outil dédié, le caissier encaisse l'argent, puis quelqu'un
+                    doit retrouver la facture dans la comptabilité et y enregistrer le paiement à la main. Odoo 20
+                    Enterprise réunit les deux gestes : à la caisse, la fiche du client indique son <strong>Total
+                    dû</strong>, le menu de la ligne propose <strong>Régler les factures</strong>, et le paiement validé
+                    solde la facture.</p>
+                <p>Cet article suit ce parcours sur la caisse <strong>Magasin de meubles</strong> de la démonstration,
+                    en dollars, avec le client de démonstration <strong>Wood Corner</strong>, qui a trois factures
+                    ouvertes pour un total de 1 048,80 $ (données de démonstration). Il montre ensuite ce que la
+                    comptabilité enregistre, et ce que la fermeture de la caisse en reprend.</p>
+
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>installer le module de règlement des factures au point de vente ;</li>
+                    <li>retrouver le dû d'un client depuis la caisse et choisir les factures à régler ;</li>
+                    <li>encaisser le règlement et savoir ce que l'écran accepte ou refuse ;</li>
+                    <li>lire l'écriture comptable créée et vérifier le lettrage de la facture ;</li>
+                    <li>retrouver ces encaissements dans la fermeture de la caisse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>De la facture ouverte au lettrage</h2>
+                <p>Le schéma ci-dessous résume le chemin d'un règlement de facture à la caisse.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du règlement d'une facture client au point de vente. Une facture client comptabilisée, non payée, est portée au compte 121000 Accounts Receivable. Dans la caisse ouverte, l'écran Client affiche le Total dû du client. Le menu de la ligne du client ouvre Régler les factures, où l'on coche une ou plusieurs factures. L'écran de paiement propose le dû des factures cochées. Si le montant saisi est inférieur au dû, un Restant s'affiche et Valider reste grisé. Avec le montant complet, Valider crée une pièce dans le journal d'espèces : débit Espèces, crédit 121000. Cette pièce est lettrée aussitôt avec la facture, qui passe Payé, et le Total dû diminue ; elle apparaît aussi à la fermeture de la caisse, sur la ligne Cash entrant/sortant" style="max-width:45%; height:auto;"/>
+                    <figcaption>Figure 1 — Le règlement d'une facture à la caisse : de la facture ouverte à la pièce de caisse lettrée.</figcaption>
+                </figure>
+                <p>Le point important est la colonne de droite : le règlement ne passe pas par une commande de point de
+                    vente. Il crée directement une pièce dans le <strong>journal d'espèces de la caisse</strong>, qui
+                    solde la créance du client et se lettre tout de suite avec la facture. La fermeture de la caisse ne
+                    fait que reprendre ce montant dans le comptage des espèces.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Installer le règlement des factures au point de vente</h2>
+                <p>La fonction est portée par le module Enterprise <strong>Point of Sale Settle Due</strong>
+                    (<code>pos_settle_due</code>), décrit par Odoo comme « Settle partner's due in the POS UI ». Il
+                    dépend du point de vente et de la gestion des relances de paiement, celle présentée dans
+                    <a href="https://odooskills.com/blog/fonctionnel-odoo-1/relances-paiement-automatiques-odoo-299">Relances
+                    de paiement automatiques dans Odoo 20</a>. Il s'installe depuis <strong>Applications</strong>, en
+                    retirant le filtre Applications et en cherchant son nom.</p>
+                <p>Sur la base de démonstration, où le point de vente et les relances étaient déjà installés, il n'a
+                    rien ajouté d'autre que lui-même. Il ne crée aucun réglage dans la configuration de la caisse :
+                    une fois installé, toutes les caisses en profitent à leur prochaine ouverture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ouvrir la caisse et retrouver le dû du client</h2>
+                <p>Ouvrez <strong>Point de Vente</strong>, puis <strong>Ouvrir la caisse</strong> sur la carte
+                    <strong>Magasin de meubles</strong>. La fenêtre <strong>Contrôle à l'ouverture</strong> propose le
+                    fond de caisse de la session précédente (51,49 $ ici) ; confirmez avec <strong>Ouvrir la
+                    caisse</strong>. Le détail de cette étape est dans
+                    <a href="https://odooskills.com/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture
+                    et fermeture de caisse dans Odoo 20</a>. Les prix de cette caisse sont en dollars : aucune liste de
+                    prix n'a été changée pour cet article.</p>
+                <p>Touchez <strong>Client</strong> en bas à gauche. La fenêtre <strong>Choisir un client</strong>
+                    affiche, pour chaque client qui a des factures ouvertes, la mention <strong>Total dû</strong>.
+                    Saisissez « Wood Corner » dans la recherche et validez par Entrée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Choisir un client du point de vente Odoo 20, recherche Wood Corner. Quatre lignes : Wood Corner, puis Ron Gibson, Tom Ruiz et Willie Burke, contacts de Wood Corner ; adresses, téléphones et courriels floutés. Chaque ligne affiche Total dû : 1 048,80 dollars. Le menu de la ligne Wood Corner est ouvert sur Régler les factures" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 2 — Le Total dû du client et le menu de sa ligne (adresses, téléphones et courriels floutés).</figcaption>
+                </figure>
+                <p>Le montant est celui de la société : les contacts rattachés à Wood Corner affichent le même
+                    <strong>Total dû</strong> de 1 048,80 $. Le bouton à trois traits, au bout de la ligne, ouvre le
+                    menu du client : choisissez <strong>Régler les factures</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Choisir les factures à régler</h2>
+                <p>La fenêtre <strong>Factures clients</strong> liste les factures ouvertes du client : numéro, date de
+                    facturation, échéance (en rouge quand elle est dépassée), total, montant dû et statut du paiement.
+                    Cochez la ou les factures que le client vient payer ; la ligne de total, en bas, suit la
+                    sélection.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Factures clients ouverte depuis la caisse pour Wood Corner : FAC/2026/00006 du 13 octobre, échéance Hier, total et dû 552,00 dollars, Non payé, cochée ; FAC/2026/00004, 186,30 dollars, et FAC/2026/00003, 310,50 dollars, non cochées. En haut, 1 sélectionné(s) ; total de la sélection 552,00 dollars ; boutons Sélectionner et Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 3 — Les factures ouvertes de Wood Corner, une facture cochée.</figcaption>
+                </figure>
+                <p>Ici, la facture <strong>FAC/2026/00006</strong> (552,00 $) est cochée. <strong>Sélectionner</strong>
+                    ouvre directement l'écran de paiement, sans passer par une commande : aucun article n'est ajouté au
+                    ticket.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Encaisser le règlement</h2>
+                <p>L'écran de paiement affiche le dû des factures cochées. Le client Wood Corner est déjà renseigné et
+                    le bouton <strong>Facture</strong> est grisé : il n'y a pas de nouvelle facture à émettre. Les modes
+                    proposés sont <strong>Espèces</strong> et <strong>Card</strong> ; le mode <strong>Compte
+                    client</strong> de cette caisse n'apparaît pas, puisqu'il s'agit justement de solder le compte du
+                    client. Touchez <strong>Espèces</strong> : Odoo inscrit le montant complet.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Écran de paiement du point de vente pour le règlement de Wood Corner : montant 552,00 dollars, ligne Espèces 552,00 dollars, modes Espèces et Card à gauche, boutons Wood Corner et Facture grisé, pavé numérique, boutons Retour et Valider" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 4 — Le règlement de FAC/2026/00006 en espèces, prêt à être validé.</figcaption>
+                </figure>
+                <p>Touchez <strong>Valider</strong>. La caisse affiche le message « Invoice(s) settled successfully. »
+                    et ouvre aussitôt une nouvelle commande vide. Aucun écran de reçu ne s'affiche après un règlement
+                    de facture : il n'y a donc ni ticket à imprimer, ni ticket à envoyer par courriel.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Haut de l'écran du point de vente après validation : commande vide numéro 15002, catégories Divers, Bureaux, Chaises, et notification verte Invoice(s) settled successfully. en haut à droite" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 5 — Après Valider : le message de confirmation et une commande vide.</figcaption>
+                </figure>
+                <p>Pour tester ce parcours sur une base qui vous appartient, la page d'accueil
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">d'Odoo</a>
+                    mène à l'essai en ligne, où le point de vente et la facturation s'installent en quelques clics.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Un règlement partiel ? L'écran le refuse</h2>
+                <p>Le client ne peut pas régler une partie seulement d'une facture par ce chemin. Sur la deuxième
+                    facture, <strong>FAC/2026/00004</strong> (186,30 $), un montant de 100,00 $ saisi au pavé fait
+                    apparaître un <strong>Restant</strong> de 86,30 $ et laisse le bouton <strong>Valider</strong>
+                    grisé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Écran de paiement du règlement de FAC/2026/00004 : montant 186,30 dollars, ligne Espèces 100,00 dollars, Restant 86,30 dollars en rouge en bas à droite, bouton Valider grisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 6 — Un montant inférieur au dû : Restant affiché, Valider grisé.</figcaption>
+                </figure>
+                <p>Avec le montant complet (186,30 $), la validation passe et la facture est soldée à son tour. De
+                    retour dans <strong>Client</strong>, le <strong>Total dû</strong> de Wood Corner n'est plus que de
+                    310,50 $, le montant de la seule facture encore ouverte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Choisir un client après les deux règlements : Wood Corner et ses contacts Ron Gibson, Tom Ruiz et Willie Burke, chacun avec Total dû : 310,50 dollars ; adresses, téléphones et courriels floutés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 7 — Après deux règlements, le Total dû de Wood Corner passe à 310,50 $ (coordonnées floutées).</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ce que la comptabilité enregistre</h2>
+                <p>Ouvrez la facture dans <strong>Comptabilité › Clients › Factures</strong>. Elle porte le bandeau
+                    <strong>PAYÉ</strong> et, sous les totaux, la ligne « Payé le 14/10/2026 » pour 552,00 $ ; le
+                    <strong>Montant dû</strong> est à 0,00 $. La caisse est encore ouverte à ce moment : le lettrage
+                    n'attend pas la fermeture de la session.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Facture client FAC/2026/00006 de Wood Corner (adresse floutée), comptabilisée, bandeau vert PAYÉ ; ligne [RENT-DAY] Groupe électrogène, 3 Jours, 2,00 unités à 240,00, taxe 15 %, 480,00 dollars ; Montant hors taxes 480,00, Tax 15 % 72,00, Total 552,00 dollars ; Payé le 14/10/2026 552,00 dollars ; Montant dû 0,00 dollar" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 8 — La facture réglée à la caisse : PAYÉ, montant dû à zéro (adresse du client floutée).</figcaption>
+                </figure>
+                <p>L'icône <strong>i</strong> devant « Payé le » ouvre la fenêtre <strong>Infos de la pièce
+                    comptable</strong> (montant, référence CSH1/2026/00005, date, journal), avec les boutons
+                    <strong>Annuler le lettrage</strong> et <strong>Vue</strong> ; ce dernier ouvre la pièce. C'est une pièce du
+                    journal <strong>Espèces Magasin de meubles</strong>, numérotée comme les autres pièces de ce journal
+                    (<strong>CSH1/2026/00005</strong> ici), datée du jour du règlement, au nom du client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Pièce comptable CSH1/2026/00005, comptabilisée, journal Espèces Magasin de meubles, date comptable 14 octobre. Boutons Éléments lettrés, Relevé bancaire, 1 Transaction bancaire. Deux lignes au nom de Wood Corner avec la description Settling invoice FAC/2026/00006 : 101501 Espèces Magasin de meubles au débit 552,00 dollars, 121000 Accounts Receivable au crédit 552,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 9 — La pièce de règlement dans le journal d'espèces de la caisse.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Compte</th><th>Débit</th><th>Crédit</th><th>Rôle</th></tr></thead>
+                    <tbody>
+                        <tr><td>101501 Espèces Magasin de meubles</td><td>552,00 $</td><td></td><td>l'argent entre dans le tiroir de la caisse</td></tr>
+                        <tr><td>121000 Accounts Receivable</td><td></td><td>552,00 $</td><td>la créance de Wood Corner diminue d'autant ; cette ligne est lettrée avec la facture</td></tr>
+                    </tbody>
+                </table>
+                <p>Les boutons du haut de la pièce confirment ses liens : <strong>Éléments lettrés</strong> renvoie au
+                    lettrage avec la facture, <strong>Relevé bancaire</strong> et <strong>1 Transaction bancaire</strong>
+                    indiquent que la pièce est une ligne du relevé d'espèces de la session de caisse. Le libellé
+                    « Settling invoice FAC/2026/00006 » permet de la retrouver dans le grand livre du client. Aucune
+                    commande de point de vente n'est créée : le menu <strong>Commandes</strong> de la caisse ne
+                    montre rien pour ce règlement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Fermer la caisse : les règlements dans le comptage</h2>
+                <p>En fin de journée, ouvrez le menu à trois traits en haut à droite de la caisse, puis
+                    <strong>Fermer la caisse</strong>. Le montant attendu en espèces additionne le fond de caisse et
+                    les règlements, présentés sous <strong>Cash entrant/sortant</strong> ; le petit triangle déplie le
+                    détail, une ligne par facture réglée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Fermeture de la caisse : 0 commandes : 0,00 dollar. Espèces 789,79 dollars : Ouverture 51,49, Cash entrant/sortant +738,30 déplié en Settling invoice FAC/2026/00006 +552,00 et Settling invoice FAC/2026/00004 +186,30, Compté 789,79, Différence 0,00. Card 0,00 et Compte client 0,00. Comptage de caisse 789,79, Note de clôture, boutons Fermer la caisse, Ignorer, Cash entrant/sortant, Ventes du jour" style="max-width:100%; height:auto;"/>
+                    <figcaption>Figure 10 — La fermeture : les deux règlements dans les espèces attendues, aucune commande.</figcaption>
+                </figure>
+                <p>Le caissier compte le tiroir comme d'habitude : 51,49 $ d'ouverture plus 738,30 $ de règlements
+                    donnent 789,79 $ attendus. L'en-tête indique <strong>0 commandes</strong> : les règlements ne
+                    sont pas des ventes. Sur la base de démonstration, la fermeture de cette session n'a créé aucune
+                    pièce de clôture supplémentaire, puisque les règlements étaient déjà comptabilisés et qu'aucune
+                    vente n'avait eu lieu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Community</h4>
+                    <p>Le module <code>pos_settle_due</code> n'existe pas dans Odoo 20 Community. La caisse Community
+                        sait vendre à crédit : son mode de paiement <strong>Compte client</strong> fait facturer la vente
+                        au client, et la facture reste à payer. En revanche, elle n'affiche pas de Total dû et ne propose
+                        pas « Régler les factures » : le paiement d'une facture se saisit dans la
+                        facturation, avec le bouton d'enregistrement du paiement, comme le montre
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et
+                        relances dans Odoo 20</a>. L'ouverture, les entrées et sorties d'espèces et la fermeture de
+                        caisse sont, elles, identiques : voir
+                        <a href="https://odooskills.com/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture
+                        et fermeture de caisse dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Trouver le client : nom complet et Entrée</h4>
+                    <p>Sur la base de démonstration, la saisie de « Wood » seul n'a affiché que deux autres contacts.
+                        Le nom complet suivi d'Entrée a affiché Wood Corner et ses contacts. Si un client attendu
+                        n'apparaît pas, complétez la recherche et validez-la.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Retour annule le règlement</h4>
+                    <p>Sur l'écran de paiement d'un règlement, <strong>Retour</strong> ne ramène pas à un ticket : une
+                        fenêtre « Cancel Settlement » demande de confirmer l'abandon du règlement. Pour changer de
+                        facture, confirmez puis recommencez depuis le client.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Pas de reçu remis au client</h4>
+                    <p>Après validation, la caisse passe directement à une nouvelle commande. Si le client demande une
+                        preuve de paiement, la facture marquée PAYÉE se retrouve dans la comptabilité.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le montant doit couvrir les factures cochées</h4>
+                    <p>Un montant inférieur au dû laisse Valider grisé. Pour un paiement partiel, cochez moins de
+                        factures, ou saisissez le paiement depuis la facture dans la comptabilité.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> régler à la caisse une facture d'un client de démonstration et
+                        retrouver le règlement en comptabilité.</p>
+                    <p><strong>Indication :</strong> créez et confirmez une facture client en dollars pour un client
+                        de démonstration, ouvrez une caisse de magasin, puis Client › menu de la ligne › Régler les
+                        factures › Espèces › Valider. Ouvrez ensuite la facture et suivez le lien du paiement.</p>
+                    <p><strong>Critère de réussite :</strong> la facture porte le bandeau PAYÉ, la pièce de règlement
+                        est dans le journal d'espèces de la caisse avec le libellé « Settling invoice » suivi du numéro
+                        de la facture, et la fermeture de la caisse affiche le montant sous Cash entrant/sortant.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le module Enterprise Point of Sale Settle Due affiche le Total dû des clients à la caisse et
+                        ajoute Régler les factures au menu de chaque client.</li>
+                    <li>Régler les factures liste les factures ouvertes ; le montant validé doit couvrir les factures
+                        cochées.</li>
+                    <li>La validation crée une pièce dans le journal d'espèces de la caisse (débit Espèces, crédit
+                        compte client), lettrée tout de suite avec la facture, sans commande ni reçu.</li>
+                    <li>La fermeture de la caisse reprend ces règlements sous Cash entrant/sortant dans les espèces
+                        attendues.</li>
+                    <li>La Community vend à crédit avec Compte client, mais le paiement de la facture se saisit dans la
+                        facturation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture et fermeture de caisse dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Fond de caisse, encaissements, comptage et ticket de clôture en Community.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/relances-paiement-automatiques-odoo-299">Relances de paiement automatiques dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les rappels de factures impayées, avant que le client ne passe en caisse.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/ecran-preparation-cuisine-odoo-324">Écran de préparation en cuisine avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La commande de la caisse sur l'écran de cuisine, d'étape en étape.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
