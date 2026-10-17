@@ -42,6 +42,20 @@ class ProductTemplate(models.Model):
         string='Hub — lien',
         help="Page de vente dédiée. Vide : la fiche boutique du produit.")
 
+    def _oski_edition(self):
+        """Édition d'Odoo couverte par le produit, lue sur les codes de ses ebooks.
+
+        `E1-20` → '20' ; `E1` (sans suffixe) → '19', l'édition d'origine de la
+        gamme. Un pack suit l'édition la plus récente de ses livres. Un produit
+        sans ebook n'a pas d'édition ('').
+        """
+        self.ensure_one()
+        editions = []
+        for ebook in self.ebook_ids:
+            code = ebook.code or ''
+            editions.append(code.rsplit('-', 1)[1] if '-' in code else '19')
+        return max(editions, key=lambda e: (len(e), e)) if editions else ''
+
     def _oski_running_campaign(self):
         """Campagne appliquée et en cours couvrant ce produit, sinon vide."""
         self.ensure_one()

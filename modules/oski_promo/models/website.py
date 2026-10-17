@@ -82,6 +82,29 @@ class Website(models.Model):
             'packs': produits.filtered(lambda p: p.oski_is_pack),
         }
 
+    @api.model
+    def oski_catalogue_par_edition(self):
+        """Le catalogue publié, groupé par édition d'Odoo, la plus récente en tête.
+
+        Rend une liste de dicts {'edition': '20', 'label': 'Odoo 20',
+        'monos': recordset, 'packs': recordset}. Le hub affiche l'édition
+        courante en haut et les précédentes en « édition précédente » ;
+        l'accueil ne prend que la première. Tant que la gamme 20 n'est pas
+        publiée, la liste ne contient que la 19 : publier les produits suffit
+        à faire basculer toutes les surfaces, sans toucher une vue.
+        """
+        cat = self.oski_catalogue()
+        groupes = {}
+        for produit in cat['monos'] | cat['packs']:
+            edition = produit._oski_edition()
+            if not edition:
+                continue
+            g = groupes.setdefault(edition, {
+                'edition': edition, 'label': 'Odoo %s' % edition,
+                'monos': produit.browse(), 'packs': produit.browse()})
+            g['packs' if produit.oski_is_pack else 'monos'] |= produit
+        return [groupes[e] for e in sorted(groupes, key=lambda e: (len(e), e), reverse=True)]
+
     #: Horizon de validité annoncé aux moteurs de recherche hors campagne.
     #: Une date lointaine écrite en dur finirait par être dépassée sans que
     #: personne ne s'en aperçoive — c'est exactement ce qui s'est produit

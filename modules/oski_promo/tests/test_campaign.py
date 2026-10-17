@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from psycopg2 import IntegrityError
 
 from odoo import fields
@@ -194,14 +196,19 @@ class TestOskiPromoCampaign(TransactionCase):
         """Deux campagnes sans aucun chevauchement de période, sur le même
         produit : la seconde application purgerait quand même les items
         encore actifs de la première, donc doit être refusée."""
-        camp = self._campaign(name='Septembre',
-                               date_start='2026-09-01 00:00:00',
-                               date_end='2026-09-10 00:00:00')
+        # Dates relatives : la première campagne doit être « non terminée » au
+        # moment du test, quelle que soit la date d'exécution. Des dates figées
+        # (sept./oct. 2026) ont rendu ce test vert à tort une fois dépassées.
+        now = fields.Datetime.now()
+        jour = timedelta(days=1)
+        camp = self._campaign(name='Prochaine',
+                               date_start=now + 10 * jour,
+                               date_end=now + 20 * jour)
         camp.action_generate_lines()
         camp.action_apply()
-        autre = self._campaign(name='Octobre',
-                               date_start='2026-10-01 00:00:00',
-                               date_end='2026-10-10 00:00:00')
+        autre = self._campaign(name='Suivante',
+                               date_start=now + 40 * jour,
+                               date_end=now + 50 * jour)
         autre.action_generate_lines()
         with self.assertRaises(UserError):
             autre.action_apply()
