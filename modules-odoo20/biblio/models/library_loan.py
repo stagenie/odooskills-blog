@@ -4,8 +4,9 @@ from dateutil.relativedelta import relativedelta
 from markupsafe import Markup
 
 from odoo import api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 from odoo.fields import Domain
+from odoo.http.dispatcher import conceal_debug_traceback
 
 _logger = logging.getLogger(__name__)
 
@@ -192,6 +193,42 @@ class LibraryLoan(models.Model):
             )
         _logger.info("Bibliothèque : %s emprunt(s) en retard relancé(s).", len(a_relancer))
         return len(a_relancer)
+
+    # API JSON-2 : chaque méthode publique est appelable par /json/2/library.loan/<méthode>
+    @api.model
+    @api.readonly
+    @conceal_debug_traceback(UserError)
+    def api_loans(self, state='ongoing', late=None, limit=80):
+        """Emprunts au format de l'API : une liste de dictionnaires plats."""
+        if state not in ('ongoing', 'returned'):
+            raise UserError(self.env._("État inconnu : %(state)s.", state=state))
+        domain = Domain('state', '=', state)
+        if late is not None:
+            domain &= Domain('is_late', '=', bool(late))
+        return self.search(domain, limit=limit)._api_values()
+
+    @api.model
+    @conceal_debug_traceback(UserError)
+    def api_return_copy(self, copy):
+        """Retour d'un exemplaire par son code d'inventaire (borne de retour)."""
+        loan = self.search([('copy_id.name', '=', copy), ('state', '=', 'ongoing')], limit=1)
+        if not loan:
+            raise UserError(self.env._("Aucun emprunt en cours pour l'exemplaire %(copy)s.", copy=copy))
+        loan.action_return()
+        return loan._api_values()[0]
+
+    def _api_values(self):
+        return [{
+            'id': loan.id,
+            'reference': loan.reference,
+            'member': loan.member_id.card_number,
+            'copy': loan.copy_id.name,
+            'book': loan.book_id.title,
+            'date_out': loan.date_out,
+            'date_due': loan.date_due,
+            'date_return': loan.date_return or None,
+            'days_late': loan.days_late,
+        } for loan in self]
 
     def _compute_access_url(self):
         super()._compute_access_url()
