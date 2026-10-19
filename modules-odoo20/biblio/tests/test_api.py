@@ -8,6 +8,7 @@ class TestApi(HttpCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        cls.env['res.lang']._activate_lang('fr_FR')
         book = cls.env['library.book'].create({'title': "Python pour Odoo"})
         cls.copy_1, cls.copy_2 = cls.env['library.copy'].create([{'book_id': book.id}, {'book_id': book.id}])
         member = cls.env['library.member'].create({'name': "Service Formation", 'card_number': 'A-0001'})
