@@ -1,0 +1,406 @@
+<!--
+Article — Recevoir ses factures électroniques dans Odoo 20
+Série « Facturation électronique et TVA avec Odoo 20 » (blog Fonctionnel, série 55), vague 3 F1.2
+Date : 2026-10-20 (routine bodoo19)
+Slug : recevoir-factures-electroniques-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-10-20 : Odoo 20.0 Community, base vs20_func_f12 (copie de vs20_func), société FR Company (id 2),
+  mode démo (account_peppol.edi.mode = demo), aucun appel réseau.
+  Joué : inscription démo (Paramètres, Authentifier, Validate Registration (Demo)) ; Factures fournisseurs › Actions ›
+  « Récupérer les factures électroniques » → brouillon Tintin INV/2025/00017, 12,00 € HT sans taxe (XML : TVA 12 %, 13,44 €),
+  journal Achats, PDF + XML joints, message « Format used to import the invoice: UBL BIS Billing 3.0.12 », partenaire créé,
+  « Could not retrieve the tax: 12.0 … » ; dépôt du même XML par « Uploader » → bandeau « Ce document pourrait être un
+  doublon de INV/2025/00017 à 12,00 € (brouillon) » (doublon supprimé ensuite).
+  Code : account_peppol/tools/demo_utils.py (facture d'exemple get_demo_vendor_bill, fournisseur 0208, une seule fois par société) ;
+  l10n_fr_pdp/tools/demo_utils.py (mode démo PDP) ; account_peppol/models/account_journal.py:40-58 (action visible si
+  société « receiver », journal achats) ; account/static/src/components/fetch_einvoices/fetch_einvoices_cog.js (menu Actions) ;
+  account_peppol/data/cron.xml + l10n_fr_pdp/data/ir_cron.xml (4 heures) ; account_peppol/controllers/webhooks.py et
+  l10n_fr_pdp/controllers/webhooks.py (webhook → déclenche la tâche) ; l10n_fr_pdp/models/account_move.py:168-174
+  (réponses de statut seulement si le fournisseur est sur une plateforme française).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Recevoir ses factures électroniques dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Depuis le 1er septembre 2026, toute entreprise établie en France doit
+                    pouvoir recevoir ses factures fournisseurs sous forme électronique. Dans Odoo 20 Community, une
+                    société inscrite à la plateforme agréée reçoit ces factures directement en brouillon dans son
+                    journal d'achats. Cet article suit une réception de bout en bout, du réglage au contrôle avant
+                    validation.</p>
+                <p class="small text-light mt-2">~9 minutes de lecture · niveau intermédiaire · série <strong>Facturation électronique et TVA avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur une copie de la base de démonstration (société « FR Company », plan comptable français),
+                        en mode démonstration de la plateforme agréée : la facture reçue est un document d'exemple
+                        fourni par Odoo, rien n'est venu du réseau réel. Ce module existe aussi dans l'édition
+                        Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que change la réception électronique</h2>
+                <p>Une facture électronique n'est pas un PDF envoyé par courriel. C'est un fichier structuré (UBL, CII,
+                    ou Factur-X qui réunit un PDF et un fichier CII) qui circule entre plateformes agréées. Le
+                    fournisseur dépose sa facture sur sa plateforme ; celle-ci consulte l'annuaire de l'État pour
+                    trouver la plateforme choisie par le client, puis la lui transmet. Le client la récupère dans son
+                    logiciel.</p>
+                <p>Avec Odoo 20, l'application Facturation est ce logiciel, et la plateforme agréée d'Odoo joue le
+                    rôle de plateforme du client. L'article précédent de la série, <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>, présente la réforme et l'inscription. Cet article part d'une société
+                    inscrite et s'intéresse à ce qui arrive ensuite : où la facture apparaît, ce qu'Odoo en lit, et ce
+                    qu'il reste à vérifier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>choisir le journal qui reçoit les factures électroniques ;</li>
+                    <li>savoir quand Odoo récupère les factures, et les récupérer à la demande ;</li>
+                    <li>lire une facture reçue : fournisseur, lignes, pièces jointes, remarques de l'import ;</li>
+                    <li>repérer un écart de taxe avant de confirmer la facture ;</li>
+                    <li>déposer à la main un fichier XML reçu hors plateforme.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le chemin d'une facture reçue</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la réception d'une facture électronique dans Odoo 20 : le fournisseur dépose la facture sur sa plateforme, qui consulte l'annuaire et la transmet à la plateforme agréée d'Odoo, d'où la base Odoo 20 la récupère en facture fournisseur brouillon ; encadrés : quand la base récupère (webhook, tâche planifiée toutes les 4 heures, action manuelle), ce que fait la base (lecture du XML, fournisseur, lignes, pièces jointes, historique), et le dépôt manuel d'un XML par le bouton Uploader" style="max-width:100%; height:auto;"/>
+                    <figcaption>De la plateforme du fournisseur au brouillon de facture fournisseur dans Odoo 20.</figcaption>
+                </figure>
+                <p>La base Odoo ne reçoit pas la facture de façon instantanée et passive : elle la <em>récupère</em>
+                    auprès de la plateforme. Trois déclencheurs existent dans le code d'Odoo 20 :</p>
+                <ul>
+                    <li><strong>l'appel de la plateforme</strong> : à l'inscription, Odoo donne à la plateforme une
+                        adresse de rappel (webhook) ; l'arrivée d'un document déclenche la tâche de récupération sans attendre
+                        son horaire ;</li>
+                    <li><strong>la tâche planifiée</strong> « Peppol : récupérer de nouveaux documents », réglée toutes
+                        les 4 heures, complétée pour la France par « PDP : récupérer les nouveaux documents
+                        réglementaires » (même fréquence) ;</li>
+                    <li><strong>l'action manuelle</strong> « Récupérer les factures électroniques », décrite à l'étape 2.</li>
+                </ul>
+                <p>L'adresse de rappel suppose une base joignable depuis Internet. Sans elle, la tâche planifiée ou
+                    l'action manuelle prennent le relais.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Choisir le journal de réception</h2>
+                <p>Sélectionnez la société française (sur la base de démonstration, « FR Company »), puis ouvrez
+                    <strong>Facturation › Configuration › Paramètres</strong>, bloc <strong>Facturation électronique
+                    française</strong>. Une fois la société inscrite (voir l'article précédent), le bloc affiche le
+                    champ <strong>Journal des factures entrantes</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bloc Facturation électronique française d'une société inscrite en mode démonstration : identifiant flouté, peut envoyer et recevoir factures et notes de crédit (MODE DÉMO), inscrit dans l'annuaire à partir du 20/10/2026, E-mail de contact, Journal des factures entrantes Achats, bouton Déconnecter la facturation électronique française, e-reporting coché, périodicité Régime réel normal mensuel" style="max-width:90%; height:auto;"/>
+                    <figcaption>La société inscrite reçoit ses factures dans le journal « Achats ». Identifiant flouté.</figcaption>
+                </figure>
+                <p>Par défaut, c'est le journal « Achats ». Une entreprise qui veut isoler les factures arrivées par
+                    la plateforme peut créer un journal d'achats dédié et le choisir ici. La mention « peut envoyer et
+                    recevoir factures et notes de crédit » confirme que la société est enregistrée comme destinataire :
+                    sans cette inscription, aucune facture électronique n'arrive dans la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Récupérer les factures à la demande</h2>
+                <p>Ouvrez <strong>Facturation › Fournisseurs › Factures</strong>, puis le menu
+                    <strong>Actions</strong> (icône à trois points à droite du titre « Factures fournisseurs »).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste Factures fournisseurs d'Odoo 20 avec le menu Actions ouvert : Importer, Exporter et Récupérer les factures électroniques" style="max-width:75%; height:auto;"/>
+                    <figcaption>L'action « Récupérer les factures électroniques », dans le menu Actions de la liste.</figcaption>
+                </figure>
+                <p><strong>Récupérer les factures électroniques</strong> interroge la plateforme tout de suite, sans
+                    attendre la tâche planifiée. L'action n'apparaît que si la société est inscrite comme destinataire
+                    et que la liste porte sur le journal choisi pour la réception : son absence signale le plus souvent
+                    une inscription inachevée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des factures fournisseurs après récupération : trois factures comptabilisées de Ready Mat et Gemini Furniture, et une nouvelle ligne en brouillon, fournisseur Tintin, date 10 sept. 2025, référence INV/2025/00017, montant affiché -12,00 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après récupération : la facture reçue apparaît en brouillon, sans numéro définitif.</figcaption>
+                </figure>
+                <p>En mode démonstration, Odoo livre une seule facture d'exemple par société : un fournisseur
+                    « Tintin », référence INV/2025/00017. Elle arrive comme toute facture reçue : en
+                    <strong>brouillon</strong>, sans numéro définitif (le formulaire affiche en grisé le numéro prévu),
+                    avec la date et la référence du fournisseur. La liste affiche les montants des factures fournisseurs
+                    avec un signe moins. Rien n'est
+                    comptabilisé tant qu'un utilisateur ne l'a pas confirmée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Lire la facture reçue</h2>
+                <p>Ouvrez le brouillon. Odoo a rempli la facture fournisseur à partir du fichier reçu.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Facture fournisseur brouillon reçue : fournisseur Tintin, Avenue Louise 9999, 1050 Bruxelles, Belgique, BE0123456749, référence facture INV/2025/00017, date 10 sept. 2025, échéance 10 sept. 2025, devise EUR ; lignes Fries 2 x 5,00 et Andalouse 2 x 1,00, colonne Taxes vide ; montant hors taxes 12,00 euros, total 12,00 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Fournisseur, référence, dates et lignes viennent du fichier. La colonne Taxes est vide.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Fournisseur</strong> : nom, adresse et numéro de TVA lus dans le fichier. Odoo cherche
+                        une fiche existante ; s'il n'en trouve pas, il en crée une.</li>
+                    <li><strong>Référence facture</strong>, <strong>Date</strong> et <strong>Échéance</strong> : celles
+                        du fournisseur.</li>
+                    <li><strong>Lignes de facture</strong> : désignation, quantité et prix unitaire, imputés au compte
+                        d'achat par défaut.</li>
+                </ul>
+                <p>Le détail de l'import se lit dans l'historique de la facture, sous le formulaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Message de l'historique de la facture reçue : Format used to import the invoice: UBL BIS Billing 3.0.12 ; Impossible de trouver un partenaire correspondant à Tintin, un nouveau partenaire a été créé ; Could not retrieve the tax: 12.0 for the document level allowance/charge ; pièces jointes 2_demo_vendor_bill.xml et INV_2025_00017.pdf" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le message d'import : format lu, fournisseur créé, taxe non retrouvée, et les deux fichiers reçus.</figcaption>
+                </figure>
+                <p>Ce message est la première chose à lire. Il donne le format reconnu (ici « UBL BIS Billing
+                    3.0.12 », le format Peppol), signale le fournisseur créé et une taxe à 12 % qu'Odoo n'a pas su
+                    retrouver. Il porte aussi les deux pièces reçues : le fichier XML, qui fait foi, et le PDF de la
+                    facture, à ouvrir pour comparer.</p>
+                <p>Ici, le fichier annonce une TVA de 12 % (taux belge) et un total de 13,44 €. La base n'a pas
+                    retrouvé de taxe d'achat correspondante : les lignes arrivent sans taxe et le brouillon affiche
+                    12,00 €. C'est au comptable de choisir la bonne taxe avant de cliquer sur
+                    <strong>Confirmer</strong>.</p>
+                <p>Les réponses de statut (facture approuvée, refusée…) partent par la plateforme française si le
+                    fournisseur y est raccordé, sinon par Peppol si sa fiche indique qu'il les accepte. Pour la facture
+                    d'exemple, aucun bouton de réponse n'apparaît.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Déposer un fichier reçu hors plateforme</h2>
+                <p>Un fournisseur peut encore envoyer son fichier XML par courriel. Dans <strong>Facturation ›
+                    Fournisseurs › Factures</strong>, le bouton <strong>Uploader</strong> accepte ce fichier : Odoo le
+                    lit comme une facture reçue par la plateforme et crée un brouillon.</p>
+                <p>Pour l'essai, le fichier XML de la facture d'exemple a été téléchargé depuis l'historique, puis
+                    déposé par ce bouton. Odoo a créé un second brouillon et l'a signalé aussitôt :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Facture fournisseur créée par dépôt du fichier XML : bandeau rouge Ce document pourrait être un doublon de INV/2025/00017 à 12,00 euros (brouillon), lien Supprimer le doublon ; fournisseur Tintin, référence INV/2025/00017" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le même fichier déposé deux fois : Odoo repère le doublon et propose de le supprimer.</figcaption>
+                </figure>
+                <p>Le bandeau <strong>Ce document pourrait être un doublon</strong> renvoie vers la première facture
+                    et propose <strong>Supprimer le doublon</strong>. Ce contrôle est utile quand un fournisseur envoie
+                    la même facture par la plateforme et par courriel.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une taxe non retrouvée change le total</h4>
+                    <p>Quand Odoo ne retrouve pas la taxe du fichier, les lignes arrivent sans taxe : le total
+                        affiché (12,00 €) diffère du total du fichier reçu (13,44 €). Comparez toujours le total du
+                        brouillon avec le PDF joint, et lisez le message d'import avant de confirmer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un fournisseur inconnu devient une nouvelle fiche</h4>
+                    <p>Si Odoo ne reconnaît pas le fournisseur, il crée un contact à partir du fichier. Une fiche
+                        existante mal renseignée (numéro de TVA absent, nom différent) produit ainsi un doublon de
+                        contact. Renseignez le numéro de TVA de vos fournisseurs avant les premières réceptions.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La facture de démonstration n'est pas une vraie réception</h4>
+                    <p>En mode démonstration, la facture « Tintin » est un document d'exemple livré avec Odoo,
+                        adressé à une autre société : toute société inscrite en mode démonstration la reçoit, une seule
+                        fois. Elle
+                        sert à voir l'écran, pas à prouver qu'une inscription réelle fonctionne.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir le contrôle de doublon à l'œuvre.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, société « FR Company »
+                        inscrite en mode démonstration, récupérez les factures électroniques, téléchargez le fichier XML
+                        depuis l'historique de la facture reçue, puis déposez-le par le bouton Uploader.</p>
+                    <p><strong>Critère de réussite :</strong> le nouveau brouillon affiche le bandeau « Ce document
+                        pourrait être un doublon de INV/2025/00017 », et il ne reste qu'un brouillon « Tintin » une fois
+                        le doublon supprimé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une société inscrite comme destinataire reçoit ses factures électroniques dans le journal choisi
+                        dans Paramètres, « Achats » par défaut.</li>
+                    <li>Odoo récupère les factures sur appel de la plateforme, toutes les 4 heures par tâche planifiée,
+                        ou à la demande par Actions › « Récupérer les factures électroniques ».</li>
+                    <li>Une facture reçue arrive en brouillon : rien n'est comptabilisé sans confirmation.</li>
+                    <li>Le message d'import dans l'historique dit ce qu'Odoo a lu, créé ou manqué ; le PDF joint sert
+                        de référence pour comparer les montants.</li>
+                    <li>Un fichier XML reçu hors plateforme se dépose par « Uploader », avec contrôle de doublon.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>L'article précédent de la série présente la réforme et l'inscription : <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>. Le prochain traitera de l'autre sens : émettre ses factures en Factur-X
+                    ou en UBL et préparer l'e-reporting.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources officielles (consultées le 18 octobre 2026)</h3>
+                <ul class="small">
+                    <li><a href="https://www.impots.gouv.fr/professionnel/je-passe-la-facturation-electronique" target="_blank" rel="noopener">impots.gouv.fr — Je passe à la facturation électronique</a></li>
+                    <li><a href="https://www.impots.gouv.fr/professionnel/questions/partir-de-quand-suis-je-concerne-par-la-reforme-de-la-facturation" target="_blank" rel="noopener">impots.gouv.fr — À partir de quand suis-je concerné par la réforme ?</a></li>
+                    <li><a href="https://www.odoo.com/documentation/20.0/applications/finance/fiscal_localizations/france.html#localizations-france-e-invoicing" target="_blank" rel="noopener">Documentation Odoo 20 — France, facturation électronique</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs</a></h5>
+                            <p class="small text-muted mb-0">Saisir, valider et payer ce que l'on reçoit.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture client dans Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique : ce que couvre Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La réforme, l'inscription et l'e-reporting.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
