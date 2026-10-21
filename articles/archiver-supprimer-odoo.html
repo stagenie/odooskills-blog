@@ -1,0 +1,297 @@
+<!--
+Article — Supprimer dans Odoo 20 : produit, projet, compte bancaire
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : archiver-supprimer-odoo
+Meta : Odoo 20 refuse de supprimer un produit vendu, un contact facturé ou un projet avec feuilles de temps : messages exacts, archivage, filtre Archivé.
+Mot-clé cible : odoo supprimer un produit / un projet / compte bancaire
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af5 (copie de vs20_func, démo), Playwright + odoo-bin shell.
+  addons/web/models/models.py:262-312 (web_unlink : violation de clé étrangère → UnlinkBlockedError, archivable, modèle bloquant ; absent de 19) ;
+  addons/web/static/src/core/errors/error_dialogs.js:224-283 + error_dialogs.xml:27-42 (fenêtre « Oops », Archiver/Ignorer, action_archive) ;
+  addons/web/i18n/fr.po:3636-3644,5297-5305 (messages non traduits) ; addons/web/static/src/views/view_hook.js:202 (« Bye-bye, record! ») ;
+  addons/account/models/partner.py:869-881 (contact avec facture brouillon ou comptabilisée) ;
+  addons/project/models/project_project.py:766-768 (archiver/désarchiver un projet propage aux tâches), :802-815 (suppression emporte les tâches) ;
+  odoo/addons/base/security/ir.access.csv:61-63 + addons/hr/security/ir.access.csv:52-54 + addons/account/security/ir.access.csv:120 (aucun droit « d » sur res.partner.bank ; v19 group_partner_manager 1,1,1,1) ;
+  addons/account/static/src/components/many2many_tags_banks/many2many_tags_banks.js:46-57 (croix de l'étiquette = archiver, info-bulle Archive) ;
+  addons/point_of_sale/models/product_template.py:237-248,267-271 (session PdV ouverte : ni archivage ni suppression) ;
+  odoo/addons/base/views/res_partner_bank_views.xml:89, res_partner_views.xml:332, project_project_views.xml:257 (filtre Archived).
+  Parcours joué : Protection de sol pour chaise (3 lignes de vente) → Supprimer → Oops « used in Ligne de commande » → Archiver (bandeau ARCHIVÉ) ;
+  Chaise de bureau : Archiver et Supprimer → « You cannot archive/delete product(s)… » (sessions PdV démo ouvertes) ;
+  Acme Corporation → « Le partenaire ne peut pas être supprimé car il est utilisé dans Comptabilité » ; archivage + désarchivage OK ;
+  Recherche & Développement → « Certaines entrées de feuille de temps… » ; archivé → 11 tâches archivées ; Montage de cuisine supprimé avec ses 16 tâches ;
+  Ready Mat › Facturation › croix « Archiver » sur un compte → active = False ; liste des comptes : Actions sans Supprimer ;
+  shell : name_search produit archivé = [] ; nouveau produit supprimé par web_unlink ; Mitchell Admin has_access('unlink') sur res.partner.bank = False.
+  Filtre Archivé + Actions › Désarchiver sans confirmation (Protection de sol pour chaise).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Supprimer dans Odoo 20 : produit, projet, compte bancaire</h1>
+                <p class="lead mt-3 text-white">Un produit déjà vendu, un client déjà facturé, un projet qui porte
+                    des feuilles de temps : Odoo 20 refuse de les supprimer, parce que d'autres documents s'y
+                    réfèrent. La bonne réponse est presque toujours l'archivage : la fiche disparaît des listes
+                    et des choix, l'historique reste intact, et un filtre la ramène en deux clics.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration (Ventes, Facturation, Projet, Point de Vente installés).
+                        Archivage et suppression fonctionnent de la même façon dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Une fiche utilisée ailleurs (ligne de commande, facture, feuille de temps) ne se
+                                supprime pas : Odoo protège l'historique.</li>
+                            <li>Ouvrez la fiche, menu <strong>⋮</strong> (Actions) › <strong>Archiver</strong>. Pour
+                                un produit, la fenêtre de refus propose même un bouton <strong>Archiver</strong>.</li>
+                            <li>Un compte bancaire ne se supprime jamais en Odoo 20 : il s'archive.</li>
+                            <li>Pour retrouver une fiche archivée : filtre <strong>Archivé</strong>, puis
+                                <strong>Actions › Désarchiver</strong>.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRODUIT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Supprimer un produit déjà vendu</h2>
+                <p>Sur la fiche du produit, l'icône <strong>⋮</strong> placée à côté du nom ouvre le menu Actions :
+                    <strong>Supprimer</strong>. Odoo demande d'abord une confirmation (« Au revoir,
+                    l'enregistrement ! »), puis, si le produit figure déjà sur une commande, il refuse. Sur la
+                    démonstration, « Protection de sol pour chaise », vendue trois fois, donne cette fenêtre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Oops d'Odoo 20 : Not possible to delete the record because it is used in Ligne de commande, How about archiving it instead?, boutons Archiver et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le refus de suppression d'un produit vendu, avec l'archivage proposé sur place.</figcaption>
+                </figure>
+                <p>Le message, encore en anglais dans cette version, nomme le document qui bloque :
+                    <em>« Not possible to delete the record because it is used in Ligne de commande »</em>, puis
+                    suggère d'archiver. Cette fenêtre est une nouveauté de la version 20 : elle apparaît pour
+                    toute fiche qu'un autre enregistrement de la base référence, et le nom affiché après
+                    « used in » change selon le cas. Le bouton <strong>Archiver</strong> archive le produit
+                    aussitôt ; la fiche porte alors le bandeau <strong>ARCHIVÉ</strong>.</p>
+                <p>Un produit archivé n'est plus proposé quand on saisit une nouvelle commande ou une nouvelle
+                    facture, mais les trois commandes passées le montrent toujours. À l'inverse, un produit créé
+                    par erreur et jamais utilisé se supprime sans difficulté.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTACT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Supprimer un contact déjà facturé</h2>
+                <p>Le même geste sur Acme Corporation, client de la démonstration, ouvre une fenêtre
+                    « Opération invalide » : <em>« Le partenaire ne peut pas être supprimé car il est utilisé
+                    dans Comptabilité »</em>. Le seul bouton est <strong>Fermer</strong>. Il suffit d'une facture,
+                    même en brouillon, pour bloquer la suppression. La solution passe par le même menu
+                    <strong>⋮</strong> › <strong>Archiver</strong>, confirmé par « Êtes-vous sûr de vraiment vouloir
+                    archiver cet enregistrement ? ». Le contact quitte les listes, ses factures restent à son
+                    nom.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PROJET ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Supprimer un projet</h2>
+                <p>Ici, deux cas se présentent. Un projet dont les tâches portent des feuilles de temps est
+                    refusé, comme « Recherche &amp; Développement » sur la démonstration :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Avertissement Odoo d'Odoo 20 : Certaines entrées de feuille de temps empêchent la suppression de ces tâches. Veuillez les supprimer en premier lieu !, boutons Voir les entrées de feuilles de temps et Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un projet avec des heures saisies ne se supprime pas.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Voir les entrées de feuilles de temps</strong> liste les heures en cause.
+                    Les supprimer effacerait du temps passé, souvent déjà facturé : l'archivage est la voie
+                    normale. Archiver un projet archive aussi toutes ses tâches (les 11 tâches du projet, ici),
+                    et le désarchiver les réactive.</p>
+                <p>Un projet <strong>sans</strong> feuille de temps, en revanche, se supprime après la seule
+                    confirmation générique, et ses tâches partent avec lui : sur la démonstration, « Montage de
+                    cuisine » a disparu avec ses 16 tâches, sans autre avertissement. Avant de cliquer sur
+                    Supprimer, vérifiez que ces tâches ne servent plus à personne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMPTE BANCAIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Supprimer un compte bancaire</h2>
+                <p>Odoo 20 ne propose plus du tout de supprimer un compte bancaire, même à l'administrateur :
+                    aucun groupe d'utilisateurs n'a ce droit. Sur la fiche du compte comme dans sa liste, le
+                    menu Actions ne contient aucune entrée Supprimer, seulement <strong>Archiver</strong>.</p>
+                <p>Le chemin le plus court part du contact : onglet <strong>Facturation</strong>, champ
+                    <strong>Comptes bancaires</strong>. Chaque compte y figure comme une étiquette ; sa petite croix
+                    a pour info-bulle <strong>Archiver</strong>. Un clic, puis l'enregistrement de la fiche, et le
+                    compte est archivé, non effacé. Un compte périmé disparaît ainsi de la fiche tout en restant
+                    dans la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RETROUVER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Retrouver et désarchiver une fiche</h2>
+                <ol>
+                    <li>Ouvrez la liste concernée, par exemple <strong>Ventes › Produits › Produits</strong>, en vue
+                        liste.</li>
+                    <li>Dépliez le menu de recherche (bouton à droite de la barre de recherche) et cochez le filtre
+                        <strong>Archivé</strong> : seules les fiches archivées restent affichées.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des produits d'Odoo 20 avec les filtres Ventes et Archivé : Pourboires et Protection de sol pour chaise, menu Filtres ouvert avec Archivé coché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le filtre Archivé fait réapparaître les produits archivés.</figcaption>
+                </figure>
+                <ol start="3">
+                    <li>Cochez la ligne, puis <strong>Actions › Désarchiver</strong>. Depuis la fiche archivée
+                        elle-même, le menu <strong>⋮</strong> propose aussi Désarchiver.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des produits archivés d'Odoo 20, Protection de sol pour chaise sélectionnée, menu Actions ouvert : Exporter, Dupliquer, Archiver, Désarchiver, Supprimer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Désarchiver remet la fiche en service.</figcaption>
+                </figure>
+                <p>Aucune confirmation n'est demandée : la fiche quitte la liste filtrée et redevient disponible
+                    dans les commandes. Le filtre Archivé existe sur la plupart des listes d'Odoo 20 (contacts,
+                    projets, comptes bancaires…), avec le même menu Actions.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : une caisse ouverte bloque aussi l'archivage</h4>
+                    <p>Tant qu'une session de Point de Vente est ouverte, un produit disponible en caisse ne
+                        peut être ni supprimé ni archivé. La démonstration en contient : sur « Chaise de bureau »,
+                        Archiver comme Supprimer aboutit à « Opération invalide » et au message
+                        <em>« You cannot archive/delete product(s) that are available in an active Point of Sale
+                        session. »</em> Fermez d'abord les sessions concernées, puis archivez.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo refuse de supprimer ce que d'autres documents utilisent ; il le dit et, pour un
+                        produit, propose d'archiver dans la même fenêtre.</li>
+                    <li>Archiver retire la fiche des listes et des choix sans toucher à l'historique.</li>
+                    <li>Un projet sans heures saisies se supprime avec toutes ses tâches : prudence.</li>
+                    <li>Filtre <strong>Archivé</strong> puis <strong>Actions › Désarchiver</strong> annule
+                        l'archivage.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Odoo 20
+                        Community : les 34 applications gratuites</a>, le tour d'horizon de la version.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/projets-taches-odoo-225">Projets et tâches dans
+                        Odoo 20</a>, pour la prise en main de l'application Projet.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/importer-produits-odoo-266">Importer ses produits dans
+                        Odoo 20 : variantes et stock</a>, pour créer un catalogue propre dès le départ.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

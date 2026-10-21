@@ -1,0 +1,275 @@
+<!--
+Article — Modifier plusieurs fiches d'un coup dans Odoo 20 (astuce AF3)
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : modifier-plusieurs-fiches-liste-odoo
+Mot-clé cible : odoo modifier (plusieurs enregistrements)
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af3 (copie de vs20_func, démonstration native).
+  Écran : Ventes › Produits › Produits, vue liste, filtre Ventes = 168 produits (SQL : 168 product_template actifs sale_ok).
+  Pager par défaut 1-80 / 168 ; case d'en-tête = « 80 sélectionné(s) » + bouton « Tout sélectionner 168 » ;
+  après clic : « Tous 168 sélectionné(s) ». Pager saisi « 1-168 » → 168 lignes, case d'en-tête = « 168 sélectionné(s) ».
+  Saisie « *=1.05 » dans Prix de vente de « Boîte de rangement » → fenêtre « Confirmation » :
+  « Êtes-vous sûr de vouloir mettre à jour 168 éléments ? », Champ : Prix de vente, Mettre à jour vers : Prix de vente * 1,05,
+  encadré des opérateurs +=, -=, *=, /= ; boutons Mettre à jour / Ignorer. Après Mettre à jour : SQL sum(list_price)
+  48 203,28 → 50 613,44 (= ×1,05), Boîte de rangement 15,80 → 16,59, Armoire avec portes 140 → 147.
+  Même saisie avec « Tous 168 sélectionné(s) » et pager 1-80 : « Cette mise à jour ne prendra en compte que les
+  enregistrements de la page en cours. » + « mettre à jour 80 éléments » (Ignorer cliqué).
+  Colonnes Disponible / Forecasted : td o_readonly_modifier, aucun champ de saisie (Playwright).
+  Code : web/static/src/views/list/list_confirmation_dialog.xml:6-15,26-48,58-71 ; list_controller.js:559-597 ;
+  model/relational_model/dynamic_list.js:320-445 (sélection = lignes chargées ; champ en lecture seule = ligne non valide,
+  opérateur → web_save_multi ligne par ligne) ; list_renderer.js:1527 (sans multi_edit, clic = (dé)sélection) ;
+  list_arch_parser.js:244-245 (attribut multi_edit) ; product/views/product_template_views.xml:8 (multi_edit="1").
+  Menu Actions (2 lignes sélectionnées) : Exporter, Dupliquer, Archiver, Désarchiver, Supprimer, Imprimer les étiquettes,
+  Rapport de liste de prix, Calculer le prix depuis la nomenclature.
+  fr.po web : « Discard » = « Ignorer », « Update » = « Mettre à jour », « Among the… » = « Parmi les … éléments sélectionnés… ».
+  Arrondi : product/models/product_template.py:113-115 list_price en min_display_digits='Product Price' (v19 : digits=,
+  odoo19 product_template.py:93-95) → SQL Bagel 1,25 → 1,3125, Boulon 0,50 → 0,525 ; liste affiche 1,31.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .answer-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .answer-box h4 { color: #1e40af; margin-top: 0; }
+  .answer-box ol { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Modifier plusieurs fiches d'un coup dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Changer un prix, une catégorie ou une étiquette sur des dizaines
+                    de fiches ne demande ni import ni ouverture de chaque fiche : la vue liste d'Odoo 20 modifie
+                    toutes les lignes cochées en une seule saisie.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration. L'édition multiple fait partie du client web d'Odoo ; elle
+                        existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU + RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>L'exemple porte sur le catalogue de la démonstration : 168 produits vendables, dont le prix de
+                    vente doit augmenter de 5 %. La même méthode vaut pour les contacts, les commandes ou les
+                    opportunités, dès que la liste accepte l'édition multiple.</p>
+                <div class="answer-box">
+                    <h4>La réponse en bref</h4>
+                    <ol>
+                        <li>Ouvrez la liste (pas le kanban) et affichez toutes les lignes à modifier sur une seule
+                            page.</li>
+                        <li>Cochez la case d'en-tête pour sélectionner les lignes.</li>
+                        <li>Cliquez dans la colonne à changer sur l'une des lignes cochées, saisissez la valeur,
+                            validez par Entrée.</li>
+                        <li>Relisez la fenêtre <strong>Confirmation</strong> (nombre de lignes, champ, nouvelle
+                            valeur), puis cliquez sur <strong>Mettre à jour</strong>.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Afficher toutes les lignes, puis les sélectionner</h2>
+                <p>Ouvrez <strong>Ventes › Produits › Produits</strong>. L'écran s'ouvre en vignettes : passez en
+                    vue liste par l'icône à lignes, en haut à droite. Le filtre <strong>Ventes</strong>, posé par
+                    défaut, limite la liste aux produits vendables ; ajoutez vos propres filtres pour ne garder que
+                    les fiches concernées.</p>
+                <p>Cochez la case de l'en-tête de colonne. Odoo coche les lignes <strong>de la page</strong>, soit
+                    80 par défaut, et propose le bouton <strong>Tout sélectionner 168</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des produits d'Odoo 20 avec la case d'en-tête cochée : bandeau 80 sélectionné(s), bouton Tout sélectionner 168, menu Actions et pagination 1-80 / 168" style="max-width:100%; height:auto;"/>
+                    <figcaption>La case d'en-tête coche la page en cours : 80 lignes sur 168.</figcaption>
+                </figure>
+                <p>Ce bouton est tentant, mais une modification saisie dans la liste ne s'applique qu'aux lignes
+                    affichées (voir l'encadré plus bas). Pour couvrir les 168 produits, agrandissez d'abord la
+                    page : cliquez sur la pagination <strong>1-80 / 168</strong>, remplacez-la par
+                    <strong>1-168</strong> et validez par Entrée. Les 168 lignes s'affichent ; la case d'en-tête
+                    sélectionne alors <strong>168 sélectionné(s)</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Saisir la nouvelle valeur sur une seule ligne</h2>
+                <p>Cliquez dans la cellule <strong>Prix de vente</strong> de n'importe quelle ligne cochée, ici
+                    « Boîte de rangement ». La cellule passe en saisie et les boutons <strong>Enregistrer</strong>
+                    et <strong>Ignorer</strong> remplacent le bouton Nouveau.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des produits d'Odoo 20 avec 168 sélectionné(s) et pagination 1-168 / 168 : la ligne Boîte de rangement est en saisie, prix 15,80 en surbrillance, colonnes Disponible 110,00 et Forecasted 88,00 grisées" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une seule cellule en saisie, 168 lignes concernées. Les colonnes grisées ne se modifient pas.</figcaption>
+                </figure>
+                <p>Deux façons de remplir la cellule :</p>
+                <ul>
+                    <li><strong>une valeur fixe</strong> (par exemple <code>20</code>) : toutes les lignes reçoivent
+                        la même valeur ;</li>
+                    <li><strong>un calcul</strong> sur la valeur de chaque ligne, avec les opérateurs
+                        <code>+=</code>, <code>-=</code>, <code>*=</code> et <code>/=</code> : <code>*=1.05</code>
+                        augmente chaque prix de 5 %, <code>+=2</code> ajoute 2 à chacun.</li>
+                </ul>
+                <p>Saisissez <code>*=1.05</code> puis appuyez sur Entrée.</p>
+                <p>Toutes les colonnes ne s'éditent pas ainsi. Sur la ligne en saisie, <strong>Disponible</strong>
+                    et <strong>Forecasted</strong> restent grisées : ces quantités découlent des mouvements de
+                    stock, pas d'une saisie. Quand une colonne n'est en lecture seule que sur certaines lignes,
+                    ces lignes sont exclues de la mise à jour, et la fenêtre de confirmation l'annonce. Enfin, une liste qui n'est pas prévue
+                    pour l'édition multiple réagit autrement : un clic sur une ligne cochée la décoche, sans
+                    ouvrir de saisie.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Relire la confirmation, puis mettre à jour</h2>
+                <p>Avant d'écrire quoi que ce soit, Odoo ouvre la fenêtre <strong>Confirmation</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Confirmation d'Odoo 20 : Êtes-vous sûr de vouloir mettre à jour 168 éléments ? Champ Prix de vente, Mettre à jour vers Prix de vente * 1,05, rappel des opérateurs +=, -=, *= et /=, boutons Mettre à jour et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le nombre de lignes, le champ et le calcul : trois points à relire avant de valider.</figcaption>
+                </figure>
+                <p>Trois contrôles suffisent : le <strong>nombre d'éléments</strong> (168, et non 80), le
+                    <strong>champ</strong> (Prix de vente) et la <strong>valeur</strong> (Prix de vente * 1,05).
+                    <strong>Ignorer</strong> abandonne tout ; <strong>Mettre à jour</strong> enregistre aussitôt
+                    les 168 fiches. Sur la démonstration, la Boîte de rangement passe de 15,80 $ à 16,59 $ et
+                    l'Armoire avec portes de 140,00 $ à 147,00 $ : le calcul s'applique ligne par ligne. Odoo
+                    conserve le résultat exact, sans arrondi : le Bagel, à 1,25 $, vaut désormais 1,3125 $, affiché
+                    1,31 $ dans la liste.</p>
+                <p>Pour un champ à étiquettes (comme <strong>Taxes de vente</strong> ou les étiquettes d'un
+                    contact), la fenêtre détaille les valeurs ajoutées et retirées : ajouter une étiquette la pose
+                    sur toutes les lignes sans effacer celles qu'elles portaient déjà.</p>
+                <div class="pitfall-box">
+                    <h4>« Tous 168 sélectionnés » ne veut pas dire 168 fiches modifiées</h4>
+                    <p>Après un clic sur <strong>Tout sélectionner 168</strong>, le bandeau affiche
+                        « Tous 168 sélectionné(s) », mais la saisie dans la liste ne touche que la page affichée.
+                        La fenêtre le dit en tête : « Cette mise à jour ne prendra en compte que les
+                        enregistrements de la page en cours », et annonce 80 éléments.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Confirmation d'Odoo 20 après Tout sélectionner : Cette mise à jour ne prendra en compte que les enregistrements de la page en cours. Êtes-vous sûr de vouloir mettre à jour 80 éléments ?" style="max-width:100%; height:auto;"/>
+                        <figcaption>Avec la pagination par défaut, seules les 80 lignes visibles seraient modifiées.</figcaption>
+                    </figure>
+                    <p>Cliquez sur <strong>Ignorer</strong>, agrandissez la pagination (étape 1), puis
+                        recommencez. Aucune touche n'annule une mise à jour validée : relisez toujours le
+                        nombre d'éléments.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ALTERNATIVE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Quand passer par l'export et l'import</h2>
+                <p>L'édition multiple pose <strong>une</strong> valeur, ou <strong>un</strong> calcul, sur toutes
+                    les lignes. Si chaque fiche doit recevoir une valeur différente (un prix par article tiré d'un
+                    tarif fournisseur, une adresse par contact), le tableur reste plus sûr : cochez les lignes,
+                    <strong>Actions › Exporter</strong>, corrigez le fichier, puis réimportez-le. Les règles de cet import (identifiant, cellules vides, colonnes reconnues) sont
+                    détaillées dans les articles sur l'import des contacts et des produits cités plus bas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Cocher des lignes en vue liste, puis saisir une cellule, modifie toutes les lignes cochées.</li>
+                    <li>La saisie ne touche que la page affichée : agrandissez la pagination avant de sélectionner.</li>
+                    <li><code>+=</code>, <code>-=</code>, <code>*=</code> et <code>/=</code> calculent la nouvelle valeur ligne par ligne.</li>
+                    <li>La fenêtre Confirmation donne le nombre réel de fiches ; une valeur différente par fiche relève de l'export et de l'import.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Pour aller plus loin</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les fiches produits et contacts, champ par champ.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/importer-produits-odoo-266">Importer ses produits dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Mettre à jour un catalogue depuis un tableur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs</a></h5>
+                            <p class="small text-muted mb-0">Le même principe pour les contacts.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

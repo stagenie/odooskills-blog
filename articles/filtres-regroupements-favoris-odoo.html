@@ -1,0 +1,336 @@
+<!--
+Article — Filtres, regroupements et favoris partagés dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : filtres-regroupements-favoris-odoo
+Mot-clé cible : odoo filter, odoo favorites (filtres, favoris odoo 20)
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af2 (copie de vs20_func), Facturation › Clients › Factures.
+  Parcours joué (Playwright, admin) : liste 29 pièces ; « En retard » + « À payer » = une facette « En retard ou À payer » ;
+  Factures 24 → + En retard 8 → + Filtre personnalisé Montant dû supérieur à 1000 : 5 (Acme Corporation 3, OpenWood 2,
+  total montant dû 110 461,50 $) ; Regrouper par Partenaire ; Partenaire puis Statut = facette « Partenaire > Statut ».
+  Favori « Retards de plus de 1 000 $ » (Filtre par défaut) enregistré, Modifier → fiche ir.filters, étiquette Mitchell Admin
+  retirée de « Partagé avec » → « Tous les utilisateurs » ; rechargement : liste ouverte sur le favori ; login demo (Marc Demo) :
+  même favori appliqué par défaut et listé. Marc Demo : crayon « Modifier le favori » → ⋮ Archiver / Supprimer ; shell
+  check_access read/write/unlink OK pour demo sur le favori global. Suppression d'un favori de test : confirmation
+  « Au revoir, l'enregistrement ! … ». Date de facturation › Ce mois → facette « octobre », flèche gauche → « septembre ».
+  Alt+Maj+H : notification « Lien copié dans le presse-papiers », lien ?domain=… ; ouvert par demo → facettes « Shared » + Partenaire.
+  web/static/src/search/custom_favorite_item/custom_favorite_item.xml:4-24 (Enregistrer la recherche actuelle, Filtre par défaut,
+  Enregistrer, Modifier ; pas de case Partagé, idem 19) ; custom_favorite_item.js:66-80 (Modifier = enregistre puis ouvre la fiche) ;
+  search_model.js:2433 (user_ids = [utilisateur] sauf partage) ; search_bar_menu.xml:116-135,179-200 (favoris personnels puis
+  partagés, crayon « Edit favorite » = « Modifier le favori ») ; search_bar_menu.js:60-67,240-275 (commande Share alt+shift+h,
+  nouveau 20) ; search_model.js:1385-1420 (facette « Shared » des filtres du lien) ; search_model.js:1153-1160 + search_bar.xml:13-15
+  (flèches de période, nouveau 20, absent du search_model.js 19) ; search_bar.js:621-633 (clic sur une facette = éditeur) ;
+  search_model.js:1168-1186 (Filtre personnalisé, connecteur par défaut « au moins un ») ;
+  list/list_controller.js:140 + list_renderer.js:1457-1480 (favori retient list_optional_show, nouveau 20 ; contexte du favori relu en shell) ;
+  base/models/ir_filters.py:14-27 ; base/views/ir_filters_views.xml:4-29 (Partagé avec, placeholder Tous les utilisateurs,
+  Filtre par défaut), ; base/views/base_menus.xml:60-78 (Technique › Interface utilisateur, group_no_one) ;
+  base/security/ir.access.csv:102-104 (group_user crud sur user_ids in [False, uid]) ;
+  account/views/account_move_views.xml:1862-1867 (En retard : échéance < aujourd'hui, comptabilisé, non payé / partiel).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Filtres, regroupements et favoris partagés dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Chaque matin, la même liste à reconstituer : les factures en
+                    retard, au-delà d'un certain montant, client par client. Odoo 20 permet de composer cette
+                    recherche une fois, de l'enregistrer en favori, de l'ouvrir par défaut et de la partager
+                    avec toute l'équipe.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre
+                        2026, sur la liste des factures clients de la base de démonstration. Filtres, regroupements
+                        et favoris font partie du socle d'Odoo : ils fonctionnent de la même façon dans toutes les
+                        listes et dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h4 class="card-title">La réponse en bref</h4>
+                        <ol class="mb-0">
+                            <li>Ouvrez le menu de recherche (la flèche au bout de la barre de recherche) : colonnes
+                                <strong>Filtres</strong>, <strong>Regrouper par</strong> et <strong>Favoris</strong>.</li>
+                            <li>Cochez des filtres, ajoutez au besoin un <strong>Filtre personnalisé...</strong>,
+                                puis un regroupement.</li>
+                            <li><strong>Favoris › Enregistrer la recherche actuelle</strong> : un nom, la case
+                                <strong>Filtre par défaut</strong> si la liste doit s'ouvrir ainsi, puis
+                                <strong>Enregistrer</strong>.</li>
+                            <li>Pour la partager : bouton <strong>Modifier</strong>, puis videz le champ
+                                <strong>Partagé avec</strong>, qui affiche alors « Tous les utilisateurs ».</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Combiner les filtres prêts à l'emploi</h2>
+                <p>Ouvrez <strong>Facturation › Clients › Factures</strong>. La liste de démonstration compte 29
+                    pièces : factures, mais aussi avoirs. Dans le menu de recherche, la colonne
+                    <strong>Filtres</strong> propose des filtres rangés par blocs, séparés par un trait.</p>
+                <p>La règle de combinaison tient en une phrase : deux filtres d'un <strong>même bloc</strong>
+                    s'additionnent (« ou »), deux filtres de <strong>blocs différents</strong> se cumulent
+                    (« et »). Cocher <strong>À payer</strong> puis <strong>En retard</strong>, qui partagent un
+                    bloc, donne une seule facette « En retard ou À payer ». Cocher <strong>Factures</strong> puis
+                    <strong>En retard</strong>, pris dans deux blocs, crée deux facettes : la liste passe de 24
+                    factures à 8 factures en retard.</p>
+                <p>Le filtre <strong>En retard</strong> retient les pièces comptabilisées, non payées ou
+                    partiellement réglées, dont l'échéance est dépassée. <strong>Factures</strong> écarte les avoirs.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ajouter un filtre personnalisé</h2>
+                <p>Aucun filtre prêt à l'emploi ne porte sur un seuil de montant. Au bas de la colonne Filtres,
+                    <strong>Filtre personnalisé...</strong> ouvre un éditeur de règles. Cliquez sur le champ
+                    proposé, tapez « Montant dû » dans la recherche de champs, choisissez l'opérateur
+                    <strong>supérieur à</strong> et saisissez 1 000.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Filtre personnalisé d'Odoo 20 : Faire correspondre au moins un règles suivantes, règle Montant dû supérieur à 1 000,00, lien Nouvelle règle, boutons Rechercher et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une règle sur le montant dû, ajoutée depuis Filtre personnalisé...</figcaption>
+                </figure>
+                <p><strong>Rechercher</strong> ajoute la facette « Montant dû supérieur à 1000 », qui se cumule
+                    avec les deux autres : il reste 5 factures. <strong>Nouvelle règle</strong> ajoute d'autres
+                    conditions dans la même fenêtre ; avec plusieurs règles, le sélecteur « au moins un » ou
+                    « tous » décide si elles s'additionnent ou se cumulent. Pour corriger un filtre déjà posé, un
+                    clic sur sa facette rouvre l'éditeur.</p>
+                <p>Les filtres de date (<strong>Date de facturation</strong>, <strong>Échéance</strong>)
+                    proposent des périodes : Aujourd'hui, Cette semaine, Ce mois, un mois, un trimestre, une
+                    année. En Odoo 20, la facette d'une période porte deux flèches : depuis « Date de facturation :
+                    octobre », la flèche de gauche passe à septembre sans rouvrir le menu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Regrouper par client</h2>
+                <p>Dans la colonne <strong>Regrouper par</strong>, cliquez sur <strong>Partenaire</strong>. La
+                    liste se replie en une ligne par client, avec le nombre de factures et les totaux des
+                    colonnes de montant ; un clic sur une ligne la déplie.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des factures clients d'Odoo 20 avec les facettes Factures, En retard, Montant dû supérieur à 1000 et Partenaire : groupe Acme Corporation déplié avec FAC/2026/00002, FAC/2026/00003 et FAC/2026/00004 échues, montant dû 106 662,50 dollars, groupe OpenWood 3 799 dollars, total 110 461,50 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois filtres et un regroupement : les gros retards, client par client.</figcaption>
+                </figure>
+                <p>Un deuxième regroupement s'emboîte dans le premier : Partenaire puis Statut donne la facette
+                    « Partenaire &gt; Statut ». <strong>Groupe personnalisé</strong>, en bas de la colonne,
+                    regroupe sur un autre champ de la facture, au choix dans une liste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Enregistrer le favori et l'ouvrir par défaut</h2>
+                <p>Dans la colonne <strong>Favoris</strong>, dépliez <strong>Enregistrer la recherche
+                    actuelle</strong>. Remplacez le nom proposé par « Retards de plus de 1 000 $ » et cochez
+                    <strong>Filtre par défaut</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Menu de recherche d'Odoo 20 : filtres Factures et En retard cochés, regroupement Partenaire coché, colonne Favoris avec Enregistrer la recherche actuelle déplié, nom du favori, case Filtre par défaut cochée et bouton Enregistrer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les trois colonnes du menu de recherche ; le favori retient ce qui est coché.</figcaption>
+                </figure>
+                <p><strong>Enregistrer</strong> crée le favori. Il retient les filtres, le regroupement et le
+                    tri ; en Odoo 20, il retient aussi les colonnes facultatives affichées dans la liste. Avec
+                    <strong>Filtre par défaut</strong>, la liste des factures s'ouvre désormais directement sur
+                    ce favori. Le filtre En retard compare l'échéance à la date du jour : le favori reste juste
+                    le lendemain, sans être refait.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Partager le favori avec tous les utilisateurs</h2>
+                <p>Un favori enregistré est personnel. La fenêtre d'enregistrement n'a pas de case de partage :
+                    le partage se règle sur la fiche du favori. Cliquez sur <strong>Modifier</strong> au lieu
+                    d'Enregistrer (le bouton enregistre puis ouvre la fiche), ou, pour un favori existant, sur le
+                    crayon <strong>Modifier le favori</strong> qui apparaît au survol de son nom.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche du favori dans Odoo 20 : Nom de filtre Retards de plus de 1 000 dollars, champ Partagé avec vide affichant Tous les utilisateurs, interrupteur Filtre par défaut activé" style="max-width:80%; height:auto;"/>
+                    <figcaption>Champ Partagé avec vidé : le favori vaut pour tous les utilisateurs.</figcaption>
+                </figure>
+                <p>Le champ <strong>Partagé avec</strong> contient le créateur. Retirez son étiquette : le champ
+                    affiche « Tous les utilisateurs ». Pour un partage restreint, ajoutez à la place les
+                    utilisateurs concernés. Enregistrez la fiche. Connecté avec un autre utilisateur de la
+                    démonstration, Marc Demo, la liste des factures s'ouvre sur le même favori, qui figure dans
+                    sa colonne Favoris.</p>
+                <p>Pour transmettre une recherche sans créer de favori, la commande <strong>Partager</strong>
+                    (raccourci <strong>Alt + Maj + H</strong>) copie un lien qui contient les filtres et le
+                    regroupement en cours ; le message « Lien copié dans le presse-papiers » le confirme. Le
+                    destinataire qui l'ouvre retrouve la même liste, ses filtres réunis dans une seule facette
+                    « Shared ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Retrouver, modifier ou supprimer un favori</h2>
+                <p>Les favoris d'une liste se retrouvent dans sa colonne Favoris : les favoris personnels
+                    d'abord, puis les favoris partagés. Le crayon <strong>Modifier le favori</strong> ouvre sa
+                    fiche : nom, partage, filtre par défaut et conditions s'y corrigent. Dans cette fiche, le menu
+                    <strong>⋮</strong> propose <strong>Archiver</strong> (le favori disparaît des menus mais se
+                    conserve) et <strong>Supprimer</strong>, après confirmation.</p>
+                <p>Pour l'administrateur, la liste de tous les favoris de la base, tous utilisateurs et toutes
+                    listes confondus, est dans <strong>Paramètres › Technique › Interface utilisateur › Filtres
+                    définis par l'utilisateur</strong>, menu visible en mode développeur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Un favori partagé est modifiable par tous</h4>
+                    <p>Tout utilisateur interne peut modifier, archiver ou supprimer un favori partagé avec tous,
+                        et pas seulement son auteur : sur la démonstration, Marc Demo, simple utilisateur, a
+                        accès au menu ⋮ Archiver / Supprimer du favori créé par l'administrateur. Pour un favori
+                        dont dépend une routine d'équipe, restreignez le champ Partagé avec aux personnes
+                        concernées, ou convenez de qui le modifie.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Même bloc de filtres : « ou » ; blocs différents : « et ».</li>
+                    <li>Filtre personnalisé... couvre tout champ de la liste, avec ses propres règles.</li>
+                    <li>Un favori retient filtres, regroupement, tri et colonnes affichées ; Filtre par défaut
+                        l'applique à l'ouverture de la liste.</li>
+                    <li>Partagé avec vide = tous les utilisateurs, qui peuvent aussi le modifier.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Pour aller plus loin</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">La prise en main de la facturation dans Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Que faire des factures en retard repérées par le favori.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/analyser-ventes-odoo-206">Analyser ses ventes</a></h5>
+                            <p class="small text-muted mb-0">Favoris sur un graphique ou un tableau croisé.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

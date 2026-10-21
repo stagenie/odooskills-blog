@@ -1,0 +1,288 @@
+<!--
+Article — Exporter une liste vers Excel dans Odoo 20 (astuce AF4)
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : exporter-liste-excel-odoo
+Mot-clé cible : odoo exporter, contacts exporter
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, copie vs20_func_af4 (démonstration, Contacts).
+  Écran : Contacts, vue liste, 4 lignes cochées (Acme Corporation + 3 contacts) → bouton Actions → Exporter →
+  fenêtre « Exporter les données » (Champs disponibles, interrupteur « Updatable fields only », Format
+  Excel Workbook (.xlsx) / Plain Text (.csv), Champs à exporter pré-remplis avec les colonnes visibles :
+  Avatar 128, Nom d'affichage, E-mail, Téléphone, Activités, Pays, Stats ; list_controller.js:291-314).
+  Modèle « Annuaire contacts » enregistré (bouton nuage « Save as export template » → nom → coche) =
+  ir.exports + lignes (export_data_dialog.js:438-480) ; boutons crayon / corbeille ; à la réouverture la
+  fenêtre repart des colonnes de la liste, le modèle se choisit dans « Select a template... ».
+  Modèle partagé : ir.access.csv:10 (ir.exports, groupe base.group_allow_export, sans domaine) ; vu par
+  Marc Demo (shell, rollback). Le modèle garde champs + langues, pas le format ni l'interrupteur
+  (odoo/addons/base/models/ir_exports.py:13-20).
+  Fichiers téléchargés et ouverts (openpyxl + LibreOffice) : « Contact (res.partner).xlsx » et .csv ; en-têtes =
+  libellés ; Gemini Furniture (2 étiquettes) → 2e étiquette sur une ligne suivante vide (fichier de 111 lignes
+  pour 107 contacts) ; « Updatable fields only » → colonne id (base.res_partner_2…), en-têtes techniques
+  (display_name, parent_id/name, category_id), étiquettes jointes par des virgules (export.py:430-441,
+  view_hook.js:144-149, odoo/orm/models.py:867-869 ; shell : export_data avec import_compat=False → 2 lignes).
+  CSV : apostrophe devant les valeurs commençant par =, + ou - ('+971 200…, export.py:555-557).
+  Toute la liste : case d'en-tête → « 80 sélectionné(s) » + « Tout sélectionner 107 » → « Tous 107 sélectionné(s) » ;
+  export avec le modèle = 107 contacts. Sans sélection : menu ⋮ (Importer, Exporter) → téléchargement direct
+  sans fenêtre, colonnes visibles, Avatar 128 en texte base64 et Stats en JSON (export_all.js:24-37,
+  view_hook.js:118-120). v19 : « Export All » (odoo19 export_all.xml:6).
+  Langues : sélecteur affiché si ≥ 2 langues installées et un champ traduisible (export_data_dialog.js:226-231,
+  541-551, colonnes champ@lang) ; absent en 19. Non montré (base en français seul).
+  Droit : groupe base.group_allow_export (base_groups.xml:66-71, privilège « Export »), list_controller.js:106.
+  Copie de travail : partenaires 51 et 52 (travaux antérieurs) archivés pour les captures.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .answer-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .answer-box h4 { color: #1e40af; margin-top: 0; }
+  .answer-box ol { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Exporter une liste vers Excel dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Contacts, commandes, factures, produits : toute liste d'Odoo 20
+                    part vers un tableur en quelques clics. Le choix des colonnes s'enregistre dans un modèle
+                    d'export, pour obtenir le même fichier la fois suivante sans tout recocher.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration. L'export fait partie du client web d'Odoo ; il existe aussi
+                        dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAPEAU + RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>L'exemple exporte les contacts de la démonstration. La méthode est la même dans toutes les
+                    applications : elle part d'une liste (ou d'une vue kanban) et de lignes cochées.</p>
+                <div class="answer-box">
+                    <h4>La réponse en bref</h4>
+                    <ol>
+                        <li>Dans la liste, cochez les lignes à exporter (ou la case d'en-tête, puis
+                            <strong>Tout sélectionner</strong>).</li>
+                        <li>Cliquez sur <strong>Actions › Exporter</strong>.</li>
+                        <li>Composez la colonne <strong>Champs à exporter</strong>, choisissez le format
+                            <strong>.xlsx</strong> ou <strong>.csv</strong>.</li>
+                        <li>Enregistrez ce choix comme modèle (icône nuage), puis cliquez sur
+                            <strong>Exporter</strong>.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Sélectionner les lignes et ouvrir Exporter</h2>
+                <p>Ouvrez l'application <strong>Contacts</strong> et passez en vue liste par l'icône à lignes, en
+                    haut à droite. Filtrez si besoin, puis cochez les fiches voulues. Le bandeau indique
+                    <strong>4 sélectionné(s)</strong> et le bouton <strong>Actions</strong> apparaît :
+                    <strong>Exporter</strong> est la première entrée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des contacts d'Odoo 20 avec quatre lignes cochées (Acme Corporation et trois de ses contacts), bandeau 4 sélectionné(s) et menu Actions ouvert : Exporter, Dupliquer, Archiver, Désarchiver, Supprimer, Fusionner, Envoyer un e-mail" style="max-width:100%; height:auto;"/>
+                    <figcaption>Quatre contacts cochés, menu Actions ouvert : Exporter en tête.</figcaption>
+                </figure>
+                <p>Pour exporter toute la liste, cochez la case de l'en-tête : Odoo coche les 80 lignes de la
+                    page et propose <strong>Tout sélectionner 107</strong>. Un clic sur ce bouton étend la
+                    sélection à toutes les fiches qui répondent aux filtres en cours (<strong>Tous 107
+                    sélectionné(s)</strong>), y compris celles des pages suivantes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="En-tête de la liste des contacts d'Odoo 20 : case d'en-tête cochée, bandeau 80 sélectionné(s) et bouton Tout sélectionner 107, pagination 1-80 / 107" style="max-width:100%; height:auto;"/>
+                    <figcaption>La case d'en-tête coche la page ; le bouton Tout sélectionner prend toute la liste.</figcaption>
+                </figure>
+                <p>Le menu Exporter n'apparaît que pour les utilisateurs qui ont le droit d'exporter (réglage
+                    <strong>Export</strong> de la fiche utilisateur, accordé d'office aux administrateurs).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Choisir les colonnes, y compris des champs liés</h2>
+                <p>La fenêtre <strong>Exporter les données</strong> s'ouvre avec, à droite, les colonnes
+                    affichées dans la liste (ici Avatar 128, Nom d'affichage, E-mail, Téléphone, Activités, Pays,
+                    Stats). Retirez les colonnes inutiles par leur corbeille ; ajoutez-en depuis
+                    <strong>Champs disponibles</strong> avec la zone <strong>Rechercher...</strong> et le
+                    <strong>+</strong> au bout de chaque ligne. Les flèches de gauche permettent de réordonner
+                    les colonnes par glisser-déposer.</p>
+                <p>Un champ précédé d'une flèche <strong>›</strong> renvoie à une autre fiche : déroulez-le pour
+                    atteindre ses propres champs. Sous <strong>Société associée</strong>, le champ
+                    <strong>Nom</strong> ajoute la colonne <strong>Société associée/Nom</strong>, c'est-à-dire la
+                    société de chaque contact.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Exporter les données d'Odoo 20 : recherche Étiquettes, champ Société associée déroulé, interrupteur Updatable fields only désactivé, modèle Annuaire contacts sélectionné avec boutons crayon et corbeille, champs à exporter Nom d'affichage, E-mail, Téléphone, Pays, Ville, Société associée/Nom, Étiquettes, format Excel Workbook (.xlsx)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les sept colonnes retenues, enregistrées sous le modèle « Annuaire contacts ».</figcaption>
+                </figure>
+                <p>Le champ <strong>Format</strong> propose <strong>Excel Workbook (.xlsx)</strong> et
+                    <strong>Plain Text (.csv)</strong>. Le fichier xlsx s'ouvre tel quel dans un tableur ; le
+                    fichier csv, séparé par des virgules, sert aux échanges avec d'autres logiciels. Dans le csv,
+                    une valeur qui commence par <code>+</code>, <code>-</code> ou <code>=</code> reçoit une
+                    apostrophe devant elle (<code>'+971 200 123 4571</code>), pour qu'un tableur ne la prenne pas
+                    pour une formule.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Enregistrer et réutiliser le modèle d'export</h2>
+                <p>Une fois les colonnes en place, cliquez sur l'icône nuage à droite de <strong>Select a
+                    template...</strong>, saisissez un nom (« Annuaire contacts ») et validez par la coche. Le
+                    modèle apparaît dans la liste déroulante, avec un crayon pour le modifier et une corbeille
+                    pour le supprimer.</p>
+                <p>À l'ouverture suivante, la fenêtre repart des colonnes de la liste : choisissez
+                    <strong>Annuaire contacts</strong> dans la liste déroulante et les sept colonnes reviennent,
+                    dans le même ordre. Le modèle retient les champs, pas le format ni l'option de
+                    l'étape 4 : vérifiez-les avant de cliquer sur <strong>Exporter</strong>.</p>
+                <p>Un modèle est propre à un type de fiche (celui des contacts ne s'affiche pas sur les
+                    factures) et il est commun à tous les utilisateurs autorisés à exporter : un collègue le voit,
+                    peut le modifier ou le supprimer. Un nom explicite évite les mauvaises surprises.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ouvrir le fichier et choisir le bon mode</h2>
+                <p>Le téléchargement s'appelle <strong>Contact (res.partner).xlsx</strong>. La première ligne
+                    reprend les libellés des colonnes, puis une ligne par contact. Avec les 107 contacts de la
+                    démonstration, le fichier compte pourtant 111 lignes : un contact qui porte plusieurs
+                    étiquettes occupe plusieurs lignes, la deuxième étiquette se trouvant sur une ligne suivante
+                    dont les autres cellules sont vides.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fichier exporté depuis Odoo 20 ouvert dans un tableur : colonnes Nom d'affichage, E-mail, Téléphone, Pays, Ville, Société associée/Nom, Étiquettes ; Gemini Furniture ligne 35 avec l'étiquette Fournisseur / Fabricants de bureaux et ligne 36 vide sauf Services de conseil ; lignes 8 à 32 masquées" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le fichier ouvert (lignes 8 à 32 masquées) : la seconde étiquette de Gemini Furniture occupe la ligne 36.</figcaption>
+                </figure>
+                <p>Ce découpage gêne un tri ou un tableau croisé. L'interrupteur <strong>Updatable fields
+                    only</strong>, en haut de la fenêtre, change le fichier : les étiquettes sont regroupées
+                    dans une seule cellule, séparées par des virgules ; une colonne <strong>id</strong> ajoute
+                    l'identifiant de chaque fiche (<code>base.res_partner_2</code> pour Acme Corporation) ; les
+                    en-têtes deviennent les noms techniques (<code>email</code>, <code>parent_id/name</code>,
+                    <code>category_id</code>) ; la liste de gauche ne montre plus que les champs modifiables.
+                    Les colonnes déjà retenues à droite restent en place : remplacez Nom d'affichage, calculé
+                    par Odoo, par le champ <strong>Nom</strong>. C'est le mode à retenir pour corriger les fiches dans le tableur puis les réimporter :
+                    Odoo reconnaît chaque ligne par sa colonne id et met à jour la fiche au lieu d'en créer une
+                    nouvelle.</p>
+                <p>Quand plusieurs langues sont installées et qu'un champ traduisible figure dans l'export, la
+                    fenêtre affiche aussi un champ <strong>Languages</strong> : une colonne par langue choisie,
+                    nouveauté d'Odoo 20.</p>
+                <div class="pitfall-box">
+                    <h4>Exporter sans rien cocher</h4>
+                    <p>Sans ligne cochée, le menu <strong>⋮</strong> à côté du titre de la liste propose aussi
+                        <strong>Exporter</strong>. Celui-ci télécharge aussitôt toute la liste filtrée en xlsx,
+                        sans ouvrir la fenêtre : le fichier reprend les colonnes affichées telles quelles,
+                        Avatar 128 compris, sous forme d'un long texte codé, et la colonne Stats en texte
+                        technique. Pour choisir les colonnes ou utiliser un modèle, cochez les lignes et passez
+                        par <strong>Actions › Exporter</strong>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Cochez les lignes (ou Tout sélectionner) puis Actions › Exporter : la fenêtre part des colonnes de la liste.</li>
+                    <li>La flèche › d'un champ donne accès aux champs de la fiche liée, comme Société associée/Nom.</li>
+                    <li>Le modèle d'export garde les colonnes, pas le format ; il est partagé entre les utilisateurs autorisés.</li>
+                    <li>Updatable fields only produit un fichier prêt à réimporter : colonne id, une ligne par fiche.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">Pour aller plus loin</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs</a></h5>
+                            <p class="small text-muted mb-0">Le chemin inverse : du tableur vers Odoo.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les fiches contacts, champ par champ.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/creer-base-odoo-community-199">Créer sa base Odoo 20 Community</a></h5>
+                            <p class="small text-muted mb-0">Les premiers réglages, dont les utilisateurs et leurs droits.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
