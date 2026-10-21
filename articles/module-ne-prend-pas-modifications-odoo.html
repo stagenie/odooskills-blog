@@ -1,0 +1,357 @@
+<!--
+Article — Mettre à jour un module Odoo 20 qui ne prend pas tes modifications
+Série « Astuces dev Odoo 20 » (blog Développement) — AT4
+Date : 2026-10-21
+Slug : module-ne-prend-pas-modifications-odoo
+Mot-clé cible : odoo update module, mettre à jour un module odoo, noupdate, debug=assets, --dev=reload,xml
+Tags : debutant, infrastructure, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  module d'exemple mon_module (champ calculé maj_info sur res.partner, vue héritée de base.view_partner_form avec class o_mon_badge,
+  étiquette res.partner.category en <data noupdate="1">, CSS dans web.assets_backend) installé par --addons-path sur cette base seulement.
+  Sonde Playwright (Chromium, contexte neuf à chaque passage, donc sans cache navigateur) sur la fiche Acme Corporation (id 10) :
+  libellé du champ, valeur calculée, background-color calculé, URL des bundles CSS.
+  Relevés (serveur lancé avec --dev= pour neutraliser dev_mode du fichier de conf) :
+   état initial → Info (vue v1) | calcul v1 | rgb(253, 230, 138), bundle 88bce61 ;
+   .py/.xml/.css modifiés, page rechargée → v1 | v1 | rgb(253, 230, 138), bundle 88bce61 inchangé ;
+   même état, ?debug=assets → v1 | v1 | rgb(167, 243, 208) (bundles /web/assets/debug/…) ;
+   menu debug « Régénérer les actifs » → rgb(167, 243, 208), bundles c9384ea / a8bd428 ;
+   redémarrage sans -u → vue v1 | calcul v2 ;
+   -u mon_module --stop-after-init --no-http lancé à côté du serveur en marche → vue v2 | calcul v2, journal du serveur :
+     « Reloading the model registry after database signaling. » ;
+   .py passé en v3 + -u à côté → vue v2 | calcul v2 (le code v3 n'est pas chargé par le serveur en marche) ;
+   champ stocké maj_note ajouté, redémarrage sans -u → GET /web/login = 500, journal « bad query … ERROR: column res_partner.maj_note does not exist »,
+     psycopg2.errors.UndefinedColumn ; -u mon_module → colonne créée (information_schema), /web/login = 200 ;
+   CSS modifié, simple redémarrage sans dev → nouvelle couleur rgb(221, 214, 254), nouveaux bundles 40fc427 / 67f3e27.
+  noupdate : XML « Client premium », base « Client fidèle » ; -u → Client fidèle | noupdate = True ; --reinit mon_module → Client premium | noupdate = True.
+   ir.model.data noupdate passé à False en console + XML toujours en <data noupdate="1"> + -u → valeur inchangée (convert.py saute le nœud).
+   Script migrations/20.0.1.0.1/post-migrate.py + version 20.0.1.0.0 → 20.0.1.0.1 + -u → « Running upgrade [20.0.1.0.1>] post-migrate »,
+   « mon_module.post from 20.0.1.0.0 to 20.0.1.0.1 in 0.002 seconds », valeur « Client premium », noupdate toujours True.
+  --dev=reload,xml (inotify présent) : .py modifié → journal « autoreload: python code updated, autoreload activated » puis calcul v4 ;
+   .xml + .css seuls modifiés, sans redémarrage (compteur autoreload inchangé) → vue v4 et nouvelle couleur rgb(254, 202, 202) ;
+   champ maj_code ajouté sous reload → redémarrage automatique, /web/login = 500, UndefinedColumn maj_code ; relancé avec -u mon_module → 200.
+  Code 20.0 relu :
+  odoo/tools/convert.py:373-391 (nœud noupdate ignoré hors mode init si l'enregistrement existe) ;
+  odoo/modules/loading.py:153-157 + 214-216 (--reinit = chargement des données en mode 'init'), :417-420 (--reinit s'étend aux modules dépendants) ;
+  odoo/modules/migration.py:62, 254-268 (migrate(cr, version)) ;
+  odoo/addons/base/models/ir_qweb.py:2944-2949 (liens d'assets en cache « forever » hors dev xml, commentaire : redémarrer ou vider le cache) ;
+  odoo/addons/base/models/ir_attachment.py:998-1006 (regenerate_assets_bundles) ; addons/web/static/src/core/debug/debug_menu_items.js:26-37 ;
+  addons/web/i18n/fr.po « Regenerate Assets » → « Régénérer les actifs » ;
+  odoo/addons/base/models/ir_ui_view.py:238-239 (dev xml : arch lue dans le fichier si la vue n'a pas été retouchée, arch_updated) ;
+  odoo/addons/base/models/ir_asset.py:115-117 (cache des chemins d'assets coupé en dev xml) ;
+  odoo/service/server.py:122-135 (reload sur les seuls .py, compile puis restart), :1595-1607 (inotify ou watchdog, sinon warning) ;
+  odoo/tools/misc.py:773-775 (stripped_sys_argv retire -u/-i au redémarrage automatique) ;
+  odoo/tools/config.py:457-465 (aide de --dev, identique à la 19.0 publique) .
+  Écart 19→20 : aucun retenu. Branche 19.0 publique relue le 21/10 : même aide --dev (config.py:423-432), même saut noupdate
+  (convert.py:360), même --reinit (loading.py), même cache d'assets (ir_asset.py:126).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Mettre à jour un module Odoo 20 qui ne prend pas tes modifications</h1>
+                <p class="lead mt-3 text-white">Tu modifies ton module, tu recharges la page, rien ne change. Odoo 20 relit
+                    le Python au démarrage, le XML à la mise à jour (<code>-u</code>), les données <code>noupdate</code>
+                    presque jamais, le CSS et le JavaScript quand le cache des assets est vidé. Chaque cas a été rejoué
+                    sur un petit module.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau débutant · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration et module d'exemple.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Tu as modifié…</th><th>Pour le voir</th></tr></thead>
+                            <tbody>
+                                <tr><td>du code Python (une méthode, un calcul)</td><td>redémarrer le serveur</td></tr>
+                                <tr><td>une vue, un menu, une action (XML)</td><td><code>-u mon_module</code></td></tr>
+                                <tr><td>un champ stocké ajouté</td><td>redémarrer <strong>avec</strong> <code>-u mon_module</code>, sinon erreur 500</td></tr>
+                                <tr><td>un enregistrement en <code>noupdate="1"</code></td><td>script de migration (ou <code>--reinit</code> sur une base de dev)</td></tr>
+                                <tr><td>un fichier CSS ou JS</td><td>redémarrer, ou « Régénérer les actifs », ou <code>?debug=assets</code></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE TEST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Python, XML, CSS : trois horloges différentes</h2>
+                <p>Le module d'exemple ajoute à la fiche contact un champ calculé (<code>calcul v1</code>), affiché par une
+                    vue héritée (<code>Info (vue v1)</code>) sur un fond coloré par une feuille CSS de
+                    <code>web.assets_backend</code>. Les trois fichiers ont été modifiés serveur en marche, puis la fiche
+                    d'Acme Corporation rouverte à chaque étape dans un navigateur neuf, sans cache :</p>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Libellé (XML)</th><th>Valeur (Python)</th><th>Fond (CSS)</th></tr></thead>
+                    <tbody>
+                        <tr><td>État initial</td><td>vue v1</td><td>calcul v1</td><td>jaune</td></tr>
+                        <tr><td>Les trois fichiers modifiés, page rechargée</td><td>vue v1</td><td>calcul v1</td><td>jaune</td></tr>
+                        <tr><td>Même page avec <code>?debug=assets</code></td><td>vue v1</td><td>calcul v1</td><td><strong>vert</strong></td></tr>
+                        <tr><td>Serveur redémarré, sans <code>-u</code></td><td>vue v1</td><td><strong>calcul v2</strong></td><td>vert</td></tr>
+                        <tr><td><code>-u mon_module</code> lancé dans un second terminal</td><td><strong>vue v2</strong></td><td>calcul v2</td><td>vert</td></tr>
+                        <tr><td>Python repassé en v3, puis <code>-u</code> dans le second terminal</td><td>vue v2</td><td>calcul v2</td><td>vert</td></tr>
+                    </tbody>
+                </table>
+                <p>Le Python est chargé en mémoire au démarrage : un redémarrage suffit, sans <code>-u</code>, pour une
+                    méthode modifiée. Les vues vivent en base : <code>-u</code> recopie le XML dans
+                    <code>ir.ui.view</code>. Dernière ligne, le piège : un <code>-u</code> lancé à côté met la base à jour
+                    et le serveur recharge son registre (<code>Reloading the model registry after database
+                    signaling.</code>), mais il garde l'<strong>ancien</strong> code Python. Relance donc le serveur
+                    lui-même :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base -u mon_module</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CHAMP AJOUTÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Un champ ajouté sans <code>-u</code> : erreur 500</h2>
+                <p>Ajoute un champ stocké, <code>maj_note = fields.Char(string="Note module")</code>, et redémarre sans
+                    <code>-u</code>. Le Python connaît le champ, la table <code>res_partner</code> n'a pas la colonne :
+                    la première requête qui lit un contact échoue. Ici, c'est la page de connexion elle-même :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : la page /web/login répond 500 et le journal indique column res_partner.maj_note does not exist" loading="lazy"/>
+                    <figcaption>Champ ajouté, serveur redémarré sans <code>-u</code> : erreur 500 et <code>UndefinedColumn</code> dans le journal.</figcaption>
+                </figure>
+                <p>C'est <code>-u</code> qui crée les colonnes (le journal l'annonce par
+                    <code>module mon_module: creating or updating database tables</code>). Après
+                    <code>-u mon_module</code>, la colonne existe et la connexion répond de nouveau.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. NOUPDATE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>noupdate="1"</code> : la donnée qui ne bouge plus</h2>
+                <p>Les données placées dans <code>&lt;data noupdate="1"&gt;</code> sont créées à l'installation, puis
+                    laissées à l'utilisateur : <code>-u</code> ne les réécrit pas. C'est le premier soupçon quand « le XML
+                    est bon mais la base ne suit pas ». Le module d'exemple crée une étiquette de contact :</p>
+<pre class="language-markup"><code class="language-markup">&lt;data noupdate="1"&gt;
+    &lt;record id="categ_client_fidele" model="res.partner.category"&gt;
+        &lt;field name="name"&gt;Client premium&lt;/field&gt;
+    &lt;/record&gt;
+&lt;/data&gt;</code></pre>
+                <p>Le nom vient d'être changé dans le fichier (il valait <code>Client fidèle</code>). Ce script, passé à
+                    <code>odoo-bin shell</code>, lit la base :</p>
+<pre class="language-python"><code class="language-python"># lire_categ.py
+tag = env.ref('mon_module.categ_client_fidele')
+imd = env['ir.model.data'].search([('module', '=', 'mon_module'), ('name', '=', 'categ_client_fidele')])
+print(tag.name, '| noupdate =', imd.noupdate)</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : après -u l'étiquette vaut toujours Client fidèle, après --reinit elle vaut Client premium" loading="lazy"/>
+                    <figcaption><code>-u</code> laisse l'étiquette telle quelle ; <code>--reinit</code> la recharge.</figcaption>
+                </figure>
+                <p><code>--reinit mon_module</code> recharge les données comme à l'installation, drapeau conservé. Commode en
+                    développement, mais il repasse <strong>toutes</strong> les données <code>noupdate</code> du module et
+                    des modules qui en dépendent : les retouches faites dans l'interface partent avec.</p>
+                <p>En production, la voie propre est un <strong>script de migration</strong>, joué une fois quand la version
+                    du manifeste augmente. Passe-la de <code>20.0.1.0.0</code> à <code>20.0.1.0.1</code> et crée
+                    <code>migrations/20.0.1.0.1/post-migrate.py</code> :</p>
+<pre class="language-python"><code class="language-python">from odoo import api, SUPERUSER_ID
+
+
+def migrate(cr, version):
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    tag = env.ref('mon_module.categ_client_fidele', raise_if_not_found=False)
+    if tag:
+        tag.name = "Client premium"</code></pre>
+                <p>Au <code>-u</code> suivant, le journal montre le passage, puis <code>lire_categ.py</code> confirme la valeur ; les <code>-u</code> d'après ne rejouent plus le script :</p>
+<div class="out">2026-10-21 11:21:26,015 69690 INFO ma_base odoo.modules.migration: module mon_module: Running upgrade [20.0.1.0.1&gt;] post-migrate
+2026-10-21 11:21:26,017 69690 INFO ma_base odoo.modules.migration.mon_module.post: mon_module.post from 20.0.1.0.0 to 20.0.1.0.1 in 0.002 seconds</div>
+<div class="out">Client premium | noupdate = True</div>
+
+                <div class="pitfall-box">
+                    <h4>Décocher <code>noupdate</code> dans <code>ir.model.data</code> ne suffit pas</h4>
+                    <p>Passer <code>noupdate</code> à <code>False</code> sur l'identifiant externe puis lancer <code>-u</code>
+                        ne change rien tant que le fichier garde <code>&lt;data noupdate="1"&gt;</code> : en mise à jour,
+                        Odoo saute ce nœud dès que l'enregistrement existe. Passe par le script de migration.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. ASSETS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. CSS et JavaScript : le cache des assets</h2>
+                <p>Au point 1, la page rechargée gardait l'ancienne couleur, et l'adresse du bundle n'avait pas changé :
+                    Odoo 20 assemble les fichiers en bundles minifiés et les garde en cache jusqu'au redémarrage. Trois
+                    façons de voir ton CSS ou ton JavaScript à jour :</p>
+                <ol>
+                    <li><strong>Redémarrer le serveur</strong> : le bundle est recalculé sous une nouvelle adresse, que le
+                        navigateur recharge. Pas de <code>-u</code> pour un fichier déjà déclaré.</li>
+                    <li><strong>Régénérer les actifs</strong>, sans redémarrer : en mode développeur, icône bogue, section
+                        <strong>Outils</strong>. Les bundles stockés sont supprimés et la page se recharge.</li>
+                    <li><strong><code>?debug=assets</code></strong> dans l'adresse : fichiers non minifiés, relus à chaque
+                        chargement. Idéal pendant que tu écris ton CSS ou ton composant.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Menu du mode développeur, section Outils, entrée Régénérer les actifs" loading="lazy"/>
+                    <figcaption>Le menu du mode développeur, section Outils : « Régénérer les actifs ».</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. --dev ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. <code>--dev=reload,xml</code> : le mode qui t'épargne la moitié du travail</h2>
+                <p>Sur ta machine de développement, lance le serveur avec <code>--dev=reload,xml</code> (ou
+                    <code>dev_mode = reload,xml</code> dans <code>odoo.conf</code>) :</p>
+                <ul>
+                    <li><strong><code>reload</code></strong> surveille les fichiers <code>.py</code> et redémarre le
+                        serveur dès qu'un fichier change. Le journal l'annonce :
+<div class="out">2026-10-21 11:24:24,785 75367 INFO ? odoo.service.server: autoreload: python code updated, autoreload activated</div>
+                        Il faut le paquet Python <code>inotify</code> (ou <code>watchdog</code>) ; sinon un
+                        <code>WARNING</code> au démarrage signale le rechargement désactivé.</li>
+                    <li><strong><code>xml</code></strong> lit l'architecture des vues directement dans tes fichiers, et
+                        recalcule les assets à chaque chargement. Vue et CSS modifiés ont été visibles au simple
+                        rechargement de la page, sans redémarrage ni <code>-u</code>.</li>
+                </ul>
+                <p>Ses limites : <code>xml</code> ne vaut que pour les vues <strong>déjà installées</strong> et non
+                    retouchées dans l'interface ; nouvelle vue, menu, action ou donnée demandent toujours <code>-u</code>.
+                    Et <code>reload</code> redémarre <strong>sans</strong> <code>-u</code> (Odoo retire l'option de la
+                    commande relancée) : un champ stocké ajouté sous ce mode a redonné l'erreur 500 du point 2, jusqu'à un
+                    redémarrage avec <code>-u mon_module</code>. Réservé au poste du développeur, jamais à la
+                    production.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Python : redémarrer le serveur ; un <code>-u</code> lancé à côté met à jour la base, pas le code en mémoire.</li>
+                    <li>Vues, menus, champs nouveaux : <code>-u mon_module</code> ; un champ stocké sans <code>-u</code> donne <code>column … does not exist</code>.</li>
+                    <li><code>noupdate="1"</code> : <code>-u</code> n'y touche pas ; script de migration en production, <code>--reinit</code> seulement en développement.</li>
+                    <li>CSS et JS : redémarrage, « Régénérer les actifs » ou <code>?debug=assets</code> ; <code>--dev=reload,xml</code> automatise une partie, pas le <code>-u</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — l'article pilier : <code>-i</code>, <code>-u</code>, <code>-u all</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a> — dont <code>--dev</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — l'outil de vérification.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, module
+                    d'exemple), dans le navigateur, en console et dans le journal du serveur ; branche 19.0 publique relue
+                    le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/convert.py" target="_blank" rel="noopener"><code>odoo/tools/convert.py</code></a> : le nœud <code>noupdate</code> ignoré en mise à jour</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/loading.py" target="_blank" rel="noopener"><code>odoo/modules/loading.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/migration.py" target="_blank" rel="noopener"><code>migration.py</code></a> : <code>--reinit</code> et les scripts de migration</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_qweb.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_qweb.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_attachment.py" target="_blank" rel="noopener"><code>ir_attachment.py</code></a> : le cache des assets et sa régénération</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/service/server.py" target="_blank" rel="noopener"><code>odoo/service/server.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>ir_ui_view.py</code></a> : les modes <code>reload</code> et <code>xml</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

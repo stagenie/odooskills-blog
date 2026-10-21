@@ -1,0 +1,356 @@
+<!--
+Article — Pannes silencieuses d'un module 19 sous Odoo 20 : t-esc, datas, t-set
+Série « Astuces dev Odoo 20 » (astuce AT5)
+Date : 2026-10-21
+Slug : pannes-silencieuses-module-odoo
+Mot-clé cible : odoo 20 t-esc ne s'affiche pas, odoo 20 pièce jointe vide datas, odoo 20 t-set t-call, odoo 20 access error groupe vide
+Tags : intermediaire, qualite-tests, guide, community
+Preuves (base vs20_tech_at5 = copie de vs20_tech, sale_management + stock, démo native fr_FR, Odoo 20.0 3538ed82, PG 16) :
+- Module jetable demo_silence : docs/blog-odoo20/captures-base-vs20_tech/at5-astuce/addons19/demo_silence (écrit comme en 19,
+  version 20.0.1.0.0) → addons/demo_silence (corrigé). Installé par --addons-path en ligne de commande, base at5 seulement.
+  install.log : -i demo_silence, code de sortie 0, aucun WARNING hors « Missing author » (clé ajoutée ensuite).
+- p_symptomes.py → p_symptomes_avant_out.txt (fig. 01) / p_symptomes_apres_out.txt (Client : Acme Corporation, Ville : Bruxelles,
+  7 b'Bonjour', demo : 1).
+- test_rouge.log + test_rouge_exit.txt (exit=1, « 3 failed, 1 error(s) of 4 tests ») → fig. 02 ; test_vert.log + test_vert_exit.txt
+  (exit=0, « 0 failed, 0 error(s) of 4 tests ») → fig. 03 ; grep_avant.txt, awk_avant.txt.
+- python -W error::UserWarning : p_werror.py → p_werror_out.txt (« UserWarning : Use raw, datas has beeen removed » levée) ;
+  test_werror.log (test_3 en ERROR « UserWarning: Use raw, datas has beeen removed », pile jusqu'à demo_fiche.py action_joindre_note, exit 1).
+- TransactionCase en superutilisateur : odoo/tests/common.py:1395 (api.Environment(cls.cr, api.SUPERUSER_ID, {})).
+- Figures construites par build_figs.py (chemins → …/, base → ma_base, pile de l'avertissement py.warnings retirée).
+- Code 20.0 : odoo/addons/base/models/ir_qweb.py:1927-1929 (Unknown directives), 0 « _compile_directive_esc », :2693
+  (corps du t-call compilé sur values.copy()) ; ir_attachment.py:533-536 (datas retiré + warnings.warn), :616 raw ;
+  ir_access.py:128-131 (permission / restriction) ; orm/models.py:3647 (Domain.OR(permissions) & Domain.AND(restrictions)) ;
+  base/security/base_groups.xml:92-96 (group_everyone) ; ir_qweb.py:490 T_CALL_SLOT = '0' (t-out="0" dans web/views/report_templates.xml).
+- 19.0 PUBLIQUE (raw.githubusercontent.com/odoo/odoo/19.0, lue le 21/10/2026, copies dans at5-astuce/pub19/) :
+  ir_qweb.py:2487-2495 _compile_directive_esc → _compile_directive_out (warning en dev_mode seulement) ;
+  ir_qweb.py:2576 + 2593-2598 is_deprecated_version recopie les t-set du corps dans t_call_values ;
+  ir_attachment.py:473 champ datas (compute/inverse), :370-371 create décode datas ;
+  ir_model.py:2157-2169 _get_allowed_models « a.group_id IS NULL OR a.group_id IN … » ; base_groups.xml : 0 group_everyone.
+Captures : content/blog/screenshots/pannes-silencieuses-module-odoo/ (01-03)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Pannes silencieuses d'un module 19 sous Odoo 20 : t-esc, datas, t-set</h1>
+                <p class="lead mt-3 text-white">Ton module 19 passe en Odoo 20, s'installe avec un code de sortie 0, et
+                    pourtant un rapport sort vide, une pièce jointe pèse 0 octet, un utilisateur ne voit plus rien.
+                    Quatre changements d'Odoo 20 ne lèvent aucune erreur à l'installation : voici comment les rendre
+                    visibles en une commande, et la ligne à changer pour chacun.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · parcours <strong>Qualité &amp; tests</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">La réponse en bref</h4>
+                    <ol class="mb-2">
+                        <li><code>t-esc</code> / <code>t-raw</code> dans un gabarit QWeb serveur n'affichent plus rien → <code>t-out</code>.</li>
+                        <li>Un <code>&lt;t t-set&gt;</code> placé dans le corps d'un <code>t-call</code> n'arrive plus au gabarit appelé → le passer en attribut du <code>t-call</code>.</li>
+                        <li><code>ir.attachment</code> créé avec <code>datas=</code> donne une pièce jointe vide → <code>raw=</code> avec les octets bruts.</li>
+                        <li>Une ligne d'accès sans groupe (« tout le monde » en 19) est devenue une restriction → groupe <code>base.group_everyone</code>.</li>
+                    </ol>
+                    <p class="mb-0">Pour les débusquer : un test par panne, lancé avec <code>--test-tags</code>. Ce qui
+                        ne dit rien au chargement échoue en rouge dans le test.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. SYMPTÔME ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le symptôme : tout s'installe, rien ne marche</h2>
+
+                <p>Pour reproduire les quatre pannes, un module minimal <code>demo_silence</code>, écrit comme en 19
+                    et seulement passé en version <code>20.0.1.0.0</code> : un modèle <code>demo.fiche</code>, trois
+                    gabarits, une méthode qui joint une note, un fichier de droits.</p>
+<pre class="language-markup"><code class="language-markup">&lt;template id="carte"&gt;
+    &lt;p class="carte"&gt;Client : &lt;t t-esc="client"/&gt;&lt;/p&gt;
+&lt;/template&gt;
+&lt;template id="adresse"&gt;
+    &lt;p class="adresse"&gt;Ville : &lt;t t-out="ville"/&gt;&lt;/p&gt;
+&lt;/template&gt;
+&lt;template id="fiche"&gt;
+    &lt;div class="fiche"&gt;
+        &lt;t t-call="demo_silence.carte"/&gt;
+        &lt;t t-call="demo_silence.adresse"&gt;
+            &lt;t t-set="ville" t-value="'Bruxelles'"/&gt;
+        &lt;/t&gt;
+    &lt;/div&gt;
+&lt;/template&gt;</code></pre>
+<pre class="language-python"><code class="language-python">def action_joindre_note(self):
+    for fiche in self:
+        self.env['ir.attachment'].create({
+            'name': 'note.txt',
+            'res_model': self._name,
+            'res_id': fiche.id,
+            'datas': base64.b64encode(b'Bonjour'),
+        })</code></pre>
+<pre class="language-bash"><code class="language-bash">id,name,model_id,group_id/id,operation,domain
+access_demo_fiche_all,demo.fiche tout le monde,demo.fiche,,r,
+access_demo_fiche_admin,demo.fiche admin,demo.fiche,base.group_system,crud,</code></pre>
+
+                <p>Le fichier de droits est déjà au format <code>ir.access</code> d'Odoo 20 : c'est la conversion
+                    « évidente » d'un ancien <code>ir.model.access.csv</code> dont la première ligne n'avait pas de
+                    groupe. <code>-i demo_silence --stop-after-init</code> se termine avec le code 0, sans un seul
+                    avertissement sur ces lignes. On rend ensuite la fiche, on joint la note et on compte les fiches
+                    visibles, dans <code>odoo-bin shell</code> :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Console odoo-bin shell sur le module écrit comme en 19 : WARNING Unknown directives or unused attributes {'t-esc'} ; WARNING py.warnings UserWarning: Use raw, datas has beeen removed ; le rendu donne Client : vide et Ville : vide ; action_joindre_note donne une pièce jointe de 0 octet, b'' ; admin lit 1 fiche, demo reçoit AccessError Vous n'êtes pas autorisé à accéder aux enregistrements Fiche de démonstration"/>
+                    <figcaption>Le module 19 sous Odoo 20 : deux lignes WARNING au mieux, aucune exception sauf pour l'utilisateur non administrateur.</figcaption>
+                </figure>
+
+                <p>Trois résultats faux, un refus, et un administrateur qui, lui, voit tout. Le <code>t-esc</code> et le
+                    <code>datas</code> laissent un WARNING dans le journal, au moment de l'exécution seulement ; le
+                    <code>t-set</code> ne laisse <strong>rien</strong>. Quant aux droits, seul un utilisateur ordinaire
+                    tombe sur l'<code>AccessError</code> : en recette faite avec le compte administrateur, la panne
+                    passe inaperçue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CAUSE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La cause : ce que la 19 tolérait, la 20 l'a retiré</h2>
+
+                <p>Chaque ligne ci-dessous a été lue dans les sources : la branche 19.0 publique d'Odoo et la 20.0.</p>
+                <table class="tmc">
+                    <thead><tr><th>Écrit pour la 19</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>t-esc</code>, <code>t-raw</code></td>
+                            <td>alias de <code>t-out</code> (<code>ir_qweb.py</code>, <code>_compile_directive_esc</code>)</td>
+                            <td>plus de directive : l'attribut tombe dans les « inconnus », un WARNING, aucune sortie
+                                (<code>odoo/addons/base/models/ir_qweb.py:1927-1929</code>)</td></tr>
+                        <tr><td><code>t-set</code> dans le corps d'un <code>t-call</code></td>
+                            <td>une compatibilité rendait le corps et recopiait ses variables vers le gabarit appelé
+                                (<code>is_deprecated_version</code>)</td>
+                            <td>le corps n'est plus qu'un contenu passé à l'appelé, évalué sur une copie des valeurs
+                                (<code>ir_qweb.py:2693</code>) : la variable reste dans le corps</td></tr>
+                        <tr><td><code>create({'datas': …})</code></td>
+                            <td>champ <code>datas</code> en base64, décodé à la création</td>
+                            <td>clé retirée avec un <code>warnings.warn</code>, contenu vide
+                                (<code>ir_attachment.py:533-536</code>) ; reste <code>raw</code> (<code>:616</code>)</td></tr>
+                        <tr><td>droit sans groupe</td>
+                            <td>accès pour tous (<code>group_id IS NULL OR …</code> dans <code>ir_model.py</code>)</td>
+                            <td>ligne sans groupe = <em>restriction</em> (<code>ir_access.py:128-131</code>), combinée
+                                en <code>OU(permissions) ET ET(restrictions)</code> (<code>odoo/orm/models.py:3647</code>) :
+                                elle ne donne aucun droit</td></tr>
+                    </tbody>
+                </table>
+                <p>Le dernier cas mérite une phrase de plus : une restriction sans domaine ne filtre rien, mais elle
+                    n'ouvre rien non plus. Sans permission qui le concerne, l'utilisateur interne n'a plus aucun accès ;
+                    seul le groupe Administrateur garde le sien grâce à la seconde ligne. Le groupe
+                    <code>base.group_everyone</code>, nouveau en 20, contient tous les utilisateurs (internes, portail,
+                    public) et redonne le sens « tout le monde ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES RENDRE BRUYANTES ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. L'astuce : un test par panne</h2>
+
+                <p>Ce qu'Odoo ne signale pas, un test l'affirme. Quatre assertions courtes, chacune sur le résultat
+                    attendu et non sur le code, suffisent :</p>
+<pre class="language-python"><code class="language-python">from odoo.tests import TransactionCase, tagged
+
+
+@tagged('post_install', '-at_install')
+class TestSilence(TransactionCase):
+
+    def _rendu(self):
+        return str(self.env['ir.qweb']._render('demo_silence.fiche', {'client': 'Acme Corporation'}))
+
+    def test_1_t_esc(self):
+        self.assertIn('Client : Acme Corporation', self._rendu())
+
+    def test_2_t_set_dans_t_call(self):
+        self.assertIn('Ville : Bruxelles', self._rendu())
+
+    def test_3_piece_jointe(self):
+        fiche = self.env['demo.fiche'].create({'name': 'F1'})
+        fiche.action_joindre_note()
+        att = self.env['ir.attachment'].search([('res_model', '=', 'demo.fiche'), ('res_id', '=', fiche.id)])
+        self.assertEqual(att.raw.content, b'Bonjour')
+
+    def test_4_lecture_utilisateur_interne(self):
+        self.env['demo.fiche'].create({'name': 'F1'})
+        demo = self.env.ref('base.user_demo')
+        self.assertEqual(self.env['demo.fiche'].with_user(demo).search_count([]), 1)</code></pre>
+
+                <p>Le quatrième test est celui qu'on oublie : il lit avec <code>with_user</code>, un utilisateur
+                    interne sans droit d'administration. Un test exécuté en superutilisateur contourne tous les droits
+                    et ne verrait rien. On lance le module avec ses tests :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -d ma_base -u demo_silence --test-tags /demo_silence --stop-after-init
+echo $?</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Journal des tests du module écrit comme en 19 : FAIL test_1_t_esc, Client : Acme Corporation not found ; FAIL test_2_t_set_dans_t_call, Ville : Bruxelles not found ; FAIL test_3_piece_jointe, b'' != b'Bonjour' ; ERROR test_4_lecture_utilisateur_interne, AccessError You are not allowed to access Fiche de démonstration ; 3 failed, 1 error(s) of 4 tests ; code de sortie 1"/>
+                    <figcaption>Les quatre pannes en rouge : trois échecs, une erreur, et un code de sortie 1 qu'un script de déploiement sait lire.</figcaption>
+                </figure>
+
+                <p>Cette fois le code de sortie vaut 1 : une intégration continue ou un script de mise en production
+                    s'arrête. Deux réglages complètent les tests pour ce qui n'en a pas encore :</p>
+                <ul>
+                    <li><strong>Faire de l'avertissement <code>datas</code> une exception</strong> : lancer Odoo avec
+                        <code>python -W error::UserWarning odoo-bin …</code>. La création lève alors
+                        <code>UserWarning: Use raw, datas has beeen removed</code> à l'endroit exact de l'appel. Le
+                        réglage vaut pour tous les <code>UserWarning</code> : à réserver à une base de test.</li>
+                    <li><strong>Chercher les directives inconnues dans le journal</strong> :
+                        <code>grep "Unknown directives" odoo.log</code> après un passage de recette. Le WARNING n'apparaît
+                        qu'au rendu du gabarit, jamais au chargement du module.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CORRECTIF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le correctif, ligne par ligne</h2>
+
+                <p>Avant de corriger, une recherche dans les sources du module donne la liste des endroits à
+                    reprendre (résultat dans la figure 3) :</p>
+<pre class="language-bash"><code class="language-bash">grep -rnE "t-(esc|raw)=|['\"]datas['\"]|&lt;t t-call=\"[^\"]*\"&gt;" demo_silence/
+awk -F, 'FNR&gt;1 &amp;&amp; $4=="" &amp;&amp; $6==""' demo_silence/security/ir.access.csv</code></pre>
+                <p>La seconde commande liste les lignes d'accès sans groupe <em>et</em> sans domaine : une restriction
+                    utile a toujours un domaine (multi-société par exemple), une ligne vide des deux côtés est presque
+                    toujours un ancien « tout le monde ». Les quatre corrections :</p>
+<pre class="language-markup"><code class="language-markup">&lt;p class="carte"&gt;Client : &lt;t t-out="client"/&gt;&lt;/p&gt;
+...
+&lt;t t-call="demo_silence.adresse" ville="'Bruxelles'"/&gt;</code></pre>
+<pre class="language-python"><code class="language-python">self.env['ir.attachment'].create({
+    'name': 'note.txt',
+    'res_model': self._name,
+    'res_id': fiche.id,
+    'raw': b'Bonjour',
+})</code></pre>
+<pre class="language-bash"><code class="language-bash">id,name,model_id,group_id/id,operation,domain
+access_demo_fiche_all,demo.fiche tout le monde,demo.fiche,base.group_everyone,r,
+access_demo_fiche_admin,demo.fiche admin,demo.fiche,base.group_system,crud,</code></pre>
+
+                <p>L'attribut du <code>t-call</code> est une expression Python, d'où les guillemets simples autour de
+                    <code>'Bruxelles'</code>. <code>raw</code> prend les octets tels quels : plus de
+                    <code>base64</code>, ni à l'écriture ni à la lecture (<code>att.raw.content</code>). Après
+                    <code>-u demo_silence</code>, la même console affiche <code>Client : Acme Corporation</code>,
+                    <code>Ville : Bruxelles</code>, <code>7 b'Bonjour'</code> et <code>demo : 1</code>, et les tests
+                    passent :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : grep sur le module écrit comme en 19 trouve demo_fiche.py ligne 18 'datas', templates.xml ligne 3 t-esc, ligne 11 t-call ouvert ; awk trouve la ligne access_demo_fiche_all sans groupe ni domaine ; après correction, les quatre tests démarrent et le journal affiche 0 failed, 0 error(s) of 4 tests, code de sortie 0"/>
+                    <figcaption>La recherche sur le module de départ, puis les quatre tests au vert après correction.</figcaption>
+                </figure>
+
+                <div class="pitfall-box">
+                    <h4>Le <code>t-set</code> ne laisse aucune trace</h4>
+                    <p>Des quatre pannes, c'est la seule sans la moindre ligne dans le journal : seul un test sur le
+                        rendu la voit. Et la recherche ne trie pas pour toi : un <code>&lt;t t-call="…"&gt;</code> ouvert
+                        reste légitime quand son corps est un contenu affiché par l'appelé (<code>t-out="0"</code>).
+                        Regarde s'il contient un <code>t-set</code> : c'est lui qu'il faut sortir en attribut.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un code de sortie 0 à l'installation ne prouve rien : <code>t-esc</code>, <code>t-set</code>
+                        dans un <code>t-call</code>, <code>datas=</code> et le droit sans groupe passent tous le
+                        chargement.</li>
+                    <li>Écrire en Odoo 20 : <code>t-out</code>, attribut du <code>t-call</code>, <code>raw=</code>,
+                        <code>base.group_everyone</code>.</li>
+                    <li>Un test par résultat attendu, dont un avec <code>with_user</code> sur un utilisateur
+                        ordinaire, transforme ces silences en code de sortie 1.</li>
+                    <li><code>python -W error::UserWarning</code> et <code>grep "Unknown directives"</code> sur le
+                        journal complètent les tests en recette.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a> :
+                        les erreurs bruyantes (<code>odoo.osv</code>, <code>ir.model.access</code>, <code>get_param</code>…)
+                        et l'outil <code>upgrade_code</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a> :
+                        écrire et lancer les tests d'un module.</li>
+                    <li><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a> :
+                        permissions, restrictions et domaines.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,316 @@
+<!--
+Article — UserError, ValidationError, AccessError en Odoo 20 : lire et corriger
+Série : Astuces dev Odoo 20 (astuce AT2)
+Date : 2026-10-21
+Slug : exceptions-odoo-validation-access-error
+Mot-clé cible : odoo validation error, odoo access error
+Catégorie : Développement Odoo
+Tags : debutant, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 sur Odoo 20.0 (PostgreSQL 16), base de démo sale_management + stock, fr_FR :
+- odoo/odoo/exceptions.py:8 (UserError, http_status 422 :14), :53 (AccessError, 403 :60), :73 (MissingError, 404 :80), :91 (ValidationError, hérite de UserError, pas de http_status propre)
+- diff avec la 19.0 publique (raw.githubusercontent.com/odoo/odoo/19.0/odoo/exceptions.py, 21/10) : seules AccessDenied change (suppress_traceback -> conceal_debug_traceback) ; les quatre classes de l'article sont identiques
+- sonde quatre_erreurs.py (odoo-bin shell) : sortie collée telle quelle (figure 01) ; issubclass(..., UserError) -> [True, True, True]
+- causes : sale_order.py:1487 (_unlink_except_draft_or_cancel, UserError) ; res_partner.py:605-608 (_check_parent_id, ValidationError) ; ir_access.py:326 (_make_model_access_error : liste des groupes) et :411 (_make_record_access_error : « Oups ! ») ; orm/fields.py:1886 (MissingError à la lecture) ; orm/models.py:3443 check_access, :3464 has_access, :3603 _access_domain, :5037 exists
+- écran (Playwright, 1280x900, échelle 2) : quatre fenêtres réelles (figure 02) : suppression de S00007 (admin), référence client « AB » (module d'exemple astuce_erreurs installé sur la base jetable), Paramètres système ouverts par Marc Demo, contact supprimé dans un autre processus puis enregistré
+- titres des fenêtres : web/static/src/core/errors/error_dialogs.js:29-40 (odooExceptionTitleMap) et :318-324 (WarningDialog pour les quatre) ; traductions web/i18n/fr.po
+- journal : odoo/http/router.py:306-309 (AccessError : WARNING, pile seulement si 'access' dans dev_mode ; UserError : WARNING) ; vérifié dans le journal du serveur, avec et sans --dev=access ; même code dans odoo/http.py 19.0 publique (l. 2878-2881)
+- ouvrir l'URL d'un id inexistant (/odoo/action-base.action_partner_form/999999) : simple notification côté client, aucune MissingError au journal
+- module d'exemple : sonde_module.py -> UserError « La commande S00027 n'a aucune ligne… », ValidationError « La référence client « AB »… »
+- has_access('read') -> False pour l'utilisateur portail sur S00007 ; browse([10, 999999]).exists() -> res.partner(10,)
+Captures : content/blog/screenshots/exceptions-odoo-validation-access-error/ (01-02)
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">UserError, ValidationError, AccessError en Odoo 20 : lire et corriger</h1>
+                <p class="lead mt-3 text-white">« Opération invalide », « Erreur de validation », « Erreur d'accès »,
+                    « Enregistrement manquant » : quatre fenêtres, quatre exceptions Python, quatre causes bien
+                    distinctes. Le titre de la fenêtre te dit déjà laquelle a été levée ; le message, quoi corriger.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau débutant · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">La réponse en bref</h4>
+                    <table class="tmc mb-0">
+                        <tr><th>Fenêtre</th><th>Exception</th><th>Ce qu'elle dit</th><th>Corriger</th></tr>
+                        <tr><td>Opération invalide</td><td><code>UserError</code></td><td>l'action n'a pas de sens dans l'état actuel du document</td><td>changer l'état d'abord (annuler, compléter)</td></tr>
+                        <tr><td>Erreur de validation</td><td><code>ValidationError</code></td><td>une contrainte <code>@api.constrains</code> refuse la donnée</td><td>corriger la valeur saisie</td></tr>
+                        <tr><td>Erreur d'accès</td><td><code>AccessError</code></td><td>il manque un groupe, ou une règle masque l'enregistrement</td><td>ajouter le groupe ou revoir <code>ir.access</code></td></tr>
+                        <tr><td>Enregistrement manquant</td><td><code>MissingError</code></td><td>l'id visé n'existe plus</td><td>recharger ; en code, filtrer par <code>exists()</code></td></tr>
+                    </table>
+                </div>
+                <p>Les quatre classes sont définies dans <code>odoo/exceptions.py</code> et héritent toutes de
+                    <code>UserError</code>. Elles sont identiques à celles de la 19.0 : ce qui suit vaut pour les deux
+                    versions.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LES PROVOQUER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les provoquer toutes les quatre dans le shell</h2>
+
+                <p>Le plus sûr moyen de reconnaître une exception est de la déclencher soi-même. Sur une base de démo
+                    avec Ventes installé, ce script passe à <code>odoo-bin shell</code> quatre opérations vouées à
+                    l'échec. Chacune tourne dans un <code>savepoint</code> : l'échec est annulé et ne pollue pas la
+                    suite.</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import UserError, ValidationError, AccessError, MissingError
+
+def essai(action):
+    try:
+        with env.cr.savepoint():
+            action()
+    except UserError as e:
+        print(f"{type(e).__name__} (HTTP {e.http_status}) | {e}\n")
+
+acme = env['res.partner'].browse(10)              # Acme Corporation
+portail = env['res.users'].search([('login', '=', 'portal')])
+
+essai(lambda: env['sale.order'].browse(7).unlink())                # S00007 confirmée
+essai(lambda: acme.write({'parent_id': acme.child_ids[0].id}))     # boucle
+essai(lambda: env['sale.order'].with_user(portail).browse(7).name) # commande d'un autre
+essai(lambda: env['res.partner'].browse(999999).name)              # id inexistant
+print([issubclass(c, UserError) for c in (ValidationError, AccessError, MissingError)])</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal odoo-bin shell : UserError (HTTP 422) refus de supprimer une commande confirmée, ValidationError (HTTP 422) hiérarchie de partenaires récursive, AccessError (HTTP 403) Joel Willis n'a pas d'accès lire à Commande client, MissingError (HTTP 404) Enregistrement inexistant ou supprimé res.partner(999999,), puis [True, True, True]"/>
+                    <figcaption>Les quatre exceptions sur la démo d'Odoo 20, avec leur code HTTP et leur message en français.</figcaption>
+                </figure>
+
+                <p>Deux enseignements tiennent dans cette sortie. D'abord, un seul <code>except UserError</code> les a
+                    toutes attrapées : la dernière ligne le confirme, <code>ValidationError</code>,
+                    <code>AccessError</code> et <code>MissingError</code> sont des sous-classes de
+                    <code>UserError</code>. Ensuite, chaque classe porte un attribut <code>http_status</code> : 422
+                    pour <code>UserError</code> et <code>ValidationError</code>, 403 pour <code>AccessError</code>,
+                    404 pour <code>MissingError</code>. C'est le code que reçoit un appel d'API.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. À L'ÉCRAN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que voit l'utilisateur, ce que garde le journal</h2>
+
+                <p>Dans le navigateur, le client web choisit le titre de la fenêtre d'après le nom de l'exception
+                    (<code>web/static/src/core/errors/error_dialogs.js</code>) et affiche le message tel quel. Les voici
+                    capturées sur la même démo :</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Quatre fenêtres d'Odoo 20 : Opération invalide (supprimer une commande confirmée), Erreur de validation (référence client AB trop courte), Erreur d'accès (Paramètres système, autorisé au groupe Rôle / Administrateur), Enregistrement manquant (res.partner(47,), Utilisateur : 2), chacune avec un seul bouton Fermer"/>
+                    <figcaption>Suppression de S00007, référence client refusée, Paramètres système ouverts par Marc Demo, contact supprimé entre-temps dans un autre onglet.</figcaption>
+                </figure>
+
+                <p>Ces quatre fenêtres n'ont qu'un bouton <strong>Fermer</strong> : pas de « Voir les détails
+                    techniques », pas de pile d'appels. C'est voulu, l'erreur est destinée à l'utilisateur. Côté serveur,
+                    le journal n'en garde qu'une ligne <code>WARNING</code>, sans trace :</p>
+<div class="out">2026-10-21 11:21:12,718 61715 WARNING ma_base odoo.http: Vous ne pouvez pas supprimer un devis envoyé ou une commande client confirmée. Vous devez l'annuler au préalable.
+2026-10-21 11:22:12,095 61715 WARNING ma_base odoo.http: Enregistrement inexistant ou supprimé.</div>
+
+                <p>Pour savoir <em>quelle ligne</em> a refusé un accès, relance le serveur avec
+                    <code>--dev=access</code> : chaque <code>AccessError</code> est alors suivie de sa pile complète
+                    dans le journal (<code>odoo/http/router.py</code>, même comportement en 19). Les trois autres
+                    exceptions restent sur une ligne : leur message suffit en général.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LIRE ET CORRIGER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Lire le message et corriger la cause</h2>
+
+                <h3>UserError : « Opération invalide »</h3>
+                <p>Le message dit ce qui bloque et, souvent, quoi faire. Ici, <code>_unlink_except_draft_or_cancel</code>
+                    (<code>sale/models/sale_order.py</code>) refuse de supprimer une commande qui n'est ni en devis ni
+                    annulée : il faut l'annuler d'abord. Pour retrouver la méthode, cherche le texte anglais du message
+                    dans les sources (le <code>msgid</code> du fichier <code>.po</code> du module si l'écran est en
+                    français).</p>
+
+                <h3>ValidationError : « Erreur de validation »</h3>
+                <p>Une contrainte <code>@api.constrains</code> a jugé la donnée invalide, et Odoo annule toute
+                    l'écriture. Le refus de boucle vient de <code>_check_parent_id</code> sur <code>res.partner</code> ;
+                    la référence trop courte, d'une contrainte de module. On corrige la <strong>valeur</strong>, pas
+                    le code, sauf si la règle elle-même est fausse.</p>
+
+                <h3>AccessError : « Erreur d'accès »</h3>
+                <p>Elle prend deux formes, à distinguer avant d'agir :</p>
+                <ul>
+                    <li><strong>« Vous n'êtes pas autorisé à accéder aux enregistrements… »</strong> suivi d'une liste de
+                        groupes : l'utilisateur n'a <em>aucun</em> droit sur le modèle. Ajoute-lui l'un des groupes
+                        cités, ou, dans ton module, une ligne <code>security/ir.access.csv</code> pour son groupe.</li>
+                    <li><strong>« Oups ! … top secrets »</strong> : le modèle lui est ouvert, mais une règle à domaine
+                        exclut <em>cet</em> enregistrement (ici, la commande d'un autre client pour l'utilisateur
+                        portail). Lis ce domaine en console : <code>env['sale.order'].with_user(u)._access_domain('read')</code>.</li>
+                </ul>
+                <p>Avant d'appeler une méthode pour le compte d'un utilisateur, teste plutôt que d'attraper :</p>
+<pre class="language-python"><code class="language-python">portail = env['res.users'].search([('login', '=', 'portal')])
+commande = env['sale.order'].with_user(portail).browse(7)
+print(commande.has_access('read'))
+print(env['res.partner'].browse([10, 999999]).exists())</code></pre>
+<div class="out">False
+res.partner(10,)</div>
+
+                <h3>MissingError : « Enregistrement manquant »</h3>
+                <p>L'id existe dans la page ou dans ton code, plus dans la base : supprimé dans un autre onglet, par une
+                    action planifiée, ou id écrit en dur. Côté code,
+                    <code>exists()</code> (ci-dessus) garde les seuls enregistrements présents : <code>999999</code>
+                    a disparu du résultat sans erreur. À noter : ouvrir dans le navigateur l'URL d'un id inexistant ne
+                    lève pas de <code>MissingError</code>, le client affiche seulement une notification « Il semble
+                    que les enregistrements avec ID 999999 soient introuvables ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LES LEVER SOI-MÊME ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les lever toi-même</h2>
+
+                <p>Dans un module, deux exceptions servent tous les jours : <code>UserError</code> pour refuser une
+                    action, <code>ValidationError</code> dans une contrainte pour refuser une donnée. Le module
+                    d'exemple qui a produit la fenêtre « Erreur de validation » ci-dessus tient en un fichier :</p>
+<pre class="language-python"><code class="language-python">from odoo import api, models
+from odoo.exceptions import UserError, ValidationError
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    @api.constrains('client_order_ref')
+    def _check_client_order_ref(self):
+        for order in self:
+            if order.client_order_ref and len(order.client_order_ref) &lt; 4:
+                raise ValidationError(self.env._(
+                    "La référence client « %s » est trop courte (4 caractères minimum).",
+                    order.client_order_ref))
+
+    def action_confirm(self):
+        for order in self:
+            if not order.order_line:
+                raise UserError(self.env._(
+                    "La commande %s n'a aucune ligne : ajoutez un article avant de la confirmer.",
+                    order.name))
+        return super().action_confirm()</code></pre>
+                <p>Essayé en console sur un devis vide, puis sur une référence de deux lettres :</p>
+<div class="out">UserError | La commande S00027 n'a aucune ligne : ajoutez un article avant de la confirmer.
+
+ValidationError | La référence client « AB » est trop courte (4 caractères minimum).</div>
+
+                <p>Rédige le message pour l'utilisateur : ce qui bloque et comment s'en sortir, avec le nom du
+                    document. <code>AccessError</code> et <code>MissingError</code>, en revanche, se lèvent rarement à la
+                    main : la première vient des droits (<code>check_access</code> la lève pour toi), la seconde de
+                    l'ORM.</p>
+
+                <div class="pitfall-box">
+                    <h4>Un <code>except UserError</code> attrape aussi les trois autres</h4>
+                    <p>Puisqu'elles héritent de <code>UserError</code>, un bloc <code>except UserError: pass</code> écrit
+                        pour ignorer un refus métier avale aussi un défaut de droits ou un enregistrement disparu, sans
+                        laisser de trace. Attrape la classe la plus précise (<code>except AccessError</code> avant
+                        <code>except UserError</code>), ou mieux, teste avant d'agir avec <code>has_access()</code> et
+                        <code>exists()</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le titre de la fenêtre donne l'exception : Opération invalide = <code>UserError</code>, Erreur de
+                        validation = <code>ValidationError</code>, Erreur d'accès = <code>AccessError</code>,
+                        Enregistrement manquant = <code>MissingError</code>.</li>
+                    <li>Une <code>AccessError</code> qui liste des groupes = droit manquant sur le modèle ; « Oups ! » =
+                        règle à domaine sur l'enregistrement. <code>--dev=access</code> met la pile au journal.</li>
+                    <li>Tu lèves <code>UserError</code> et <code>ValidationError</code> ; tu préviens les deux autres
+                        avec <code>has_access()</code> et <code>exists()</code>.</li>
+                    <li>Les quatre héritent de <code>UserError</code> : attrape la plus précise.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>
+                        — les lignes qui décident d'une « Erreur d'accès ».</li>
+                    <li><a href="/blog/developpement-odoo-2/methodes-boutons-odoo-20-182">Agir en Odoo 20 : méthodes, boutons et contraintes</a>
+                        — boutons et <code>@api.constrains</code> dans un vrai module.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a>
+                        — la console utilisée pour toutes les sondes de cette astuce.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
