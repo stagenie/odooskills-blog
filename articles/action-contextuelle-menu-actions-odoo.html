@@ -1,0 +1,344 @@
+<!--
+Article — Action contextuelle Odoo 20 : une entrée dans le menu Actions
+Série « Astuces dev Odoo 20 » (blog Développement) — AT9
+Date : 2026-10-21
+Slug : action-contextuelle-menu-actions-odoo
+Mot-clé cible : odoo contextual action, action contextuelle odoo, binding_model_id, menu Actions liste
+Tags : intermediaire, web-ui, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  module d'exemple mon_module (méthode action_etiqueter_a_relancer sur res.partner, étiquette res.partner.category,
+  ir.actions.server state=code lié par binding_model_id, binding_view_types=list) installé par --addons-path sur cette base seulement.
+  Navigateur (Playwright, Ventes > Commandes > Clients, vue liste) : sans sélection, pas de bouton Actions ; 2 lignes cochées (Acme Corporation,
+   Azure Interior) → menu Actions = Exporter, Dupliquer, Archiver, Désarchiver, Supprimer | Fusionner … Donner accès au portail, Étiqueter « À relancer » ;
+   clic → notification « 2 contact(s) étiqueté(s) « À relancer ». », liste rechargée, étiquette visible sur les deux lignes.
+   Fiche contact : menu Actions sans l'entrée.
+  Console (odoo-bin shell) : get_views(list, form, toolbar=True) → list True / form False ;
+   run() avec active_ids de 3 sociétés → display_notification « 3 contact(s) … » (une seule exécution) ;
+   group_ids = base.group_system (console puis XML + -u) → get_bindings admin True, Marc Demo False ; run() en Marc Demo → AccessError
+   « You don't have enough access rights to run this action. » (msgstr fr vide dans base/i18n/fr.po:22049-22050) ;
+   utilisateur créé avec base.group_user seul, sans group_ids sur l'action : entrée présente dans get_bindings, run() sur base.res_partner_12 →
+   AccessError + WARNING « Forbidden server action 'Étiqueter « À relancer »' executed while the user … does not have access to res.partner(16,) ».
+   Menu : base.menu_server_action = Paramètres/Technique/Actions/Actions de serveur.
+  Code 20.0 relu :
+  odoo/addons/base/models/ir_actions.py:75-80 (binding_model_id, binding_type action/report, binding_view_types défaut 'list,form'),
+   :142-163 (get_bindings : filtre group_ids et has_access('read') du res_model), :168-203 (_get_bindings, tri par sequence),
+   :991-1002 (create_action / unlink_action), :1015-1019 (_run_action_code_multi : exécution unique, renvoie eval_context['action']),
+   :1148-1162 (records = active_ids si active_model = modèle de l'action), :1194-1196 et :1233-1260 (_can_execute_action_on_records :
+   group_ids sinon check_access('write') modèle + lignes) ;
+  odoo/addons/base/models/ir_ui_view.py:2980-2994 (toolbar par vue selon binding_view_types, report → print, action → action) ;
+  odoo/addons/base/views/ir_actions_views.xml:366-378 (boutons Créer / Supprimer une action contextuelle, pas de champ binding_view_types) ;
+  addons/web/static/src/views/list/list_controller.xml:59-80 (menu Actions dans le slot de sélection, hasSelectedRecords) ;
+  addons/web/static/src/search/action_menus/action_menus.js:101-122 (active_id, active_ids, active_model, active_domain) ;
+  addons/web/static/src/webclient/actions/client_actions.js:9-24 (display_notification renvoie params.next).
+  Écart 19→20 : aucun retenu. Branche 19.0 publique relue le 21/10 : mêmes champs binding_* (ir_actions.py:74-79), même get_bindings
+  (seul le test de lecture passe de ir.model.access.check à has_access), même toolbar (ir_ui_view.py:2960-2972), même
+  _can_execute_action_on_records (:1215-1242). Écart vu mais non utilisé : 'timezone' du contexte d'évaluation = pytz.timezone en 19, ZoneInfo en 20.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Action contextuelle Odoo 20 : une entrée dans le menu Actions</h1>
+                <p class="lead mt-3 text-white">Tu coches quelques lignes d'une liste, tu ouvres le menu
+                    <strong>Actions</strong> et ton traitement est là, à côté d'Exporter et d'Archiver. En Odoo 20,
+                    il suffit d'une action serveur avec <code>binding_model_id</code>. Exemple complet sur les
+                    contacts de la démo, rejoué de bout en bout.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes installé) et module d'exemple.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Écris la méthode métier sur le modèle (<code>def action_…(self)</code>) : elle reçoit les lignes cochées.</li>
+                            <li>Déclare en XML un <code>ir.actions.server</code> avec <code>model_id</code>, <code>binding_model_id</code> (le même modèle), <code>state="code"</code> et le code <code>action = records.action_…()</code>.</li>
+                            <li>Ajoute <code>binding_view_types="list"</code> pour la réserver à la liste (défaut : liste et formulaire).</li>
+                            <li><code>-u ton_module</code>, recharge la page, coche des lignes : l'entrée est dans <strong>Actions</strong>.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LA MÉTHODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La méthode : le travail sur les lignes cochées</h2>
+                <p>Le cas d'école : sur la liste des clients, cocher plusieurs sociétés et leur poser d'un clic
+                    l'étiquette « À relancer ». Le traitement va dans une méthode du modèle, que tu peux tester et
+                    réutiliser ailleurs (un bouton, une tâche planifiée) :</p>
+<pre class="language-python"><code class="language-python"># mon_module/models/res_partner.py
+from odoo import models
+from odoo.fields import Command
+
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    def action_etiqueter_a_relancer(self):
+        tag = self.env.ref('mon_module.categ_a_relancer')
+        self.write({'category_id': [Command.link(tag.id)]})
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'message': f"{len(self)} contact(s) étiqueté(s) « À relancer ».",
+                'type': 'success',
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
+            },
+        }</code></pre>
+                <p><code>self</code> contient toutes les lignes cochées : un seul <code>write</code> pour le lot. La valeur
+                    renvoyée est une action que le client web exécute ensuite : ici une notification verte, puis
+                    <code>soft_reload</code>, qui recharge la liste pour faire apparaître la nouvelle étiquette.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. L'ACTION SERVEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. L'action serveur liée au modèle</h2>
+                <p>Le branchement dans le menu se fait en données, dans un fichier XML déclaré dans
+                    <code>data</code> du manifeste :</p>
+<pre class="language-markup"><code class="language-markup">&lt;!-- mon_module/data/res_partner_actions.xml --&gt;
+&lt;odoo&gt;
+    &lt;record id="categ_a_relancer" model="res.partner.category"&gt;
+        &lt;field name="name"&gt;À relancer&lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;record id="action_etiqueter_a_relancer" model="ir.actions.server"&gt;
+        &lt;field name="name"&gt;Étiqueter « À relancer »&lt;/field&gt;
+        &lt;field name="model_id" ref="base.model_res_partner"/&gt;
+        &lt;field name="binding_model_id" ref="base.model_res_partner"/&gt;
+        &lt;field name="binding_view_types"&gt;list&lt;/field&gt;
+        &lt;field name="state"&gt;code&lt;/field&gt;
+        &lt;field name="code"&gt;action = records.action_etiqueter_a_relancer()&lt;/field&gt;
+    &lt;/record&gt;
+&lt;/odoo&gt;</code></pre>
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Rôle</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>model_id</code></td><td>le modèle sur lequel le code s'exécute (<code>records</code> en sera un recordset)</td></tr>
+                        <tr><td><code>binding_model_id</code></td><td>le modèle dont les vues affichent l'entrée : c'est lui qui crée l'action contextuelle</td></tr>
+                        <tr><td><code>binding_view_types</code></td><td><code>list</code>, <code>form</code> ou <code>list,form</code> (valeur par défaut)</td></tr>
+                        <tr><td><code>state</code> + <code>code</code></td><td>« Exécuter le code » : le Python évalué, où <code>records</code> = les lignes cochées</td></tr>
+                    </tbody>
+                </table>
+                <p>Le code d'une action de type code tourne <strong>une seule fois</strong> pour toute la sélection,
+                    pas une fois par ligne : la notification annonce bien « 2 contact(s) » pour deux lignes cochées.
+                    Et si le code affecte une variable <code>action</code>, elle est renvoyée au navigateur, d'où
+                    <code>action = records.…()</code>.</p>
+                <p>Installe ou mets à jour le module (<code>-u mon_module</code>), recharge la page, ouvre
+                    <strong>Ventes &gt; Commandes &gt; Clients</strong> en vue liste et coche deux lignes :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des clients, deux lignes cochées, menu Actions ouvert avec l'entrée Étiqueter « À relancer » en dernier" loading="lazy"/>
+                    <figcaption>Deux lignes cochées : l'action du module s'ajoute au menu Actions, sous Exporter, Dupliquer, Archiver et Supprimer.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Actions</strong> n'existe dans une liste que si au moins une ligne est cochée.
+                    Un clic sur l'entrée, et le résultat :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Notification verte 2 contact(s) étiqueté(s) « À relancer » et colonne Étiquettes montrant À relancer sur Acme Corporation et Azure Interior" loading="lazy"/>
+                    <figcaption>Notification, puis liste rechargée : Acme Corporation et Azure Interior portent l'étiquette « À relancer » (colonne Étiquettes affichée par le menu des colonnes optionnelles).</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. VÉRIFIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Liste, formulaire, groupe : vérifier en console</h2>
+                <p>Avec <code>binding_view_types</code> à <code>list</code>, la fiche d'un contact n'affiche pas
+                    l'entrée dans son menu Actions. Pour limiter l'action à certains utilisateurs, renseigne
+                    <code>group_ids</code> dans le même enregistrement :</p>
+<pre class="language-markup"><code class="language-markup">&lt;field name="group_ids" eval="[Command.link(ref('base.group_system'))]"/&gt;</code></pre>
+                <p>Ce script, passé à <code>odoo-bin shell</code>, interroge les deux mécanismes : la barre d'outils
+                    que le serveur envoie avec chaque vue, et <code>get_bindings</code>, qui filtre les actions pour un
+                    utilisateur donné. Le groupe y est posé en console pour l'essai, puis annulé :</p>
+<pre class="language-python"><code class="language-python"># verifier_action.py
+NOM = 'Étiqueter « À relancer »'
+vues = env['res.partner'].get_views([(False, 'list'), (False, 'form')], {'toolbar': True})
+for vt in ('list', 'form'):
+    noms = [a['name'] for a in vues['views'][vt]['toolbar'].get('action', [])]
+    print(vt, '-&gt;', NOM in noms)
+
+act = env.ref('mon_module.action_etiqueter_a_relancer')
+act.group_ids = env.ref('base.group_system')
+for user in (env.ref('base.user_admin'), env.ref('base.user_demo')):
+    noms = [a['name'] for a in env['ir.actions.actions'].with_user(user).get_bindings('res.partner')['action']]
+    print(user.name, '-&gt;', NOM in noms)
+env.cr.rollback()</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : list True, form False, Mitchell Admin True, Marc Demo False" loading="lazy"/>
+                    <figcaption>Présente dans la liste, absente du formulaire ; réservée au groupe Administrateur, elle disparaît pour l'utilisateur de démonstration.</figcaption>
+                </figure>
+                <p>Même déclaration dans le fichier XML, puis <code>-u</code> : le résultat est identique (Marc Demo
+                    ne la voit plus). Et si un utilisateur hors du groupe appelle quand même l'action, le serveur
+                    refuse : <code>AccessError: You don't have enough access rights to run this action.</code></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. SANS MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. La même chose depuis l'interface</h2>
+                <p>En mode développeur, <strong>Paramètres &gt; Technique &gt; Actions &gt; Actions de serveur</strong>
+                    liste toutes les actions serveur, dont celle du module. Sur une action créée à la main, le bouton
+                    <strong>Créer une action contextuelle</strong> remplit <code>binding_model_id</code> avec le modèle
+                    de l'action ; une fois liée, le bouton devient <strong>Supprimer une action contextuelle</strong>.
+                    Le champ <strong>Groupes autorisés</strong> est le <code>group_ids</code> vu plus haut.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Formulaire de l'action serveur Étiqueter « À relancer » : bouton Supprimer une action contextuelle, modèle Contact, type Exécuter le code, code action = records.action_etiqueter_a_relancer()" loading="lazy"/>
+                    <figcaption>L'action du module vue dans Paramètres &gt; Technique : déjà liée, d'où le bouton « Supprimer une action contextuelle ».</figcaption>
+                </figure>
+                <p>Pratique pour un essai, mais une action créée ainsi vit dans la base seulement : pour un
+                    traitement qui doit suivre tes déploiements, garde le XML du module. Ce formulaire n'affiche pas
+                    <code>binding_view_types</code> : pour une entrée « liste seulement », passe par le XML.</p>
+                <p>Le même <code>binding_model_id</code> fonctionne sur une fenêtre (<code>ir.actions.act_window</code>
+                    en <code>target="new"</code>) pour ouvrir un assistant sur la sélection, et sur un rapport, qui
+                    rejoint alors le menu <strong>Imprimer</strong> au lieu d'Actions.</p>
+
+                <div class="pitfall-box">
+                    <h4>Visible dans le menu ne veut pas dire exécutable</h4>
+                    <p>Sans <code>group_ids</code>, Odoo exige au lancement le droit d'<strong>écriture</strong> sur le
+                        modèle et sur chacune des lignes cochées. Essai avec un utilisateur interne de base : l'entrée
+                        figure bien dans son menu, mais l'exécution sur une société de la démo lève
+                        <code>AccessError</code> et le journal note <code>Forbidden server action 'Étiqueter « À relancer »'
+                        executed while the user … does not have access to res.partner(…)</code>. Avec
+                        <code>group_ids</code>, c'est l'appartenance au groupe qui est contrôlée à la place : réserve
+                        donc l'action au bon groupe plutôt que de laisser le refus tomber au clic.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Une action contextuelle = une action dont <code>binding_model_id</code> est rempli ; le menu Actions d'une liste n'apparaît qu'avec des lignes cochées.</li>
+                    <li>Action serveur de type code : <code>records</code> = la sélection, code exécuté une fois, variable <code>action</code> renvoyée au navigateur.</li>
+                    <li><code>binding_view_types</code> choisit liste et/ou formulaire ; <code>group_ids</code> masque l'entrée et contrôle le lancement.</li>
+                    <li>Sans groupe, le lancement exige le droit d'écriture sur les lignes cochées.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/assistant-prolonger-odoo-20-189">L'assistant en Odoo 20 : prolonger en lot</a> — un assistant ouvert depuis le menu Actions, avec <code>active_ids</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — le <code>-u</code> qui charge le XML.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — l'outil de la vérification.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, module
+                    d'exemple), dans le navigateur et en console ; branche 19.0 publique relue le même jour (mécanisme
+                    identique). Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_actions.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_actions.py</code></a> : champs <code>binding_*</code>, <code>get_bindings</code>, exécution des actions serveur et contrôle des droits</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_ui_view.py</code></a> : la barre d'outils jointe à chaque vue</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/search/action_menus/action_menus.js" target="_blank" rel="noopener"><code>addons/web/static/src/search/action_menus/action_menus.js</code></a> : le contexte <code>active_ids</code> envoyé au clic</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

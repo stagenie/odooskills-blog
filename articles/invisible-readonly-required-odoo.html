@@ -1,0 +1,335 @@
+<!--
+Article — invisible, readonly, required conditionnels en Odoo 20 : adieu attrs
+Série « Astuces dev Odoo 20 » (blog Développement) — AT6
+Date : 2026-10-21
+Slug : invisible-readonly-required-odoo
+Mot-clé cible : odoo modifiers, odoo attrs, invisible readonly required odoo, column_invisible, attrs states no longer used
+Tags : intermediaire, web-ui, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  module d'exemple mon_module (vue héritée de sale.view_order_form) installé par --addons-path sur cette base seulement.
+  v1 en attrs : -i mon_module → ParseError, « Depuis 17.0, les attributs "attrs" et "states" ne sont plus utilisés. »,
+   « Vue : sale.order.form.conditions dans mon_module/views/sale_order_views.xml », module resté non installé.
+  v2 en expressions (payment_term_id required="state == 'sale'" readonly="invoice_count &gt; 0" ;
+   client_order_ref required="state == 'sale' and amount_total &gt; 1000") : installation sans erreur.
+  Playwright (Chromium, fr-FR) sur les commandes de la démo, classes des div.o_field_widget relevées :
+   S00001 (draft, Acme Corporation) → payment_term_id sans modificateur, validity_date présent, colonnes sans Délivré/Facturé ;
+   S00004 (sale, 2 240) → payment_term_id « o_required_modifier o_field_invalid », validity_date absent, colonnes Délivré + Facturé,
+     onglet Autres informations : client_order_ref « o_required_modifier o_field_invalid » ;
+   S00008 (sale, 462) → client_order_ref sans o_required_modifier ;
+   S00007 (sale, facture brouillon 57 créée par _create_invoices en console, invoice_count = 1) → payment_term_id « o_readonly_modifier o_required_modifier o_field_invalid ».
+   0 erreur console.
+  Console : get_views du formulaire → <field name="amount_total" invisible="True" readonly="True" data-used-by="required=... (field,client_order_ref)">.
+   write partner_id + client_order_ref=False sur S00004 confirmée → accepté (rollback).
+  lxml : readonly="invoice_count > 0" se lit ; readonly="invoice_count < 1" → « Unescaped '<' not allowed in attributes values ».
+  Code 20.0 relu :
+  odoo/addons/base/models/ir_ui_view.py:34 (VIEW_MODIFIERS), :506-512 (refus attrs/states), :1546-1592 (_add_missing_fields, data-used-by), :2195-2202 (_postprocess_attributes) ;
+  addons/web/static/src/model/relational_model/record.js:899-919 (invisible/readonly/required évalués par enregistrement) ;
+  addons/web/static/src/model/relational_model/utils.js:351-358 (context, uid, allowed_company_ids, current_company_id) ;
+  addons/web/static/src/model/relational_model/static_list.js:128-131 + views/list/list_renderer.js:1302-1304 (column_invisible : contexte de la liste + parent) ;
+  addons/web/static/src/core/py_js/py_builtin.js:85-99 (context_today, today, now) ;
+  addons/web/static/src/model/relational_model/record.js:647-685 (valeurs : many2one → id, x2many → ids, date → texte, id → resId ou false) ;
+  addons/sale/views/sale_order_views.xml:469, 477, 799, 831, 843 (exemples du cœur).
+  Écart 19→20 : aucun. Branche 19.0 publique relue le 21/10 : même refus « Since 17.0 » (ir_ui_view.py:497), même VIEW_MODIFIERS (:34),
+  même getBasicEvalContext (utils.js:343-351).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">invisible, readonly, required conditionnels en Odoo 20 : adieu attrs</h1>
+                <p class="lead mt-3 text-white">Ton ancien module masquait un champ avec <code>attrs</code> et Odoo 20
+                    refuse de l'installer. La condition s'écrit désormais en clair, directement dans l'attribut
+                    <code>invisible</code>, <code>readonly</code> ou <code>required</code>. Démonstration sur le
+                    formulaire de commande de la démo.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes) et module d'exemple.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Écris la condition en expression Python dans l'attribut lui-même :
+                                <code>invisible="state == 'sale'"</code>, <code>readonly="invoice_count &gt; 0"</code>,
+                                <code>required="state == 'sale'"</code>.</li>
+                            <li>Dans les lignes d'un document, <code>column_invisible="parent.state != 'sale'"</code> masque
+                                la colonne entière ; <code>invisible</code> ne vide que la cellule.</li>
+                            <li><code>attrs</code> et <code>states</code> sont refusés à l'installation depuis la 17 ; Odoo 20
+                                n'a pas changé de règle.</li>
+                            <li>Inutile de déclarer les champs que lit la condition : Odoo les ajoute à la vue.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE MESSAGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le message qui t'amène ici</h2>
+                <p>Le module d'exemple hérite du formulaire de commande client. Écrit à l'ancienne, il rend les conditions
+                    de paiement obligatoires sur une commande confirmée, et la référence client obligatoire au-delà de
+                    1 000 :</p>
+<pre class="language-markup"><code class="language-markup">&lt;field name="payment_term_id" position="attributes"&gt;
+    &lt;attribute name="attrs"&gt;{'required': [('state', '=', 'sale')],
+                             'readonly': [('invoice_count', '&gt;', 0)]}&lt;/attribute&gt;
+&lt;/field&gt;
+&lt;field name="client_order_ref" position="attributes"&gt;
+    &lt;attribute name="attrs"&gt;{'required': [('state', '=', 'sale'), ('amount_total', '&gt;', 1000)]}&lt;/attribute&gt;
+&lt;/field&gt;</code></pre>
+                <p>L'installation s'arrête net :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : ParseError, Depuis 17.0, les attributs attrs et states ne sont plus utilisés" loading="lazy"/>
+                    <figcaption>Une vue qui contient <code>attrs</code> ou <code>states</code> est refusée : le module ne s'installe pas.</figcaption>
+                </figure>
+                <p>Le contrôle porte sur la vue <strong>combinée</strong> : une seule vue héritée fautive bloque tout le
+                    module, même si le reste est propre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. TRADUIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Traduire un <code>attrs</code> en expression</h2>
+                <p>Chaque clé de l'ancien dictionnaire devient un attribut, et chaque domaine devient une expression
+                    Python qui renvoie vrai ou faux :</p>
+                <table class="tmc">
+                    <thead><tr><th>Ancien domaine</th><th>Expression Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>[('state', '=', 'sale')]</code></td><td><code>state == 'sale'</code></td></tr>
+                        <tr><td><code>[('state', 'in', ['draft', 'sent'])]</code></td><td><code>state in ['draft', 'sent']</code></td></tr>
+                        <tr><td><code>[('reference', '=', False)]</code></td><td><code>not reference</code></td></tr>
+                        <tr><td><code>[('a', '=', 'x'), ('b', '&gt;', 0)]</code> (ET implicite)</td><td><code>a == 'x' and b &gt; 0</code></td></tr>
+                        <tr><td><code>['|', ('state', '=', 'cancel'), ('locked', '=', True)]</code></td><td><code>state == 'cancel' or locked</code></td></tr>
+                        <tr><td><code>states="draft,sent"</code> (visible dans ces états)</td><td><code>invisible="state not in ['draft', 'sent']"</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le formulaire de commande d'Odoo 20 lui-même en est rempli : <code>invisible="state == 'sale'"</code>
+                    sur la date d'expiration, <code>readonly="state == 'cancel' or locked"</code> sur les adresses,
+                    <code>readonly="qty_invoiced &gt; 0"</code> sur le prix unitaire des lignes. Le module d'exemple
+                    réécrit :</p>
+<pre class="language-markup"><code class="language-markup">&lt;field name="payment_term_id" position="attributes"&gt;
+    &lt;attribute name="required"&gt;state == 'sale'&lt;/attribute&gt;
+    &lt;attribute name="readonly"&gt;invoice_count &amp;gt; 0&lt;/attribute&gt;
+&lt;/field&gt;
+&lt;field name="client_order_ref" position="attributes"&gt;
+    &lt;attribute name="required"&gt;state == 'sale' and amount_total &amp;gt; 1000&lt;/attribute&gt;
+&lt;/field&gt;</code></pre>
+                <p>Cette fois, <code>-i mon_module</code> passe sans erreur. Un détail d'écriture : dans un attribut XML,
+                    <code>&lt;</code> doit s'écrire <code>&amp;lt;</code>, sinon le fichier ne se lit même pas
+                    (<code>Unescaped '&lt;' not allowed in attributes values</code>). Le <code>&gt;</code> brut est
+                    accepté ; le cœur l'écrit souvent <code>&amp;gt;</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. À L'ÉCRAN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le résultat à l'écran</h2>
+                <p>Ouvre le devis S00001 d'Acme Corporation, encore en brouillon : rien n'est imposé, la date
+                    d'expiration s'affiche, les lignes n'ont pas de colonnes de livraison ni de facturation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Devis S00001 en brouillon : Expiration visible, Conditions de paiement 30 jours, colonnes Quantité, Prix unitaire, Taxes, Montant" loading="lazy"/>
+                    <figcaption>Devis en brouillon : aucune condition déclenchée.</figcaption>
+                </figure>
+                <p>Ouvre maintenant la commande confirmée S00004 (2 240 au total, sans conditions de paiement) :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Commande S00004 confirmée : Conditions de paiement en rouge, onglet Autres informations en rouge, colonnes Délivré et Facturé" loading="lazy"/>
+                    <figcaption>Commande confirmée : champ requis vide en rouge, onglet signalé, colonnes Délivré et Facturé apparues.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Conditions de paiement</strong> passe en requis : vide, le champ est marqué en rouge.</li>
+                    <li>L'onglet <strong>Autres informations</strong> est rouge aussi : il contient la référence client,
+                        requise puisque le total dépasse 1 000. Sur la commande S00008 (462), la même référence reste
+                        facultative.</li>
+                    <li>La date d'expiration a disparu et les colonnes <strong>Délivré</strong> et <strong>Facturé</strong>
+                        sont apparues : ce sont les conditions du formulaire standard.</li>
+                </ul>
+                <p>Enfin, sur S00007, une facture brouillon a été créée : <code>invoice_count</code> vaut 1 et les
+                    conditions de paiement passent en lecture seule. Ces conditions sont évaluées dans le navigateur, sur
+                    les valeurs courantes du formulaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CE QUE LA CONDITION PEUT LIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que la condition peut lire</h2>
+                <table class="tmc">
+                    <thead><tr><th>Nom</th><th>Contenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>un champ du modèle</td><td>sa valeur courante dans le formulaire : un <code>Many2one</code> vaut un id ou <code>False</code>, un <code>One2many</code> ou <code>Many2many</code> la liste des ids, une date le texte <code>'AAAA-MM-JJ'</code></td></tr>
+                        <tr><td><code>id</code></td><td>l'id de l'enregistrement, <code>False</code> tant qu'il n'est pas enregistré</td></tr>
+                        <tr><td><code>parent.champ</code></td><td>dans les lignes d'un <code>One2many</code>, un champ du document parent</td></tr>
+                        <tr><td><code>context</code>, <code>uid</code></td><td>le contexte de l'action, l'id de l'utilisateur</td></tr>
+                        <tr><td><code>allowed_company_ids</code>, <code>current_company_id</code></td><td>les sociétés cochées, la société active</td></tr>
+                        <tr><td><code>today</code>, <code>now</code></td><td>la date et l'heure du navigateur, en texte : <code>'AAAA-MM-JJ'</code> et <code>'AAAA-MM-JJ HH:MM:SS'</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le champ n'a pas besoin d'être dans la vue. <code>amount_total</code> n'apparaît nulle part dans le
+                    formulaire de commande, sauf dans la condition du module. Ce script, passé à
+                    <code>odoo-bin shell</code>, lit la vue telle que le navigateur la reçoit :</p>
+<pre class="language-python"><code class="language-python"># champs_ajoutes.py
+from lxml import etree
+arch = env['sale.order'].get_views([(False, 'form')])['views']['form']['arch']
+for node in etree.fromstring(arch).xpath("//field[@name='amount_total']"):
+    print(etree.tostring(node).decode().strip())</code></pre>
+<div class="out">&lt;field name="amount_total" invisible="True" readonly="True" data-used-by="required=&amp;quot;state == 'sale' and amount_total &amp;gt; 1000&amp;quot; (field,client_order_ref)" on_change="1"/&gt;</div>
+                <p>Odoo a ajouté le champ, invisible et en lecture seule, et note dans <code>data-used-by</code> quelle
+                    condition le réclame. Une ligne <code>&lt;field name="state" invisible="1"/&gt;</code> posée seulement
+                    pour servir une condition n'est donc plus nécessaire.</p>
+                <p>Une nuance pour <code>column_invisible</code> : la condition vaut pour toute la colonne, elle est donc
+                    évaluée pour la liste, avec le contexte et <code>parent</code>, jamais avec les champs d'une
+                    ligne. Pour masquer selon la ligne, mets <code>invisible</code> : la colonne reste, la cellule se vide.
+                    Le formulaire standard combine les deux, <code>column_invisible="parent.state != 'sale'"</code> sur
+                    les quantités livrées, <code>invisible="display_type"</code> sur les lignes de section.</p>
+
+                <div class="pitfall-box">
+                    <h4>Une condition de vue ne protège pas la donnée</h4>
+                    <p><code>readonly</code> et <code>required</code> ne jouent que dans le formulaire. Le client de S00004
+                        est en lecture seule à l'écran, la référence client y est requise ; en console, rien ne
+                        bloque :</p>
+<pre class="language-python"><code class="language-python">so = env['sale.order'].browse(4)
+print(so.name, so.state, so.amount_total, '| client :', so.partner_id.name)
+so.write({'partner_id': env.ref('base.res_partner_12').id, 'client_order_ref': False})
+print(so.name, so.state, '| client :', so.partner_id.name, '| réf. client :', so.client_order_ref)
+env.cr.rollback()</code></pre>
+<div class="out">S00004 sale 2240.0 | client : Gemini Furniture
+S00004 sale | client : Azure Interior | réf. client : False</div>
+                    <p>Un import, l'API ou une action serveur écrivent par le même ORM. Si la règle compte, double-la côté
+                        Python : <code>@api.constrains</code> et <code>ValidationError</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li><code>attrs="{'invisible': [...]}"</code> devient <code>invisible="expression"</code> ; idem pour <code>readonly</code> et <code>required</code>, et <code>states</code> devient un test sur <code>state</code>.</li>
+                    <li><code>|</code>, <code>&amp;</code>, <code>=</code> deviennent <code>or</code>, <code>and</code>, <code>==</code> ; <code>&lt;</code> s'écrit <code>&amp;lt;</code> dans le XML.</li>
+                    <li><code>column_invisible</code> pour la colonne (avec <code>parent.</code>), <code>invisible</code> pour la cellule.</li>
+                    <li>Les champs lus par la condition sont ajoutés par Odoo ; la vraie règle métier reste en Python.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/heritage-vues-odoo-20-192">Héritage de vues en Odoo 20 : l'onglet Emprunts</a> — l'article pilier : <code>inherit_id</code>, <code>xpath</code>, <code>position="attributes"</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/domaines-odoo-20-274">Les domaines en Odoo 20 : opérateurs, Domain, any et chemins</a> — les domaines qui restent des domaines (<code>domain=</code>, filtres).</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — <code>-i</code> et <code>-u</code> pour recharger tes vues.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, module
+                    d'exemple), dans le navigateur et en console ; branche 19.0 publique relue le même jour, sans
+                    différence sur ces points. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_ui_view.py</code></a> : refus d'<code>attrs</code> et <code>states</code>, ajout des champs manquants</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/model/relational_model/record.js" target="_blank" rel="noopener"><code>addons/web/…/relational_model/record.js</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/model/relational_model/utils.js" target="_blank" rel="noopener"><code>utils.js</code></a> : évaluation des conditions et noms disponibles</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/views/list/list_renderer.js" target="_blank" rel="noopener"><code>addons/web/…/list/list_renderer.js</code></a> : évaluation de <code>column_invisible</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/sale/views/sale_order_views.xml" target="_blank" rel="noopener"><code>addons/sale/views/sale_order_views.xml</code></a> : les conditions du formulaire de commande</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
