@@ -1,0 +1,265 @@
+<!--
+Article — Tableau croisé dynamique dans Odoo 20 : la vue pivot
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : vue-pivot-tableau-croise-odoo
+Meta : Le tableau croisé dynamique d'Odoo 20 : choisir lignes, colonnes et mesures, trier, ouvrir le détail d'une case et télécharger le xlsx, sans export.
+Mot-clé cible : odoo tableau croisé dynamique
+Tags : debutant, achats, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community (commit 3538ed82), base vs20_func_af18 (copie de vs20_func, démo), société My Company (San Francisco), Playwright + odoo-bin shell.
+  purchase/report/purchase_report_views.xml:88-96 (action « Analyse des achats », view_mode graph,pivot, filtres par défaut orders + order_date_last_year) ;
+  :3-12 (pivot par défaut : lignes category_id puis order_id, mesures untaxed_total + price_total, display_quantity = Nombre) ;
+  :108-109 (menu Analyse › Achats réservé à purchase.group_purchase_manager) ;
+  web/static/src/views/pivot/pivot_controller.xml:6-17 (Mesures, Inverser les axes, Tout déplier, Télécharger le xlsx — infobulles relevées à l'écran en français) ;
+  web/static/src/views/pivot/pivot_renderer.js:201-219 (clic sur en-tête : ouvert → replié ; replié → menu de regroupement) ; :225-231 (clic sur mesure : tri, croissant puis décroissant, classes o_pivot_sort_order_asc/desc relevées) ;
+  :311-352 (clic sur une case → liste des lignes de ce groupe).
+  À l'écran : Achats › Analyse › Achats s'ouvre en graphique ; icône Tableau croisé dynamique ; Mesures = 14 entrées (# de lignes … Total, Total hors taxes … Nombre) ;
+  menu d'en-tête : Fournisseur, Pays du fournisseur, Acheteur, Commandes, Produit, Catégorie de produits, Statut, Société, Échéance de commande ›, Date de confirmation › (Année, Trimestre, Mois, Semaine, Jour), Groupe personnalisé ;
+  Fournisseur × Date de confirmation : Semaine → W37/W38/W39 2026 + Aucun ; total 44 625,50 $ HT ; tri décroissant : Wood Corner 17 204,50, Gemini Furniture 15 595,00, Ready Mat 6 936,00, Azure Interior 4 840,00, Joel Willis 50,00 (P00030 sans date de confirmation, colonne Aucun) ;
+  clic sur la case Total de Wood Corner → liste « 1-12 / 12 », somme de la colonne Total 19 785,18 $ (TTC ; shell : untaxed_total 17 204,50 / price_total 19 785,18 sur 12 lignes) ;
+  fil d'Ariane → tableau conservé ; retour du navigateur ou rechargement → tableau de départ (catégories × commandes, 3 mesures) ;
+  sous-niveau Wood Corner › Produit : Tiroir noir 4 212,00 en tête, tri conservé ;
+  Télécharger le xlsx → fichier « Tableau croisé dynamique Analyse des achats (purchase.report).xlsx », feuille « Analyse des achats », valeurs numériques, niveaux en retrait.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Tableau croisé dynamique dans Odoo 20 : la vue pivot</h1>
+                <p class="lead mt-3 text-white">Combien a-t-on acheté à chaque fournisseur, semaine par semaine ?
+                    La question appelle d'ordinaire un export vers un tableur, puis un tableau croisé dynamique.
+                    Odoo 20 le construit directement à l'écran, sur des données toujours à jour, en quelques clics.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société <strong>My Company (San Francisco)</strong>, application
+                        Achats (montants de démonstration en dollars). La vue pivot existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Ouvrez une analyse, par exemple <strong>Achats › Analyse › Achats</strong>, et cliquez
+                                sur l'icône <strong>Tableau croisé dynamique</strong> en haut à droite.</li>
+                            <li>Cliquez sur l'en-tête <strong>Total</strong> des lignes, puis des colonnes, pour choisir
+                                ce qui se croise (fournisseur, produit, date…).</li>
+                            <li>Le bouton <strong>Mesures</strong> choisit les chiffres affichés ; un clic sur le nom
+                                d'une mesure trie le tableau.</li>
+                            <li>Un clic sur une case ouvre les lignes qui la composent ; <strong>Télécharger le
+                                xlsx</strong> sort le tableau tel qu'il est affiché.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OUVRIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir la vue pivot</h2>
+                <p>La vue pivot est le nom technique du tableau croisé dynamique d'Odoo. Elle n'a rien à installer :
+                    elle s'affiche dans les écrans d'analyse des applications, à côté du graphique. Cet article prend
+                    l'exemple des achats ; les ventes suivent la même logique, détaillée dans
+                    <a href="/blog/fonctionnel-odoo-1/analyser-ventes-odoo-206">Analyser ses ventes dans Odoo 20</a>.</p>
+                <ol>
+                    <li>Ouvrez <strong>Achats › Analyse › Achats</strong>. Ce menu est réservé aux utilisateurs qui
+                        ont le droit Administrateur de l'application Achats.</li>
+                    <li>L'écran « Analyse des achats » s'ouvre en graphique. Cliquez sur la seconde icône en haut à
+                        droite, <strong>Tableau croisé dynamique</strong>.</li>
+                </ol>
+                <p>Le tableau de départ range les lignes de commande par catégorie de produits puis par commande, avec
+                    trois mesures : <strong>Nombre</strong> (de lignes), <strong>Total hors taxes</strong> et
+                    <strong>Total</strong>. Deux filtres sont déjà posés : <strong>Bons de commande fournisseur</strong>
+                    (les commandes, sans les demandes de prix ni les commandes annulées) et <strong>Date limite de commande : 365
+                    derniers jours</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONSTRUIRE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Choisir lignes, colonnes et mesures</h2>
+                <p>Pour obtenir les achats par fournisseur et par semaine :</p>
+                <ol>
+                    <li>Ouvrez <strong>Mesures</strong>, décochez <strong>Nombre</strong> et <strong>Total</strong> :
+                        seul <strong>Total hors taxes</strong> reste coché.</li>
+                    <li>Cliquez sur l'en-tête <strong>Total</strong> des lignes, à gauche : le premier clic replie le
+                        regroupement existant. Cliquez une seconde fois : la liste des regroupements s'ouvre.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Vue pivot d'Odoo 20 repliée sur un seul Total, avec le menu de regroupement ouvert : Fournisseur, Pays du fournisseur, Acheteur, Commandes, Produit, Catégorie de produits, Statut, Société, Échéance de commande, Date de confirmation, Groupe personnalisé" style="max-width:45%; height:auto;"/>
+                    <figcaption>Un en-tête replié ouvre la liste des regroupements possibles.</figcaption>
+                </figure>
+                <ol start="3">
+                    <li>Choisissez <strong>Fournisseur</strong> : une ligne par fournisseur apparaît.</li>
+                    <li>Cliquez sur l'en-tête <strong>Total</strong> des colonnes, survolez <strong>Date de
+                        confirmation</strong> et choisissez <strong>Semaine</strong>. Les dates proposent aussi
+                        Année, Trimestre, Mois et Jour.</li>
+                    <li>Cliquez sur le nom de la mesure de la dernière colonne, <strong>Total hors taxes</strong> : un
+                        premier clic trie les lignes par ordre croissant, un second par ordre décroissant.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Tableau croisé dynamique de l'analyse des achats dans Odoo 20 : fournisseurs en lignes (Wood Corner, Gemini Furniture, Ready Mat, Azure Interior, Joel Willis), semaines W37 à W39 2026 et Aucun en colonnes, Total hors taxes trié par ordre décroissant" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les achats hors taxes par fournisseur et par semaine de confirmation, du plus gros au plus petit.</figcaption>
+                </figure>
+                <p>La colonne <strong>Aucun</strong> rassemble les lignes qui n'ont pas de valeur pour le champ
+                    choisi : ici, une commande sans date de confirmation. Le libellé des semaines (W37 2026) suit
+                    la numérotation des semaines de l'année.</p>
+                <p>Le menu de regroupement se termine par <strong>Groupe personnalisé</strong>, qui ouvre la liste
+                    de tous les champs du rapport (devise, entrepôt, position fiscale, unité de mesure…) quand le
+                    regroupement voulu n'est pas dans la liste courte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DÉTAIL ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Descendre dans le détail</h2>
+                <p>Chaque nombre du tableau est cliquable. Un clic sur la case Total de Wood Corner ouvre la liste
+                    des douze lignes de commande qui forment ce montant, avec le produit, la commande et l'acheteur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des douze lignes de commande fournisseur de Wood Corner ouverte depuis une case du tableau croisé dans Odoo 20, avec le fil d'Ariane Analyse des achats et la somme de la colonne Total" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le clic sur une case ouvre les lignes qui la composent.</figcaption>
+                </figure>
+                <p>La liste affiche la colonne <strong>Total</strong>, taxes comprises : sa somme (19 785,18 $) ne
+                    se compare pas aux 17 204,50 $ du tableau, exprimés hors taxes. Pour recouper les deux écrans,
+                    gardez la même mesure des deux côtés.</p>
+                <p>Pour revenir au tableau, cliquez sur <strong>Analyse des achats</strong> dans le fil d'Ariane,
+                    en haut à gauche. Un niveau supplémentaire s'ajoute ensuite sur une seule ligne : cliquez sur
+                    l'en-tête <strong>Wood Corner</strong> et choisissez <strong>Produit</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Ligne Wood Corner dépliée par produit dans le tableau croisé d'Odoo 20 : Tiroir noir, Grande armoire, Écrans anti-bruit, Flipover, Bureau d'angle, Boîte de rangement, avec les montants hors taxes par semaine" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un second niveau sur une seule ligne : les produits achetés à Wood Corner, toujours triés.</figcaption>
+                </figure>
+                <p>Le tri choisi s'applique aussi au nouveau niveau. Trois boutons complètent le bouton Mesures :
+                    <strong>Inverser les axes</strong> échange lignes et colonnes, <strong>Tout déplier</strong>
+                    ouvre tous les niveaux d'un coup, et <strong>Télécharger le xlsx</strong> produit un fichier
+                    tableur de ce qui est affiché, avec des valeurs numériques et les niveaux en retrait.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : le tableau ne survit pas au rechargement</h4>
+                    <p>Le bouton de retour du navigateur, comme le rechargement de la page, rouvre le tableau de
+                        départ : catégories, commandes et trois mesures. Le réglage construit est perdu. Revenez
+                        toujours par le fil d'Ariane, qui le conserve, et enregistrez un tableau utile en favori
+                        (menu de la barre de recherche, colonne <strong>Favoris</strong>, <strong>Enregistrer la
+                        recherche actuelle</strong>) : le favori retient filtres, regroupements et mesures.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le tableau croisé dynamique d'Odoo 20 est la vue <strong>pivot</strong> des écrans d'analyse.</li>
+                    <li>Un clic sur un en-tête replié choisit le regroupement ; un clic sur une mesure trie.</li>
+                    <li>Chaque case s'ouvre sur ses lignes : le chiffre se vérifie sans quitter Odoo.</li>
+                    <li>Fil d'Ariane et favori gardent le tableau ; le rechargement le perd.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/analyser-ventes-odoo-206">Analyser ses ventes dans
+                        Odoo 20</a>, pour le graphique, la marge par client et les favoris d'analyse.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la
+                        demande de prix à la facture dans Odoo 20</a>, pour le cycle qui alimente l'analyse des achats.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

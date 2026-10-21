@@ -1,0 +1,317 @@
+<!--
+Article — Importer une liste de prix depuis Excel dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : importer-liste-prix-odoo
+Meta : Importer une liste de prix depuis Excel dans Odoo 20 : les colonnes exactes, une ligne par règle, le test, puis la mise à jour des prix par réimport.
+Mot-clé cible : odoo importer liste de prix
+Tags : debutant, ventes, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af17 (copie de vs20_func, démo native), société My Company (San Francisco), Playwright + odoo-bin shell.
+  Menu Ventes › Produits › Listes de prix : addons/sale/views/sale_menus.xml:57-61 (groupe product.group_product_pricelist) ; Actions (⋮) › Importer / Exporter relevés à l'écran.
+  Modèle proposé par l'écran d'import : addons/product/models/product_pricelist.py:471-476 (« Modèle pour les listes de prix » → /product/static/xls/product_pricelist.xls),
+  fichier lu : 17 colonnes en anglais, ligne « Retailers » en « Formula » + colonne « Percentage Price ».
+  Types de règle v20 : addons/product/models/product_pricelist_item.py:107-122 (discount « Remise », markup « Surcharge », fixed « Prix fixe », défaut fixed).
+  Ordre des règles : product_pricelist_item.py:12 (_order = applied_on, min_quantity desc, categ_id desc, id desc).
+  Test du modèle officiel : « Valeur "Formula" non trouvée dans le champ de sélection "Règles de liste de prix/Compute Price" », valeurs possibles Discount / Surcharge / Fixed Price,
+  choix « Empêcher l'importation » / « Défini à : Remise / Surcharge / Prix fixe » ; colonnes External ID, Apply On, Percentage Price non associées (fig. 02).
+  Fichier af17_tarif_revendeurs.xlsx (6 colonnes, en-têtes = libellés français d'Odoo, 5 lignes) : association automatique, « Tout semble correct. » (fig. 01) ;
+  import → 1 liste « Tarif revendeurs » (USD, My Company), 5 règles : 400 $ (qté 1) / 380 $ (qté 10) Combinaison de bureau, 125 $ Armoire avec portes,
+  10 % Chaise de bureau, 15 % dès 5 Lampe de bureau (SQL + fig. 03).
+  Devis S00082 (Acme Corporation, liste Tarif revendeurs) : 10 × 380,00 ; 2 × 400,00 ; Chaise 70,00 avec Rem.% 10,00 → 63,00 (fig. 04, n° TVA flouté) ;
+  shell : _get_product_price qté 9 → 400, qté 10 → 380 ; Rem.% seulement si is_plain_discount (addons/sale/models/product_pricelist_item.py:16).
+  Menu absent sans le réglage Listes de prix : addons/sale/wizard/res_config_settings_views.xml:40-41 (group_product_pricelist).
+  Remise en colonne Rem.% : addons/sale/models/sale_order_line.py:992-1015 (_is_discount_feature_enabled + _show_discount).
+  Export : interrupteur « Updatable fields only » (addons/web/static/src/views/view_dialogs/export_data_dialog.xml:37 ; 19.0 même ligne : « I want to update data (import-compatible export) ») ;
+  export réel en .xlsx : en-têtes techniques (id, name, item_ids/id, item_ids/fixed_price…), ID externes __export__.product_pricelist_13_…, __export__.product_pricelist_item_…
+  Réimport UI du fichier modifié (380 → 370, une ligne sans ID ajoutée) : 1 seule liste, règle 20 passée à 370, nouvelle règle 115 $ dès 5 Armoire ;
+  shell (rollback) : rechargement sans colonnes ID → 2e liste « Tarif revendeurs » ; fichier privé d'une ligne → règle 23 conservée (6 règles avant et après).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Importer une liste de prix depuis Excel dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un tarif revendeurs, des prix dégressifs par quantité, des remises
+                    par article : saisis règle par règle, ils prennent du temps. Odoo 20 importe une liste de prix
+                    complète depuis un fichier Excel, à condition de respecter une disposition précise : une ligne
+                    par règle, le nom de la liste sur la première seulement.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration (application Ventes, listes de prix activées), société
+                        <strong>My Company (San Francisco)</strong>. Le module Ventes existe aussi dans l'édition
+                        Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Préparez un fichier avec une ligne par règle de prix : nom de la liste, produit,
+                                quantité minimale, type de calcul, prix ou remise.</li>
+                            <li>Ouvrez <strong>Ventes › Produits › Listes de prix</strong>, puis
+                                <strong>Actions (⋮) › Importer</strong> et chargez le fichier.</li>
+                            <li>Cliquez sur <strong>Tester</strong> : visez « Tout semble correct. », puis
+                                <strong>Importer</strong>.</li>
+                            <li>Pour changer des prix plus tard, exportez la liste avec ses identifiants, modifiez,
+                                réimportez : les règles sont mises à jour, pas dupliquées.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FICHIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Préparer le fichier Excel</h2>
+                <p>Une liste de prix est un en-tête (son nom, sa devise) qui porte plusieurs <strong>règles</strong>.
+                    Le fichier suit cette structure : la première ligne donne le nom de la liste et sa première
+                    règle ; les lignes suivantes laissent le nom vide et ajoutent chacune une règle à la même
+                    liste. L'exemple ci-dessous crée un « Tarif revendeurs » sur les articles de la base de
+                    démonstration.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr>
+                            <th>Nom de la liste de prix</th>
+                            <th>Règles de liste de prix/Produit</th>
+                            <th>Règles de liste de prix/Quantité minimale</th>
+                            <th>Règles de liste de prix/Calculer le prix</th>
+                            <th>Règles de liste de prix/Prix fixe</th>
+                            <th>Règles de liste de prix/Remise sur le prix</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Tarif revendeurs</td><td>[FURN_7800] Combinaison de bureau</td><td>1</td><td>Prix fixe</td><td>400</td><td></td></tr>
+                        <tr><td></td><td>[FURN_7800] Combinaison de bureau</td><td>10</td><td>Prix fixe</td><td>380</td><td></td></tr>
+                        <tr><td></td><td>[E-COM11] Armoire avec portes</td><td>1</td><td>Prix fixe</td><td>125</td><td></td></tr>
+                        <tr><td></td><td>[FURN_7777] Chaise de bureau</td><td>1</td><td>Remise</td><td></td><td>10</td></tr>
+                        <tr><td></td><td>[FURN_8888] Lampe de bureau</td><td>5</td><td>Remise</td><td></td><td>15</td></tr>
+                    </tbody>
+                </table>
+                <p>Quelques règles de saisie :</p>
+                <ul>
+                    <li>Les en-têtes reprennent les libellés d'Odoo : l'écran d'import associe alors chaque colonne
+                        tout seul.</li>
+                    <li>Le produit s'écrit comme Odoo l'affiche, référence entre crochets comprise.</li>
+                    <li>La colonne <strong>Calculer le prix</strong> accepte trois valeurs en Odoo 20 :
+                        <strong>Prix fixe</strong>, <strong>Remise</strong> (pourcentage retiré du prix de vente)
+                        et <strong>Surcharge</strong> (pourcentage ajouté).</li>
+                    <li>Deux lignes pour le même article avec des quantités minimales différentes donnent un prix
+                        dégressif : 400 $ à l'unité, 380 $ à partir de 10.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== IMPORT ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Tester, puis importer</h2>
+                <ol>
+                    <li>Ouvrez <strong>Ventes › Produits › Listes de prix</strong>. Si ce menu n'apparaît pas, les
+                        listes de prix ne sont pas encore activées dans les paramètres de Ventes.</li>
+                    <li>Cliquez sur l'icône <strong>Actions (⋮)</strong> à côté du titre, puis sur
+                        <strong>Importer</strong>.</li>
+                    <li>Cliquez sur <strong>Charger</strong> et choisissez le fichier. Vérifiez que chaque colonne
+                        du fichier est reliée à un champ Odoo.</li>
+                    <li>Cliquez sur <strong>Tester</strong>. Le test n'enregistre rien.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Écran d'import des listes de prix d'Odoo 20 après le test : message Tout semble correct, six colonnes du fichier associées aux champs Nom de la liste de prix et Règles de liste de prix" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avec les libellés d'Odoo en en-tête, chaque colonne trouve son champ et le test passe.</figcaption>
+                </figure>
+                <ol start="5">
+                    <li>Cliquez sur <strong>Importer</strong>. Odoo affiche la liste des enregistrements
+                        importés : une seule liste, « Tarif revendeurs ».</li>
+                </ol>
+                <p>Ouverte, la liste montre ses cinq règles dans l'onglet <strong>Règles</strong>. Odoo les trie
+                    lui-même (quantités minimales les plus hautes en premier) : l'ordre du fichier n'est pas
+                    conservé. La devise et la société sont celles de la société
+                    courante, faute de colonne dans le fichier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste de prix Tarif revendeurs importée dans Odoo 20 : devise USD, société My Company (San Francisco), cinq règles avec prix fixes de 380, 125 et 400 dollars et remises de 15 et 10 % sur prix de vente" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste importée : prix fixes et remises en pourcentage, quantités minimales comprises.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VÉRIFIER SUR UN DEVIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Vérifier sur un devis</h2>
+                <p>Le contrôle le plus sûr reste un devis. Choisissez la liste dans le champ
+                    <strong>Liste de prix</strong>, puis ajoutez les articles :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Devis S00082 d'Odoo 20 pour Acme Corporation avec la liste de prix Tarif revendeurs : Combinaison de bureau à 380 pour 10 unités et 400 pour 2 unités, Chaise de bureau à 70 avec 10 % de remise" style="max-width:100%; height:auto;"/>
+                    <figcaption>À 10 unités le prix passe à 380 ; la remise de la chaise apparaît dans la colonne Rem.%.</figcaption>
+                </figure>
+                <p>La règle de quantité joue au seuil exact : 2 unités restent à 400, 10 unités passent à 380.
+                    Pour la chaise, la base de démonstration affiche le prix de vente (70,00) et la remise dans
+                    la colonne <strong>Rem.%</strong> (10,00), soit 63,00 : une règle de type Remise s'affiche
+                    ainsi lorsque les remises sur les lignes de commande sont activées dans les paramètres de
+                    Ventes, comme sur la démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== METTRE À JOUR ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Mettre à jour les prix par réimport</h2>
+                <p>Réimporter le fichier de départ ne modifie pas la liste existante : Odoo crée une seconde
+                    liste « Tarif revendeurs ». Pour mettre à jour, le fichier doit porter les
+                    <strong>identifiants</strong> de la liste et de chaque règle. Le plus simple est de les
+                    obtenir par un export :</p>
+                <ol>
+                    <li>Dans <strong>Ventes › Produits › Listes de prix</strong>, cochez la liste, puis
+                        <strong>Actions (⋮) › Exporter</strong>.</li>
+                    <li>Activez l'interrupteur <strong>Updatable fields only</strong> (libellé affiché en anglais).</li>
+                    <li>Dépliez <strong>Règles de liste de prix</strong> et ajoutez <strong>ID externe</strong>,
+                        <strong>Produit</strong>, <strong>Quantité minimale</strong>, <strong>Calculer le
+                        prix</strong>, <strong>Prix fixe</strong> et <strong>Remise sur le prix</strong>, puis
+                        exportez au format Excel.</li>
+                    <li>Modifiez les prix dans le fichier ; pour une nouvelle règle, ajoutez une ligne avec une
+                        colonne d'identifiant vide.</li>
+                    <li>Réimportez par <strong>Actions (⋮) › Importer</strong>, en testant d'abord.</li>
+                </ol>
+                <p>Le fichier exporté porte des en-têtes techniques (<code>id</code>, <code>item_ids/id</code>,
+                    <code>item_ids/fixed_price</code>…) que l'import reconnaît. Sur la base de démonstration, le
+                    prix à partir de 10 unités passé de 380 à 370 a modifié la règle existante, et la ligne sans
+                    identifiant a ajouté une sixième règle : toujours une seule liste.</p>
+                <p>Supprimer une ligne du fichier, en revanche, ne supprime pas la règle dans Odoo : elle reste
+                    en place après le réimport. Une règle à retirer se supprime depuis la fiche de la liste
+                    (icône corbeille).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : le modèle téléchargeable et la valeur « Formula »</h4>
+                    <p>L'écran d'import propose un lien <strong>Modèle pour les listes de prix</strong>. Ce fichier,
+                        en anglais, contient une règle de type « Formula » et une colonne « Percentage Price ».
+                        Odoo 20 ne connaît plus ces deux notions (les règles s'écrivent en Remise, Surcharge ou
+                        Prix fixe) : au test, la règle est refusée.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Test d'import du modèle de listes de prix dans Odoo 20 : Valeur Formula non trouvée dans le champ de sélection Règles de liste de prix/Compute Price, avec le choix Empêcher l'importation" style="max-width:100%; height:auto;"/>
+                        <figcaption>Le modèle téléchargé échoue au test sur la valeur « Formula ».</figcaption>
+                    </figure>
+                    <p>Servez-vous de ce modèle seulement comme exemple de disposition. Partez plutôt du tableau
+                        ci-dessus, ou d'un export de vos propres listes. Le passage de « Formula » à Remise et
+                        Surcharge est détaillé dans
+                        <a href="/blog/fonctionnel-odoo-1/listes-prix-formule-supprimee-odoo-255">Listes de prix Odoo 20 :
+                        ce qui change depuis la 19</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une ligne par règle ; le nom de la liste sur la première ligne seulement.</li>
+                    <li>Trois types de calcul à l'import : <strong>Prix fixe</strong>, <strong>Remise</strong>,
+                        <strong>Surcharge</strong>.</li>
+                    <li><strong>Tester</strong> avant d'importer, puis contrôler sur un devis.</li>
+                    <li>Sans identifiants, un réimport crée une nouvelle liste ; avec l'export « Updatable fields
+                        only », il met à jour les règles.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de prix et
+                        remises dans Odoo 20</a>, pour la prise en main des listes de prix.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/importer-produits-odoo-266">Importer ses produits dans
+                        Odoo 20 : variantes et stock</a>, pour la méthode d'import pas à pas et les erreurs du premier essai.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/listes-prix-formule-supprimee-odoo-255">Listes de prix
+                        Odoo 20 : ce qui change depuis la 19</a>, pour les types Remise et Surcharge.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
