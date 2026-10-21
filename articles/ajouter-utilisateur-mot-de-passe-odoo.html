@@ -1,0 +1,289 @@
+<!--
+Article — Ajouter un utilisateur dans Odoo 20 : mot de passe oublié
+Série « Astuces Odoo 20 » (blog Fonctionnel), astuce AF11
+Date : 2026-10-21
+Slug : ajouter-utilisateur-mot-de-passe-odoo
+Meta : Ajouter un utilisateur dans Odoo 20, lui donner son premier mot de passe et réinitialiser un mot de passe oublié, même sans serveur de courriel sortant.
+Mot-clé cible : odoo ajouter utilisateur · odoo mot de passe oublié
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af11 (copie de vs20_func, démo), société My Company (San Francisco),
+aucun serveur de courriel sortant configuré (les envois échouent en « Connexion refusée »), Playwright + psql.
+  Menu Paramètres › Utilisateurs & Sociétés › Utilisateurs (relevé à l'écran) ; Nouveau → fiche : statut Invité / Confirmé / Inactive,
+  bouton « Envoyer une invitation par e-mail », onglets Droits d'accès / Préférences / Calendrier (+ Sécurité après enregistrement),
+  Rôle Light / User / Administrateur, User coché par défaut (fig. 01).
+  odoo/addons/base/models/res_users.py:264 (champ role Light/User/Administrator ; 19.0 : User/Administrator seulement, odoo19 res_users.py:272) ;
+  :444-462 _onchange_role (Light = droits réduits aux groupes « légers », Administrateur = base.group_system).
+  addons/auth_signup/models/res_users.py:39-41 (statut : Inactive si archivé, Confirmé dès une première connexion, sinon Invité) ;
+  :303-314 create() envoie l'invitation, échec d'envoi absorbé (signup_cancel) : utilisateur créé sans message à l'écran (joué) ;
+  :150-160 + :176-260 action_reset_password : bouton Envoyer une invitation sans serveur → « Opération invalide » « Impossible de contacter
+  le serveur de messagerie. Veuillez vérifier la configuration de votre serveur de messagerie sortant » (joué).
+  Paramètres généraux › Utilisateurs › « Inviter de nouveaux utilisateurs » (champ e-mail + Inviter) : utilisateur créé, listé dans
+  « Invitations en attente », aucun message (joué, invite.test@example.com).
+  addons/auth_signup/views/res_users_views.xml:16-23 : « Send Password Reset » visible si statut Confirmé et autre que soi ;
+  widget « Copy Reset Password Link » (groupe base.group_erp_manager, pas sur sa propre fiche) ; absent de la 19.0 (grep odoo19-dev vide + raw.githubusercontent odoo/odoo 19.0 vide, role 19.0 = User/Administrator).
+  addons/auth_signup/static/src/components/signup.js (get_reset_password_link → presse-papiers, notification « Lien copié dans le presse-papiers ! », jouée).
+  addons/auth_signup/models/res_partner.py:186-190 (validité : lien de réinitialisation 4 h, invitation 144 h, par défaut).
+  Lien copié ouvert dans un navigateur sans session : formulaire Mot de passe / Confirmer le mot de passe / Réinitialiser le mot de passe (fig. 03),
+  puis « Votre mot de passe a été réinitialisé avec succès. » ; connexion de l'utilisateur → statut Confirmé (fig. 02).
+  « Envoyer la réinitialisation du mot de passe » sans serveur → notification « Un lien de réinitialisation de mot de passe a été envoyé par mail » (jouée).
+  Page de connexion : lien « Réinitialiser le mot de passe » (auth_signup_login_templates.xml:8, si reset_password_enabled ; case
+  Paramètres généraux « Réinitialisation du mot de passe — Permettre la réinitialisation du mot de passe depuis la page de connexion », cochée sur la démo)
+  → champ E-mail → « Les instructions de réinitialisation du mot de passe ont été envoyées à votre adresse e-mail. » (joué).
+  « Modifier le mot de passe » sur la fiche d'un autre utilisateur : fenêtre « Contrôle d'accès » (mot de passe de l'administrateur,
+  res_users.py:1057 @check_identity) puis tableau User / Nouveau mot de passe ; connexion avec le nouveau mot de passe réussie (joué).
+  Paramètres généraux, recherche « serveur » : bloc E-mails « Utiliser les serveurs de messagerie personnalisés ».
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Ajouter un utilisateur dans Odoo 20 : mot de passe oublié</h1>
+                <p class="lead mt-3 text-white">Un collègue rejoint la base, un autre ne retrouve plus son mot de
+                    passe : dans Odoo 20, les deux demandes se règlent depuis la même fiche utilisateur. Le premier
+                    mot de passe n'est jamais saisi par l'administrateur à la création : Odoo envoie un lien.
+                    Encore faut-il que ce lien arrive, et Odoo 20 prévoit une solution quand le courriel ne part pas.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société <strong>My Company (San Francisco)</strong>, connecté en
+                        administrateur. La gestion des utilisateurs existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li><strong>Paramètres › Utilisateurs &amp; Sociétés › Utilisateurs › Nouveau</strong> :
+                                nom, adresse e-mail, rôle, puis enregistrez.</li>
+                            <li>Odoo envoie une invitation : l'utilisateur choisit lui-même son mot de passe.</li>
+                            <li>Mot de passe oublié : lien <strong>Réinitialiser le mot de passe</strong> de la page de
+                                connexion, ou onglet <strong>Sécurité</strong> de la fiche utilisateur.</li>
+                            <li>Si aucun courriel n'arrive : bouton <strong>Copier le lien de réinitialisation du mot de
+                                passe</strong>, et transmettez le lien à l'utilisateur.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== AJOUTER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ajouter un utilisateur</h2>
+                <ol>
+                    <li>Ouvrez <strong>Paramètres › Utilisateurs &amp; Sociétés › Utilisateurs</strong> et cliquez sur
+                        <strong>Nouveau</strong>.</li>
+                    <li>Saisissez le nom, puis l'adresse e-mail dans le champ <strong>Se connecter</strong> : elle sert
+                        d'identifiant de connexion et d'adresse d'envoi de l'invitation.</li>
+                    <li>Dans l'onglet <strong>Droits d'accès</strong>, choisissez le <strong>Rôle</strong>, vérifiez la
+                        société, puis enregistrez.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fiche d'un nouvel utilisateur dans Odoo 20 : nom Utilisateur test, adresse e-mail, statut Invité, rôle Light, User ou Administrateur, société My Company (San Francisco)" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche d'un nouvel utilisateur : statut Invité, rôle User coché par défaut.</figcaption>
+                </figure>
+                <p>Le rôle fixe le niveau d'accès d'ensemble :</p>
+                <ul>
+                    <li><strong>User</strong> (coché par défaut) donne accès aux applications selon les niveaux réglés
+                        plus bas dans l'onglet, application par application ;</li>
+                    <li><strong>Administrateur</strong> ajoute l'accès aux paramètres de la base ;</li>
+                    <li><strong>Light</strong>, nouveau dans Odoo 20, ramène chaque application à un niveau d'accès
+                        réduit.</li>
+                </ul>
+                <p>Une voie plus courte existe : <strong>Paramètres › Paramètres généraux</strong>, bloc
+                    <strong>Utilisateurs</strong>, champ <strong>Inviter de nouveaux utilisateurs</strong>. Une adresse
+                    e-mail et le bouton <strong>Inviter</strong> suffisent : l'utilisateur est créé avec les droits par
+                    défaut et apparaît sous <strong>Invitations en attente</strong> jusqu'à sa première connexion.</p>
+                <p>La barre d'état de la fiche suit le compte : <strong>Invité</strong> tant que l'utilisateur ne
+                    s'est jamais connecté, <strong>Confirmé</strong> dès sa première connexion,
+                    <strong>Inactive</strong> une fois archivé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PREMIER MOT DE PASSE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le premier mot de passe</h2>
+                <p>À l'enregistrement, Odoo envoie à l'adresse saisie un courriel d'invitation. Son lien ouvre une page
+                    où l'utilisateur choisit son mot de passe ; l'administrateur ne le connaît jamais. Le lien
+                    d'invitation reste valable 144 heures par défaut. Tant que la fiche est au statut
+                    <strong>Invité</strong>, le bouton <strong>Envoyer une invitation par e-mail</strong> renvoie ce
+                    courriel.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MOT DE PASSE OUBLIÉ ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Réinitialiser un mot de passe oublié</h2>
+                <h3 class="h5 mt-3">Depuis la fiche utilisateur</h3>
+                <p>Ouvrez la fiche de l'utilisateur, onglet <strong>Sécurité</strong>. Trois boutons s'y trouvent :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Onglet Sécurité d'une fiche utilisateur confirmée dans Odoo 20 : boutons Modifier le mot de passe, Envoyer la réinitialisation du mot de passe, Copier le lien de réinitialisation du mot de passe" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'onglet Sécurité d'un utilisateur confirmé.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Bouton</th><th>Effet</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Envoyer la réinitialisation du mot de passe</td><td>Envoie à l'utilisateur un courriel
+                            contenant un lien pour choisir un nouveau mot de passe. Visible sur une fiche au statut
+                            Confirmé.</td></tr>
+                        <tr><td>Copier le lien de réinitialisation du mot de passe</td><td>Place le même type de lien dans
+                            le presse-papiers (« Lien copié dans le presse-papiers ! »), à transmettre par le canal de
+                            votre choix. Nouveau dans Odoo 20.</td></tr>
+                        <tr><td>Modifier le mot de passe</td><td>Fixe directement un nouveau mot de passe. Odoo demande
+                            d'abord le mot de passe de l'administrateur (fenêtre « Contrôle d'accès »), puis le nouveau
+                            mot de passe de l'utilisateur.</td></tr>
+                    </tbody>
+                </table>
+                <p>Le lien de réinitialisation est valable 4 heures par défaut. Ouvert par l'utilisateur, il affiche
+                    cette page :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Page de réinitialisation du mot de passe d'Odoo 20 : champs Mot de passe et Confirmer le mot de passe, bouton Réinitialiser le mot de passe" style="max-width:45%; height:auto;"/>
+                    <figcaption>La page ouverte par le lien : l'utilisateur saisit deux fois son nouveau mot de passe.</figcaption>
+                </figure>
+                <p>Après validation, Odoo affiche « Votre mot de passe a été réinitialisé avec succès. » et propose le
+                    retour à la page de connexion. Le bouton <strong>Modifier le mot de passe</strong> reste la voie de
+                    dépannage la plus directe, mais l'administrateur connaît alors le mot de passe : demandez à
+                    l'utilisateur de le changer à sa prochaine connexion.</p>
+
+                <h3 class="h5 mt-4">Depuis la page de connexion</h3>
+                <p>L'utilisateur peut aussi agir seul. Sous le champ <strong>Mot de passe</strong> de la page de
+                    connexion, le lien <strong>Réinitialiser le mot de passe</strong> demande son adresse e-mail, puis
+                    affiche « Les instructions de réinitialisation du mot de passe ont été envoyées à votre adresse
+                    e-mail. »</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Formulaire de connexion d'Odoo 20 avec le lien Réinitialiser le mot de passe à côté du champ Mot de passe" style="max-width:45%; height:auto;"/>
+                    <figcaption>Le lien Réinitialiser le mot de passe de la page de connexion.</figcaption>
+                </figure>
+                <p>Ce lien n'apparaît que si la case <strong>Réinitialisation du mot de passe</strong> (« Permettre la
+                    réinitialisation du mot de passe depuis la page de connexion ») est cochée dans
+                    <strong>Paramètres › Paramètres généraux</strong>. Elle l'est sur la base de démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : sans serveur de courriel sortant, rien n'arrive</h4>
+                    <p>Invitation et réinitialisation passent par le courriel. Sur une base où aucun serveur sortant ne
+                        fonctionne, l'utilisateur créé reste au statut Invité sans recevoir de message, et aucun avertissement
+                        ne s'affiche à la création. Le bouton <strong>Envoyer une invitation par e-mail</strong> ouvre
+                        alors la fenêtre « Opération invalide » (« Impossible de contacter le serveur de messagerie »).
+                        Les messages de confirmation de la réinitialisation indiquent que la demande est partie, pas
+                        qu'elle a été reçue. Vérifiez le bloc <strong>E-mails</strong> des Paramètres généraux
+                        (« Utiliser les serveurs de messagerie personnalisés ») ; en attendant, le bouton
+                        <strong>Copier le lien de réinitialisation du mot de passe</strong> fonctionne sans courriel,
+                        y compris pour un utilisateur encore au statut Invité.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un utilisateur se crée dans <strong>Paramètres › Utilisateurs &amp; Sociétés › Utilisateurs</strong> ;
+                        il choisit lui-même son mot de passe grâce au lien d'invitation.</li>
+                    <li>Odoo 20 propose trois rôles : Light, User et Administrateur.</li>
+                    <li>Mot de passe oublié : page de connexion pour l'utilisateur, onglet <strong>Sécurité</strong> pour
+                        l'administrateur.</li>
+                    <li>Sans courriel, <strong>Copier le lien de réinitialisation du mot de passe</strong> débloque
+                        la situation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/creer-base-odoo-community-199">Créer sa base Odoo 20 Community :
+                        les premiers réglages</a>, pour régler l'administrateur et changer son propre mot de passe.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/utilisateur-leger-tarifs-odoo-enterprise-292">Odoo 20 Enterprise :
+                        Utilisateur Léger et nouveaux tarifs</a>, pour comprendre le rôle Light.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

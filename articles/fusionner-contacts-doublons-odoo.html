@@ -1,0 +1,280 @@
+<!--
+Article — Fusionner des contacts en double dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : fusionner-contacts-doublons-odoo
+Meta : Fusionner des contacts en double dans Odoo 20 : action Fusionner de la liste, contact de destination, valeurs conservées, et recherche des doublons par e-mail et nom.
+Mot-clé cible : odoo fusionner contacts / doublons contacts
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af13 (copie de vs20_func, démo), Mitchell Admin, Playwright + odoo-bin shell.
+  Doublons créés en shell à partir des fiches de démo (nom, e-mail, téléphone seulement, comme une ligne d'import) : Lumber Inc (118, + devis S00082), Ready Mat (119), Wood Corner (120).
+  odoo/odoo/addons/base/wizard/base_partner_merge_views.xml:102-109 (action « Merge » liée à res.partner, vues liste et kanban) ; :3-9 action_partner_deduplicate, aucun menuitem
+    (grep action_partner_deduplicate dans odoo/addons et odoo/odoo/addons : seul le bouton de l'écran final, :19) ;
+  base_partner_merge.py:40-50 (sélection reprise, destination par défaut) + :584-591 (_get_ordered_partner : fiche active la plus ancienne) — écran : « Lumber Inc (17) » proposé ;
+  :444-505 _merge : > 3 contacts refusé :459-460, parent/enfant :462-467, plus d'un utilisateur :470-471, e-mails différents réservés à l'administrateur :473-474 (env.is_admin = groupe Droits d'accès),
+    sources supprimées :505 (unlink) — vérifié : ids 118/119/120 absents ;
+  :356-402 _merge_values (pour chaque champ, la dernière valeur non vide l'emporte, la destination passe en dernier) — vérifié shell Ready Mat : réf. vide de 12 remplie par « IMPORT-2 » de 119,
+    téléphone et site web de 12 conservés ; account/wizard/base_partner_merge.py (customer_rank / supplier_rank additionnés) ;
+  :333-348 clés étrangères et références redirigées — écran : fiche 17 bouton Ventes 2 (devis S00082 rattaché), « Contact créé » du doublon dans le chatter ;
+  mail/wizard/base_partner_merge_automatic_wizard.py:11-21 message « Fusionnés avec les partenaires suivants : Lumber Inc <lumber-inv92@example.com> (ID 118) » (fig. 03) ;
+  :515-552 _generate_query (e-mail et nom comparés sans casse, TVA sans espaces, critères cumulés, limite 0 = sans limite) ; :682-718 vérification manuelle / fusion automatique ;
+  messages shell (fr_FR) : Marc Demo, e-mails différents → « Tous les contacts doivent avoir la même adresse e-mail. Seul l'administrateur peut fusionner… » ;
+    4 contacts → « Pour des raisons de sécurité, vous ne pouvez pas fusionner plus de 3 contacts… ».
+  Parcours écran : liste Contacts, recherche Lumber Inc, 2 cochés, Actions › Fusionner (fig. 01), fenêtre Fusionner (fig. 02, TVA floutée), Fusionner les contacts → « Il n'y a plus de contacts à fusionner
+    pour cette demande » + bouton « Déduplication des autres contacts » → fenêtre « Contacts dédupliqués » (fig. 04) ; E-mail + Nom + Fusionner avec vérification manuelle → « Groupe de contacts 2 »,
+    premier groupe Wood Corner (120, 9), destination Wood Corner (9).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Fusionner des contacts en double dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un fichier importé deux fois, un client saisi à nouveau par un
+                    collègue : la base se retrouve avec deux fiches pour la même société, chacune portant une partie
+                    de l'historique. Odoo 20 sait regrouper ces fiches en une seule, documents compris, à condition
+                    de bien choisir celle qui reste.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration (application Contacts, connexion administrateur). Les doublons
+                        montrés ont été créés à partir des fiches de démonstration, comme le ferait un second import.
+                        L'application Contacts existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Dans <strong>Contacts</strong>, en vue liste, cochez les fiches en double (3 au plus).</li>
+                            <li>Ouvrez <strong>Actions › Fusionner</strong>.</li>
+                            <li>Vérifiez le <strong>Contact de destination</strong> : c'est la fiche qui reste.</li>
+                            <li>Cliquez sur <strong>Fusionner les contacts</strong> : devis, factures et messages
+                                passent sur la fiche conservée, les autres fiches sont supprimées.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FUSIONNER DEPUIS LA LISTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Fusionner deux fiches depuis la liste</h2>
+                <p>Sur la base de démonstration, la société Lumber Inc existe maintenant deux fois : la fiche
+                    d'origine, complète (adresse, numéro de TVA, un devis), et une fiche réduite au nom, à l'e-mail
+                    et au téléphone, sur laquelle un devis a aussi été saisi.</p>
+                <ol>
+                    <li>Ouvrez l'application <strong>Contacts</strong> et passez en vue liste (icône de liste en
+                        haut à droite).</li>
+                    <li>Cherchez le nom en double, ici « Lumber Inc ». Les deux fiches apparaissent, avec les
+                        contacts rattachés à la société.</li>
+                    <li>Cochez les deux fiches à regrouper, puis cliquez sur <strong>Actions</strong> et choisissez
+                        <strong>Fusionner</strong>.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des contacts d'Odoo 20 : deux fiches Lumber Inc cochées, 2 sélectionné(s), menu Actions ouvert avec Exporter, Dupliquer, Archiver, Supprimer et Fusionner" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'action Fusionner apparaît dans le menu Actions dès que des contacts sont cochés.</figcaption>
+                </figure>
+                <p>La fenêtre <strong>Fusionner</strong> s'ouvre. Elle liste les fiches retenues avec leur
+                    identifiant, leur e-mail, leur numéro de TVA et leur pays : de quoi repérer en un coup d'œil la
+                    fiche la plus complète.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Fusionner d'Odoo 20 : Contact de destination Lumber Inc (17), liste des fiches 118 et 17 avec e-mail, TVA et pays, boutons Fusionner les contacts, Ignorer ces contacts et Ignorer" style="max-width:85%; height:auto;"/>
+                    <figcaption>Odoo propose comme destination la fiche la plus ancienne, ici l'identifiant 17 (numéro de TVA flouté).</figcaption>
+                </figure>
+                <ol start="4">
+                    <li>Contrôlez le champ <strong>Contact de destination</strong>. Par défaut, Odoo choisit la
+                        fiche active la plus ancienne, c'est-à-dire en général l'originale. Pour garder l'autre
+                        fiche, sélectionnez-la dans ce champ.</li>
+                    <li>Une fiche ajoutée par erreur se retire avec la croix en bout de ligne.</li>
+                    <li>Cliquez sur <strong>Fusionner les contacts</strong>. Odoo affiche « Il n'y a plus de
+                        contacts à fusionner pour cette demande » : cliquez sur <strong>Clôturer</strong>.</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE DEVIENT LA FICHE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que contient la fiche conservée</h2>
+                <p>Tous les documents liés à la fiche supprimée sont rattachés à la fiche de destination : sur la
+                    base de démonstration, le bouton <strong>Ventes</strong> de Lumber Inc passe à 2, les deux devis
+                    étant désormais réunis. Le fil de discussion récupère aussi l'historique du doublon, et Odoo y
+                    note l'opération :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fil de discussion de la fiche Lumber Inc dans Odoo 20 : message de Mitchell Admin, Fusionnés avec les partenaires suivants : Lumber Inc lumber-inv92@example.com (ID 118)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le message garde le nom, l'e-mail et l'identifiant de la fiche disparue.</figcaption>
+                </figure>
+                <p>Pour les champs de la fiche, la règle est simple : <strong>une valeur déjà saisie sur la
+                    destination est conservée</strong>, et un champ vide de la destination est complété par la
+                    valeur trouvée sur le doublon. Dans l'essai réalisé sur la fiche Ready Mat, le doublon portait
+                    une référence, un autre téléphone et un autre site web : seule la référence, vide sur la fiche
+                    d'origine, a été reprise. Téléphone et site web sont restés ceux de la destination.</p>
+                <p>Odoo refuse certaines fusions, avec un message explicite :</p>
+                <ul>
+                    <li>plus de 3 contacts à la fois : « Pour des raisons de sécurité, vous ne pouvez pas fusionner
+                        plus de 3 contacts » (relancer l'action autant de fois que nécessaire) ;</li>
+                    <li>une société avec l'une de ses propres personnes de contact ;</li>
+                    <li>deux fiches liées chacune à un utilisateur ;</li>
+                    <li>des fiches aux e-mails différents, sauf pour un administrateur : « Tous les contacts doivent
+                        avoir la même adresse e-mail. Seul l'administrateur peut fusionner des contacts avec des
+                        adresses e-mail différentes. »</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DÉDOUBLONNAGE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Après un import : chercher tous les doublons d'un coup</h2>
+                <p>Après un import raté, les doublons se comptent par dizaines et les chercher nom par nom devient
+                    fastidieux. Odoo 20 dispose d'un assistant de recherche, sans entrée de menu : il s'ouvre depuis
+                    l'écran final d'une fusion, par le bouton <strong>Déduplication des autres contacts</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Contacts dédupliqués d'Odoo 20 : critères E-mail et Nom cochés, Est une société, TVA, Société parente, exclusions Utilisateur associé et Écritures comptables, Limite maximum du groupe de contacts, boutons Fusionner avec vérification manuelle et Fusionner automatiquement" style="max-width:85%; height:auto;"/>
+                    <figcaption>Les critères cochés se cumulent : ici, même e-mail et même nom.</figcaption>
+                </figure>
+                <ol>
+                    <li>Cochez les critères qui signent un doublon. <strong>E-mail</strong> et <strong>Nom</strong>
+                        ensemble conviennent bien à un réimport : Odoo ne propose que les fiches qui ont
+                        <em>toutes</em> ces valeurs en commun, sans tenir compte des majuscules.</li>
+                    <li>Laissez <strong>Limite maximum du groupe de contacts</strong> à 0 pour traiter tous les
+                        groupes trouvés.</li>
+                    <li>Cliquez sur <strong>Fusionner avec vérification manuelle</strong>. Odoo indique le nombre de
+                        groupes trouvés (2 sur la base de démonstration : Wood Corner et Ready Mat) et présente le
+                        premier dans la même fenêtre que celle de la section 1.</li>
+                    <li>Pour chaque groupe, vérifiez la destination puis <strong>Fusionner les contacts</strong>, ou
+                        <strong>Ignorer ces contacts</strong> pour passer au groupe suivant sans rien changer.</li>
+                </ol>
+                <p>Le bouton <strong>Fusionner automatiquement</strong> enchaîne toutes les fusions sans les montrer,
+                    avec la destination choisie par défaut. Après un import, la vérification manuelle reste plus sûre :
+                    deux fiches au même nom peuvent désigner deux clients distincts.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : une fusion ne se défait pas</h4>
+                    <p>Les fiches fusionnées ne sont pas archivées mais <strong>supprimées</strong> : aucun bouton ne
+                        les rétablit. Si le doublon porte l'information juste (un e-mail corrigé, une nouvelle
+                        adresse), choisissez-le comme destination, ou reportez d'abord la donnée sur la fiche
+                        d'origine, puisque les valeurs déjà remplies de la destination l'emportent. Le message du fil de
+                        discussion reste la seule trace de la fiche disparue.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><strong>Actions › Fusionner</strong>, en vue liste, regroupe jusqu'à 3 fiches à la fois.</li>
+                    <li>Le <strong>Contact de destination</strong> reste ; ses valeurs remplies sont conservées, ses
+                        champs vides sont complétés.</li>
+                    <li>Devis, factures et historique suivent la fiche conservée ; les autres fiches sont supprimées.</li>
+                    <li>Le bouton <strong>Déduplication des autres contacts</strong> recherche les doublons par
+                        e-mail, nom, TVA ou société parente.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et
+                        fournisseurs dans Odoo 20</a>, pour réimporter sans créer de doublons grâce à l'ID externe.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles
+                        dans Odoo 20</a>, pour la prise en main des fiches contact.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

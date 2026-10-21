@@ -1,0 +1,261 @@
+<!--
+Article — Utilisateur portail Odoo 20 : accès client aux factures
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : portail-client-factures-odoo
+Mot-clé cible : odoo utilisateur portail
+Tags : debutant, comptabilite, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af12 (copie de vs20_func, démo), société My Company (San Francisco), Playwright + odoo-bin shell.
+  addons/portal/wizard/portal_wizard_views.xml:4-10 (action serveur liée à res.partner, « Donner accès au portail ») ; :25-60 (fenêtre, colonnes, boutons Donner l'accès / Révoquer l'accès / Réinviter, coche e-mail valide) ;
+  addons/portal/wizard/portal_wizard.py:24-31 (société + contacts de type contact/autre) ; :96-109 (e-mail ko / déjà pris) ; :134-166 action_grant_access (groupe portail, réactive un utilisateur existant, signup_prepare, envoi) ;
+  :152-157 + :208-218 (utilisateur créé dans la société courante, login = e-mail) ; :168-188 action_revoke_access (signup_type = None, utilisateur archivé) ; :190-201 Réinviter ;
+  addons/auth_signup/data/mail_template_data.xml:109 (objet « Your account at … », vu traduit « Votre compte chez My Company (San Francisco) ») ; :122 lien _get_signup_url() ;
+  addons/account/security/ir.access.csv:36 (portail : factures/avoirs hors brouillon et annulé, partner_id child_of commercial_partner) ; :37 (règle société company_ids) ;
+  addons/account/controllers/portal.py:74 (/my/invoices), :144 (/my/invoices/<id>).
+  Parcours joué : Acme Corporation › Actions › Donner accès au portail → 4 lignes (Acme, Floyd Steward, Douglas Fletcher, Addison Olson) ; Donner l'accès sur Douglas Fletcher → user 8, groupe « Rôle / Portail », société My Company (SF) seule ;
+  mail.mail 345 « Votre compte chez My Company (San Francisco) » état exception « Connexion refusée » (pas de serveur sortant) ;
+  lien d'inscription → page Nom / E-mail / Mot de passe / Confirmer le mot de passe / S'inscrire → /my (Mon compte, tuile Vos factures) ;
+  /my/invoices : FAC/2026/00014, 00002, 00003, 00004 + RFAC/2026/00004, 00003 (My Company, $) ; factures Acme de FR Company absentes ; /my/invoices/38 (FR Company) → redirection /my ;
+  détail FAC/2026/00014 : Payer maintenant, Télécharger, vendeur Mitchell Admin (TVA d'Acme visible sur le document : figure recadrée sur la colonne gauche) ;
+  shell (rollback) : action_revoke_access → utilisateur 8 actif = False.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Utilisateur portail Odoo 20 : accès client aux factures</h1>
+                <p class="lead mt-3 text-white">Un client qui redemande sans cesse une copie de facture, ou qui
+                    veut savoir ce qu'il reste à payer, gagne à consulter lui-même ses documents. Odoo 20 lui ouvre
+                    pour cela un compte <strong>portail</strong> : un accès limité, sans entrée dans le back-office,
+                    où il retrouve ses factures, leur échéance et leur PDF.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société <strong>My Company (San Francisco)</strong>, avec les
+                        applications Contacts, Facturation et Site web installées. Le module Portail existe aussi dans
+                        l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Ouvrez la fiche du client dans <strong>Contacts</strong>, puis le menu
+                                <strong>Actions</strong> (⋮) › <strong>Donner accès au portail</strong>.</li>
+                            <li>Sur la ligne de la personne à inviter, vérifiez l'e-mail et cliquez sur
+                                <strong>Donner l'accès</strong>.</li>
+                            <li>Odoo crée un utilisateur portail et envoie un e-mail d'invitation : le client y choisit
+                                son mot de passe.</li>
+                            <li>Une fois connecté, le client ouvre <strong>Vos factures</strong> : il voit, télécharge
+                                et peut payer les factures confirmées de sa société.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DONNER L'ACCÈS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Donner l'accès depuis la fiche contact</h2>
+                <p>Un utilisateur portail ne se crée pas depuis la liste des utilisateurs internes : il part d'un
+                    contact. L'administrateur passe donc par l'application Contacts.</p>
+                <ol>
+                    <li>Ouvrez <strong>Contacts</strong> et cliquez sur la société cliente, ici
+                        <strong>Acme Corporation</strong>.</li>
+                    <li>À côté du nom, dans le fil d'Ariane, cliquez sur l'icône <strong>⋮</strong> (bulle
+                        « Actions »), puis sur <strong>Donner accès au portail</strong>, en bas du menu.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Menu Actions d'une fiche contact dans Odoo 20 : Modifier les propriétés, Dupliquer, Archiver, Supprimer, Envoyer un SMS, Télécharger (vCard), Donner accès au portail" style="max-width:60%; height:auto;"/>
+                    <figcaption>L'entrée Donner accès au portail se trouve dans le menu Actions de la fiche contact.</figcaption>
+                </figure>
+                <ol start="3">
+                    <li>La fenêtre <strong>Gestion de l'accès au portail</strong> s'ouvre. Ouverte depuis une
+                        société, elle liste la société elle-même et ses contacts : sur la démonstration, Acme
+                        Corporation, Floyd Steward, Douglas Fletcher et Addison Olson.</li>
+                    <li>Repérez la personne à inviter. L'adresse e-mail se corrige directement dans la colonne
+                        <strong>E-mail</strong> ; une coche verte confirme qu'elle est valide.</li>
+                    <li>Cliquez sur <strong>Donner l'accès</strong> sur sa ligne.</li>
+                </ol>
+                <p>Le champ en haut de la fenêtre (« Ce texte figure à la fin de l'e-mail envoyé aux nouveaux
+                    utilisateurs du portail ») accueille, si besoin, un mot personnel ajouté à l'invitation : il
+                    se remplit avant de cliquer sur <strong>Donner l'accès</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Gestion de l'accès au portail d'Odoo 20 : quatre contacts d'Acme Corporation, Douglas Fletcher avec les boutons Révoquer l'accès et Réinviter, les autres avec Donner l'accès" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le clic, la ligne de Douglas Fletcher propose Révoquer l'accès et Réinviter.</figcaption>
+                </figure>
+                <p>Ce clic crée un utilisateur dont l'identifiant est l'adresse e-mail du contact, dans le groupe
+                    <strong>Portail</strong>, et envoie l'e-mail « Votre compte chez My Company (San Francisco) ».
+                    Il contient un lien vers une page où le client renseigne <strong>Mot de passe</strong> et
+                    <strong>Confirmer le mot de passe</strong>, puis valide par <strong>S'inscrire</strong>. La
+                    colonne <strong>Dernière authentification</strong> de la même fenêtre indique ensuite s'il
+                    s'est déjà connecté.</p>
+                <p>L'invitation suppose un serveur de courriel sortant opérationnel. Sur une base où il n'est pas
+                    encore réglé, l'e-mail reste en échec ; le bouton <strong>Réinviter</strong> l'envoie de
+                    nouveau une fois le serveur en place.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE VOIT LE CLIENT ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que le client voit sur le portail</h2>
+                <p>Connecté, le client arrive sur la page <strong>Mon compte</strong>, sur le site web de la base.
+                    Des tuiles y regroupent ses documents ; celle des factures s'intitule <strong>Vos
+                    factures</strong> (« Suivez, téléchargez ou payez vos factures »). Elle mène à la liste
+                    suivante :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des factures sur le portail client d'Odoo 20 : colonnes Facture n°, Date de facturation, Échéance, Montant dû, Statut, avec des boutons Payer maintenant" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le portail de Douglas Fletcher affiche les factures et avoirs d'Acme Corporation.</figcaption>
+                </figure>
+                <p>La liste se trie par date et se filtre. Elle montre <strong>toutes les factures et tous les
+                    avoirs de la société</strong>, pas seulement ceux adressés à la personne invitée : Douglas
+                    Fletcher voit les pièces d'Acme Corporation, sa société. Les factures en brouillon et les
+                    factures annulées n'y figurent pas ; seules les pièces confirmées sont visibles.</p>
+                <p>Un clic sur un numéro ouvre la facture : le document à droite, et à gauche le montant,
+                    l'échéance et les boutons d'action.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Facture FAC/2026/00014 vue par le client sur le portail d'Odoo 20 : montant, Venant à échéance dans 6 jours, boutons Payer maintenant et Télécharger, vendeur Mitchell Admin" style="max-width:45%; height:auto;"/>
+                    <figcaption>Le client télécharge le PDF lui-même ; le vendeur reste joignable depuis la page.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RETIRER L'ACCÈS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Retirer l'accès</h2>
+                <p>Quand la personne quitte la société cliente, rouvrez la même fenêtre depuis sa fiche et cliquez
+                    sur <strong>Révoquer l'accès</strong>. Odoo archive l'utilisateur portail et invalide le lien
+                    d'invitation : la connexion n'est plus possible, mais le contact et son historique restent. Un
+                    nouveau clic sur <strong>Donner l'accès</strong> réactive le même utilisateur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : une seule société par accès</h4>
+                    <p>L'utilisateur portail est rattaché à la société active au moment du clic sur
+                        <strong>Donner l'accès</strong>, et il ne voit que les factures de cette société. Sur la
+                        base de démonstration, Acme Corporation a aussi des factures chez <strong>FR Company</strong> :
+                        elles n'apparaissent pas sur son portail, et l'adresse directe de l'une d'elles renvoie à
+                        la page Mon compte. Dans une base multi-sociétés, sélectionnez la bonne société dans le
+                        sélecteur en haut à droite avant de donner l'accès.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'accès portail se donne depuis le contact : <strong>Actions › Donner accès au
+                        portail</strong>, puis <strong>Donner l'accès</strong>.</li>
+                    <li>L'e-mail du contact devient l'identifiant ; il doit être valide et ne pas être déjà pris.</li>
+                    <li>Chaque personne invitée voit toutes les factures confirmées de sa société.</li>
+                    <li><strong>Révoquer l'accès</strong> archive l'utilisateur sans toucher au contact.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                        avoirs dans Odoo 20</a>, pour la prise en main de la facturation.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                        Odoo 20</a>, pour suivre les factures que le client n'a pas encore réglées.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
