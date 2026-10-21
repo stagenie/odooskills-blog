@@ -1,0 +1,376 @@
+<!--
+Article — Traceback Odoo 20 : lire une erreur et trouver la ligne fautive
+Série « Astuces dev Odoo 20 » (blog Développement) — AT1
+Date : 2026-10-21
+Slug : traceback-erreur-odoo
+Mot-clé cible : odoo traceback, odoo error 500
+Tags : intermediaire, qualite-tests, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  module d'exemple mon_module (héritage res.partner, bouton « Calculer la remise », route /mon_module/remise/<id>) installé
+  par --addons-path sur cette base seulement ; Playwright (Chromium, fr-FR) + curl + journal du serveur.
+  Parcours joué : Gemini Furniture (pays SM) → bouton → fenêtre « Oups ! » / « Voir les détails techniques » / « Masquer les
+  détails techniques » / bouton presse-papiers → info-bulle « Copié » ; presse-papiers relu : RPC_ERROR, Odoo Server Error,
+  « Occurred on … on model res.partner on … », trace, « The above server error caused the following client error ».
+  Journal : « ERROR <base> odoo.http: Exception during request handling. » + trace complète ; ligne d'accès POST call_button … 200.
+  curl JSON-RPC call_button → HTTP/1.1 200 OK, error.code 0, message « Odoo Server Error », data.name builtins.KeyError, data.debug = trace.
+  curl -i /mon_module/remise/11 (type='http') → HTTP/1.1 500 INTERNAL SERVER ERROR, page « Internal Server Error » sans trace ; journal : même ERROR + trace.
+  UserError → fenêtre « Opération invalide », journal « WARNING … odoo.http: Ce contact n'a pas d'adresse e-mail. » sans trace.
+  AccessError (utilisateur demo, ir.config_parameter) → WARNING sans trace ; relancé avec --dev=access → WARNING + trace.
+  breakpoint() dans une route, serveur au premier plan : invite (Pdb), « p partner.name, partner.country_id.code » → ('Gemini Furniture', 'SM'), « c ».
+  Code 20.0 relu :
+  odoo/http/router.py:298-317 (journalisation par type d'exception : UserError/AccessError en WARNING, sinon « Exception during request handling. ») ;
+  odoo/http/dispatcher.py:78-91 (serialize_exception, champ debug), :379-397 (JsonRPCDispatcher.handle_error, code 0, « Odoo Server Error ») ;
+  addons/web/static/src/core/network/rpc.js:29-39 (RPCError, name = "RPC_ERROR") ;
+  addons/web/static/src/core/errors/error_dialogs.xml:70-96 + error_dialogs.js:49-51,84-88 (titre Oops!, détails repliables, copie) ;
+  addons/web/i18n/fr.po (Oups !, Voir/Masquer les détails techniques, Erreur de serveur Odoo) ;
+  odoo/tools/config.py:457-466 + odoo-bin server --help (--dev : access, qweb, reload, replica, xml ; aucun débogueur).
+  19.0 publique relue le 21/10 (raw.githubusercontent.com) : odoo/http.py monolithique (l.2870-2891, même journalisation ;
+  odoo/http/router.py → 404) ; --dev identique (pas de pdb) ; ErrorDialog 19 sans <details>.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Traceback Odoo 20 : lire une erreur et trouver la ligne fautive</h1>
+                <p class="lead mt-3 text-white">Un clic sur un bouton, et Odoo 20 affiche « Oups ! ». Derrière cette
+                    fenêtre se cache une trace Python de quarante lignes, dont une seule t'intéresse vraiment. Voici
+                    où la trouver, dans l'interface comme dans le journal du serveur, et comment ne pas confondre
+                    l'erreur d'origine avec son enveloppe (<code>RPC_ERROR</code>, erreur 500).</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, avec un petit module d'exemple qui provoque de vraies erreurs.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Dans la fenêtre « Oups ! », clique sur <strong>Voir les détails techniques</strong>,
+                                puis descends <strong>tout en bas</strong> de la trace.</li>
+                            <li>La dernière ligne Python (<code>KeyError: 'SM'</code>…) est l'erreur d'origine.
+                                <code>RPC_ERROR</code> et <code>Odoo Server Error</code> ne sont que l'enveloppe.</li>
+                            <li>Remonte jusqu'au dernier <code>File "…", line N</code> qui pointe dans <strong>ton</strong>
+                                module : c'est la ligne fautive.</li>
+                            <li>La même trace est dans le journal du serveur, sous
+                                <code>ERROR … odoo.http: Exception during request handling.</code></li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. PROVOQUER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Une vraie erreur pour s'exercer</h2>
+                <p>Le module d'exemple ajoute un bouton <strong>Calculer la remise</strong> sur la fiche contact. Le
+                    taux dépend du pays, et le dictionnaire ne connaît que la France et les États-Unis :</p>
+<pre class="language-python"><code class="language-python"># mon_module/models/res_partner.py
+from odoo import models
+from odoo.exceptions import UserError
+
+TAUX_REMISE = {'FR': 5, 'US': 10}
+
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    def _taux_remise(self):
+        return TAUX_REMISE[self.country_id.code]
+
+    def action_calculer_remise(self):
+        for partner in self:
+            taux = partner._taux_remise()
+            partner.comment = f"Remise : {taux} %"
+
+    def action_verifier_email(self):
+        if not self.email:
+            raise UserError("Ce contact n'a pas d'adresse e-mail.")</code></pre>
+                <p>Sur <strong>Gemini Furniture</strong>, dont le pays de démonstration a le code <code>SM</code>, le
+                    bouton échoue. Odoo 20 n'affiche d'abord qu'un message vague et un lien replié :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Oups ! d'Odoo 20 avec le lien Voir les détails techniques replié et l'heure de l'erreur"/>
+                    <figcaption>La fenêtre « Oups ! » : tout est caché derrière « Voir les détails techniques ».</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LA FENÊTRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Dans l'interface : déplier, descendre, copier</h2>
+                <ol>
+                    <li>Clique sur <strong>Voir les détails techniques</strong>. Le lien devient
+                        <strong>Masquer les détails techniques</strong> et la fenêtre s'élargit.</li>
+                    <li>Le bloc commence par <strong>Erreur de serveur Odoo</strong>, une ligne
+                        « Occurred on … on model res.partner on … », puis <code>RPC_ERROR</code> et
+                        <code>Odoo Server Error</code>. Ne t'arrête pas là : c'est l'emballage.</li>
+                    <li>Fais défiler la trace jusqu'en bas. La ligne <code>KeyError: 'SM'</code> donne la vraie
+                        erreur ; juste au-dessus, <code>…/mon_module/models/res_partner.py", line 11, in _taux_remise</code>
+                        donne le fichier, la ligne et la fonction. La ligne de code fautive est recopiée en dessous,
+                        soulignée de <code>~~~^^^</code>.</li>
+                    <li>Pour la transmettre, clique sur l'icône presse-papiers en haut à droite du bloc : une
+                        info-bulle <strong>Copié</strong> confirme. Le texte copié contient le nom de l'erreur, le
+                        message, le contexte (serveur, modèle, heure) et la trace entière.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Détails techniques de l'erreur Odoo 20 défilés jusqu'en bas : KeyError SM, lignes 15 et 11 du module, puis RPC_ERROR côté client"/>
+                    <figcaption>Le bas de la trace : les deux cadres de <code>mon_module</code>, l'erreur d'origine, puis l'erreur client qu'elle a provoquée.</figcaption>
+                </figure>
+                <p>La trace se lit de bas en haut. Python l'écrit « most recent call last » : le dernier cadre est
+                    l'endroit où l'exception est levée (ligne 11), celui du dessus est l'appelant (ligne 15,
+                    <code>action_calculer_remise</code>). Tous les cadres plus haut — <code>odoo/http/router.py</code>,
+                    <code>dispatcher.py</code>, <code>routing_map.py</code>, <code>web/controllers/dataset.py</code>,
+                    <code>odoo/service/model.py</code> — sont la plomberie qui a transporté le clic jusqu'à ta méthode.
+                    La ligne à corriger est presque toujours dans le dernier cadre qui porte le chemin de ton module.</p>
+                <p>Petit repère si tu viens de la 19 : cette plomberie s'appelait <code>odoo/http.py</code>, un seul
+                    fichier ; en 20 elle est découpée dans le paquet <code>odoo/http/</code>. La lecture ne change pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LE JOURNAL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Dans le journal du serveur : chercher « ERROR »</h2>
+                <p>Le serveur a tout écrit au même moment, dans le terminal ou dans le fichier défini par
+                    <code>logfile</code>. Cherche <code>ERROR</code> à l'heure indiquée dans la fenêtre :</p>
+<pre class="language-bash"><code class="language-bash">grep -n -A40 "Exception during request handling" odoo.log</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Journal du serveur Odoo 20 : ligne ERROR odoo.http Exception during request handling, trace complète jusqu'à KeyError SM, puis ligne d'accès POST call_button avec le code 200"/>
+                    <figcaption>Même trace côté serveur, précédée de la ligne <code>ERROR</code> et suivie de la ligne d'accès de la requête.</figcaption>
+                </figure>
+                <p>La première ligne donne l'heure, le niveau <code>ERROR</code> et la base. La ligne d'accès qui
+                    suit nomme la route appelée, donc le bouton exact, et se termine par <code>200</code>, pas par 500 :
+                    c'est le point suivant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. ENVELOPPE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'enveloppe : RPC_ERROR, 200 et 500</h2>
+                <p>L'interface parle au serveur en JSON-RPC. Quand ta méthode lève une exception, la réponse HTTP reste
+                    <strong>200</strong> ; l'erreur voyage dans le corps JSON. Rejouée avec <code>curl</code> :</p>
+<div class="out">HTTP/1.1 200 OK
+{
+  "code": 0,
+  "message": "Odoo Server Error",
+  "data": {
+    "name": "builtins.KeyError",
+    "message": "SM",
+    "arguments": [
+      "SM"
+    ]
+  }
+}</div>
+                <p>(extrait du champ <code>error</code> ; <code>data.debug</code> porte la trace complète.) Le client web
+                    transforme cette réponse en exception JavaScript nommée <code>RPC_ERROR</code>. Ce nom
+                    ne dit rien de la cause : elle est dans <code>data.name</code> et dans la trace.</p>
+                <p>L'erreur 500 apparaît sur les routes <code>type='http'</code> (une page web, un export, un
+                    contrôleur maison). Même bug, appelé par une route de ce type (<code>auth='user'</code>, d'où le cookie de session) :</p>
+<div class="out">$ curl -i -b cookies.txt http://localhost:8069/mon_module/remise/11
+HTTP/1.1 500 INTERNAL SERVER ERROR
+date: Wed, 21 Oct 2026 11:21:53 GMT
+content-type: text/html; charset=utf-8
+content-length: 265
+connection: close
+server: odoo/20.0 python-h11/0.16.0 CPython/3.12.3
+
+&lt;!doctype html&gt;
+&lt;html lang=en&gt;
+&lt;title&gt;500 Internal Server Error&lt;/title&gt;
+&lt;h1&gt;Internal Server Error&lt;/h1&gt;
+&lt;p&gt;The server encountered an internal error and was unable to complete your request. Either the server is overloaded or there is an error in the application.&lt;/p&gt;</div>
+                <p>La page 500 ne dit rien de la cause, volontairement. La trace n'est que dans le journal, sous la
+                    même ligne <code>ERROR … Exception during request handling.</code>, suivie de
+                    <code>"GET /mon_module/remise/11 HTTP/1.1" 500</code>. Face à une « odoo error 500 », le
+                    journal est donc le seul endroit utile.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. PAS DE TRACE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Quand il n'y a pas de trace</h2>
+                <p>Une erreur métier levée volontairement (<code>UserError</code>) n'a ni
+                    « Oups ! » ni détails techniques : la fenêtre affiche le message tel quel.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Opération invalide d'Odoo 20 avec le message Ce contact n'a pas d'adresse e-mail, sans détails techniques"/>
+                    <figcaption>Une <code>UserError</code> : titre « Opération invalide », aucun lien vers une trace.</figcaption>
+                </figure>
+                <p>Le journal n'en garde qu'une ligne, sans trace :</p>
+<div class="out">2026-10-21 11:18:39,320 58304 WARNING ma_base odoo.http: Ce contact n'a pas d'adresse e-mail.</div>
+                <p>C'est voulu : le code a choisi ce message. Pour retrouver d'où il part, cherche son texte dans le
+                    code (<code>grep -rn "pas d'adresse e-mail" mon_module/</code>). Une erreur de droits
+                    (<code>AccessError</code>) est aussi journalisée en <code>WARNING</code> sans trace ; pour l'obtenir,
+                    relance le serveur avec <code>--dev=access</code>. Le même refus, sur
+                    <code>ir.config_parameter</code> avec l'utilisateur de démonstration, est alors suivi de sa pile complète :</p>
+<div class="out">2026-10-21 11:19:11,534 65282 WARNING ma_base odoo.http: You are not allowed to access 'System Parameter' (ir.config_parameter) records.
+
+This operation is allowed for the following groups:
+	- Role / Administrator
+
+Contact your administrator to request access if necessary.
+Traceback (most recent call last):
+  File "…/odoo/http/router.py", line 279, in __call__
+    response = serve_db(request)</div>
+
+                <div class="pitfall-box">
+                    <h4>--dev n'ouvre pas de débogueur</h4>
+                    <p>En Odoo 20, <code>./odoo-bin server --help</code> liste cinq fonctions pour <code>--dev</code> :
+                        <code>access</code>, <code>qweb</code>, <code>reload</code>, <code>replica</code>, <code>xml</code>
+                        (<code>all</code> = access, reload, qweb, xml). Aucune n'arrête le serveur sur l'exception.
+                        Pour inspecter les variables au point fautif, place <code>breakpoint()</code> juste avant la
+                        ligne et lance le serveur au premier plan dans ton terminal : la requête s'y fige sur l'invite
+                        <code>(Pdb)</code>. Essai sur une route du module d'exemple :</p>
+<pre class="language-python"><code class="language-python">    @http.route('/mon_module/pause/&lt;int:partner_id&gt;', type='http', auth='user')
+    def pause(self, partner_id):
+        partner = request.env['res.partner'].browse(partner_id)
+        breakpoint()
+        return f"Remise de {partner.name} : {partner._taux_remise()} %"</code></pre>
+<div class="out">&gt; …/addons/mon_module/controllers/main.py(16)pause()
+-&gt; return f"Remise de {partner.name} : {partner._taux_remise()} %"
+(Pdb) p partner.name, partner.country_id.code
+('Gemini Furniture', 'SM')
+(Pdb) c</div>
+                    <p>Tape <code>c</code> pour laisser la requête continuer, et retire le <code>breakpoint()</code>
+                        avant de livrer le module.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Une trace se lit de bas en haut : dernière ligne = l'erreur, dernier <code>File … line …</code> de ton module = la ligne à corriger.</li>
+                    <li><code>RPC_ERROR</code>, <code>Odoo Server Error</code> et la page 500 sont des enveloppes ; la cause est dans <code>data.name</code> et la trace.</li>
+                    <li>Le journal du serveur garde la trace complète, sous <code>ERROR … Exception during request handling.</code>, même quand l'écran n'en montre rien.</li>
+                    <li><code>UserError</code> et <code>AccessError</code> n'écrivent qu'un <code>WARNING</code> ; <code>--dev=access</code> ajoute la trace des refus de droits.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler, --log-sql, --log-config</a> — régler ce que le journal écrit, et où.</li>
+                    <li><a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a> — les traces typiques d'un portage.</li>
+                    <li><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a> — la vue d'ensemble.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Erreurs provoquées le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, module
+                    d'exemple), dans le navigateur, avec <code>curl</code> et dans le journal du serveur ; branche 19.0
+                    publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/http/router.py" target="_blank" rel="noopener"><code>odoo/http/router.py</code></a> : journalisation selon le type d'exception</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/http/dispatcher.py" target="_blank" rel="noopener"><code>odoo/http/dispatcher.py</code></a> : <code>serialize_exception</code> et la réponse JSON-RPC « Odoo Server Error »</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/core/errors/error_dialogs.xml" target="_blank" rel="noopener"><code>addons/web/static/src/core/errors/error_dialogs.xml</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/core/network/rpc.js" target="_blank" rel="noopener"><code>network/rpc.js</code></a> : la fenêtre et <code>RPC_ERROR</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : l'option <code>--dev</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
