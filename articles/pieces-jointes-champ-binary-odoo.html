@@ -1,0 +1,349 @@
+<!--
+Article — Pièces jointes et champs Binary en Odoo 20 : raw, pas base64
+Série « Astuces dev Odoo 20 » (blog Développement) — AT16
+Date : 2026-10-21
+Slug : pieces-jointes-champ-binary-odoo
+Mot-clé cible : odoo attachment raw, odoo binary field base64, odoo ir.attachment create, odoo download file controller
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Module d'exemple mon_fichier (20.0.1.0.0, depends base) installé par --addons-path sur cette base seulement :
+   controllers/main.py (/mon_fichier/logo/<pid> via ir.binary._get_stream_from + get_response(as_attachment=True) ;
+   /mon_fichier/contact/<pid>.csv via request.make_response + content_disposition de odoo.http.stream) ;
+   data/pieces_jointes.xml (<field name="raw" type="bytes" file="mon_fichier/data/modele.csv"/>).
+  Relevés (odoo-bin shell) :
+   creer.py → « 500 commande.csv text/csv 25 », « LocalBinaryFile b'ref;quantite\nFURN_0001;3\n' », base64, checksum 40 hex (sha1, ir_attachment.py:451).
+   lire.py → bytes nus : TypeError « res.partner.image_1920: use BinaryValue instead of bytes » ; BinaryBytes 6078 image/png ;
+     .content == png True ; .to_base64() ; base64.b64decode(img) → b'<\xd1\x88…' SANS erreur ; champ vide → Binary(b'', filename='') False.
+   p2_binary.py → base64.b64encode(png) écrit → même TypeError ; len(img) → TypeError « object of type 'BinaryBytes' has no len() » ;
+     img.decode() sur un PNG → UnicodeDecodeError ; img == png → False ; partner.read(['image_128']) → dict clés content, size ;
+     écriture d'une str base64 (img.to_base64()) → acceptée, BinaryBytes 6078 ; écriture False → falsy.
+   XML : type="base64" file=… sur datas → « DeprecationWarning: Since 20.0, use type=bytes instead of type=base64 » (convert.py:143)
+     + warning « Use raw, datas has beeen removed », pièce jointe 0 octet ; type="bytes" sur raw → 25 octets, text/csv.
+  Serveur (port à soi, curl avec session admin) : /web/content/500?download=true → attachment; filename=commande.csv, text/csv ;
+   /web/content/res.partner/10/image_1920 → inline; filename="Acme Corporation.png" ; /mon_fichier/logo/10 → attachment; filename=logo-10.png ;
+   /mon_fichier/contact/10.csv → filename*=UTF-8''Acme%20Corporation.csv ; sans session /web/content/500 → 404.
+   Capture Playwright du chatter d'Acme Corporation (id 10) : « Fichiers », commande.csv.
+  Code 20.0 relu : odoo/tools/binary.py:8-105 (BinaryValue : content, size, mimetype, to_base64, decode = contenu brut, pas de __len__) ;
+   odoo/orm/fields_binary.py:85-112 (convert_to_cache : str base64, dict, BinaryValue ; bytes seulement pour raw), :128-146 (EMPTY_BINARY, read → dict) ;
+   odoo/addons/base/models/ir_attachment.py:533-542 (datas ignoré + warning), :616 (raw) ; ir_binary.py:105-171 (_get_stream_from, nom de fichier) ;
+   addons/web/controllers/binary.py:55-82 (/web/content, field='raw' par défaut) ; odoo/http/stream.py:34 (content_disposition).
+  Écarts 19→20 vérifiés contre la 19.0 publique (raw.githubusercontent, 21/10) :
+   19.0 ir_attachment.py:473 « datas = fields.Binary(string='File Content (base64)' » → absent en 20 ;
+   19.0 fields_binary.py:159 (lecture d'un Binary en pièce jointe = att.datas, base64), :110-113 (convert_to_record → bytes) → en 20 BinaryValue ;
+   19.0 odoo/http.py:353 def content_disposition → en 20 « from odoo.http import content_disposition » = ImportError (exécuté).
+   Non-écart : /web/content et _get_stream_from existent en 19.0 (binary.py:72, ir_binary.py).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Pièces jointes et champs Binary en Odoo 20 : raw, pas base64</h1>
+                <p class="lead mt-3 text-white">En Odoo 20, un fichier ne voyage plus en base64 dans le code Python :
+                    une pièce jointe se crée avec des octets bruts, un champ Binary se lit comme un objet. Créer, lire
+                    et servir un fichier, chaque geste rejoué sur la démo.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes et Inventaire) et un petit module d'exemple, <code>mon_fichier</code>, pour
+                        la partie contrôleur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Tu veux…</th><th>Écris</th></tr></thead>
+                            <tbody>
+                                <tr><td>créer une pièce jointe</td><td><code>env['ir.attachment'].create({'name': …, 'raw': octets, 'res_model': …, 'res_id': …})</code></td></tr>
+                                <tr><td>écrire un champ Binary</td><td><code>rec.champ = BinaryBytes(octets)</code> (<code>from odoo.tools import BinaryBytes</code>)</td></tr>
+                                <tr><td>lire un champ Binary</td><td><code>rec.champ.content</code> (octets), <code>.size</code>, <code>.mimetype</code>, <code>.to_base64()</code></td></tr>
+                                <tr><td>servir le fichier</td><td><code>/web/content/&lt;modèle&gt;/&lt;id&gt;/&lt;champ&gt;</code>, ou <code>ir.binary</code> dans ton contrôleur</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CRÉER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer une pièce jointe : le champ <code>raw</code></h2>
+                <p>Une pièce jointe (<code>ir.attachment</code>) reçoit son contenu dans <code>raw</code>, en
+                    <strong>octets bruts</strong> : pas d'encodage préalable. Ce script, passé à
+                    <code>odoo-bin shell</code>, rattache un petit CSV à la fiche d'Acme Corporation :</p>
+<pre class="language-python"><code class="language-python"># creer.py
+partner = env['res.partner'].search([('name', '=', 'Acme Corporation')], limit=1)
+contenu = "ref;quantite\nFURN_0001;3\n".encode()
+att = env['ir.attachment'].create({
+    'name': 'commande.csv',
+    'raw': contenu,
+    'res_model': 'res.partner',
+    'res_id': partner.id,
+})
+print(att.id, att.name, att.mimetype, att.file_size)
+print(type(att.raw).__name__, att.raw.content)
+print(att.raw.to_base64())
+print(att.checksum)
+env.cr.commit()</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : pièce jointe 500 commande.csv, type text/csv, 25 octets, contenu relu en octets, en base64 et somme de contrôle" loading="lazy"/>
+                    <figcaption>Type MIME, taille et somme de contrôle sont calculés à la création.</figcaption>
+                </figure>
+                <p>Tu ne fournis que le nom et les octets : Odoo déduit <code>text/csv</code>, compte 25 octets et
+                    calcule la somme de contrôle SHA-1. Relu, <code>att.raw</code> n'est pas un <code>bytes</code> mais
+                    un objet (<code>LocalBinaryFile</code>, le fichier du filestore) : ses octets sont dans
+                    <code>.content</code>, sa forme base64 dans <code>.to_base64()</code>. <code>raw</code> est le seul
+                    champ Binary qui accepte des <code>bytes</code> nus. Le couple <code>res_model</code> /
+                    <code>res_id</code> fait apparaître le fichier dans le chatter de la fiche :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Chatter de la fiche Acme Corporation : trombone 1, rubrique Fichiers avec l'aperçu de commande.csv" loading="lazy"/>
+                    <figcaption>La pièce jointe créée par le script, dans le chatter d'Acme Corporation.</figcaption>
+                </figure>
+                <p><strong>Venant de la 19</strong> : le champ <code>datas</code> (« File Content (base64) ») n'existe
+                    plus sur <code>ir.attachment</code> ; seul <code>raw</code> reste. Dans un fichier de données XML,
+                    même logique : <code>&lt;field name="raw" type="bytes" file="mon_fichier/data/modele.csv"/&gt;</code>.
+                    L'ancien <code>type="base64"</code> est encore lu mais signalé au chargement :
+                    <code>DeprecationWarning: Since 20.0, use type=bytes instead of type=base64</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CHAMP BINARY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Écrire et lire un champ Binary</h2>
+                <p>Sur un champ Binary ordinaire (ici <code>image_1920</code> du contact), les <code>bytes</code> sont
+                    refusés : Odoo ne peut pas savoir s'ils sont bruts ou déjà en base64. On les enveloppe dans un
+                    <code>BinaryBytes</code>. Le script se termine par <code>rollback()</code> : rien n'est enregistré.</p>
+<pre class="language-python"><code class="language-python"># lire.py
+import base64
+from odoo.tools import BinaryBytes, file_open
+partner = env['res.partner'].search([('name', '=', 'Acme Corporation')], limit=1)
+with file_open('web/static/img/placeholder.png', 'rb') as f:
+    png = f.read()
+try:
+    partner.image_1920 = png
+except TypeError as e:
+    print("bytes nus  ->", e)
+partner.image_1920 = BinaryBytes(png)
+img = partner.image_1920
+print("lu         ->", type(img).__name__, img.size, img.mimetype)
+print(".content   ->", img.content[:8], img.content == png)
+print(".to_base64 ->", img.to_base64()[:20])
+print("b64decode  ->", base64.b64decode(img)[:8])
+vide = env['res.partner'].search([('image_1920', '=', False)], limit=1)
+print("champ vide ->", repr(vide.image_1920), bool(vide.image_1920))
+env.cr.rollback()</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : bytes nus refusés par TypeError, BinaryBytes de 6078 octets image/png, content identique, to_base64, b64decode qui renvoie des octets incohérents, champ vide falsy" loading="lazy"/>
+                    <figcaption>Écrire en <code>BinaryBytes</code>, lire par <code>.content</code> ; un champ vide est un objet « faux ».</figcaption>
+                </figure>
+                <p>Ligne par ligne :</p>
+                <ul>
+                    <li><strong>Écrire</strong> : <code>BinaryBytes(octets)</code>. Une <em>chaîne</em> base64 reste
+                        acceptée (c'est ce qu'envoient le client web et les appels RPC) : <code>partner.image_1920 =
+                        img.to_base64()</code> passe. Des <code>bytes</code> base64, eux, lèvent la même
+                        <code>TypeError</code> que les octets bruts.</li>
+                    <li><strong>Lire</strong> : un <code>BinaryBytes</code> qui donne <code>.content</code>,
+                        <code>.size</code> (6078), <code>.mimetype</code> (<code>image/png</code>, deviné du contenu) et
+                        <code>.to_base64()</code> quand une API externe attend du base64.</li>
+                    <li><strong>Champ vide</strong> : jamais <code>False</code>, mais un <code>BinaryBytes</code> vide,
+                        faux dans un test. <code>if partner.image_1920:</code> fonctionne toujours.</li>
+                    <li><strong>Comparer, mesurer</strong> : <code>img == png</code> vaut <code>False</code> (compare
+                        <code>img.content</code>) ; <code>len(img)</code> lève <code>TypeError: object of type
+                        'BinaryBytes' has no len()</code> : utilise <code>img.size</code>, et passe
+                        <code>img.content</code> à toute bibliothèque qui attend des <code>bytes</code>.</li>
+                    <li><strong><code>.decode()</code></strong> décode le contenu <em>brut</em> en texte : sur un PNG,
+                        <code>UnicodeDecodeError</code>. Pour une URL <code>data:image/png;base64,…</code>, c'est
+                        <code>.to_base64()</code>.</li>
+                    <li><strong><code>read()</code></strong> (et donc l'API) renvoie un dictionnaire, ici
+                        <code>{'content': &lt;base64&gt;, 'size': …}</code>, plus une simple chaîne.</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4><code>base64.b64decode(rec.champ)</code> ne lève aucune erreur</h4>
+                    <p>En 19, un champ Binary se lisait en base64 et il fallait le décoder. En 20 la valeur est déjà
+                        brute, et <code>b64decode</code> l'accepte quand même : il ignore les caractères qui ne sont pas
+                        du base64 et rend des octets sans rapport avec le fichier (<code>b'&lt;\xd1\x88…'</code> sur la
+                        capture). Le PNG reçu ensuite est illisible, sans trace dans le journal. Cherche
+                        <code>b64decode</code> et <code>b64encode</code> appliqués à un champ Binary dans ton code et
+                        remplace-les par <code>.content</code> et <code>.to_base64()</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. SERVIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Servir le fichier au navigateur</h2>
+                <p>Pour un fichier déjà stocké, pas besoin de contrôleur : <code>/web/content/&lt;id&gt;</code> sert une
+                    pièce jointe, <code>/web/content/&lt;modèle&gt;/&lt;id&gt;/&lt;champ&gt;</code> n'importe quel champ
+                    Binary, <code>?download=true</code> force le téléchargement, et <code>/web/image/…</code> ajoute le
+                    redimensionnement des images. Les droits de lecture de l'utilisateur s'appliquent.</p>
+                <p>Dans ton propre contrôleur, reprends l'outil de <code>/web/content</code> :
+                    <code>ir.binary</code> construit un flux (type MIME, nom de fichier, cache) à partir d'un
+                    enregistrement. Pour un fichier fabriqué à la volée, <code>request.make_response</code> suffit :</p>
+<pre class="language-python"><code class="language-python"># mon_fichier/controllers/main.py
+from odoo import http
+from odoo.http import request
+from odoo.http.stream import content_disposition
+
+
+class MonFichier(http.Controller):
+
+    @http.route('/mon_fichier/logo/&lt;int:pid&gt;', type='http', auth='user')
+    def logo(self, pid):
+        partner = request.env['res.partner'].browse(pid)
+        stream = request.env['ir.binary']._get_stream_from(
+            partner, 'image_1920', filename=f'logo-{pid}.png')
+        return stream.get_response(as_attachment=True)
+
+    @http.route('/mon_fichier/contact/&lt;int:pid&gt;.csv', type='http', auth='user')
+    def contact_csv(self, pid):
+        partner = request.env['res.partner'].browse(pid)
+        partner.check_access('read')
+        data = f"nom;ville\n{partner.name};{partner.city}\n".encode()
+        return request.make_response(data, headers=[
+            ('Content-Type', 'text/csv; charset=utf-8'),
+            ('Content-Disposition', content_disposition(f'{partner.name}.csv')),
+        ])</code></pre>
+                <p>Module installé, <code>$ODOO</code> pointant vers l'instance et <code>cookies.txt</code> contenant
+                    une session ouverte, <code>curl</code> montre les en-têtes de chaque réponse :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Terminal : quatre réponses HTTP 200 avec content-disposition attachment ou inline et le bon content-type, puis 404 sans session" loading="lazy"/>
+                    <figcaption>Pièce jointe, champ Binary, contrôleur <code>ir.binary</code>, fichier généré : 200 ; sans session : 404.</figcaption>
+                </figure>
+                <p>Sans <code>filename</code>, le nom vient du champ <code>name</code> de l'enregistrement, complété par
+                    l'extension du type MIME : <code>Acme Corporation.png</code>. <code>content_disposition</code> encode
+                    l'espace du nom (<code>filename*=UTF-8''Acme%20Corporation.csv</code>). <strong>Venant de la
+                    19</strong> : cette fonction s'importait de <code>odoo.http</code> ; en 20, <code>from odoo.http
+                    import content_disposition</code> lève <code>ImportError</code>, elle vit dans
+                    <code>odoo.http.stream</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Pièce jointe : <code>raw</code> en octets bruts ; <code>datas</code> n'existe plus ; en XML, <code>type="bytes"</code>.</li>
+                    <li>Champ Binary : écrire <code>BinaryBytes(octets)</code>, lire <code>.content</code>, <code>.size</code>, <code>.to_base64()</code>.</li>
+                    <li>Plus de <code>b64decode</code> sur un champ Binary : il ne plante pas, il corrompt.</li>
+                    <li>Servir : <code>/web/content/…</code>, ou <code>ir.binary._get_stream_from(…).get_response()</code> ; <code>content_disposition</code> vient de <code>odoo.http.stream</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a> — l'article pilier : les écarts 19 → 20, dont les fichiers.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour rejouer <code>creer.py</code> et <code>lire.py</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/create-write-command-odoo-20-277">create, write et Command en Odoo 20</a> — écrire sur un enregistrement depuis le code, y compris ses relations.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, un module
+                    d'exemple), en console, par <code>curl</code> et dans le navigateur ; branche 19.0 publique relue le
+                    même jour pour les écarts. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/binary.py" target="_blank" rel="noopener"><code>odoo/tools/binary.py</code></a> : <code>BinaryValue</code>, <code>BinaryBytes</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_binary.py" target="_blank" rel="noopener"><code>odoo/orm/fields_binary.py</code></a> : valeurs acceptées à l'écriture, format de <code>read()</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_binary.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_binary.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/controllers/binary.py" target="_blank" rel="noopener"><code>addons/web/controllers/binary.py</code></a> : flux et routes <code>/web/content</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

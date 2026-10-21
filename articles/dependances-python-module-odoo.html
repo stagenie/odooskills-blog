@@ -1,0 +1,326 @@
+<!--
+Article — Dépendances Python d'un module Odoo 20 : external_dependencies et venv
+Série « Astuces dev Odoo 20 » (blog Développement) — AT17
+Date : 2026-10-21
+Slug : dependances-python-module-odoo
+Mot-clé cible : odoo python library, odoo python version, external_dependencies, odoo venv, odoo requirements.txt
+Tags : intermediaire, infrastructure, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Venv jetable créé dans le dossier de travail (python3.12 -m venv) : Python 3.12.3 ; pip install -r odoo/requirements.txt
+   → « Successfully installed » 65 paquets ; odoo-bin --version → « Odoo Server 20.0 ». Venv partagé du poste non modifié.
+  Module d'exemple mon_slug (depends product, external_dependencies python ['python-slugify>=8'], champ calculé slug
+   sur product.template avec « from slugify import slugify »), installé par --addons-path sur cette base seulement.
+  Relevés :
+   venv jetable sans packaging : -i mon_slug → « Exception: Package `packaging` is required to parse `python-slugify>=8`
+     external dependency and is not installed », rc 255 ;
+   avec packaging, sans python-slugify : -i mon_slug → UserError « Impossible d'installer le module "mon_slug" à cause d'une
+     dépendance externe non trouvée : python-slugify>=8 », Failed to load registry, rc 255 (même message avec le venv du poste) ;
+   interface (venv du poste, sans python-slugify) : fiche du module > Activer → boîte « Opération invalide », même message (capture 01) ;
+   pip install python-slugify → python-slugify 9.1.3 + text-unidecode 1.3 ; -i mon_slug → rc 0 ; shell → 4 slugs (capture 02) ;
+   'python-slugify>=99' + -u → « External dependency version mismatch: python-slugify>=99 (installed: 9.1.3) » puis
+     UserError « Impossible de mettre à jour le module "mon_slug" … » ;
+   'apt': {'python-slugify>=99': 'python3-slugify'} → ligne « Peut être installé en exécutant : apt install python3-slugify » ;
+     clé 'python-slugify' (sans la version) → aucune ligne apt ;
+   'slugify' (nom d'import) → installé, WARNING « python external dependency on 'slugify' does not appear to be a valid PyPI
+     package. Using a PyPI package name is recommended. » ;
+   module installé puis pip uninstall python-slugify → démarrage : CRITICAL « Couldn't load module mon_slug », « Failed to load
+     registry », « Failed to initialize database », ModuleNotFoundError: No module named 'slugify', rc 255 (capture 03).
+   Recensement des 641 manifestes de odoo/addons : 5 déclarent external_dependencies (account_peppol phonenumbers,
+     auth_ldap python-ldap, cloud_storage_google google-auth, l10n_eg_edi_eta asn1crypto, website geoip2), tous avec 'apt'.
+   requirements.txt 20.0 : ni phonenumbers, ni packaging (grep -c → 0).
+  Code 20.0 relu :
+   odoo/release.py:39-40 (MIN_PY_VERSION (3, 12), MAX_PY_VERSION (3, 14)) ; odoo/init.py:16 (assert version minimale) ;
+   odoo/cli/server.py:69-73 (avertissement au-delà de 3.14) ; odoo/modules/module.py:30-43 (repli sans packaging),
+   :297-316 (check_manifest_dependencies : python, bin), :617-643 (check_python_external_dependency : nom PyPI, marqueur :623,
+   repli import :632-637, version :641) ; odoo/addons/base/models/ir_module.py:349-376 (UserError, indice apt sur Debian/Ubuntu,
+   clé = e.dependency), :402 (appel à l'installation et à la mise à jour, :736) ; addons/account_peppol/__manifest__.py:22-27.
+  Écart 19→20 (19.0 publique, raw.githubusercontent, relue le 21/10) : seul MIN_PY_VERSION change, (3, 10) → (3, 12) ;
+   MAX_PY_VERSION (3, 14) des deux côtés ; check_manifest_dependencies identique, check_python_external_dependency et
+   check_external_dependencies identiques (seule une coquille du message d'avertissement corrigée en 20).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Dépendances Python d'un module Odoo 20 : external_dependencies et venv</h1>
+                <p class="lead mt-3 text-white">Ton module a besoin d'une bibliothèque Python qu'Odoo ne fournit pas.
+                    Quelle version de Python choisir, où installer la bibliothèque, comment la déclarer dans le
+                    manifeste et ce qu'Odoo 20 fait quand elle manque : la réponse, rejouée sur un module d'exemple.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, Ubuntu 24.04,
+                        Python 3.12, base de démonstration, un environnement virtuel neuf et un petit module d'exemple,
+                        <code>mon_slug</code>, qui utilise la bibliothèque <code>python-slugify</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li><strong>Python 3.12 à 3.14</strong> pour Odoo 20, dans un environnement virtuel (venv) réservé à Odoo.</li>
+                            <li>Dans ce venv : <code>pip install -r requirements.txt</code>, puis <code>packaging</code> et les bibliothèques de tes modules.</li>
+                            <li>Dans le manifeste : <code>'external_dependencies': {'python': ['python-slugify&gt;=8']}</code>, avec le nom <strong>PyPI</strong> du paquet.</li>
+                            <li>Odoo vérifie à l'installation et à la mise à jour du module, pas au démarrage : installe la bibliothèque sur chaque serveur <strong>avant</strong> d'y déployer le code.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. VERSION DE PYTHON ET VENV ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La version de Python et le venv</h2>
+                <p>Les bornes sont écrites dans <code>odoo/release.py</code> : <code>MIN_PY_VERSION = (3, 12)</code> et
+                    <code>MAX_PY_VERSION = (3, 14)</code>. En dessous de 3.12, Odoo refuse de démarrer
+                    (<code>Outdated python version detected, Odoo requires Python &gt;= 3.12 to run.</code>) ; au-dessus de
+                    3.14, il démarre avec un avertissement <code>Python … is not officially supported</code>. Le
+                    <code>requirements.txt</code> suit les distributions : ses versions épinglées visent Python 3.12
+                    (Ubuntu 24.04), 3.13 et 3.14. La 19 acceptait encore Python 3.10 : un serveur en 3.10 ou
+                    3.11 qui faisait tourner une 19 doit changer de Python pour passer en 20.</p>
+                <p>Installe les bibliothèques dans un venv, jamais dans le Python du système. Depuis le dossier des
+                    sources d'Odoo :</p>
+<pre class="language-bash"><code class="language-bash">python3.12 -m venv venv
+venv/bin/python --version
+venv/bin/pip install -r requirements.txt
+venv/bin/python odoo-bin --version</code></pre>
+<div class="out">Python 3.12.3
+…
+Successfully installed Babel-2.10.3 Jinja2-3.1.2 MarkupSafe-2.1.5 Pillow-10.2.0 … zope.interface-8.7
+Odoo Server 20.0</div>
+                <p>Sur le poste de test, sous Ubuntu 24.04, <code>pip</code> a installé 65 paquets. Ensuite, lance
+                    toujours Odoo avec <strong>ce</strong> Python
+                    (<code>venv/bin/python odoo-bin</code>, ou le venv choisi comme interpréteur dans ton IDE) : une
+                    bibliothèque installée ailleurs n'existe pas pour Odoo.</p>
+                <p>Deux paquets absents de <code>requirements.txt</code> peuvent te manquer : <code>packaging</code>, que
+                    la section suivante explique, et <code>phonenumbers</code>, que le module standard
+                    <code>account_peppol</code> déclare lui-même en dépendance externe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. DÉCLARER LA BIBLIOTHÈQUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Déclarer la bibliothèque dans le manifeste</h2>
+                <p>Le module d'exemple calcule un « slug » (le nom d'un article réduit à des minuscules sans accents,
+                    séparées par des tirets) avec <code>python-slugify</code> :</p>
+<pre class="language-python"><code class="language-python"># mon_slug/__manifest__.py
+{
+    'name': "Slug des articles",
+    'version': '20.0.1.0.0',
+    'author': 'OdooSkills',
+    'depends': ['product'],
+    'external_dependencies': {
+        'python': ['python-slugify&gt;=8'],
+    },
+    'license': 'LGPL-3',
+}</code></pre>
+<pre class="language-python"><code class="language-python"># mon_slug/models/product_template.py
+from slugify import slugify
+
+from odoo import api, fields, models
+
+
+class ProductTemplate(models.Model):
+    _inherit = 'product.template'
+
+    slug = fields.Char(compute='_compute_slug')
+
+    @api.depends('name')
+    def _compute_slug(self):
+        for product in self:
+            product.slug = slugify(product.name or '')</code></pre>
+                <p>Ce que lit Odoo 20 dans <code>external_dependencies</code> :</p>
+                <ul>
+                    <li><strong><code>python</code></strong> : une liste de noms de paquets <strong>PyPI</strong>
+                        (<code>python-slugify</code>), pas de noms d'import (<code>slugify</code>). Odoo cherche d'abord
+                        les métadonnées du paquet installé ; avec le nom d'import, il se rabat sur un
+                        <code>import</code> et l'accepte, mais l'écrit dans le journal :
+                        <code>python external dependency on 'slugify' does not appear to be a valid PyPI package</code>.</li>
+                    <li><strong>Version et marqueurs</strong> : la syntaxe de pip est comprise (<code>&gt;=8</code>,
+                        <code>; python_version &gt;= '3.13'</code>). Une version installée hors bornes est refusée :
+                        <code>External dependency version mismatch: python-slugify&gt;=99 (installed: 9.1.3)</code>.</li>
+                    <li><strong><code>bin</code></strong> : des exécutables cherchés dans le <code>PATH</code>.</li>
+                    <li><strong><code>apt</code></strong> : un dictionnaire facultatif qui ajoute au message d'erreur, sur
+                        Debian et Ubuntu, la commande <code>apt install</code> à lancer.</li>
+                </ul>
+                <p>Pour lire une version (<code>&gt;=8</code>), Odoo a besoin du paquet <code>packaging</code>. Dans un
+                    venv construit seulement avec <code>requirements.txt</code>, il manque, et l'installation tombe sur
+                    une exception qui ne parle pas de ton module :</p>
+<div class="out">Exception: Package `packaging` is required to parse `python-slugify&gt;=8` external dependency and is not installed</div>
+                <p><code>venv/bin/pip install packaging</code> règle la question. Un nom seul, sans version, passe sans
+                    lui. Côté <code>apt</code>, la clé doit reprendre <strong>exactement</strong> la chaîne de la liste
+                    <code>python</code>, version comprise : avec <code>'apt': {'python-slugify&gt;=99': 'python3-slugify'}</code>,
+                    le message se termine par <code>Peut être installé en exécutant : apt install python3-slugify</code> ;
+                    avec la clé <code>'python-slugify'</code>, cette ligne n'apparaît pas. Les modules standard d'Odoo
+                    évitent le piège : sur 641 manifestes, les cinq qui déclarent une dépendance externe (dont
+                    <code>account_peppol</code> avec <code>phonenumbers</code>) la donnent sans version.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. QUAND LA BIBLIOTHÈQUE MANQUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ce qu'Odoo 20 fait quand la bibliothèque manque</h2>
+                <p>Sans <code>python-slugify</code> dans le venv, le bouton <strong>Activer</strong> de la fiche du module
+                    (menu <strong>Applications</strong>) s'arrête net :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Odoo 20, boîte Opération invalide : impossible d'installer le module mon_slug à cause d'une dépendance externe non trouvée, python-slugify>=8" loading="lazy"/>
+                    <figcaption>Le message reprend la chaîne du manifeste, version comprise.</figcaption>
+                </figure>
+                <p>Le module reste « non installé ». En ligne de commande, <code>-i mon_slug</code> écrit le même message dans le journal
+                    (<code>odoo.exceptions.UserError</code>) et s'arrête avec le code retour 255. La mise à jour
+                    (<code>-u</code>) refait le contrôle : c'est là qu'une exigence de version relevée dans le manifeste
+                    se fait sentir, avec <code>Impossible de mettre à jour le module "mon_slug"</code>.</p>
+                <p>La correction tient en une commande, dans le venv qui fait tourner Odoo, puis l'installation passe :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : pip install python-slugify, puis odoo-bin -i mon_slug charge le module, puis le shell affiche les slugs de quatre produits" loading="lazy"/>
+                    <figcaption><code>pip install</code>, installation du module (extrait du journal), puis le champ calculé lu dans <code>odoo-bin shell</code>.</figcaption>
+                </figure>
+                <p>Le script <code>slug.py</code> se contente de lire le champ sur les premiers articles de la démo :</p>
+<pre class="language-python"><code class="language-python">for p in env['product.template'].search([], limit=4, order='id'):
+    print(p.id, p.name, '-&gt;', p.slug)</code></pre>
+                <p>Pour garder la liste à jour, note aussi tes bibliothèques dans un
+                    <code>requirements.txt</code> à la racine de ton dépôt de modules ; un
+                    <code>pip install -r</code> suffit alors sur chaque machine.</p>
+
+                <div class="pitfall-box">
+                    <h4>Installé ici, absent là-bas : la base entière ne démarre plus</h4>
+                    <p><code>external_dependencies</code> n'est contrôlé qu'à l'installation et à la mise à jour. Au
+                        démarrage, Odoo importe simplement le code des modules installés. Si tu copies la base ou le code
+                        sur un serveur dont le venv n'a pas la bibliothèque, le <code>from slugify import slugify</code>
+                        échoue et c'est tout le registre qui tombe, pas seulement le module :</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_03" alt="Terminal : après pip uninstall python-slugify, odoo-bin échoue au démarrage, Couldn't load module mon_slug, Failed to load registry, ModuleNotFoundError No module named slugify" loading="lazy"/>
+                        <figcaption>Bibliothèque retirée après installation : <code>Failed to initialize database</code>.</figcaption>
+                    </figure>
+                    <p>Ordre sûr pour un déploiement : <code>pip install</code> dans le venv du serveur, puis le code, puis
+                        <code>-u</code> du module.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Odoo 20 tourne sur Python 3.12 à 3.14, dans un venv à lui ; lance-le toujours avec le Python de ce venv.</li>
+                    <li><code>external_dependencies</code> : noms PyPI, versions à la pip (elles exigent <code>packaging</code>), clé <code>apt</code> identique à la chaîne déclarée.</li>
+                    <li>Le contrôle se fait à l'installation et à la mise à jour : message clair, module laissé non installé.</li>
+                    <li>Au démarrage, une bibliothèque absente fait tomber toute la base : installe-la avant de déployer.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer Odoo 20 sur Ubuntu et le lancer dans PyCharm</a> — l'article pilier : sources, venv, PostgreSQL 16 et interpréteur de l'IDE.</li>
+                    <li><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a> — le venv côté production, là où la bibliothèque doit aussi être installée.</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — les <code>-i</code> et <code>-u</code> qui déclenchent le contrôle.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, venv neuf,
+                    module d'exemple), en ligne de commande et dans le navigateur ; branche 19.0 publique relue le même
+                    jour (contrôle des dépendances identique, Python minimal 3.10 en 19). Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/release.py" target="_blank" rel="noopener"><code>odoo/release.py</code></a> : versions de Python minimale et maximale</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/module.py" target="_blank" rel="noopener"><code>odoo/modules/module.py</code></a> : <code>check_manifest_dependencies</code> et <code>check_python_external_dependency</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_module.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_module.py</code></a> : message d'erreur et indice <code>apt</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
