@@ -1,0 +1,382 @@
+<!--
+Article — Rapport et courriel dans la langue du client en Odoo 20
+Série « Astuces dev Odoo 20 » (blog Développement) — AT14
+Date : 2026-10-21
+Slug : langue-client-rapport-courriel-odoo
+Mot-clé cible : odoo langue du client, odoo mail template lang, odoo report t-lang, odoo with_context lang, rapport multilingue odoo
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR, admin fr_FR).
+  Langue : en_US inactive au départ (res.lang actives = fr_FR seul) ; odoo-bin --load-language=en_US --stop-after-init → en_US active (relu par search active_test=False).
+  Acme Corporation (res.partner 10) passée en en_US ; ses 3 contacts restent ['fr_FR', 'fr_FR', 'fr_FR'].
+  langue_courriel.py (shell, sans commit) → modèle account.email_template_edi_invoice : lang = False ;
+    _render_lang([10, 11]) = {10: 'fr_FR', 11: 'en_US'} ; sujet compute_lang=True : « Facture (Réf FAC/2026/00001) » / « Invoice (Ref FAC/2026/00002) » ;
+    sans compute_lang : « Facture (Réf FAC/2026/00002) » ; send_mail(11) → mail.mail outgoing, sujet anglais, corps « Dear Acme Corporation, Here is your invoice … $ 48,012.50 ».
+  Écran : facture FAC/2026/00002, bouton Envoyer (configurateur d'agencement validé d'abord par « Continuer ») → assistant « Envoyer » :
+    sujet « My Company (San Francisco) Invoice (Ref FAC/2026/00002) », corps anglais, pièce FAC_2026_00002.pdf. Rien envoyé (pas de clic sur Envoyer).
+  Module d'exemple mon_rapport_langue (--addons-path, cette base seule) : ir.actions.report sur account.move, i18n/fr.po (Statement → Relevé…).
+    Sans t-lang : 11 → « Relevé … Échéance : 05/10/2026 … Bureau pour quatre personnes … $ 48 012,50 » ;
+    Report.with_context(lang='en_US') → « Statement … Due date: 10/05/2026 … Four Person Desk … $ 48,012.50 ».
+    Avec t-lang="o.partner_id.lang" (-u) : 10 en français, 11 en anglais ; rendu [10, 11] → page 1 « Relevé », page 2 « Statement ».
+  t-lang sur un <div> sans t-call → QWebError / SyntaxError « t-lang is an alias of t-options-lang but only available on the same node of t-call ».
+  Python : facture.with_context(lang='en_US') → type_name Facture / Invoice ; produits ['Bureau pour quatre personnes', 'Canapé deux places'] / ['Four Person Desk', 'Two-Seat Sofa'] ;
+    format_amount lang_code='en_US' → $ 48,012.50 / $ 48 012,50 ; format_date → 10/05/2026 / 05/10/2026.
+  p9_verifs.py : state 'posted' → « Comptabilisé » / « Posted » selon env.lang ; sale.email_template_edi_sale._generate_template([1], ['report_template_ids'])
+    (S00001, Acme en_US, utilisateur fr_FR) → pièce « Quotation - S00001.pdf », PDF « Quotation # S00001 », « Quotation Date ».
+  Piège : PDF account.account_invoices de FAC/2026/00002 en anglais (« Invoice », « Due Date ») mais ligne « Canapé deux places avec structure en chêne »
+    = account.move.line.name stocké (lignes en base : [False, 'Canapé deux places avec structure en chêne']).
+  Code 20.0 relu :
+   addons/mail/models/mail_render_mixin.py:68-72 (champ lang, aide « If not set, the main partner's language will be used »), :753-777 (_render_lang,
+     repli _mail_get_partners :770-775), :779-802 (_classify_per_lang → with_context(lang=…)), :804-855 (_render_field, compute_lang) ;
+   addons/mail/models/mail_template.py:631 (_generate_template → _classify_per_lang), :369-373 (rapports joints rendus par le modèle contextualisé) ;
+   addons/account/models/account_move_send.py:170-171 (_get_default_mail_lang = _render_lang), :684 ;
+   addons/account/views/report_invoice.xml:636-639 (t-lang="lang", lang = o.partner_id.lang) ; addons/sale/report/ir_actions_report_templates.xml:479 ;
+   odoo/addons/base/models/res_partner.py:126-127 (lang = langues installées), :303, :487-495 (_compute_lang @depends parent_id) ;
+   odoo/addons/base/models/ir_qweb.py:257-267 (doc t-lang), :2744-2747 ; addons/sale/models/sale_order_line.py:522-527 (_compute_name dans la langue du client).
+  Écart 19→20 : aucun retenu. mail_render_mixin.py de la 19.0 publique (raw.githubusercontent, 21/10) : même repli sur la langue du partenaire
+   (seule différence : filter(None, res_ids)). Pas d'encadré « Venant de la 19 ».
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Rapport et courriel dans la langue du client en Odoo 20</h1>
+                <p class="lead mt-3 text-white">Tu travailles en français, ton client lit l'anglais : le courriel, le PDF
+                    joint et les textes calculés en Python doivent suivre sa langue, pas la tienne. Trois mécanismes
+                    s'en chargent : le champ <code>lang</code> du modèle de courriel, <code>t-lang</code> dans le
+                    rapport et <code>with_context(lang=…)</code> dans le code.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration en français (Ventes, Inventaire, Facturation) à laquelle l'anglais a été ajouté,
+                        avec un petit module de rapport d'exemple. Aucun courriel n'est parti : pas de serveur sortant.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Pour…</th><th>Écris</th></tr></thead>
+                            <tbody>
+                                <tr><td>que la langue existe</td><td>langue active + champ <code>lang</code> du partenaire (celui du document)</td></tr>
+                                <tr><td>le courriel</td><td>champ <code>lang</code> du <code>mail.template</code> (<code>{{ object.partner_id.lang }}</code>) ; vide = langue du partenaire principal</td></tr>
+                                <tr><td>le rapport PDF</td><td><code>&lt;t t-call="…_document" t-lang="o.partner_id.lang"/&gt;</code> dans la boucle sur <code>docs</code></td></tr>
+                                <tr><td>le code Python</td><td><code>record.with_context(lang=partner.lang)</code>, ou <code>lang_code=</code> pour <code>format_amount</code> / <code>format_date</code></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LANGUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La langue doit être active, et posée sur le bon partenaire</h2>
+                <p>Le champ <code>lang</code> d'un partenaire ne propose que les langues <strong>actives</strong>.
+                    Sur la base de démonstration française, seul <code>fr_FR</code> l'est : même l'anglais est absent.
+                    Pour l'activer en ligne de commande :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base --load-language=en_US --stop-after-init</code></pre>
+                <p>Le choix de la langue se fait ensuite sur la fiche du partenaire, champ <code>lang</code>. Ici,
+                    Acme Corporation passe en anglais. Attention : ses trois contacts gardent <code>fr_FR</code> (un contact reprend la langue de sa société quand on la lui attribue, pas quand elle change ensuite). Odoo
+                    lit la langue du <strong>partenaire du document</strong> (<code>partner_id</code> de la facture) :
+                    si la facture est adressée à un contact, c'est la langue du contact qui compte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. COURRIEL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le courriel : le champ <code>lang</code> du modèle</h2>
+                <p>Un <code>mail.template</code> porte un champ <code>lang</code>, une expression rendue sur chaque
+                    enregistrement, par exemple <code>{{ object.partner_id.lang }}</code>. S'il est vide, Odoo prend la
+                    langue du partenaire principal du document (<code>_mail_get_partners</code>). Le modèle de facture
+                    <code>account.email_template_edi_invoice</code> le laisse vide, et ça suffit. Ce script, passé à
+                    <code>odoo-bin shell</code> avec un utilisateur en français, rend le sujet de deux factures de la
+                    démo, l'une pour Azure Interior (français), l'autre pour Acme Corporation (anglais) :</p>
+<pre class="language-python"><code class="language-python"># langue_courriel.py
+import re
+tpl = env.ref('account.email_template_edi_invoice')
+factures = env['account.move'].browse([10, 11])     # Azure Interior, Acme Corporation
+print("Utilisateur :", env.user.lang, "| champ lang du modèle :", tpl.lang)
+print(tpl._render_lang(factures.ids))
+sujets = tpl._render_field('subject', factures.ids, compute_lang=True)
+for f in factures:
+    print(f.name, f.partner_id.name, "→", sujets[f.id])
+print("sans compute_lang :", tpl._render_field('subject', [11])[11])
+mail = env['mail.mail'].browse(tpl.send_mail(11))
+texte = re.sub(r'\s+', ' ', re.sub(r'&lt;[^&gt;]+&gt;', ' ', mail.body_html)).strip()
+print(mail.state, "|", mail.subject, "|", texte[:90])</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : _render_lang donne fr_FR pour la facture 10 et en_US pour la 11 ; sujet Facture pour l'une, Invoice pour l'autre ; mail.mail outgoing en anglais" loading="lazy"/>
+                    <figcaption>Une langue par facture, dans le même appel ; sans <code>compute_lang</code>, le sujet suit l'utilisateur.</figcaption>
+                </figure>
+                <ul>
+                    <li><code>_render_lang()</code> renvoie la langue de <strong>chaque</strong> enregistrement. Odoo
+                        regroupe ensuite les enregistrements par langue et rend le modèle avec
+                        <code>with_context(lang=…)</code> pour chaque groupe : un envoi groupé mélange sans peine
+                        français et anglais.</li>
+                    <li><code>send_mail()</code> passe par ce chemin : le <code>mail.mail</code> créé (état
+                        <code>outgoing</code>, en file d'attente) a un sujet et un corps anglais.</li>
+                    <li><code>_render_field(…)</code> <strong>sans</strong> <code>compute_lang=True</code> rend dans la
+                        langue du contexte, donc la tienne. Si tu rends un champ du modèle à la main, passe ce
+                        paramètre.</li>
+                </ul>
+                <p>L'interface suit le même calcul. Sur la facture d'Acme Corporation, le bouton <strong>Envoyer</strong>
+                    ouvre l'assistant : libellés en français, courriel en anglais.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Assistant Envoyer d'Odoo 20 en français : sujet Invoice (Ref FAC/2026/00002) et corps Dear Acme Corporation en anglais" loading="lazy"/>
+                    <figcaption>L'assistant « Envoyer » d'une facture : l'écran est en français, le courriel préparé est en anglais.</figcaption>
+                </figure>
+                <p>Remplis le champ <code>lang</code> toi-même quand le destinataire n'est pas le partenaire principal
+                    du document, par exemple <code>{{ object.user_id.lang }}</code> sur un devis, pour un courriel
+                    interne destiné au vendeur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. RAPPORT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le rapport PDF : <code>t-lang</code> sur le <code>t-call</code></h2>
+                <p>Un rapport QWeb est rendu dans la langue de <strong>celui qui l'imprime</strong>, sauf si le
+                    gabarit dit le contraire. Les rapports standard le disent : la facture appelle son document avec
+                    <code>t-lang="lang"</code> (où <code>lang</code> vaut <code>o.partner_id.lang</code>), le devis avec
+                    <code>t-lang="doc.partner_id.lang"</code>. Ton propre rapport doit faire de même. Voici celui du
+                    module d'exemple, un relevé sur <code>account.move</code> dont les libellés fixes sont traduits
+                    dans son <code>i18n/fr.po</code> (« Statement » → « Relevé ») :</p>
+<pre class="language-markup"><code class="language-markup">&lt;template id="report_releve_document"&gt;
+    &lt;t t-call="web.external_layout"&gt;
+        &lt;div class="page"&gt;
+            &lt;h2&gt;Statement &lt;span t-field="o.name"/&gt;&lt;/h2&gt;
+            &lt;p&gt;Due date: &lt;span t-field="o.invoice_date_due"/&gt;&lt;/p&gt;
+            &lt;p t-foreach="o.invoice_line_ids" t-as="line"&gt;
+                &lt;span t-field="line.product_id"/&gt;
+            &lt;/p&gt;
+            &lt;p&gt;Total: &lt;span t-field="o.amount_total"/&gt;&lt;/p&gt;
+        &lt;/div&gt;
+    &lt;/t&gt;
+&lt;/template&gt;
+
+&lt;template id="report_releve"&gt;
+    &lt;t t-call="web.html_container"&gt;
+        &lt;t t-foreach="docs" t-as="o"&gt;
+            &lt;t t-call="mon_rapport_langue.report_releve_document" t-lang="o.partner_id.lang"/&gt;
+        &lt;/t&gt;
+    &lt;/t&gt;
+&lt;/template&gt;</code></pre>
+                <p>Sans l'attribut <code>t-lang</code>, le relevé d'Acme Corporation sort en français, pour la
+                    simple raison que l'utilisateur est en français. Texte extrait du PDF par <code>pdftotext</code> :</p>
+<div class="out">11 Relevé FAC/2026/00002 | Échéance : 05/10/2026 | [FURN_8220] Bureau pour quatre personnes | Canapé deux places (Lin) | Total : $ 48 012,50</div>
+                <p>Avec <code>t-lang</code> et après <code>-u mon_rapport_langue</code>, le script
+                    <code>releve.py</code> rend chaque facture, puis les deux dans un seul PDF :</p>
+<pre class="language-python"><code class="language-python"># releve.py
+import subprocess, tempfile
+def texte(pdf):
+    with tempfile.NamedTemporaryFile(suffix='.pdf') as fp:
+        fp.write(pdf); fp.flush()
+        out = subprocess.run(['pdftotext', fp.name, '-'], capture_output=True, text=True).stdout
+    garde = ('Statement', 'Relevé', 'Due', 'Échéance', 'Total', '[FURN', 'Canapé', 'Two-Seat')
+    return ' | '.join(l.strip() for l in out.splitlines() if l.strip().startswith(garde))
+
+Report = env['ir.actions.report']
+for fid in (10, 11):
+    pdf, _f = Report._render_qweb_pdf('mon_rapport_langue.action_report_releve', [fid])
+    print(fid, texte(pdf))
+pdf, _f = Report.with_context(lang='en_US')._render_qweb_pdf('mon_rapport_langue.action_report_releve', [11])
+print("with_context(lang='en_US') :", texte(pdf))
+pdf, _f = Report._render_qweb_pdf('mon_rapport_langue.action_report_releve', [10, 11])
+with tempfile.NamedTemporaryFile(suffix='.pdf') as fp:
+    fp.write(pdf); fp.flush()
+    for page in (1, 2):
+        out = subprocess.run(['pdftotext', '-f', str(page), '-l', str(page), fp.name, '-'], capture_output=True, text=True).stdout
+        print("page", page, ":", [l for l in out.splitlines() if l.startswith(('Statement', 'Relevé'))])</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : relevé en français pour Azure Interior, en anglais pour Acme Corporation, page 1 Relevé et page 2 Statement dans le même PDF" loading="lazy"/>
+                    <figcaption>Avec <code>t-lang</code> : libellés, noms d'articles, dates et montants suivent le client, page par page.</figcaption>
+                </figure>
+                <p>Tout bascule : le texte fixe traduit par le module, le nom des articles (champ traduisible), le
+                    format de date (10/05/2026 contre 05/10/2026) et celui du montant. Deux remarques :</p>
+                <ul>
+                    <li><code>Report.with_context(lang='en_US')</code> marche aussi, mais impose <strong>une</strong>
+                        langue à tout le lot. Seul <code>t-lang</code>, évalué pour chaque document, sait faire un
+                        PDF dont la page 1 est en français et la page 2 en anglais.</li>
+                    <li><code>t-lang</code> ne se pose que sur le nœud qui porte le <code>t-call</code>. Sur un
+                        <code>&lt;div&gt;</code>, le rendu échoue : <code>SyntaxError: t-lang is an alias of
+                        t-options-lang but only available on the same node of t-call</code>. D'où le découpage en
+                        deux gabarits, le document et la boucle.</li>
+                </ul>
+                <p>Un rapport joint à un modèle de courriel (<code>report_template_ids</code>) est rendu par le modèle
+                    déjà placé dans la langue du destinataire. Avec le modèle de devis et le devis S00001 d'Acme
+                    Corporation, la pièce s'appelle « Quotation - S00001.pdf » (et non « Devis - … ») et son contenu
+                    affiche « Quotation # S00001 ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. PYTHON ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Dans ton code : <code>with_context(lang=…)</code></h2>
+                <p>Hors rapport et modèle de courriel (un texte de relance que tu composes, un nom de fichier, un
+                    message), c'est l'environnement qui décide. Change sa langue sur l'enregistrement que tu lis :</p>
+<pre class="language-python"><code class="language-python">from odoo.tools import format_amount, format_date
+facture = env['account.move'].browse(11)
+lang = facture.partner_id.lang                   # 'en_US'
+f_client = facture.with_context(lang=lang)
+print(facture.env.lang, "→", f_client.env.lang)
+print(facture.type_name, "/", f_client.type_name)
+print(facture.invoice_line_ids.product_id.mapped('name'))
+print(f_client.invoice_line_ids.product_id.mapped('name'))
+print(format_amount(env, facture.amount_total, facture.currency_id, lang_code=lang),
+      "/", format_amount(env, facture.amount_total, facture.currency_id))
+print(format_date(env, facture.invoice_date_due, lang_code=lang),
+      "/", format_date(env, facture.invoice_date_due))</code></pre>
+<div class="out">fr_FR → en_US
+Facture / Invoice
+['Bureau pour quatre personnes', 'Canapé deux places']
+['Four Person Desk', 'Two-Seat Sofa']
+$ 48,012.50 / $ 48 012,50
+10/05/2026 / 05/10/2026</div>
+                <p><code>type_name</code> est calculé avec <code>_('Invoice')</code> : les chaînes traduites du code,
+                    les champs traduisibles et les libellés de sélection suivent tous <code>env.lang</code>. Les
+                    fonctions de format, elles, prennent la langue en paramètre <code>lang_code</code>. C'est
+                    exactement ce que fait l'envoi de factures d'Odoo :
+                    <code>move.with_context(lang=mail_lang).type_name</code>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Les descriptions de lignes restent dans la langue d'origine</h4>
+                    <p>Le PDF de la facture d'Acme Corporation sort bien en anglais (« Invoice », « Due Date »,
+                        « Four Person Desk »), sauf une ligne : « Canapé deux places avec structure en chêne ». C'est
+                        le champ <code>name</code> de la ligne, un texte <strong>stocké</strong>, rempli en français à
+                        la création de la facture, avant le changement de langue du client. Les ventes calculent cette
+                        description dans la langue du client au moment de la saisie : change donc la langue du
+                        partenaire <strong>avant</strong> de créer ses devis, ou ressaisis la ligne.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>La langue doit être active ; Odoo lit celle du partenaire du document, contact compris.</li>
+                    <li>Courriel : <code>lang</code> du modèle, sinon la langue du partenaire principal ; <code>compute_lang=True</code> si tu rends un champ à la main.</li>
+                    <li>Rapport : <code>t-lang="o.partner_id.lang"</code> sur le <code>t-call</code> du document, dans la boucle.</li>
+                    <li>Code : <code>with_context(lang=…)</code> et <code>lang_code=</code> ; les textes déjà stockés ne se retraduisent pas.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/traduire-module-odoo-20-193">Traduire un module en Odoo 20 : .pot, .po, jsonb</a> — pour produire le <code>fr.po</code> qui traduit les libellés de ton rapport.</li>
+                    <li><a href="/blog/developpement-odoo-2/rapport-pdf-odoo-20-190">Le rapport PDF en Odoo 20 : la fiche de prêt</a> — <code>ir.actions.report</code>, <code>external_layout</code> et <code>_render_qweb_pdf</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/relance-courriel-odoo-20-188">Relancer par courriel en Odoo 20 : mail.template</a> — écrire et envoyer ton propre modèle de courriel.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/mail_render_mixin.py" target="_blank" rel="noopener"><code>addons/mail/models/mail_render_mixin.py</code></a> : champ <code>lang</code>, <code>_render_lang</code>, <code>_classify_per_lang</code>, <code>_render_field</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/account/views/report_invoice.xml" target="_blank" rel="noopener"><code>addons/account/views/report_invoice.xml</code></a> : <code>t-lang</code> du rapport de facture</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_qweb.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_qweb.py</code></a> : la directive <code>t-lang</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

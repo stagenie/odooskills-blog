@@ -1,0 +1,400 @@
+<!--
+Article — Rapport sur une vue SQL en Odoo 20 : _auto = False et _table_sql
+Série « Astuces dev Odoo 20 » (blog Développement) — AT12
+Date : 2026-10-21
+Slug : vue-sql-rapport-odoo
+Mot-clé cible : odoo sql view, odoo _auto false, odoo report sql view, _table_query, _table_sql
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community (3538ed82), base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Modules d'exemple installés par --addons-path sur cette base seulement :
+   mon_rapport_sql (mon.rapport.client, _auto=False, init() + CREATE OR REPLACE VIEW sur sale_order state='sale', _depends,
+   ir.access.csv lecture sales_team.group_sale_salesman, list + pivot, menu sous sale.menu_sale_report) ;
+   mon_rapport_v19 (mon.rapport.v19 : d'abord _table_query, puis @property _table_sql + to_flush).
+  Relevés :
+   -i mon_rapport_sql → rc 0, « creating or updating database tables », csv et vues chargés.
+   sonde_v1.py (shell) → Gemini Furniture 17 / 23963.00 ; Joel Willis 1 / 2947.50 ; Lumber Inc 1 / 750.00 ; lignes : 3 ;
+     relkind : v ; _read_group company → [(res.company(1,), 19.0, 27660.5)].
+   sonde_depends.py → avec _depends : S00003 Ready Mat, devis.state='sale' en cache → avant 3 / après 4 lignes ;
+     _depends renommé (_depends_off) → avant 3 / après 3.
+   -i mon_rapport_v19 avec _table_query → rc 0 ; INFO « Models have no table: mon.rapport.v19. », « Recreate table of model … »,
+     ERROR « Model mon.rapport.v19 has no table. » ; shell : _table_sql = SQL('"mon_rapport_v19"'), search → UndefinedTable
+     « relation "mon_rapport_v19" does not exist ».
+   _table_sql surchargé (+ _depends) puis -u → plus d'ERROR ; sonde_table_sql.py → lignes 3 / après 3 (flush perdu) ;
+     avec SQL(..., to_flush=[sale.order.partner_id, sale.order.state]) → lignes 3 / après 4.
+   Capture Playwright : menu Ventes > Analyse > Ventes par client, vue liste (19 commandes, 27 660,50).
+  Code 20.0 relu :
+   odoo/orm/models.py:406-411 (_auto, init() crée la table), :530-549 (_table_sql : identifiant + to_flush de _depends),
+   :2535 (_auto_init ne crée rien si _auto False), :2591-2595 (init) ; odoo/orm/query.py:64 (FROM = model._table_sql) ;
+   odoo/orm/registry.py:1040-1059 (contrôle des tables manquantes, sauf _table_sql surchargé) ;
+   odoo/tools/sql.py:651-656 (drop_view_if_exists), :116-127 (SQL to_flush) ;
+   odoo/addons/test_lint/tests/test_model_attributes.py:9 (« _table_query » → « overwrite _table_sql ») ;
+   exemples du cœur : addons/stock/report/report_stock_quantity.py:36-52 (init + CREATE VIEW), addons/sale/report/sale_report.py:124,
+   addons/purchase/report/purchase_report.py:54, addons/hr_timesheet/report/timesheets_analysis_report.py:40 (_table_sql).
+  Écart 19→20 vérifié contre la 19.0 publique (raw.githubusercontent, 21/10) : odoo/orm/models.py:427 déclare
+   `_table_query: SQL | str | None = None`, lu par _table_sql :489-497 qui y ajoute _depends ; registry.py:982 exclut les
+   modèles à _table_query du contrôle. En 20 : aucune occurrence de _table_query dans odoo/orm.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Rapport sur une vue SQL en Odoo 20 : _auto = False et _table_sql</h1>
+                <p class="lead mt-3 text-white">Un modèle sans table, une requête SQL qui l'alimente, une liste et un
+                    pivot par-dessus : le rapport d'analyse à la manière des rapports de Ventes, rejoué sur la démo
+                    d'Odoo 20, avec le piège <code>_table_query</code> pour qui vient de la 19.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration avec Ventes et Inventaire, et deux petits modules d'exemple.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Un modèle avec <code>_auto = False</code> : Odoo ne crée pas de table, tes champs sont en
+                                <code>readonly=True</code>.</li>
+                            <li>Sa source : soit <code>init()</code> qui crée une vraie vue PostgreSQL
+                                (<code>CREATE OR REPLACE VIEW</code>), soit une propriété <code>_table_sql</code> qui renvoie
+                                <code>SQL("(SELECT …)")</code>. Dans les deux cas, une colonne <code>id</code> unique.</li>
+                            <li><code>_depends</code> (ou <code>to_flush</code>) pour que le rapport voie les écritures en attente.</li>
+                            <li>Un droit de lecture dans <code>ir.access.csv</code>, une action liste/pivot, un menu.</li>
+                        </ol>
+                        <p class="mt-2 mb-0">L'attribut <code>_table_query</code> de la 19 n'existe plus : Odoo 20 l'ignore sans
+                            refuser le module.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE MODÈLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le modèle et sa vue SQL</h2>
+                <p>Le besoin type : un tableau « ventes confirmées par client » qu'aucun champ calculé ne donne
+                    efficacement, parce qu'il regroupe des milliers de commandes. Une requête SQL le fait en une passe ;
+                    le modèle Odoo se contente de la lire. Le module d'exemple dépend de <code>sale</code> :</p>
+<pre class="language-python"><code class="language-python"># mon_rapport_sql/models/mon_rapport_client.py
+from odoo import fields, models, tools
+from odoo.tools import SQL
+
+
+class MonRapportClient(models.Model):
+    _name = 'mon.rapport.client'
+    _description = "Ventes confirmées par client"
+    _auto = False                      # pas de table : c'est init() qui crée la vue
+    _order = 'montant_ht desc'
+    _depends = {
+        'sale.order': ['partner_id', 'company_id', 'state', 'amount_untaxed', 'date_order'],
+    }
+
+    partner_id = fields.Many2one('res.partner', string="Client", readonly=True)
+    company_id = fields.Many2one('res.company', string="Société", readonly=True)
+    nb_commandes = fields.Integer("Commandes", readonly=True)
+    montant_ht = fields.Float("Montant HT", readonly=True)
+    derniere_commande = fields.Datetime("Dernière commande", readonly=True)
+
+    def init(self):
+        tools.drop_view_if_exists(self.env.cr, self._table)
+        self.env.cr.execute(SQL("""
+            CREATE OR REPLACE VIEW %s AS (
+                SELECT MIN(so.id)            AS id,
+                       so.partner_id,
+                       so.company_id,
+                       COUNT(*)              AS nb_commandes,
+                       SUM(so.amount_untaxed) AS montant_ht,
+                       MAX(so.date_order)    AS derniere_commande
+                  FROM sale_order so
+                 WHERE so.state = 'sale'
+              GROUP BY so.partner_id, so.company_id
+            )""", SQL.identifier(self._table)))</code></pre>
+                <p>Trois points qui ne se devinent pas :</p>
+                <ul>
+                    <li><strong><code>init()</code></strong> est appelée à chaque installation et mise à jour du module,
+                        juste après la création des tables (qu'Odoo saute ici, puisque <code>_auto</code> vaut
+                        <code>False</code>), au moment où le journal affiche « creating or updating database tables ».
+                        <code>drop_view_if_exists</code> supprime l'ancienne vue avant de recréer la nouvelle.</li>
+                    <li><strong>La colonne <code>id</code></strong> est obligatoire : chaque requête de l'ORM commence par
+                        <code>SELECT "table"."id"</code>. Avec un <code>GROUP BY</code>, <code>MIN(so.id)</code> donne un
+                        identifiant unique et stable par groupe.</li>
+                    <li><strong>Le nom de la vue</strong> est <code>self._table</code>, dérivé de <code>_name</code> :
+                        <code>mon_rapport_client</code>. <code>SQL.identifier()</code> le met entre guillemets.</li>
+                </ul>
+                <p>La sécurité suit le format d'Odoo 20 : un fichier <code>security/ir.access.csv</code>, ici en lecture
+                    seule pour les vendeurs.</p>
+<pre class="language-bash"><code class="language-bash">id,name,model_id,group_id/id,operation,domain
+mon_rapport_client_vendeur,Rapport client : lecture vendeur,mon.rapport.client,sales_team.group_sale_salesman,r,</code></pre>
+                <p>On installe, puis on interroge le modèle dans <code>odoo-bin shell</code> avec ce petit script :</p>
+<pre class="language-python"><code class="language-python"># sonde_v1.py
+Rapport = env['mon.rapport.client']
+for r in Rapport.search([], limit=5):
+    print(f"{r.partner_id.name:&lt;28} {r.nb_commandes:&gt;2}  {r.montant_ht:&gt;10.2f}  {r.derniere_commande}")
+print("lignes :", Rapport.search_count([]))
+env.cr.execute("SELECT relkind FROM pg_class WHERE relname = 'mon_rapport_client'")
+print("relkind :", env.cr.fetchone()[0])
+print(Rapport._read_group([], ['company_id'], ['nb_commandes:sum', 'montant_ht:sum']))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : installation de mon_rapport_sql puis lecture du rapport, trois clients, relkind v, total 19 commandes et 27660.5" loading="lazy"/>
+                    <figcaption>Trois clients, une vraie vue PostgreSQL (<code>relkind : v</code>) et un regroupement qui marche comme sur n'importe quel modèle.</figcaption>
+                </figure>
+                <p>Le modèle se lit comme un autre : <code>search</code>, <code>search_count</code>,
+                    <code>_read_group</code>, les relations (<code>r.partner_id.name</code>). La différence est en
+                    base : <code>relkind</code> vaut <code>v</code> (vue), pas <code>r</code> (table). Tu peux donc aussi
+                    la consulter dans <code>psql</code> avec un simple <code>SELECT</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. L'ÉCRAN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Une liste et un pivot dans le menu Analyse</h2>
+                <p>Côté interface, rien de spécial : une vue liste sans création ni édition, une vue pivot, une action
+                    et un menu rangé sous <code>sale.menu_sale_report</code>.</p>
+<pre class="language-markup"><code class="language-markup">&lt;list create="0" edit="0" delete="0"&gt;
+    &lt;field name="partner_id"/&gt;
+    &lt;field name="nb_commandes" sum="Total"/&gt;
+    &lt;field name="montant_ht" sum="Total"/&gt;
+    &lt;field name="derniere_commande"/&gt;
+&lt;/list&gt;
+
+&lt;record id="mon_rapport_client_action" model="ir.actions.act_window"&gt;
+    &lt;field name="name"&gt;Ventes par client&lt;/field&gt;
+    &lt;field name="res_model"&gt;mon.rapport.client&lt;/field&gt;
+    &lt;field name="view_mode"&gt;list,pivot&lt;/field&gt;
+&lt;/record&gt;
+
+&lt;menuitem id="mon_rapport_client_menu" name="Ventes par client"
+          parent="sale.menu_sale_report" action="mon_rapport_client_action" sequence="50"/&gt;</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Odoo 20, menu Ventes, Analyse, Ventes par client : liste de trois clients avec le nombre de commandes, le montant HT et la date de dernière commande" loading="lazy"/>
+                    <figcaption>Ventes &gt; Analyse &gt; Ventes par client : la vue SQL affichée comme une liste, totaux compris.</figcaption>
+                </figure>
+                <p>Le menu parent Analyse est réservé au groupe des responsables
+                    (<code>sales_team.group_sale_manager</code>) : un vendeur n'y voit pas le rapport, même avec le droit
+                    de lecture. Range le menu ailleurs si le rapport leur est destiné. Le bouton à droite de la liste
+                    ouvre le pivot, avec les mêmes mesures.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. _DEPENDS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>_depends</code> : voir les écritures pas encore en base</h2>
+                <p>L'ORM garde les écritures en mémoire et ne les envoie à PostgreSQL qu'au besoin. Une vue SQL lit la
+                    base, pas cette mémoire. <code>_depends</code> dit à Odoo quels champs écrire avant d'interroger le
+                    rapport. Ce script confirme un devis en cache, sans rien valider, puis relit :</p>
+<pre class="language-python"><code class="language-python"># sonde_depends.py
+Rapport = env['mon.rapport.client']
+devis = env['sale.order'].search([('state', '=', 'draft')], limit=1)
+print("devis :", devis.name, devis.partner_id.name, devis.amount_untaxed)
+print("avant :", Rapport.search_count([]), "lignes")
+devis.state = 'sale'          # écrit en cache, pas encore en base
+print("après :", Rapport.search_count([]), "lignes")
+env.cr.rollback()</code></pre>
+                <p>Avec <code>_depends</code>, puis en le retirant du modèle :</p>
+<div class="out">devis : S00003 Ready Mat 377.5
+avant : 3 lignes
+après : 4 lignes
+
+devis : S00003 Ready Mat 377.5
+avant : 3 lignes
+après : 3 lignes</div>
+                <p>Sans <code>_depends</code>, le rapport ignore la commande tant qu'aucune autre opération n'a écrit
+                    en base : un bouton qui confirme puis lit le rapport dans la même transaction obtient un chiffre en
+                    retard d'une écriture. Liste chaque champ que ta requête lit, modèle par modèle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. VENANT DE LA 19 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Venant de la 19 : <code>_table_query</code> est ignoré, passe à <code>_table_sql</code></h2>
+                <p>En 19, un rapport pouvait se passer de vue : l'attribut <code>_table_query</code> recevait la requête
+                    et Odoo l'utilisait comme sous-requête. Cet attribut a disparu du cœur de la 20. Un module qui le
+                    déclare encore s'installe pourtant :</p>
+<pre class="language-python"><code class="language-python">class RapportV19(models.Model):
+    _name = 'mon.rapport.v19'
+    _auto = False
+    _table_query = """
+        SELECT MIN(id) AS id, partner_id, COUNT(*) AS nb_commandes
+          FROM sale_order WHERE state = 'sale' GROUP BY partner_id
+    """</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : l'installation renvoie 0 malgré l'erreur Model mon.rapport.v19 has no table, puis la recherche échoue sur UndefinedTable" loading="lazy"/>
+                    <figcaption>Code de sortie 0, une ligne ERROR dans le journal, et la première recherche qui échoue.</figcaption>
+                </figure>
+                <p><code>_table_sql</code> pointe vers une table <code>mon_rapport_v19</code> qui n'existe pas :
+                    l'attribut est lu nulle part. Le test de qualité du cœur (<code>test_lint</code>) range d'ailleurs
+                    <code>_table_query</code> parmi les attributs dépréciés, avec la consigne « overwrite _table_sql ».
+                    La version 20 :</p>
+<pre class="language-python"><code class="language-python">from odoo import fields, models
+from odoo.tools import SQL
+
+
+class RapportV19(models.Model):
+    _name = 'mon.rapport.v19'
+    _description = "Rapport écrit pour la 19"
+    _auto = False
+
+    partner_id = fields.Many2one('res.partner', readonly=True)
+    nb_commandes = fields.Integer(readonly=True)
+
+    @property
+    def _table_sql(self):
+        commande = self.env['sale.order']
+        return SQL("""(
+            SELECT MIN(id) AS id, partner_id, COUNT(*) AS nb_commandes
+              FROM sale_order WHERE state = 'sale' GROUP BY partner_id
+        )""", to_flush=[commande._fields['partner_id'], commande._fields['state']])</code></pre>
+                <p>Après <code>-u</code>, l'erreur « has no table » disparaît : Odoo ne cherche plus de table pour un
+                    modèle qui fournit son propre <code>_table_sql</code>. La requête, entre parenthèses, devient le
+                    <code>FROM</code> de chaque recherche ; aucune vue n'est créée en base. C'est la forme que prennent
+                    en 20 les rapports de Ventes et d'Achats (<code>sale.report</code>, <code>purchase.report</code>).</p>
+
+                <div class="pitfall-box">
+                    <h4>Surcharger <code>_table_sql</code> fait perdre <code>_depends</code></h4>
+                    <p>C'est la propriété <code>_table_sql</code> d'origine qui transforme <code>_depends</code> en champs à
+                        écrire avant la requête. La remplacer, c'est perdre ce mécanisme : avec un <code>_depends</code>
+                        déclaré et une <code>_table_sql</code> sans <code>to_flush</code>, la sonde du point 3 donne
+                        <code>3</code> puis <code>3</code>. Avec <code>to_flush=[…]</code> comme ci-dessus, <code>3</code>
+                        puis <code>4</code>. Un portage mécanique de <code>_table_query</code> vers <code>_table_sql</code>
+                        perd donc ce rafraîchissement sans aucun message.</p>
+                </div>
+
+                <p>Quelle forme choisir ? La vue d'<code>init()</code> se lit aussi hors d'Odoo (<code>psql</code>, un
+                    outil de tableau de bord) et sa requête est figée à l'installation. <code>_table_sql</code> est
+                    évaluée à chaque recherche : elle peut dépendre de l'environnement, de la date du jour ou d'un
+                    paramètre, comme le fait <code>purchase.report</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li><code>_auto = False</code>, champs <code>readonly</code>, une colonne <code>id</code> unique (<code>MIN(id)</code> sur un <code>GROUP BY</code>).</li>
+                    <li>Vue PostgreSQL : <code>init()</code> avec <code>drop_view_if_exists</code> puis <code>CREATE OR REPLACE VIEW</code>.</li>
+                    <li>Sous-requête : <code>@property _table_sql</code> qui renvoie <code>SQL("(…)", to_flush=[…])</code> ; <code>_table_query</code> est ignoré en 20.</li>
+                    <li><code>_depends</code> (ou <code>to_flush</code>) pour que le rapport voie les écritures du cache.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/cache-sql-flush-invalidate-odoo-20-280">Cache et SQL en Odoo 20 : flush, invalidate et env.cr.execute avec SQL</a> — pourquoi l'ORM retient les écritures, et l'objet <code>SQL</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/kanban-graphique-pivot-odoo-20-191">Kanban, graphique et pivot en Odoo 20 : les emprunts</a> — habiller le rapport d'un graphique et d'un pivot plus riche.</li>
+                    <li><a href="/blog/developpement-odoo-2/read-group-odoo-20-270">read_group en Odoo 20 : sommes, comptages, regroupements par mois</a> — quand un regroupement de l'ORM suffit, sans vue SQL.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, deux modules
+                    d'exemple), en console, à l'installation et dans le navigateur ; branche 19.0 publique relue le même
+                    jour pour <code>_table_query</code>. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>_auto</code>, la propriété <code>_table_sql</code> et <code>_depends</code>, <code>init()</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/registry.py" target="_blank" rel="noopener"><code>odoo/orm/registry.py</code></a> : le contrôle « has no table »</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/stock/report/report_stock_quantity.py" target="_blank" rel="noopener"><code>addons/stock/report/report_stock_quantity.py</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/purchase/report/purchase_report.py" target="_blank" rel="noopener"><code>addons/purchase/report/purchase_report.py</code></a> : les deux formes dans le cœur</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,348 @@
+<!--
+Article — Envoyer un email depuis le code Odoo 20 : message_post, mail.template
+Série « Astuces dev Odoo 20 » (blog Développement) — AT13
+Date : 2026-10-21
+Slug : envoyer-email-code-odoo
+Mot-clé cible : odoo email template code, odoo message_post, odoo send_mail, odoo mail.mail create
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Aucun serveur sortant configuré, rien n'écoute sur le port 25 : aucun courriel n'a quitté la base.
+  Module d'exemple mon_courriel (depends sale, data/mail_template.xml) installé par --addons-path sur cette base seulement (rc 0).
+  Relevés (odoo-bin shell, sans commit sauf l'écran) :
+   message_post.py → « Notes → notifiés : [] » ; « Messages → notifiés : ['Acme Corporation', 'Marc Demo'] » ;
+     mail.mail 17 outgoing mark.brown23@example.com | Expédition ; 16 outgoing acme_corp@yourcompany.example.com | Expédition.
+   note_partner.py → note (sous-type Notes) avec partner_ids=[Acme] : notifiés ['Acme Corporation'], mail.mail vers acme_corp@yourcompany.example.com.
+   template.py → send_mail : 19 outgoing acme_corp@… | « S00001 : votre commande part demain », corps rendu « Bonjour Acme Corporation, … S00001 ($ 2 001,00) » ;
+     message_post_with_source : comment → notifiés ['Acme Corporation', 'Marc Demo'].
+   sondes : send_mail → mail.mail message_type email_outgoing, auto_delete True, is_notification False, ligne visible dans le chatter (capture, auteur OdooBot = utilisateur du shell) ;
+     apres_envoi.py : _postprocess_sent_message (étape après envoi réussi) → mail.mail() et mail.message() supprimés, plus dans message_ids.
+     message_post_with_source : auteur Marc Demo (email_from du gabarit = vendeur, _message_compute_author).
+   mail_mail.py → 22 outgoing "OdooBot" <odoobot@example.com> model False auto_delete False.
+   markup.py → '<p>&lt;b&gt;Urgent&lt;/b&gt;</p>' ; '<b>Urgent</b>' ; '<p>Client : &lt;script&gt;x&lt;/script&gt;</p>'.
+   t-esc dans body_html (copie du gabarit) → « <p>Bonjour ,</p> » + WARNING Unknown directives {'t-esc'}.
+   Écran (commit, mail_notify_force_send=False, cron de file désactivé sur la base, serveur --max-cron-threads=0) : chatter de S00001 ;
+     Paramètres › Technique › E-mail › E-mails (mode développeur) : 5 lignes « Sortant », boutons Envoyer maintenant / Annuler l'e-mail.
+  Code 20.0 relu :
+   addons/mail/models/mail_thread.py:2251-2259 (signature message_post), :2261-2262 (str échappé, Markup gardé), :2372 (repli mail.mt_note), :2399 (escape(body)),
+     :2719 (message_post_with_source), :3115 (_message_compute_author), :3744-3751 (mail_notify_force_send, limite mail.mail.force.send.limit 100, send_after_commit) ;
+   addons/mail/models/mail_template.py:55-58 (use_default_to défaut True), :97-98 (auto_delete défaut True), :705-724 (send_mail, force_send=False « use the mail queue ») ;
+   addons/mail/models/mail_mail.py:66 (is_notification), :79-85 (états), :183-188 (unlink : message supprimé si pas notification), :323-324 (auto_delete après envoi), :752-760 (send « immediately ») ;
+   addons/mail/data/ir_cron_data.xml:4-11 (Mail: Email Queue Manager, process_email_queue, toutes les heures) ; addons/mail/views/mail_menus.xml:79-83, odoo/addons/base/views/base_menus.xml:59-61 (menu).
+  Écart 19→20 : aucun affirmé (pas d'encadré « Venant de la 19 »).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Envoyer un email depuis le code Odoo 20 : message_post, mail.template</h1>
+                <p class="lead mt-3 text-white">Trois façons de faire partir un courriel depuis Python :
+                    <code>message_post</code>, un <code>mail.template</code> ou un <code>mail.mail</code> créé à la
+                    main. Elles ne laissent pas la même trace et ne préviennent pas les mêmes personnes : le choix,
+                    rejoué sur un devis de la démo.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration avec Ventes, devis S00001 d'Acme Corporation, et un petit module d'exemple qui
+                        déclare un gabarit. Aucun serveur sortant : les courriels restent dans la file, rien n'est
+                        réellement parti.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Tu veux…</th><th>Écris</th><th>Ce qui reste</th></tr></thead>
+                            <tbody>
+                                <tr><td>écrire au client <strong>et</strong> aux abonnés d'un document, texte court écrit en Python</td><td><code>record.message_post(body=Markup(…), message_type='comment', subtype_xmlid='mail.mt_comment', partner_ids=[…])</code></td><td>message dans le chatter, un <code>mail.mail</code> par destinataire</td></tr>
+                                <tr><td>un courriel mis en forme, modifiable par l'utilisateur, publié dans le chatter</td><td>un <code>mail.template</code> + <code>record.message_post_with_source(template, …)</code></td><td>message dans le chatter, notifications</td></tr>
+                                <tr><td>le même gabarit, envoyé au destinataire du gabarit seulement</td><td><code>template.send_mail(record.id)</code></td><td>un <code>mail.mail</code> en file, effacé du chatter après l'envoi</td></tr>
+                                <tr><td>un courriel technique, sans document</td><td><code>env['mail.mail'].create({…})</code></td><td>rien dans le chatter</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. MESSAGE_POST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>message_post</code> : la note ou le message</h2>
+                <p><code>message_post</code> existe sur tout modèle qui hérite de <code>mail.thread</code> (devis,
+                    contact, tâche…). Il crée un <code>mail.message</code> dans le chatter, puis un courriel pour
+                    chaque personne à prévenir. Tout se joue sur le <strong>sous-type</strong>. Ce script, passé à
+                    <code>odoo-bin shell</code>, poste une note puis un message sur le devis S00001 :</p>
+<pre class="language-python"><code class="language-python"># message_post.py
+from markupsafe import Markup
+so = env['sale.order'].browse(1).with_user(env.ref('base.user_admin'))
+Mail = env['mail.mail'].sudo()
+avant = Mail.search([]).ids
+
+note = so.message_post(body="Client rappelé, livraison confirmée.")
+msg = so.message_post(
+    body=Markup("&lt;p&gt;Votre commande &lt;b&gt;%s&lt;/b&gt; part demain.&lt;/p&gt;") % so.name,
+    subject="Expédition",
+    message_type='comment',
+    subtype_xmlid='mail.mt_comment',
+    partner_ids=so.partner_id.ids,
+)
+print(note.subtype_id.name, "→ notifiés :", note.notified_partner_ids.mapped('name'))
+print(msg.subtype_id.name, "→ notifiés :", msg.notified_partner_ids.mapped('name'))
+for m in Mail.search([('id', 'not in', avant)]):
+    print(m.id, m.state, m.recipient_ids.email, "|", m.subject)</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : la note ne notifie personne, le message notifie Acme Corporation et Marc Demo, deux mail.mail outgoing" loading="lazy"/>
+                    <figcaption>La note reste interne ; le message crée un courriel pour le client et un pour l'abonné.</figcaption>
+                </figure>
+                <p>Ce que montre la sortie :</p>
+                <ul>
+                    <li><strong>Sans <code>subtype_xmlid</code></strong>, le message est une <strong>note</strong>
+                        (sous-type <code>mail.mt_note</code>, le repli de <code>message_post</code>) : aucun abonné
+                        n'est prévenu.</li>
+                    <li>Avec <code>mail.mt_comment</code>, le client passé dans <code>partner_ids</code> reçoit le
+                        message, <strong>et</strong> les abonnés du devis inscrits aux « Messages » : ici Marc Demo,
+                        le vendeur. L'auteur, Mitchell Admin, n'est pas notifié.</li>
+                    <li>Les courriels sont des <code>mail.mail</code> à l'état <code>outgoing</code>. Sous 100
+                        courriels par message (paramètre <code>mail.mail.force.send.limit</code>), Odoo les envoie
+                        juste <strong>après le commit</strong> de la transaction ; au-delà, la file s'en charge.</li>
+                </ul>
+                <p>Attention à <code>partner_ids</code> sur une note : rejoué avec
+                    <code>so.message_post(body="Note interne", partner_ids=so.partner_id.ids)</code>, le sous-type reste
+                    « Notes », mais Acme Corporation est notifiée et un <code>mail.mail</code> part vers son adresse. Un
+                    partenaire cité est toujours prévenu.</p>
+                <p>Dans le shell, <code>with_user(…)</code> fait de l'administrateur l'auteur du message ; sans lui,
+                    l'auteur serait OdooBot. Dans une méthode de bouton, l'auteur est l'utilisateur qui clique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. MAIL.TEMPLATE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>mail.template</code> : le gabarit, deux façons de l'envoyer</h2>
+                <p>Dès que le courriel dépasse deux lignes, ou que l'utilisateur doit pouvoir en changer le texte,
+                    déclare un gabarit dans les données de ton module :</p>
+<pre class="language-markup"><code class="language-markup">&lt;!-- mon_courriel/data/mail_template.xml --&gt;
+&lt;odoo&gt;
+    &lt;record id="mail_template_expedition" model="mail.template"&gt;
+        &lt;field name="name"&gt;Commande : avis d'expédition&lt;/field&gt;
+        &lt;field name="model_id" ref="sale.model_sale_order"/&gt;
+        &lt;field name="subject"&gt;{{ object.name }} : votre commande part demain&lt;/field&gt;
+        &lt;field name="email_from"&gt;{{ object.user_id.email_formatted or user.email_formatted }}&lt;/field&gt;
+        &lt;field name="lang"&gt;{{ object.partner_id.lang }}&lt;/field&gt;
+        &lt;field name="body_html" type="html"&gt;
+&lt;div&gt;
+    &lt;p&gt;Bonjour &lt;t t-out="object.partner_id.name"/&gt;,&lt;/p&gt;
+    &lt;p&gt;Votre commande &lt;strong t-out="object.name"/&gt;
+        (&lt;t t-out="format_amount(object.amount_total, object.currency_id)"/&gt;)
+        part demain.&lt;/p&gt;
+&lt;/div&gt;
+        &lt;/field&gt;
+    &lt;/record&gt;
+&lt;/odoo&gt;</code></pre>
+                <p>Le sujet utilise la syntaxe <code>{{ … }}</code>, le corps du QWeb avec <code>t-out</code>.
+                    Pas de destinataire écrit : l'option <code>use_default_to</code>, vraie par défaut, envoie au client
+                    du document. Le module installé (<code>-i mon_courriel</code>), deux appels s'offrent à toi :</p>
+<pre class="language-python"><code class="language-python"># template.py
+so = env['sale.order'].browse(1).with_user(env.ref('base.user_admin'))
+tpl = env.ref('mon_courriel.mail_template_expedition')
+
+mail = env['mail.mail'].sudo().browse(tpl.send_mail(so.id))
+print("send_mail :", mail.id, mail.state, mail.recipient_ids.email, "|", mail.subject)
+print(mail.body_html.strip())
+
+msg = so.message_post_with_source(tpl, message_type='comment', subtype_xmlid='mail.mt_comment')
+print("message_post_with_source :", msg.message_type, "→ notifiés :", msg.notified_partner_ids.mapped('name'))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : send_mail crée le mail.mail 19 outgoing vers Acme avec le corps rendu, message_post_with_source notifie Acme Corporation et Marc Demo" loading="lazy"/>
+                    <figcaption>Le gabarit rendu sur S00001 : nom du client, référence et montant remplacés.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong><code>send_mail(res_id)</code></strong> rend le gabarit et crée <strong>un</strong>
+                        <code>mail.mail</code> pour les destinataires du gabarit, sans prévenir les abonnés. Sans
+                        <code>force_send=True</code>, il attend la file, l'action planifiée « Mail: Email Queue Manager »,
+                        qui passe toutes les heures.</li>
+                    <li><strong><code>message_post_with_source(template, …)</code></strong> rend le même gabarit et le
+                        publie comme un <code>message_post</code> : message dans le chatter, client et abonnés
+                        notifiés selon le sous-type.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Chatter du devis S00001 : message du gabarit par Marc Demo, ligne de send_mail par OdooBot, message Expédition et note de Mitchell Admin" loading="lazy"/>
+                    <figcaption>Le chatter du devis après les deux scripts : de bas en haut, la note, le message, la ligne de <code>send_mail</code>, le message du gabarit.</figcaption>
+                </figure>
+                <p>Lis le chatter de bas en haut. L'enveloppe à côté du nom marque les messages qui ont notifié par
+                    courriel. Le message du gabarit est signé Marc Demo : Odoo déduit l'auteur de l'expéditeur du
+                    gabarit, ici le vendeur. La ligne d'OdooBot est le <code>mail.mail</code> de
+                    <code>send_mail</code>, lancé depuis le shell : elle n'est que <strong>provisoire</strong>. Le
+                    gabarit a <code>auto_delete</code> vrai par défaut ; une fois le courriel envoyé, Odoo supprime le
+                    <code>mail.mail</code> et, comme ce n'est pas une notification, le message avec lui. En rejouant
+                    l'étape qui suit un envoi réussi, la ligne disparaît bien de <code>message_ids</code>. Si tu veux
+                    une trace durable, prends <code>message_post_with_source</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. MAIL.MAIL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>mail.mail</code> : le courriel brut</h2>
+                <p>Pour un courriel qui ne concerne aucun document (fin d'un export, alerte d'administration), crée
+                    directement le <code>mail.mail</code>. Aucun rendu : le corps est le HTML que tu passes.</p>
+<pre class="language-python"><code class="language-python">mail = env['mail.mail'].create({
+    'subject': "Export terminé",
+    'body_html': "&lt;p&gt;Le fichier est prêt.&lt;/p&gt;",
+    'email_to': env.ref('base.user_admin').email,
+})
+print(mail.id, mail.state, mail.email_from, mail.model, mail.auto_delete)</code></pre>
+<div class="out">22 outgoing "OdooBot" &lt;odoobot@example.com&gt; False False</div>
+                <p>Sans <code>email_from</code>, l'expéditeur est l'utilisateur courant ; sans
+                    <code>model</code>, rien dans le chatter ; <code>auto_delete</code> est faux, le courriel reste
+                    visible après l'envoi. Il part avec la file, ou tout de suite par <code>mail.send()</code>.
+                    Pour suivre tous ces courriels, active le mode développeur puis ouvre
+                    <strong>Paramètres › Technique › E-mail › E-mails</strong> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste Paramètres, Technique, E-mails : cinq courriels au statut Sortant avec les boutons Envoyer maintenant et Annuler l'e-mail" loading="lazy"/>
+                    <figcaption>Les cinq courriels du devis, au statut « Sortant » : la file attend un serveur sortant.</figcaption>
+                </figure>
+
+                <div class="pitfall-box">
+                    <h4>Le HTML passé en <code>str</code> s'affiche en toutes lettres</h4>
+                    <p><code>message_post</code> échappe tout corps de type <code>str</code> et ne garde tel quel
+                        qu'un <code>Markup</code>. Rejoué sur le devis :</p>
+<pre class="language-python"><code class="language-python">print(so.message_post(body="&lt;b&gt;Urgent&lt;/b&gt;").body)
+print(so.message_post(body=Markup("&lt;b&gt;Urgent&lt;/b&gt;")).body)
+client = "&lt;script&gt;x&lt;/script&gt;"
+print(so.message_post(body=Markup("&lt;p&gt;Client : %s&lt;/p&gt;") % client).body)</code></pre>
+<div class="out">&lt;p&gt;&amp;lt;b&amp;gt;Urgent&amp;lt;/b&amp;gt;&lt;/p&gt;
+&lt;b&gt;Urgent&lt;/b&gt;
+&lt;p&gt;Client : &amp;lt;script&amp;gt;x&amp;lt;/script&amp;gt;&lt;/p&gt;</div>
+                    <p>Écris donc <code>Markup("…%s…") % valeur</code> : la valeur insérée est échappée, le gabarit
+                        non. Jamais <code>Markup(f"…{valeur}…")</code>, qui laisse passer le HTML de la valeur.
+                        Même famille de panne dans un gabarit : <code>t-esc</code> ne rend plus rien en Odoo 20 ;
+                        rejoué dans <code>body_html</code>, il donne « Bonjour , ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li><code>message_post</code> sans sous-type = note ; <code>mail.mt_comment</code> pour écrire au client et aux abonnés ; un partenaire de <code>partner_ids</code> est prévenu même sur une note.</li>
+                    <li>Un gabarit s'envoie par <code>message_post_with_source</code> (trace durable, abonnés) ou <code>send_mail</code> (destinataires du gabarit, file d'envoi).</li>
+                    <li><code>mail.mail</code> à la main pour un courriel sans document : pas de rendu, pas de chatter.</li>
+                    <li>Corps HTML = <code>Markup</code> ; gabarit = <code>t-out</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/relance-courriel-odoo-20-188">Relancer par courriel en Odoo 20 : mail.template</a> — un gabarit complet dans un module, déclenché par une action planifiée.</li>
+                    <li><a href="/blog/developpement-odoo-2/chatter-emprunt-odoo-20-187">Le chatter en Odoo 20 : suivre un emprunt</a> — <code>mail.thread</code>, abonnés et suivi des champs.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour rejouer ces scripts sur ta base.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, un module
+                    d'exemple), en console et dans le navigateur, sans serveur sortant. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/mail_thread.py" target="_blank" rel="noopener"><code>addons/mail/models/mail_thread.py</code></a> : <code>message_post</code>, <code>message_post_with_source</code>, envoi après commit</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/mail_template.py" target="_blank" rel="noopener"><code>addons/mail/models/mail_template.py</code></a> : <code>send_mail</code>, <code>use_default_to</code>, <code>auto_delete</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/mail_mail.py" target="_blank" rel="noopener"><code>addons/mail/models/mail_mail.py</code></a> : états, <code>send</code>, suppression après envoi</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
