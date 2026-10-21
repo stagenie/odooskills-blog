@@ -1,0 +1,292 @@
+<!--
+Article — Modifier une facture déjà validée dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : modifier-facture-validee-odoo
+Meta : Modifier une facture validée dans Odoo 20 : remettre en brouillon, annuler ou faire un avoir, ce qui bloque (date de verrouillage) et le message exact.
+Mot-clé cible : odoo modifier facture
+Tags : debutant, comptabilite, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af8 (copie de vs20_func, démo), société FR Company (base.user_admin.company_id = 2), Playwright + odoo-bin shell.
+  addons/account/views/account_move_views.xml:825-835 (boutons Avoir, Annuler visible seulement en brouillon, Remettre en brouillon si show_reset_to_draft_button) ;
+  addons/account/models/account_move.py:2050-2055 (bouton = pas de hachage et état comptabilisé ou annulé ; ni paiement ni envoi n'interviennent) ;
+  :6891-6908 button_draft (garde le numéro, détache le PDF :6958-6979) ; :7010-7031 _check_draftable (« Vous ne pouvez pas remettre en brouillon une pièce comptable verrouillée. ») ;
+  :4045-4048 + :2956-2972 (sortie de l'état comptabilisé contrôlée par les dates de verrouillage, message exact) ; :7039-7051 button_cancel (délettre, statut Annulé) ;
+  addons/account/models/account_move_line.py:2227-2245 (modifier le montant d'une ligne lettrée casse le lettrage) ;
+  aucun écran Community pour les dates de verrouillage (grep sale_lock_date / fiscalyear_lock_date dans les .xml d'odoo/addons : vide).
+  Parcours joué : FAC/2026/00009 (OpenWood) Remettre en brouillon → « Facture brouillon FAC/2026/00009 », chatter « Comptabilisé → Brouillon (Statut) », Confirmer → même numéro ;
+  FAC/2026/00008 (LightsUp) payée → Remettre en brouillon sans message, ruban PAYÉ conservé ; Annuler → statut Annulé, chatter « Payé → Non payé » ;
+  shell : facture payée remise en brouillon, libellé seul modifié → reste payée ; montant 275 → 300 ou 200 → Non payé, paiement 275 non rapproché ;
+  shell : is_move_sent = True → remise en brouillon acceptée ; journal sécurisé + button_hash → bouton masqué, message de verrouillage ;
+  date de verrouillage des ventes 30/09/2026 posée en shell sur FR Company → FAC/2026/00001 : « Opération invalide » (fig. 03), puis retirée ;
+  bouton Avoir → fenêtre Motif affiché sur l'avoir / Journal / Date d'extourne (date du jour) / Extourner / Extourner et créer une facture / Ignorer.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Modifier une facture déjà validée dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une quantité erronée, un mauvais prix, un libellé à reprendre : une
+                    fois confirmée, une facture d'Odoo 20 n'est plus modifiable en l'état. Trois voies existent
+                    pour la corriger : la remettre en brouillon, l'annuler ou émettre un avoir. Le bon choix
+                    dépend de ce qui est déjà arrivé à la facture.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société <strong>FR Company</strong> (application Facturation).
+                        Le module Facturation existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Ouvrez la facture, cliquez sur <strong>Remettre en brouillon</strong>, corrigez, puis
+                                <strong>Confirmer</strong> : elle garde son numéro.</li>
+                            <li>Pour l'abandonner : <strong>Remettre en brouillon</strong>, puis <strong>Annuler</strong>.</li>
+                            <li>Si une <strong>date de verrouillage</strong> couvre la facture, Odoo refuse : passez
+                                par le bouton <strong>Avoir</strong>.</li>
+                            <li>Une facture déjà transmise au client se corrige de préférence par un avoir, qui
+                                laisse une trace des deux documents.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== BROUILLON ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Remettre la facture en brouillon</h2>
+                <p>Une facture confirmée porte le statut <strong>Comptabilisé</strong> : ses champs sont en lecture
+                    seule, car elle a déjà produit ses écritures comptables. Pour la retoucher, il faut d'abord la
+                    sortir de cet état.</p>
+                <ol>
+                    <li>Ouvrez <strong>Facturation › Clients › Factures</strong> et cliquez sur la facture.</li>
+                    <li>Dans la barre de boutons, cliquez sur <strong>Remettre en brouillon</strong>. Aucune
+                        confirmation n'est demandée.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Facture client FAC/2026/00009 d'OpenWood au statut Comptabilisé dans Odoo 20, avec les boutons Envoyer, Imprimer, Payer, Aperçu, Avoir et Remettre en brouillon" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sur une facture comptabilisée, le bouton Remettre en brouillon se trouve en fin de barre.</figcaption>
+                </figure>
+                <ol start="3">
+                    <li>La facture repasse au statut <strong>Brouillon</strong> et le fil de discussion note
+                        « Comptabilisé → Brouillon (Statut) ». Les lignes, les dates, le client et les conditions
+                        de paiement redeviennent modifiables.</li>
+                    <li>Corrigez, puis cliquez sur <strong>Confirmer</strong>.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="La même facture remise en brouillon dans Odoo 20 : fil d'Ariane Facture brouillon FAC/2026/00009, boutons Confirmer et Annuler, statut Brouillon" style="max-width:100%; height:auto;"/>
+                    <figcaption>En brouillon, la facture conserve son numéro FAC/2026/00009.</figcaption>
+                </figure>
+                <p>Le numéro n'est ni perdu ni réattribué : la facture reprend la même référence à la nouvelle
+                    confirmation, sans trou dans la numérotation. Le PDF déjà généré est détaché de la facture
+                    pour qu'Odoo en produise un nouveau, conforme à la version corrigée.</p>
+                <p>Ni l'envoi au client ni le paiement ne bloquent ce bouton. Odoo le masque seulement sur une
+                    pièce <strong>sécurisée</strong> (verrouillée par empreinte) : celle-ci ne peut plus revenir
+                    en brouillon.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VERROUILLAGE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Quand Odoo refuse : la date de verrouillage</h2>
+                <p>Une date de verrouillage protège une période déjà déclarée ou clôturée. Si la date
+                    comptable de la facture tombe à cette date ou avant, le clic sur <strong>Remettre en
+                    brouillon</strong> ouvre la fenêtre « Opération invalide ». Sur la base de démonstration,
+                    avec une date de verrouillage des ventes au 30/09/2026, la facture du 1<sup>er</sup> septembre
+                    donne :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Opération invalide d'Odoo 20 : Vous ne pouvez pas ajouter ou modifier des écritures comptables antérieures ou égales à : Date de verrouillage des ventes (30/09/2026)" style="max-width:70%; height:auto;"/>
+                    <figcaption>La date de verrouillage interdit de sortir la facture de l'état Comptabilisé.</figcaption>
+                </figure>
+                <p>Le message nomme la date en cause : <em>« Vous ne pouvez pas ajouter ou modifier des écritures
+                    comptables antérieures ou égales à : Date de verrouillage des ventes (30/09/2026). »</em> L'annulation,
+                    qui passe par le brouillon, est bloquée de la même façon. La correction passe alors par un avoir daté
+                    après la date de verrouillage. Odoo 20 Community ne propose pas d'écran pour définir ces
+                    dates ; le message apparaît sur une base où elles ont été posées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ANNULER ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Annuler une facture</h2>
+                <p>Le bouton <strong>Annuler</strong> n'apparaît que sur une facture en brouillon. Pour annuler
+                    une facture confirmée : <strong>Remettre en brouillon</strong>, puis <strong>Annuler</strong>.
+                    La facture passe au statut <strong>Annulé</strong>, garde son numéro et ses écritures ne
+                    comptent plus. Le bouton <strong>Remettre en brouillon</strong> reste disponible pour la réactiver.</p>
+                <p>Si la facture était payée, l'annulation détache le paiement : le fil de discussion indique
+                    « Payé → Non payé (Statut du paiement) » et la somme encaissée reste disponible sur le compte du
+                    client, à affecter à une autre facture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== AVOIR ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Faire un avoir</h2>
+                <p>L'avoir laisse la facture d'origine intacte et crée un document inverse. C'est la voie à suivre
+                    quand la période est verrouillée ou quand le client a déjà reçu la facture. Le bouton
+                    <strong>Avoir</strong> d'une facture comptabilisée ouvre cette fenêtre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Avoir d'Odoo 20 : Motif affiché sur l'avoir, Journal Ventes, Date d'extourne, boutons Extourner, Extourner et créer une facture, Ignorer" style="max-width:85%; height:auto;"/>
+                    <figcaption>La date d'extourne est par défaut celle du jour, donc hors période verrouillée.</figcaption>
+                </figure>
+                <p><strong>Extourner</strong> prépare un avoir que vous ajustez (total ou partiel) avant de le
+                    confirmer. <strong>Extourner et créer une facture</strong> annule toute la facture par un avoir
+                    et ouvre aussitôt une copie en brouillon, prête à corriger : c'est l'équivalent comptable de
+                    « modifier la facture ». Le détail de l'avoir partiel et de l'avoir sur facture payée est
+                    traité dans <a href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Faire un
+                    avoir dans Odoo 20 : partiel ou sur facture payée</a>.</p>
+
+                <h3 class="h5 mt-4">Quelle voie choisir ?</h3>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Situation de la facture</th><th>Que faire</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Confirmée, non envoyée, non payée</td><td>Remettre en brouillon, corriger, Confirmer</td></tr>
+                        <tr><td>Créée par erreur</td><td>Remettre en brouillon, puis Annuler</td></tr>
+                        <tr><td>Déjà envoyée au client</td><td>Avoir (de préférence), le client reçoit un document qui explique l'écart</td></tr>
+                        <tr><td>Payée, seul un libellé est à reprendre</td><td>Remettre en brouillon, corriger, Confirmer : elle reste payée</td></tr>
+                        <tr><td>Payée, montant à changer</td><td>Avoir, ou brouillon en sachant que le paiement sera détaché</td></tr>
+                        <tr><td>Date dans une période verrouillée</td><td>Avoir, daté après la date de verrouillage</td></tr>
+                        <tr><td>Pièce sécurisée (bouton absent)</td><td>Avoir</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : une facture payée remise en brouillon</h4>
+                    <p>Odoo accepte de remettre en brouillon une facture payée, sans avertissement : le ruban
+                        <strong>PAYÉ</strong> reste affiché. Si seul le texte change, elle reste payée à la nouvelle
+                        confirmation. Si le montant change, le lien avec le paiement est rompu : la facture
+                        redevient <strong>Non payé</strong> et le paiement reste à affecter. Après une correction de
+                        montant, ouvrez la facture et rapprochez le paiement, ou préférez un avoir.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><strong>Remettre en brouillon</strong> rouvre la facture sans changer son numéro.</li>
+                    <li><strong>Annuler</strong> se trouve sur le brouillon : deux clics pour annuler une facture confirmée.</li>
+                    <li>Une date de verrouillage bloque brouillon et annulation : le message nomme la date.</li>
+                    <li>L'<strong>avoir</strong> fonctionne dans tous les cas et garde la trace de la correction.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                        avoirs dans Odoo 20</a>, pour la prise en main de la facturation.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Faire un avoir dans
+                        Odoo 20 : partiel ou sur facture payée</a>, pour les avoirs qui ne reprennent qu'une partie
+                        de la facture.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                        Odoo 20</a>, pour affecter un paiement resté disponible.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

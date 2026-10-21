@@ -1,0 +1,301 @@
+<!--
+Article — Modèle d'email dans Odoo 20 : créer, réutiliser, gérer
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : modeles-email-chatter-odoo
+Mot-clé cible : odoo modèle email
+Tags : debutant, ventes, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af10 (copie de vs20_func, démo, Ventes installé), Playwright + psql.
+  addons/mail/wizard/mail_compose_message_views.xml:126 (sélecteur de modèles dans le pied de la fenêtre « Rédiger un e-mail ») ;
+  addons/mail/static/src/core/web/mail_composer_template_selector.xml (menu ⋮ : « Sélectionnez un modèle », « Enregistrer comme modèle », « Gérer les modèles ») ;
+  addons/mail/static/src/core/web/mail_composer_template_selector.js:33-56 (liste = modèles du document dont l'utilisateur est propriétaire, puis modèles sans propriétaire ; limite 80) et :72-82 (Gérer les modèles = action Modèles d'e-mail filtrée « Mes modèles » + modèle du document) ;
+  addons/mail/wizard/mail_compose_message_views.xml:132-146 + mail_compose_message.py:1010-1037 (fenêtre « Créer un modèle d'e-mail », champ Nom du modèle ; valeurs créées : nom, corps, modèle, use_default_to, user_id — PAS le sujet ; pièces jointes reprises) ;
+  addons/mail/static/src/views/web/fields/html_composer_message_field/html_composer_message_field.js:84-88 (insertion de champ retirée du composeur d'un seul document : le menu « / » n'offre pas « Champ », constaté à l'écran) ;
+  addons/mail/views/mail_template_views.xml:42 (Sujet, dynamic_placeholder, touche #), :50-54 (Corps, « Astuce : écrivez /champ pour insérer du contenu dynamique ! »), :94-96 (Propriétaire, onglet Options) ;
+  html_editor/static/src/backend/dynamic_field/dynamic_field_plugin.js:38-63 (commande « Champ » / « Insérer un champ », catégorie Données) ; aucun mode développeur requis (popover sans condition odoo.debug pour l'insertion) ;
+  addons/mail/views/res_config_settings_views.xml:83-85 (Restreindre le rendu du modèle) et :178-191 (bloc « Modèles d'e-mail », bouton « Revoir tous les modèles ») ; mail/data/ir_config_parameter_data.xml:8-11 (restriction active par défaut) ;
+  addons/mail/views/mail_template_views.xml:136-138 (filtres Mes modèles, Modèles de base, Modèles personnalisés).
+  Parcours joué (admin) : S00001 (Acme Corporation) › Envoyer message › Ouvrir l'éditeur complet › sujet + corps › ⋮ › Enregistrer comme modèle « Relance de devis » ;
+  base : mail_template id 66, subject vide, user_id 2, corps avec la signature « -- Mitchell Admin » ;
+  ⋮ › Gérer les modèles › Relance de devis : /champ › Client (rend object.partner_id.display_name, affiché « Client ») ; Sujet « Votre devis » + # › Référence commande › Insérer → « Votre devis {{object.name}} en attente » ; enregistré ;
+  S00002 (Ready Mat) › éditeur complet › ⋮ › Relance de devis → Vers Ready Mat, Sujet « Votre devis S00002 en attente », « Bonjour Ready Mat, », signature non doublée ; fenêtre fermée par Ignorer, aucun message posté (mail_message 0) ;
+  suppression d'un premier essai : Gérer les modèles › case › Actions (Exporter, Dupliquer, Archiver, Désarchiver, Supprimer, Réinitialiser le modèle d'e-mail) › Supprimer › « Au revoir, l'enregistrement ! » › Supprimer.
+  shell (rollback) : modèle sans sujet appliqué à S00002 → sujet « S00002 » (référence du document).
+  Aucun serveur sortant configuré, aucun courriel envoyé.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Modèle d'email dans Odoo 20 : créer, réutiliser, gérer</h1>
+                <p class="lead mt-3 text-white">Une relance de devis, une demande de pièce manquante, un
+                    accusé de réception : certains courriels s'écrivent chaque semaine presque à l'identique.
+                    Odoo 20 permet de les enregistrer comme modèles directement depuis la fenêtre de rédaction
+                    du chatter, puis de les rappeler en un clic, avec le nom du client et la référence du
+                    document remplis tout seuls.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration avec l'application Ventes, connecté en administrateur. Les
+                        modèles de courriel font partie de la messagerie de base et existent aussi dans
+                        l'édition Enterprise. Aucun courriel n'a été réellement envoyé pour cet article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Dans le chatter, <strong>Envoyer message</strong>, puis l'icône
+                                <strong>Ouvrir l'éditeur complet</strong> : la fenêtre « Rédiger un e-mail » s'ouvre.</li>
+                            <li>Rédigez le message, puis bouton <strong>⋮</strong> en bas ›
+                                <strong>Enregistrer comme modèle</strong>, donnez-lui un nom.</li>
+                            <li>Pour le réutiliser : même bouton <strong>⋮</strong>, cliquez sur le nom du modèle.</li>
+                            <li>Pour ajouter le nom du client ou la référence du document : <strong>⋮</strong> ›
+                                <strong>Gérer les modèles</strong>, puis <code>/champ</code> dans le corps et
+                                <code>#</code> dans le sujet. Aucun mode développeur n'est nécessaire.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. ENREGISTRER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Enregistrer un message comme modèle</h2>
+                <p>Un modèle de courriel est attaché à un type de document : créé depuis un devis, il n'est
+                    proposé que sur les devis et commandes. L'exemple suit une relance de devis sur la commande S00001
+                    de la démonstration (client Acme Corporation).</p>
+                <ol>
+                    <li>Ouvrez le devis (<strong>Ventes › Commandes › Devis</strong>), puis cliquez sur
+                        <strong>Envoyer message</strong> au-dessus du chatter.</li>
+                    <li>La zone de saisie rapide ne propose pas les modèles. Cliquez sur l'icône
+                        <strong>Ouvrir l'éditeur complet</strong> (les deux flèches en bas à droite de la zone) :
+                        la fenêtre <strong>Rédiger un e-mail</strong> s'ouvre, avec le client dans le champ
+                        <strong>Vers</strong>.</li>
+                    <li>Saisissez le <strong>Sujet</strong> et le texte du message.</li>
+                    <li>Cliquez sur le bouton <strong>⋮</strong> du pied de fenêtre, à droite de l'horloge
+                        de planification.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Rédiger un e-mail d'Odoo 20 sur le devis S00001 pour Acme Corporation, menu ⋮ ouvert : Sélectionnez un modèle, liste des modèles Ventes et eCommerce, Enregistrer comme modèle, Gérer les modèles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le menu ⋮ de la fenêtre de rédaction : les modèles existants, puis l'enregistrement et la gestion.</figcaption>
+                </figure>
+                <p>Sur un devis, la liste <strong>Sélectionnez un modèle</strong> contient déjà les modèles
+                    livrés par Ventes et eCommerce ; les deux commandes utiles ici viennent en dessous.</p>
+                <ol start="5">
+                    <li>Choisissez <strong>Enregistrer comme modèle</strong>. Une petite fenêtre
+                        <strong>Créer un modèle d'e-mail</strong> demande le <strong>Nom du modèle</strong>.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Créer un modèle d'e-mail d'Odoo 20 : champ Nom du modèle rempli avec Relance de devis, boutons Enregistrer le modèle et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le nom choisi est celui qui apparaîtra dans le menu ⋮.</figcaption>
+                </figure>
+                <ol start="6">
+                    <li>Cliquez sur <strong>Enregistrer le modèle</strong>. La fenêtre de rédaction revient,
+                        intacte : vous pouvez envoyer le message ou cliquer sur <strong>Ignorer</strong>.</li>
+                </ol>
+                <p>Le modèle reprend le corps du message tel qu'il est écrit, signature comprise, ainsi que
+                    les pièces jointes éventuelles. Il appartient à l'utilisateur qui l'a créé : il apparaît
+                    désormais en tête de la liste du menu ⋮.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CHAMPS DYNAMIQUES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ajouter le nom du client et la référence du devis</h2>
+                <p>Un modèle qui commence par « Bonjour Acme Corporation » ne sert qu'une fois. Pour qu'il
+                    s'adapte à chaque document, il faut y placer des <strong>champs dynamiques</strong>. Dans la
+                    fenêtre de rédaction d'un seul document, le menu « / » ne propose pas d'insérer un champ :
+                    l'opération se fait sur la fiche du modèle, accessible sans mode développeur.</p>
+                <ol>
+                    <li>Dans la fenêtre de rédaction, <strong>⋮</strong> › <strong>Gérer les modèles</strong>.
+                        La liste <strong>Modèles d'e-mail</strong> s'ouvre, filtrée sur « Mes modèles » et sur
+                        le type de document du devis.</li>
+                    <li>Ouvrez « Relance de devis ». Sous le corps, Odoo rappelle : « Astuce : écrivez /champ
+                        pour insérer du contenu dynamique ! ».</li>
+                    <li>Placez le curseur après « Bonjour », tapez <code>/champ</code> et validez
+                        <strong>Champ</strong>. Une bulle s'ouvre : cliquez dans <strong>Champ</strong>,
+                        cherchez « Client », cliquez sur <strong>Client</strong>, puis sur
+                        <strong>Mettre à jour</strong>. Le corps affiche alors une étiquette « Client ».</li>
+                    <li>Dans le <strong>Sujet</strong>, tapez « Votre devis » puis le caractère <code>#</code> :
+                        la liste des champs s'ouvre. Choisissez <strong>Référence commande</strong>, puis
+                        <strong>Insérer</strong>, et complétez par « en attente ».</li>
+                    <li>Enregistrez la fiche.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche du modèle Relance de devis dans Odoo 20 : Sujet Votre devis {{object.name}} en attente, onglet Corps avec Bonjour Client et la signature Mitchell Admin, astuce écrivez /champ" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le modèle avec ses deux champs : la référence dans le sujet, le client dans le corps.</figcaption>
+                </figure>
+                <p>Le sujet montre l'expression brute <code>{{object.name}}</code> : c'est normal, elle désigne
+                    la référence du document et sera remplacée à l'utilisation. La case
+                    <strong>Par défaut</strong> de la bulle prévoit un texte de secours si le champ est vide.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. RÉUTILISER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Réutiliser le modèle sur un autre devis</h2>
+                <p>Sur le devis S00002 (client Ready Mat), le chemin est le même : <strong>Envoyer
+                    message</strong>, <strong>Ouvrir l'éditeur complet</strong>, <strong>⋮</strong>, puis un
+                    clic sur « Relance de devis ». Le sujet et le corps sont remplacés par ceux du modèle,
+                    avec les valeurs du document ouvert :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Rédiger un e-mail d'Odoo 20 sur le devis S00002 : Vers Ready Mat, Sujet Votre devis S00002 en attente, corps Bonjour Ready Mat suivi du texte du modèle et de la signature" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le même modèle, rempli pour un autre client et un autre devis.</figcaption>
+                </figure>
+                <p>Le texte reste modifiable avant l'envoi. La signature n'est pas répétée, et le
+                    destinataire proposé est le client du devis.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. RETROUVER, MODIFIER, SUPPRIMER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Retrouver, modifier ou supprimer ses modèles</h2>
+                <ul>
+                    <li><strong>Depuis un document</strong> : <strong>⋮</strong> › <strong>Gérer les
+                        modèles</strong> ouvre directement vos modèles pour ce type de document.</li>
+                    <li><strong>Depuis les paramètres</strong> : <strong>Paramètres</strong>, bloc
+                        <strong>Modèles d'e-mail</strong>, lien <strong>Revoir tous les modèles</strong>. La
+                        liste s'ouvre sur le filtre « Modèles de base » (ceux livrés par les applications) ;
+                        retirez-le et choisissez « Mes modèles » ou « Modèles personnalisés ».</li>
+                    <li><strong>Modifier</strong> : ouvrez la fiche, corrigez le sujet ou le corps,
+                        enregistrez.</li>
+                    <li><strong>Supprimer</strong> : cochez le modèle dans la liste, puis
+                        <strong>Actions › Supprimer</strong> et confirmez (« Au revoir, l'enregistrement ! »).
+                        Le même menu propose <strong>Archiver</strong> pour le retirer sans l'effacer.</li>
+                </ul>
+                <p>Pour partager un modèle avec les collègues, videz le champ <strong>Propriétaire</strong>
+                    dans l'onglet Options : le menu ⋮ affiche les modèles de l'utilisateur et ceux qui n'ont
+                    pas de propriétaire. Enfin, la case <strong>Restreindre le rendu du modèle</strong> des
+                    Paramètres, cochée par défaut, encadre la modification des modèles et l'usage des champs
+                    dynamiques ; l'administrateur et le groupe « Éditeur de modèle d'e-mail » n'y sont pas
+                    soumis.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : le sujet n'est pas enregistré avec le modèle</h4>
+                    <p>« Enregistrer comme modèle » conserve le nom, le corps et les pièces jointes, mais pas
+                        le sujet saisi dans la fenêtre : sur la base de démonstration, la fiche du modèle
+                        s'ouvre avec un <strong>Sujet</strong> vide. Sans correction, le modèle appliqué
+                        sur le devis S00002 propose pour sujet la seule référence « S00002 ». Passez donc par
+                        <strong>Gérer les modèles</strong> juste après la création pour renseigner le sujet.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les modèles se trouvent dans l'éditeur complet du chatter, derrière le bouton
+                        <strong>⋮</strong>, pas dans la zone de saisie rapide.</li>
+                    <li>Un modèle vaut pour un type de document : celui d'un devis n'apparaît pas sur un
+                        contact.</li>
+                    <li>Les champs dynamiques s'ajoutent sur la fiche du modèle : <code>/champ</code> dans le
+                        corps, <code>#</code> dans le sujet, sans mode développeur.</li>
+                    <li>Après « Enregistrer comme modèle », complétez le sujet dans
+                        <strong>Gérer les modèles</strong>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Odoo 20
+                        Community : les 34 applications gratuites</a>, le tour d'horizon de la version.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande
+                        confirmée dans Odoo 20</a>, pour l'envoi du devis lui-même.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances
+                        commerciales dans Odoo 20</a>, pour planifier les relances avant de les écrire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

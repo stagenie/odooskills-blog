@@ -1,0 +1,306 @@
+<!--
+Article — Modifier les conditions de paiement dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : conditions-paiement-odoo
+Mot-clé cible : odoo modifier conditions de paiement
+Tags : debutant, comptabilite, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af7 (copie de vs20_func, démo), admin passé sur FR Company (id 2), Playwright + odoo-bin shell.
+  addons/account/models/account_payment_term.py:279-304 (value Pour cent/Fixe, delay_type à 4 choix, days_next_month), :306-323 (_get_due_date),
+    :337-342 (_check_percent), :154-163 (_check_lines : somme des % = 100), :344-359 (_compute_days +30, _compute_value_amount = reste) ;
+  addons/account/views/account_payment_term_views.xml (formulaire : Conditions d'échéance, Aperçu, Afficher les dates des versements, Société « Visible pour tous ») ;
+  addons/account/views/account_menuitem.xml:60 (Configuration › Facturation › Conditions de paiement) ;
+  addons/account/data/account_data.xml:36-100 (11 conditions natives, dont « 30% maintenant, le solde à 60 jours », « 30% d'avance, fin du mois suivant ») ;
+  addons/account/models/partner.py:597-600 (property_payment_term_id company_dependent) ; views/partner_view.xml:267 ;
+  addons/sale/models/sale_order.py:244-250,627-630 (payment_term_id calculé depuis le client, modifiable), :1874 (repris sur la facture) ;
+  addons/account/views/account_move_views.xml:1183-1199 (Échéance ou Conditions de paiement ; readonly si comptabilisée) ;
+  addons/account/views/report_invoice.xml:407-433 (note + « n - Versement de … dû le … » si display_on_invoice) ;
+  addons/account/views/account_portal_templates.xml:143-158 (Versement suivant / montant en retard) ; account_move.py:7339-7358.
+  Parcours joué : création UI « 30 jours fin de mois » (id 12, aperçu 30/11/2026 pour le 21/10/2026) et « 30 % à la commande, solde à 30 jours »
+  (id 13 ; 2e ligne auto 70 % / 30 jours ; aperçu 300 € le 21/10/2026, 700 € le 20/11/2026) ; Acme Corporation › Ventes & Achats › Conditions de paiement
+  (FR Company) ; nouveau devis Acme → 30 jours fin de mois ; facture FAC/2026/00010 (id 111) 1 000 € passée en condition id 13, comptabilisée :
+  écritures « versement #1 » 300 € et « #2 » 700 €, échéance 20/11/2026, aperçu portail « Versement suivant 300,00 € Dû aujourd'hui ».
+  Shell (rollback) : devis Acme confirmé → facture en 30 jours fin de mois, échéance 30/11/2026 ; nouvelle facture Acme → condition du client ;
+  changer la condition du client ne modifie ni la facture comptabilisée ni un brouillon existant ; Acme en My Company = « 30 jours », en FR Company = vide ;
+  _get_due_date : 15/01/2026 → 02/03/2026 (fin du mois +30) contre 28/02/2026 (Jours fin de mois, le 0) ; 21/10/2026 → 30/11/2026 pour les deux.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Modifier les conditions de paiement dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">30 jours fin de mois, 30 % à la commande puis le solde à
+                    30 jours : dans Odoo 20, chaque règle d'échéance est une fiche « Conditions de paiement »,
+                    créée une fois, rattachée au client, puis recopiée sur ses devis et ses factures, qui la
+                    découpent en versements datés.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration (Ventes et Facturation installés), société « FR Company » pour
+                        les montants en euros. Les conditions de paiement fonctionnent de la même façon dans
+                        l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Ouvrez <strong>Facturation › Configuration › Conditions de paiement</strong> et
+                                cliquez sur <strong>Nouveau</strong>.</li>
+                            <li>Une ligne par échéance : un pourcentage, un nombre de jours et un point de départ
+                                (date de facture ou fin du mois). L'<strong>Aperçu</strong> calcule les dates.</li>
+                            <li>Sur la fiche client, onglet <strong>Ventes &amp; Achats</strong>, choisissez-la dans
+                                <strong>Conditions de paiement</strong> : devis et factures la reprennent.</li>
+                            <li>Sur un devis ou une facture en brouillon, le même champ se change au cas par
+                                cas.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 30 JOURS FIN DE MOIS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Créer « 30 jours fin de mois »</h2>
+                <p>Parmi les onze conditions fournies (Paiement immédiat, 30 jours, Fin du mois suivant…),
+                    aucune ne correspond à « 30 jours fin de mois ».</p>
+                <ol>
+                    <li>Ouvrez <strong>Facturation › Configuration › Conditions de paiement</strong>, puis
+                        <strong>Nouveau</strong>.</li>
+                    <li>Nommez la condition : <em>30 jours fin de mois</em>.</li>
+                    <li>Dans <strong>Conditions d'échéance</strong>, Odoo a déjà posé une ligne
+                        « 100 Pour cent, 0 Jours après la date de facturation ». Saisissez <strong>30</strong>
+                        dans la colonne <strong>Après</strong> et choisissez <strong>Jours après la fin du
+                        mois</strong> dans la liste voisine.</li>
+                    <li>Sous l'<strong>Aperçu</strong>, rédigez la mention imprimée sur la facture, par exemple
+                        <em>Conditions de paiement : 30 jours fin de mois</em>, puis enregistrez.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fiche Conditions de paiement d'Odoo 20 nommée 30 jours fin de mois : ligne 100 Pour cent, 30 Jours après la fin du mois, aperçu 1# Versement de 1 000,00 € dû le 30/11/2026" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une seule échéance : 30 jours comptés à partir de la fin du mois de facturation.</figcaption>
+                </figure>
+                <p>L'aperçu applique la règle à 1 000,00 € facturés le jour même : pour le 21 octobre 2026,
+                    le versement est dû le 30/11/2026 (31 octobre + 30 jours). Le champ
+                    <strong>Société</strong> laissé vide (« Visible pour tous ») rend la condition disponible
+                    dans toutes les sociétés.</p>
+                <p>Un autre point de départ, <em>Jours fin de mois, le</em>, ajoute d'abord les jours puis
+                    renvoie au jour indiqué du mois suivant ; avec 30 jours et <strong>0</strong> dans la petite case qui
+                    apparaît, il donne « date de facture + 30 jours, puis fin de ce mois ». Les deux lectures
+                    divergent parfois : pour une facture du 15 janvier 2026, la première mène au 2 mars, la
+                    seconde au 28 février. Retenez celle qui suit la formule de vos conditions générales, en
+                    contrôlant l'aperçu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ACOMPTE ET SOLDE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer « 30 % à la commande, solde à 30 jours »</h2>
+                <ol>
+                    <li>Nouvelle condition, nommée <em>30 % à la commande, solde à 30 jours</em>.</li>
+                    <li>Sur la première ligne, remplacez 100 par <strong>30</strong> et laissez 0 jour après la
+                        date de facturation.</li>
+                    <li>Cliquez sur <strong>Ajouter une ligne</strong> : Odoo la remplit seul avec le reste,
+                        <strong>70</strong> %, et <strong>30</strong> jours après la date de facturation (le délai
+                        de la ligne précédente plus 30). Il n'y a rien à corriger ici.</li>
+                    <li>Ajoutez la mention pour la facture et enregistrez.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche Conditions de paiement d'Odoo 20 : 30 Pour cent à 0 jour et 70 Pour cent à 30 jours après la date de facturation, aperçu de deux versements de 300,00 € et 700,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux lignes, deux versements : l'aperçu les date et les chiffre.</figcaption>
+                </figure>
+                <p>Le total des pourcentages doit faire 100 ; un montant <strong>Fixe</strong> est possible à la
+                    place d'un pourcentage. La case <strong>Afficher les dates des versements</strong>, cochée
+                    par défaut, imprime le détail des échéances sur la facture.</p>
+                <p>Le mot « commande » relève ici du libellé : dans Odoo, la première échéance tombe à la date
+                    de la <strong>facture</strong>. Pour encaisser réellement avant de livrer, la commande
+                    client sait émettre une facture d'acompte, présentée dans
+                    <a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une
+                    commande dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PAR DÉFAUT SUR LE CLIENT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. L'affecter par défaut à un client</h2>
+                <p>Ouvrez la fiche du client (Acme Corporation sur la démonstration), onglet
+                    <strong>Ventes &amp; Achats</strong>, bloc <strong>Ventes</strong>, champ
+                    <strong>Conditions de paiement</strong>, puis enregistrez. Le bloc Achats, plus bas, porte un
+                    champ du même nom : il sert aux factures du fournisseur, pas aux ventes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Onglet Ventes et Achats d'une fiche contact Odoo 20, bloc Ventes : Conditions de paiement 30 jours fin de mois" style="max-width:100%; height:auto;"/>
+                    <figcaption>La condition par défaut du client, côté ventes.</figcaption>
+                </figure>
+                <p>Un nouveau devis pour ce client affiche alors <strong>30 jours fin de mois</strong> dès
+                    que le client est choisi ; le champ reste modifiable pour une affaire particulière, et la
+                    facture issue de la commande reprend la condition du devis. Une facture saisie directement
+                    reçoit aussi celle du client. Changer la fiche client ne modifie pas les documents déjà
+                    créés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SUR LA FACTURE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. La changer sur une facture, et ce que cela produit</h2>
+                <p>Sur une facture en brouillon, la ligne d'en-tête propose soit une date
+                    d'<strong>Échéance</strong>, soit des <strong>Conditions de paiement</strong> : choisir une
+                    condition remplace la date fixe. Une fois la facture comptabilisée, le champ se verrouille ;
+                    pour le changer, passez par <strong>Remettre en brouillon</strong>.</p>
+                <p>Une facture de 1 000,00 € pour Acme Corporation, passée en « 30 % à la commande, solde à
+                    30 jours » et comptabilisée le 21 octobre 2026, produit :</p>
+                <ul>
+                    <li>dans ses <strong>Écritures comptables</strong>, deux lignes client au lieu d'une,
+                        « versement #1 » de 300,00 € et « versement #2 » de 700,00 €, chacune avec sa propre
+                        échéance ;</li>
+                    <li>sur le document imprimé, la mention de la condition suivie de « 1 - Versement de
+                        300,00 € dû le 21/10/2026 » et « 2 - Versement de 700,00 € dû le 20/11/2026 », et une
+                        <strong>Échéance</strong> d'en-tête au 20/11/2026, la date du dernier versement ;</li>
+                    <li>sur l'espace client en ligne (bouton <strong>Aperçu</strong>), le montant du prochain
+                        versement plutôt que le total :</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Espace client d'Odoo 20 pour une facture de 1 000,00 € : Versement suivant 300,00 €, Dû aujourd'hui, boutons Payer maintenant et Télécharger" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le client voit d'abord ce qu'il doit maintenant : 300,00 €.</figcaption>
+                </figure>
+                <p>Lorsqu'un versement dépasse sa date sans être réglé, ce même encadré de l'espace client
+                    affiche le montant en retard au lieu du versement suivant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : la condition du client dépend de la société</h4>
+                    <p>La condition de la fiche client a une valeur par société : sur la démonstration, Acme
+                        Corporation est à « 30 jours » dans My Company (San Francisco) mais n'avait aucune
+                        condition dans FR Company. Dans une base à plusieurs sociétés, réglez la fiche depuis
+                        chacune d'elles (sélecteur de société en haut à droite).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une condition de paiement = des lignes « pourcentage, jours, point de départ » ;
+                        l'aperçu montre aussitôt les dates.</li>
+                    <li>« Fin de mois » se règle de deux façons : <em>Jours après la fin du mois</em> ou
+                        <em>Jours fin de mois, le</em> 0. Vérifiez la date obtenue.</li>
+                    <li>Posée sur le client, la condition suit le devis puis la facture ; elle se change au cas
+                        par cas tant que le document est en brouillon.</li>
+                    <li>Plusieurs lignes = plusieurs échéances réelles sur la facture et dans l'espace
+                        client.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients
+                        et avoirs dans Odoo 20</a>, pour la prise en main de la facturation.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/escompte-paiement-anticipe-devis-ttc-odoo-263">Escompte
+                        pour paiement anticipé et devis TTC dans Odoo 20</a>, la case <strong>Escompte</strong> de cette même
+                        fiche.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances
+                        dans Odoo 20</a>, pour encaisser chaque versement.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
