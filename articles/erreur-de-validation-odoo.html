@@ -1,0 +1,289 @@
+<!--
+Article — « Erreur de validation » dans Odoo 20 : messages courants et solutions
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : erreur-de-validation-odoo
+Meta : Erreur de validation dans Odoo 20 : lire la fenêtre, corriger « Champs obligatoires manquants », « Les contacts nécessitent un nom » et un code-barres en double.
+Mot-clé cible : odoo erreur de validation, les contacts nécessitent un nom
+Tags : debutant, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af20 (copie de vs20_func, démo), société My Company (San Francisco), Playwright + odoo-bin shell + psql.
+  addons/web/static/src/core/errors/error_dialogs.js:29-40 (titres : UserError → « Opération invalide », ValidationError → « Erreur de validation », AccessError → « Erreur d'accès ») ;
+  addons/web/static/src/model/relational_model/record.js:745-747 (notification « Champs obligatoires manquants », type danger) ;
+  odoo/addons/base/models/res_partner.py:416-419 (_check_name : CHECK type='contact' AND name IS NOT NULL ; « Contacts require a name » → fr « Les contacts nécessitent un nom », base/i18n/fr.po:6264) ;
+  addons/base_import/static/src/import_model.js:546-552 (« Erreur à la ligne %(row)s », row = error.record, index d'enregistrement à partir de 0) ;
+  addons/product/models/product_product.py:334-383 (contrôle d'unicité du code-barres, message « Code(s)-barres déjà attribué(s) » + note d'accès) ;
+  addons/web/static/src/views/form/form_status_indicator/form_status_indicator.xml:12,23 (« Enregistrer manuellement », « Ignorer tous les changements »).
+  Parcours joué : Contacts › Nouveau, Enregistrer sans nom → notification « Champs obligatoires manquants », champ Nom en rouge (fig. 01) ;
+  fiche Acme Corporation › Ajouter Contacts liés, Enregistrer & Fermer sans nom → même notification (le formulaire bloque avant le serveur) ;
+  import CSV (Nom, E-mail, Ville ; 2e ligne de données sans nom) › Tester → « Erreur à la ligne 1: "Les contacts nécessitent un nom" » + « Échec de l'importation : voir les erreurs ci-dessous » (fig. 02) ;
+  même fichier, ligne vide en 1re ligne de données → « Erreur à la ligne 0 » ; bouton Importer avec l'erreur → aucun contact créé (psql : 0 ligne pour les deux e-mails) ;
+  colonne Type d'adresse = Livraison sur la ligne sans nom → « Tout semble correct. » ;
+  produit Lampe de bureau (modèle 6), code-barres 10133785575281 (celui de Pied de table) → fenêtre « Erreur de validation » (fig. 03) ;
+  Fermer → la saisie reste dans le champ ; Ignorer tous les changements → code-barres d'origine 40164785534112 (rien n'a été enregistré) ;
+  recherche 10133785575281 dans la liste des produits → Pied de table ; menu Ventes › Produits › Produits (ir_ui_menu 201, sale.product_template_action) ;
+  menu ⋮ (info-bulle « Actions ») de Contacts → Importer / Exporter.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Erreur de validation dans Odoo 20 : messages et solutions</h1>
+                <p class="lead mt-3 text-white">Un clic sur Enregistrer, et Odoo 20 répond par une fenêtre
+                    « Erreur de validation » ou un bandeau rouge. Le message n'est pas une panne : il nomme la
+                    règle que la saisie enfreint. Cet article montre comment le lire et comment corriger les
+                    messages les plus fréquents, dont « Les contacts nécessitent un nom ».</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société <strong>My Company (San Francisco)</strong>
+                        (applications Contacts et Inventaire). Ces messages existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Lisez le texte sous le titre : il dit quelle valeur pose problème.</li>
+                            <li>Cliquez sur <strong>Fermer</strong> : votre saisie reste en place, rien n'est
+                                enregistré.</li>
+                            <li>Corrigez la valeur et enregistrez à nouveau, ou abandonnez avec
+                                <strong>Ignorer tous les changements</strong> (la croix).</li>
+                            <li>À l'import, « Les contacts nécessitent un nom » signale une ligne sans nom :
+                                complétez-la dans le fichier, puis <strong>Charger à nouveau</strong>.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LIRE LA FENÊTRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire la fenêtre avant de la fermer</h2>
+                <p>Odoo 20 choisit le titre de la fenêtre selon la nature du refus. Le titre suffit souvent à
+                    savoir où chercher :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Titre affiché</th><th>Ce qu'il signifie</th><th>Où agir</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Erreur de validation</strong></td><td>Une valeur saisie enfreint une
+                            règle sur les données (doublon, champ vide, incohérence).</td><td>Corriger la valeur
+                            nommée dans le message.</td></tr>
+                        <tr><td><strong>Opération invalide</strong></td><td>Odoo refuse l'action demandée, par exemple sur une
+                            période verrouillée.</td><td>Suivre la raison donnée dans le message.</td></tr>
+                        <tr><td><strong>Erreur d'accès</strong></td><td>L'utilisateur n'a pas les
+                            droits nécessaires sur ce document.</td><td>Un administrateur ajuste les droits.</td></tr>
+                    </tbody>
+                </table>
+                <p>Une erreur de validation bloque l'enregistrement en entier : aucune des modifications en cours
+                    n'est écrite. Le bouton <strong>Fermer</strong> ramène au formulaire avec la saisie intacte.
+                    Deux sorties sont alors possibles : corriger puis cliquer de nouveau sur
+                    <strong>Enregistrer manuellement</strong> (le nuage), ou cliquer sur la croix
+                    <strong>Ignorer tous les changements</strong> pour revenir aux valeurs d'origine.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHAMPS OBLIGATOIRES ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. « Champs obligatoires manquants »</h2>
+                <p>C'est le message le plus courant, et il ne prend pas la forme d'une fenêtre : un bandeau rouge
+                    apparaît en haut à droite, et le champ à remplir se colore en rose. Le formulaire bloque
+                    l'enregistrement avant même d'interroger le serveur. Sur un contact créé par
+                    <strong>Contacts › Nouveau</strong> puis enregistré sans nom :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Formulaire de nouveau contact dans Odoo 20 : bandeau rouge Champs obligatoires manquants et champ Nom (entreprise ou personne) surligné en rose" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le champ coloré est celui qui manque ; le bandeau ne le nomme pas.</figcaption>
+                </figure>
+                <p>Remplissez le champ coloré et enregistrez. Le même bandeau apparaît dans les fenêtres de
+                    saisie, par exemple <strong>Ajouter Contacts liés</strong> sur la fiche d'une entreprise,
+                    quand le nom de la personne est laissé vide.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTACTS NOM ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. « Les contacts nécessitent un nom » à l'import</h2>
+                <p>Ce message vient d'une règle de la base de données : tout partenaire de type
+                    <strong>Contact</strong> doit avoir un nom. Le formulaire l'empêche en amont (bandeau de la
+                    section précédente) ; c'est donc surtout à l'<strong>import</strong> d'un fichier qu'il
+                    apparaît, quand une ligne a une cellule Nom vide.</p>
+                <ol>
+                    <li>Dans <strong>Contacts</strong>, ouvrez le menu <strong>⋮</strong> (info-bulle
+                        « Actions ») à côté du titre, puis <strong>Importer</strong>.</li>
+                    <li>Chargez le fichier et cliquez sur <strong>Tester</strong>.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Écran d'import de contacts d'Odoo 20 : bandeau Erreur à la ligne 1: Les contacts nécessitent un nom, et notification Échec de l'importation : voir les erreurs ci-dessous" style="max-width:100%; height:auto;"/>
+                    <figcaption>La seconde ligne de données du fichier n'a pas de nom : Odoo la désigne comme « ligne 1 ».</figcaption>
+                </figure>
+                <ol start="3">
+                    <li>Complétez le nom dans le fichier, enregistrez-le, puis cliquez sur
+                        <strong>Charger à nouveau</strong> et testez encore.</li>
+                    <li>Quand le bandeau indique « Tout semble correct. », cliquez sur <strong>Importer</strong>.</li>
+                </ol>
+                <p>Tant qu'une erreur subsiste, Odoo n'importe rien, pas même les lignes correctes : sur la base
+                    de démonstration, un clic sur <strong>Importer</strong> avec ce fichier n'a créé aucun contact.
+                    Il n'y a donc pas de doublons à nettoyer après une tentative échouée.</p>
+                <p>La règle ne vise que le type <strong>Contact</strong>. Une ligne sans nom dont la colonne
+                    <strong>Type d'adresse</strong> vaut Livraison (ou Facture, Autre) passe le test : c'est le
+                    cas des adresses secondaires d'un client, qui n'ont pas toujours de nom propre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CODE-BARRES ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un code-barres déjà attribué</h2>
+                <p>Deux produits ne peuvent pas partager le même code-barres. Sur la base de démonstration,
+                    saisir sur la fiche <strong>Lampe de bureau</strong> le code-barres du produit
+                    <strong>Pied de table</strong> donne cette fenêtre :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Erreur de validation d'Odoo 20 : Code(s)-barres déjà attribué(s), Barcode 10133785575281 already assigned to product: Pied de table, remarque sur les restrictions d'accès, bouton Fermer" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le message donne le code en cause et le produit qui le porte déjà.</figcaption>
+                </figure>
+                <p>Le texte nomme le produit concurrent : <em>« Barcode "10133785575281" already assigned to
+                    product: Pied de table »</em>. Pour le retrouver, collez le code dans la barre de recherche de
+                    <strong>Ventes › Produits › Produits</strong> : la fiche Pied de table s'affiche. Décidez alors quel produit garde le
+                    code, retirez-le de l'autre, puis enregistrez. La remarque finale rappelle qu'un produit
+                    que l'utilisateur n'a pas le droit de voir peut aussi bloquer : si la recherche ne trouve
+                    rien, un administrateur doit vérifier.</p>
+                <p>Le même raisonnement vaut pour toutes les erreurs de validation de type « déjà utilisé » :
+                    le message cite la valeur, il reste à trouver l'enregistrement qui la porte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : le numéro de ligne de l'import</h4>
+                    <p>Dans « Erreur à la ligne 1 », Odoo compte les lignes de <strong>données</strong> à partir
+                        de <strong>0</strong> : la première ligne sous l'en-tête est la ligne 0. Sur la base de
+                        démonstration, un nom vide en première ligne de données donne « Erreur à la ligne 0 ».
+                        Dans un tableur où l'en-tête occupe la ligne 1, l'erreur « ligne N » se trouve donc à la
+                        ligne N + 2. Vérifiez la ligne avant de corriger, sous peine de modifier la mauvaise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une <strong>erreur de validation</strong> n'enregistre rien ; <strong>Fermer</strong>
+                        garde la saisie pour la corriger.</li>
+                    <li><strong>Champs obligatoires manquants</strong> : remplissez le champ coloré en rose.</li>
+                    <li><strong>Les contacts nécessitent un nom</strong> : une ligne d'import de type Contact
+                        sans nom ; l'import entier attend la correction.</li>
+                    <li>Un message « déjà attribué » cite la valeur : cherchez-la pour trouver le doublon.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et
+                        fournisseurs dans Odoo 20</a>, pour préparer un fichier de contacts sans erreur.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/importer-produits-odoo-266">Importer ses produits dans
+                        Odoo 20 : variantes et stock</a>, pour les codes-barres et références à l'import.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/clients-articles-ventes-odoo-201">Clients et articles
+                        dans Odoo 20 : les données de départ</a>, pour la saisie des fiches à la main.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
