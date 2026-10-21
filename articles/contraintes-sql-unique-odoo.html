@@ -1,0 +1,368 @@
+<!--
+Article — Contraintes SQL en Odoo 20 : models.Constraint, unique et check
+Série « Astuces dev Odoo 20 » (blog Développement) — AT11
+Date : 2026-10-21
+Slug : contraintes-sql-unique-odoo
+Mot-clé cible : odoo sql constraints unique, models.Constraint, models.UniqueIndex, check constraint odoo, _sql_constraints
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Module d'exemple mon_contraintes (depends product) installé par --addons-path sur cette base seulement.
+  Relevés :
+   sonde_demo.py → 46 contacts, aucun avec ref ; contrainte native res_partner_check_name (CHECK) seule sur res_partner.
+   prep_doublon.py → Acme Corporation (10) et Azure Interior (16) passés à ref 'CLI-001'.
+   -i mon_contraintes → ERROR odoo.schema « Constraint not added: could not create unique index "res_partner_ref_uniq" /
+     DETAIL: Key (ref)=(CLI-001) is duplicated. », module chargé, rc 0 ; pg_constraint : product_template_list_price_positive seule,
+     ir.model.constraint : res_partner_ref_uniq (u) ET product_template_list_price_positive (u) enregistrées.
+   doublons.py → [('CLI-001', [10, 16])] ; ref de 16 → 'CLI-002' ; -u mon_contraintes → rc 0 ; pg_constraint : res_partner_ref_uniq UNIQUE (ref).
+   essai.py → 41 contacts sans référence ; UniqueViolation | res_partner_ref_uniq + message du module ;
+     CheckViolation | product_template_list_price_positive + message du module (via _sql_error_to_message).
+   _sql_constraints ajouté sur product.template, -u → WARNING odoo.registry « Model attribute '_sql_constraints' is no longer supported,
+     please define models.Constraint on the model. », rc 0, aucune contrainte default_code créée (pg_constraint inchangé).
+   _ref_uniq remplacé par _ref_ci_uniq = UniqueIndex("(lower(ref)) WHERE active IS TRUE", msg), -u → « Deleting …
+     (mon_contraintes.constraint_res_partner_ref_uniq) », plus de contrainte UNIQUE, index
+     « CREATE UNIQUE INDEX res_partner_ref_ci_uniq ON public.res_partner USING btree (lower((ref)::text)) WHERE (active IS TRUE) »,
+     ir.model.constraint type i.
+   essai_index.py → 'cli-001' : UniqueViolation | res_partner_ref_ci_uniq + message ; archivé avec 'CLI-001' : accepté.
+   Écran (Playwright) : fiche Azure Interior, onglet Ventes & Achats, Référence = cli-001, Enregistrer → dialogue « Erreur de validation »,
+     « The operation cannot be completed: Cette référence interne est déjà utilisée par un autre contact. » (capture de la modale seule).
+  Code 20.0 relu :
+   odoo/orm/table_objects.py:41-51 (nom commençant par « _ »), :56-59 (nom SQL = <table>_<nom>), :88-148 (Constraint, apply_to_database
+     :128-141 : définition modifiée → drop puis add), :119-126 (avertissement suffixe _not_null), :150-218 (Index), :221-235 (UniqueIndex + message) ;
+   odoo/orm/model_classes.py:175-177 (_sql_constraints ignoré, WARNING) ; odoo/orm/models.py:2580-2581, 2599-2604 (_add_sql_constraints),
+     :2607-2622 (_sql_error_to_message : message de ir.model.constraint puis de l'objet) ;
+   odoo/orm/registry.py:771-790 (post_constraint : échec à l'installation → _schema.error, on continue) ;
+   odoo/http/retrying.py:82-90 (IntegrityError → « The operation cannot be completed: %s ») ; addons/web/i18n/fr.po:7517-7518 (msgstr vide) ;
+   odoo/addons/base/models/res_partner.py:417-420 (_check_name CHECK) ; odoo/addons/base/models/res_currency.py:430-437 (NULLS NOT DISTINCT) ;
+   addons/product/models/product_product.py:154 (UniqueIndex WHERE active IS TRUE).
+  Écart 19→20 : aucun sur le sujet. 19.0 publique (raw.githubusercontent, 21/10) : model_classes.py:162-163 même WARNING _sql_constraints ;
+   table_objects.py : seuls ajouts 20 = avertissement _not_null et matches_database (non cités dans le corps).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Contraintes SQL en Odoo 20 : models.Constraint, unique et check</h1>
+                <p class="lead mt-3 text-white">Une référence qui ne doit exister qu'une fois, un prix qui ne doit
+                    jamais passer sous zéro : en Odoo 20, ces règles se déclarent comme attributs de classe et
+                    PostgreSQL les fait respecter. Voici la syntaxe, le message affiché, et le piège des doublons
+                    déjà présents en base.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes, Inventaire) et un petit module d'exemple qui hérite de
+                        <code>res.partner</code> et de <code>product.template</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Dans la classe du modèle : <code>_ref_uniq = models.Constraint('UNIQUE(ref)', "message")</code>
+                                ou <code>models.Constraint('CHECK(list_price &gt;= 0)', "message")</code>.</li>
+                            <li>Le nom commence par <code>_</code> ; en base, la contrainte s'appelle
+                                <code>&lt;table&gt;_&lt;nom&gt;</code>, ici <code>res_partner_ref_uniq</code>.</li>
+                            <li><code>_sql_constraints = [...]</code> est ignoré : un simple WARNING, aucune contrainte créée.</li>
+                            <li>Unicité sans la casse, ou limitée aux fiches actives : <code>models.UniqueIndex("(lower(ref)) WHERE active IS TRUE", "message")</code>.</li>
+                            <li>Avant d'installer, cherche les doublons : sinon le module s'installe <strong>sans</strong> la contrainte.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CONSTRAINT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>models.Constraint</code> : UNIQUE et CHECK</h2>
+                <p>Une contrainte SQL est un objet <code>models.Constraint</code> posé comme attribut de la classe.
+                    Le premier argument est la définition SQL, celle qui suit <code>ADD CONSTRAINT</code> ; le
+                    second, le message montré à l'utilisateur. Le module d'exemple en déclare deux, sur des modèles
+                    de la démo :</p>
+<pre class="language-python"><code class="language-python"># models/res_partner.py
+from odoo import models
+
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    _ref_uniq = models.Constraint(
+        'UNIQUE(ref)',
+        "Cette référence interne est déjà utilisée par un autre contact.",
+    )
+
+
+# models/product_template.py
+class ProductTemplate(models.Model):
+    _inherit = 'product.template'
+
+    _list_price_positive = models.Constraint(
+        'CHECK(list_price &gt;= 0)',
+        "Le prix de vente ne peut pas être négatif.",
+    )</code></pre>
+                <p>Trois règles de forme :</p>
+                <ul>
+                    <li>le nom de l'attribut <strong>doit</strong> commencer par <code>_</code> (Odoo le vérifie au
+                        chargement) ;</li>
+                    <li>la contrainte prend en base le nom <code>&lt;table&gt;_&lt;nom sans le _&gt;</code> :
+                        <code>res_partner_ref_uniq</code>, <code>product_template_list_price_positive</code> ;</li>
+                    <li>si tu changes la définition, le <code>-u</code> suivant supprime la contrainte et la recrée.</li>
+                </ul>
+                <p>Le cœur s'en sert lui-même : <code>res.partner</code> porte nativement
+                    <code>_check_name</code>, un <code>CHECK</code> qui exige un nom sur tout contact de type
+                    « contact ». L'ancienne liste <code>_sql_constraints = [(nom, définition, message)]</code> ne fait
+                    plus rien : au <code>-u</code>, le journal affiche
+                    <code>Model attribute '_sql_constraints' is no longer supported, please define models.Constraint on the model.</code>,
+                    le module se charge, et aucune contrainte n'apparaît dans PostgreSQL. C'est déjà le cas en 19 ;
+                    un module plus ancien porté tel quel perd donc ses contraintes sans erreur.</p>
+                <p>Ce script, passé à <code>odoo-bin shell</code>, provoque les deux violations dans des points de
+                    sauvegarde et affiche le message que la contrainte associe à l'erreur :</p>
+<pre class="language-python"><code class="language-python"># essai.py
+import psycopg2
+Partner = env['res.partner']
+print(Partner.search_count([('ref', '=', False)]), "contacts sans référence : NULL n'entre pas en conflit")
+try:
+    with env.cr.savepoint():
+        Partner.create({'name': 'Doublon', 'ref': 'CLI-001'})
+except psycopg2.Error as e:
+    print(type(e).__name__, '|', e.diag.constraint_name)
+    print(Partner._sql_error_to_message(e))
+try:
+    with env.cr.savepoint():
+        env['product.template'].search([], limit=1).list_price = -5
+        env.flush_all()
+except psycopg2.Error as e:
+    print(type(e).__name__, '|', e.diag.constraint_name)
+    print(env['product.template']._sql_error_to_message(e))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : UniqueViolation sur res_partner_ref_uniq et CheckViolation sur product_template_list_price_positive, avec les messages du module" loading="lazy"/>
+                    <figcaption>Les deux contraintes refusent l'écriture ; les 41 contacts sans référence ne gênent pas l'unicité.</figcaption>
+                </figure>
+                <p>Deux leçons dans cette sortie. D'abord, <code>UNIQUE</code> laisse passer autant de
+                    <code>NULL</code> qu'on veut : un champ vide n'est jamais un doublon. Ensuite, en Python, la
+                    violation remonte <strong>brute</strong> (<code>psycopg2.errors.UniqueViolation</code>) :
+                    c'est la couche HTTP qui la convertit en message pour l'écran. Le <code>flush_all()</code> envoie
+                    l'affectation à PostgreSQL à l'intérieur du point de sauvegarde, là où l'erreur est attrapée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. UNIQUEINDEX ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Quand <code>UNIQUE</code> ne suffit pas : <code>models.UniqueIndex</code></h2>
+                <p><code>UNIQUE(ref)</code> accepte <code>CLI-001</code> et <code>cli-001</code> côte à côte, et
+                    compte les contacts archivés. Pour une unicité sur une <strong>expression</strong> ou sur une
+                    partie des lignes, il faut un index unique, que <code>models.UniqueIndex</code> déclare avec le
+                    même genre de message :</p>
+<pre class="language-python"><code class="language-python">class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    _ref_ci_uniq = models.UniqueIndex(
+        "(lower(ref)) WHERE active IS TRUE",
+        "Cette référence interne est déjà utilisée par un autre contact.",
+    )</code></pre>
+                <p>La définition est ce qui suit <code>CREATE UNIQUE INDEX … ON res_partner</code>. Après
+                    <code>-u</code>, PostgreSQL contient :</p>
+<div class="out">CREATE UNIQUE INDEX res_partner_ref_ci_uniq ON public.res_partner USING btree (lower((ref)::text)) WHERE (active IS TRUE)</div>
+                <p>L'ancienne contrainte <code>res_partner_ref_uniq</code> a disparu d'elle-même : le journal du
+                    <code>-u</code> affiche
+                    <code>Deleting … (mon_contraintes.constraint_res_partner_ref_uniq)</code>. Donne une
+                    <strong>nouvelle</strong> clé à l'index plutôt que de réutiliser <code>_ref_uniq</code> : c'est
+                    ce changement de nom qui fait supprimer l'ancienne. Rejoué dans le shell, <code>cli-001</code>
+                    est refusé (<code>UniqueViolation | res_partner_ref_ci_uniq</code>), tandis qu'un contact
+                    <strong>archivé</strong> avec <code>CLI-001</code> est accepté. À l'écran, sur la fiche Azure
+                    Interior, onglet <em>Ventes &amp; Achats</em>, champ <em>Référence</em> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Dialogue Erreur de validation : The operation cannot be completed: Cette référence interne est déjà utilisée par un autre contact." loading="lazy"/>
+                    <figcaption>À l'enregistrement, le message du module, précédé de « The operation cannot be completed: ».</figcaption>
+                </figure>
+                <p>Le préfixe vient du cœur (<code>odoo/http/retrying.py</code>) ; seul le texte qui suit est le
+                    tien, écris-le donc comme une phrase complète, dans la langue de tes utilisateurs. Deux autres
+                    formes utiles se trouvent dans le code d'Odoo 20 lui-même :</p>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Exemple du cœur</th></tr></thead>
+                    <tbody>
+                        <tr><td>une seule variante active par combinaison</td><td><code>product.product</code> : <code>UniqueIndex("(product_tmpl_id, combination_indices) WHERE active IS TRUE")</code></td></tr>
+                        <tr><td>traiter deux <code>NULL</code> comme égaux</td><td><code>res.currency.rate</code> : <code>UniqueIndex('(currency_id, company_id, name) NULLS NOT DISTINCT', "…")</code></td></tr>
+                    </tbody>
+                </table>
+                <p><code>NULLS NOT DISTINCT</code> répond au cas d'un taux « sans société » : sans cette clause,
+                    deux taux du même jour avec <code>company_id</code> vide ne seraient pas des doublons. La
+                    clause demande PostgreSQL 15 ou plus ; Odoo 20 exige de toute façon PostgreSQL 16.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. DOUBLONS EXISTANTS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les doublons déjà en base</h2>
+                <p>Une contrainte ajoutée à une table déjà remplie doit être vraie pour toutes les lignes
+                    existantes. Sur la base d'essai, deux sociétés de la démo, Acme Corporation et Azure Interior,
+                    portaient la même référence <code>CLI-001</code> avant l'installation du module :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Journal d'installation : ERROR Constraint not added, Key (ref)=(CLI-001) is duplicated, puis Modules loaded et code retour 0" loading="lazy"/>
+                    <figcaption>Une ligne ERROR au milieu du journal, puis « Modules loaded » et un code retour 0.</figcaption>
+                </figure>
+
+                <div class="pitfall-box">
+                    <h4>Installé, mais sans la contrainte</h4>
+                    <p>Odoo n'interrompt pas l'installation : le module passe à l'état installé, la contrainte
+                        <code>CHECK</code> est créée, l'<code>UNIQUE</code> ne l'est pas. Le modèle
+                        <code>ir.model.constraint</code> liste pourtant les deux : ne t'y fie pas, interroge
+                        <code>pg_constraint</code>. Dans un script de déploiement qui ne regarde que le code retour,
+                        rien ne signale le trou.</p>
+                </div>
+
+                <p>Trouve les valeurs en cause, corrige-les, puis relance un <code>-u</code> :</p>
+<pre class="language-python"><code class="language-python"># doublons.py
+env.cr.execute("""
+    SELECT ref, array_agg(id ORDER BY id) FROM res_partner
+    WHERE ref IS NOT NULL GROUP BY ref HAVING count(*) &gt; 1
+""")
+print(env.cr.fetchall())</code></pre>
+<div class="out">[('CLI-001', [10, 16])]</div>
+                <p>Une fois la référence d'Azure Interior (id 16) passée à <code>CLI-002</code>, <code>-u mon_contraintes</code> crée la
+                    contrainte. Pour le vérifier, compare le catalogue de PostgreSQL et ce qu'Odoo a enregistré :</p>
+<pre class="language-python"><code class="language-python"># voir_contraintes.py
+for table in ('res_partner', 'product_template'):
+    env.cr.execute("""SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+                      WHERE conrelid = %s::regclass AND contype IN ('u', 'c') ORDER BY conname""", [table])
+    for row in env.cr.fetchall():
+        print(*row)
+for c in env['ir.model.constraint'].search([('module.name', '=', 'mon_contraintes')]):
+    print(c.name, c.type, c.model.model)</code></pre>
+<div class="out">res_partner_check_name CHECK (((((type)::text = 'contact'::text) AND (name IS NOT NULL)) OR ((type)::text &lt;&gt; 'contact'::text)))
+res_partner_ref_uniq UNIQUE (ref)
+product_template_list_price_positive CHECK ((list_price &gt;= (0)::numeric))
+res_partner_ref_uniq u res.partner
+product_template_list_price_positive u product.template</div>
+                <p>Les trois premières lignes viennent de PostgreSQL, les deux dernières d'Odoo. Avant la
+                    correction, la ligne <code>res_partner_ref_uniq UNIQUE (ref)</code> manquait, alors que les deux
+                    lignes d'<code>ir.model.constraint</code> étaient déjà là.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li><code>_nom = models.Constraint('UNIQUE(…)' ou 'CHECK(…)', "message")</code> ; <code>_sql_constraints</code> n'est plus lu.</li>
+                    <li><code>models.UniqueIndex</code> pour une expression (<code>lower(ref)</code>), une condition (<code>WHERE active IS TRUE</code>) ou <code>NULLS NOT DISTINCT</code>.</li>
+                    <li>En Python, l'erreur est brute (<code>UniqueViolation</code>) ; à l'écran, ton message suit « The operation cannot be completed: ».</li>
+                    <li>Doublons existants : installation réussie, contrainte absente. Vérifie <code>pg_constraint</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/methodes-boutons-odoo-20-182">Agir en Odoo 20 : méthodes, boutons et contraintes</a> — contraintes SQL et contraintes Python <code>@api.constrains</code> dans un vrai module.</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — le <code>-u</code> qui pose ou recrée tes contraintes.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour chercher et corriger les doublons avant l'installation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, un module
+                    d'exemple), en console, à l'installation et dans le navigateur ; branche 19.0 publique relue le
+                    même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/table_objects.py" target="_blank" rel="noopener"><code>odoo/orm/table_objects.py</code></a> : <code>Constraint</code>, <code>Index</code>, <code>UniqueIndex</code>, nommage en base</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/model_classes.py" target="_blank" rel="noopener"><code>odoo/orm/model_classes.py</code></a> : l'avertissement sur <code>_sql_constraints</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/registry.py" target="_blank" rel="noopener"><code>odoo/orm/registry.py</code></a> : <code>post_constraint</code>, l'échec journalisé sans arrêt</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

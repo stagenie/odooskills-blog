@@ -1,0 +1,323 @@
+<!--
+Article — Dates et fuseaux horaires en Odoo 20 : context_today et zoneinfo
+Série « Astuces dev Odoo 20 » (blog Développement) — AT15
+Date : 2026-10-21
+Slug : dates-fuseaux-horaires-odoo
+Mot-clé cible : odoo context_today, odoo timezone, odoo pytz zoneinfo, odoo heure décalée, context_timestamp
+Tags : intermediaire, framework-orm, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Utilisateur du shell : OdooBot, tz Europe/Brussels (admin et demo : Europe/Brussels, portal : aucun).
+  Relevés (odoo-bin shell, sorties collées telles quelles) :
+   heure_base.py → en base 2026-09-07 06:16:00 ; utilisateur 2026-09-07 08:16:00+02:00 ; fuseau Europe/Brussels (sale.order 2, S00002).
+   context_today.py → fuseau Europe/Brussels ; Date.today() 2026-10-21 ; context_today(order, 22:30 UTC) 2026-10-22 ;
+     with_context(tz='America/New_York') 2026-10-21.
+   zoneinfo_demo.py → type ZoneInfo, key Europe/Brussels ; 09:00+02:00 -> 07:00:00 ; AttributeError 'ZoneInfo' object has no attribute 'localize' ;
+     ValueError Datetime field expects a naive datetime ; écrit 2026-10-22 07:00:00 (non commité) ;
+     ImportError cannot import name 'utc' from 'odoo.tools.date_utils'.
+   action_serveur.py (ir.actions.server state=code, run sur S00002) → « S00002 : 2026-09-07 06:16:00 en base, 07/09/2026 08:16 à Bruxelles » (ir_logging) ;
+     version .localize() → ValueError AttributeError("'ZoneInfo' object has no attribute 'localize'") while evaluating.
+   Playwright, profil admin (tz Europe/Brussels), liste des devis filtrée S00002 :
+     navigateur timezone_id Europe/Brussels → « 7 sept., 08:16 » ; timezone_id America/New_York → « 7 sept., 02:16 ».
+  Code 20.0 relu :
+   odoo/orm/fields_temporal.py:133-138 (Date.today = date.today()), :141-156 (context_today, env.tz), :221 (Datetime.now),
+     :226-244 (context_timestamp), :259 (ValueError naive datetime) ;
+   odoo/orm/environments.py:315-323 (env.tz : context tz, sinon user.tz, ZoneInfo, défaut UTC) ;
+   odoo/_monkeypatches/__init__.py:57-59 (TZ=UTC pour le processus) ;
+   odoo/addons/base/models/ir_actions.py:133 ('timezone': ZoneInfo) ;
+   web/static/src : aucun luxon Settings.defaultZone posé hors calendrier (grep) → fuseau du navigateur (prouvé Playwright) ;
+   addons/stock_landed_costs/models/stock_landed_cost.py:34 (default=fields.Date.context_today), addons/sale/models/sale_order.py:122 (default=fields.Datetime.now) ;
+   requirements.txt : pas de pytz (seul tzdata win32, l.54).
+  Écarts 19→20 confirmés contre la 19.0 publique (raw.githubusercontent, 21/10) :
+   odoo/orm/environments.py:291 `return pytz.timezone(timezone)` ; odoo/addons/base/models/ir_actions.py:14 `from pytz import timezone`, :148 ;
+   odoo/tools/date_utils.py:20 `utc = pytz.utc` ; requirements.txt:80 `pytz` ; fields_temporal.py:133,227 pytz.utc.localize.
+   Inchangé : ValueError sur datetime avec fuseau (19 fields_temporal.py:244).
+  Hors Odoo : pytz 2026.3 (venv) → datetime(2026,10,22,9).replace(tzinfo=pytz.timezone('Europe/Brussels')) = +00:18 ; localize = +02:00 ; tz.zone.
+  Défaut appelable : odoo/orm/models.py:1354 defaults[name] = field.default(self) ; patch_init appelé odoo/init.py:33.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Dates et fuseaux horaires en Odoo 20 : context_today et zoneinfo</h1>
+                <p class="lead mt-3 text-white">Une heure décalée de deux heures, une date qui vaut hier après 22 h,
+                    un <code>.localize()</code> qui plante depuis la migration : en Odoo 20, tout passe par
+                    <code>context_today</code>, <code>context_timestamp</code> et un fuseau <code>zoneinfo</code>.
+                    Pytz est sorti du cœur.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration avec Ventes et Inventaire, en console (<code>odoo-bin shell</code>) et dans le
+                        navigateur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Tu veux…</th><th>Écris</th></tr></thead>
+                            <tbody>
+                                <tr><td>la date du jour de l'utilisateur (champ <code>Date</code>)</td><td><code>fields.Date.context_today(self)</code>, pas <code>fields.Date.today()</code></td></tr>
+                                <tr><td>l'instant présent (champ <code>Datetime</code>)</td><td><code>fields.Datetime.now()</code> : UTC, sans fuseau</td></tr>
+                                <tr><td>l'heure locale d'un <code>Datetime</code>, en Python</td><td><code>fields.Datetime.context_timestamp(self, dt)</code></td></tr>
+                                <tr><td>enregistrer une heure locale</td><td><code>dt.replace(tzinfo=self.env.tz).astimezone(UTC).replace(tzinfo=None)</code></td></tr>
+                                <tr><td>le fuseau</td><td><code>self.env.tz</code>, un <code>ZoneInfo</code> : plus de <code>pytz</code>, plus de <code>.localize()</code></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. L'HEURE DÉCALÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Pourquoi l'heure est « décalée »</h2>
+                <p>Un champ <code>Datetime</code> est stocké en <strong>UTC, sans fuseau</strong> (un
+                    <code>datetime</code> « naïf »). Le devis S00002 de la démo, lu dans le shell :</p>
+<pre class="language-python"><code class="language-python"># heure_base.py
+from odoo import fields
+
+order = env['sale.order'].browse(2)
+print("en base     :", order.date_order)
+print("utilisateur :", fields.Datetime.context_timestamp(order, order.date_order))
+print("fuseau      :", order.env.tz)</code></pre>
+<div class="out">en base     : 2026-09-07 06:16:00
+utilisateur : 2026-09-07 08:16:00+02:00
+fuseau      : Europe/Brussels</div>
+                <p><code>context_timestamp</code> convertit vers <code>self.env.tz</code> : le fuseau du contexte
+                    (clé <code>tz</code>), sinon celui du profil de l'utilisateur, sinon UTC. Dans le shell,
+                    l'utilisateur est OdooBot, réglé sur Europe/Brussels dans la démo.</p>
+                <p>Le client web, lui, ne lit pas ce profil pour afficher l'heure : il convertit dans le fuseau du
+                    <strong>navigateur</strong>. Même utilisateur, même devis, deux navigateurs réglés différemment :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Liste des devis Odoo 20 : S00002 affiché 7 sept., 08:16 avec un navigateur à Bruxelles et 7 sept., 02:16 avec un navigateur à New York" loading="lazy"/>
+                    <figcaption>La même valeur en base (06:16 UTC) s'affiche 08:16 ou 02:16 selon le fuseau du navigateur.</figcaption>
+                </figure>
+                <p>Deux conséquences. À l'écran, un écart d'heure entre deux postes peut venir du seul réglage
+                    de leur fuseau, sans rien dans le code. Et tout ce que ton code met en forme <em>sans</em>
+                    navigateur (courriel, PDF, message dans le chatter) doit passer par
+                    <code>context_timestamp</code> : sinon tu écris l'heure UTC.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CONTEXT_TODAY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>context_today</code> plutôt que <code>Date.today()</code></h2>
+                <p>Au démarrage, Odoo force le fuseau de son processus à UTC. <code>fields.Date.today()</code>
+                    renvoie donc la date <strong>UTC</strong> du serveur. <code>fields.Date.context_today(record)</code>
+                    renvoie la date vue dans le fuseau de l'utilisateur. Entre 22 h et minuit UTC, en heure d'été
+                    à Bruxelles, les deux ne tombent pas le même jour. Le second argument permet de le
+                    vérifier sans attendre le soir :</p>
+<pre class="language-python"><code class="language-python"># context_today.py
+from datetime import datetime
+from odoo import fields
+
+order = env['sale.order'].browse(2)
+print("fuseau         :", order.env.tz)
+print("Date.today()   :", fields.Date.today())
+soir = datetime(2026, 10, 21, 22, 30)      # 22:30 UTC, sans fuseau
+print("context_today  :", fields.Date.context_today(order, soir))
+ny = order.with_context(tz='America/New_York')
+print("à New York     :", fields.Date.context_today(ny, soir))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : Date.today() 2026-10-21, context_today 2026-10-22 à Bruxelles, 2026-10-21 à New York pour 22:30 UTC" loading="lazy"/>
+                    <figcaption>À 22:30 UTC, il est déjà le 22 à Bruxelles et encore le 21 à New York.</figcaption>
+                </figure>
+                <p><code>Date.today()</code> ne prend pas d'instant en argument : elle donne la date UTC du moment
+                    où le script tourne (ici en fin de matinée). Le fuseau suit le contexte :
+                    <code>with_context(tz=…)</code> suffit à changer de point de vue. Pour
+                    une valeur par défaut, passe la fonction <strong>sans parenthèses</strong> : Odoo l'appelle avec
+                    le modèle quand il calcule les valeurs par défaut, comme le fait le cœur.</p>
+<pre class="language-python"><code class="language-python">date = fields.Date(default=fields.Date.context_today)        # date du jour de l'utilisateur
+date_order = fields.Datetime(default=fields.Datetime.now)    # instant présent, en UTC</code></pre>
+                <p>Pour un <code>Datetime</code>, garde <code>now</code> : l'instant est le même partout, seul
+                    l'affichage change.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. ZONEINFO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>zoneinfo</code> : le fuseau en Odoo 20</h2>
+                <p>En Odoo 19, <code>self.env.tz</code> renvoyait un objet <code>pytz</code>. En Odoo 20, c'est un
+                    <code>ZoneInfo</code> de la bibliothèque standard, et <code>pytz</code> n'est plus dans les
+                    dépendances d'Odoo (<code>requirements.txt</code>). Le cas courant : un rendez-vous saisi à 9 h,
+                    heure de Bruxelles, à enregistrer dans un <code>Datetime</code>.</p>
+<pre class="language-python"><code class="language-python"># zoneinfo_demo.py
+from datetime import datetime, UTC
+
+order = env['sale.order'].browse(2)
+tz = env.tz
+print(type(tz).__name__, tz.key)
+rdv = datetime(2026, 10, 22, 9, 0).replace(tzinfo=tz)   # 9 h à Bruxelles
+print(rdv, "->", rdv.astimezone(UTC).replace(tzinfo=None))
+try:
+    tz.localize(datetime(2026, 10, 22, 9, 0))           # réflexe pytz
+except AttributeError as e:
+    print("AttributeError:", e)
+try:
+    order.date_order = rdv                              # datetime avec fuseau
+except ValueError as e:
+    print("ValueError:", e)
+order.date_order = rdv.astimezone(UTC).replace(tzinfo=None)
+print("écrit :", order.date_order)
+try:
+    from odoo.tools.date_utils import utc
+except ImportError as e:
+    print("ImportError:", e)</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : ZoneInfo Europe/Brussels, 09:00+02:00 converti en 07:00, AttributeError sur localize, ValueError sur un datetime avec fuseau, ImportError sur date_utils.utc" loading="lazy"/>
+                    <figcaption>La bonne conversion, puis les trois réflexes Odoo 19 qui échouent.</figcaption>
+                </figure>
+                <p>Ligne par ligne :</p>
+                <ul>
+                    <li>Le nom du fuseau se lit dans <code>tz.key</code> (avec pytz, c'était <code>tz.zone</code>).</li>
+                    <li>Avec <code>zoneinfo</code>, <code>.replace(tzinfo=tz)</code> donne le bon décalage (+02:00 ici,
+                        heure d'été). Avec pytz, le même <code>.replace()</code> donnait <code>+00:18</code>, d'où le
+                        <code>.localize()</code> obligatoire ; le <code>ZoneInfo</code> n'a pas cette méthode.</li>
+                    <li>Un champ <code>Datetime</code> refuse une valeur avec fuseau : repasse en UTC, puis
+                        <code>.replace(tzinfo=None)</code>. Cette règle n'a pas changé depuis la 19.</li>
+                    <li><code>date_utils.utc</code> a disparu : prends <code>UTC</code> dans <code>datetime</code>
+                        (Python 3.11 et plus).</li>
+                </ul>
+
+                <div class="pitfall-box">
+                    <h4>Action serveur : <code>timezone</code> n'est plus pytz</h4>
+                    <p>Dans le code d'une action serveur, le nom <code>timezone</code> est désormais
+                        <code>ZoneInfo</code> (en 19 : <code>pytz.timezone</code>). Un code repris de la 19 avec
+                        <code>.localize()</code> échoue à l'exécution ; la forme <code>zoneinfo</code> passe. Exécutés
+                        sur S00002 : le code ci-dessous, puis le même avec
+                        <code>local = bxl.localize(record.date_order)</code> en deuxième ligne :</p>
+<pre class="language-python"><code class="language-python">bxl = timezone('Europe/Brussels')
+local = record.date_order.replace(tzinfo=datetime.timezone.utc).astimezone(bxl)
+log("%s : %s en base, %s à Bruxelles" % (record.name, record.date_order, local.strftime('%d/%m/%Y %H:%M')))</code></pre>
+<div class="out">zoneinfo -> S00002 : 2026-09-07 06:16:00 en base, 07/09/2026 08:16 à Bruxelles
+localize -> AttributeError("'ZoneInfo' object has no attribute 'localize'") while evaluating</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>En base, un <code>Datetime</code> est en UTC sans fuseau ; le client web l'affiche dans le fuseau du navigateur.</li>
+                    <li>Date du jour : <code>fields.Date.context_today(self)</code> ; en valeur par défaut, sans parenthèses.</li>
+                    <li>Heure locale en Python (courriel, PDF, chatter) : <code>fields.Datetime.context_timestamp(self, dt)</code>.</li>
+                    <li>Odoo 20 : <code>self.env.tz</code> et <code>timezone</code> sont des <code>ZoneInfo</code> ; <code>.replace(tzinfo=…)</code> au lieu de <code>.localize()</code>, <code>tz.key</code> au lieu de <code>tz.zone</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a> — l'article pilier : pytz, Binary, sécurité et les autres ruptures.</li>
+                    <li><a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a> — quand le <code>import pytz</code> d'un module porté ne passe plus.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour rejouer ces scripts sur ta base.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Scripts exécutés le 21/10/2026 sur Odoo 20.0 Community (base de démonstration), en
+                    console et dans le navigateur ; branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_temporal.py" target="_blank" rel="noopener"><code>odoo/orm/fields_temporal.py</code></a> : <code>Date.today</code>, <code>context_today</code>, <code>Datetime.now</code>, <code>context_timestamp</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/environments.py" target="_blank" rel="noopener"><code>odoo/orm/environments.py</code></a> : <code>env.tz</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_actions.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_actions.py</code></a> : contexte d'évaluation des actions serveur</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
