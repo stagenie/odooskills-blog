@@ -1,0 +1,285 @@
+<!--
+Article — Odoo 20 mot de passe oublié : réinitialiser l'admin en shell ou SQL
+Série « Astuces dev Odoo 20 » (blog Développement) — AT19
+Date : 2026-10-21
+Slug : mot-de-passe-admin-oublie-odoo
+Mot-clé cible : odoo mot de passe oublié, odoo reset admin password, odoo shell password, res_users password sql
+Tags : debutant, infrastructure, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  serveur local lancé sur cette base ; mots de passe de démonstration Demo-Odoo20-a / -b / -c uniquement.
+  Relevés :
+   psql : 7 lignes res_users, mots de passe stockés '$pbkdf2-sha512$600000$…' ; modules auth_totp, auth_totp_mail, auth_passkey installés d'office.
+   qui_est_admin.py (shell) : env.ref('base.group_system').all_user_ids → « 2 admin Mitchell Admin True ».
+   reset sans env.cr.commit() → « fait pour admin », puis /web/session/authenticate admin/Demo-Odoo20-a → AccessDenied,
+     journal « Login failed for login:admin from 127.0.0.1 » ; l'ancien mot de passe admin marche encore.
+   reset avec env.cr.commit() → connexion OK (uid 2, Mitchell Admin) SANS redémarrer le serveur ; colonne = '$pbkdf2-sha512$600000$…'.
+   SQL UPDATE res_users SET password='Demo-Odoo20-b' → stocké en clair, connexion OK (journal « Login successful … »),
+     puis la colonne vaut '$pbkdf2-sha512$600000$…' (réécrite à la connexion).
+   passlib (venv Odoo, 1.7.4) CryptContext(['pbkdf2_sha512'], rounds=600_000).hash('Demo-Odoo20-c') → UPDATE → connexion OK.
+   2FA : totp_secret posé par shell → totp_enabled True ; /web/session/authenticate → uid None ; /web/login → /web/login/totp
+     (capture) ; UPDATE res_users SET totp_secret = NULL → connexion OK.
+  Code 20.0 relu :
+   odoo/addons/base/models/res_users.py:90 (MIN_ROUNDS = 600_000), :205-207 (password calculé, inverse _set_password),
+   :270-285 (init : mots de passe hors format MCF repassés au hachage), :287-299 (_set_password / _set_encrypted_password),
+   :365-374 (_check_credentials : verify_and_update, remplacement du hachage), :416-428 (_set_new_password refuse son propre compte),
+   :815, :818 (journal Login failed / successful), :1236-1254 (_crypt_context : pbkdf2_sha512 + plaintext, deprecated auto,
+   rounds = max(MIN_ROUNDS, ICP password.hashing.rounds)) ;
+   odoo/cli/shell.py:146-148 (rollback avant et après la console) ;
+   addons/auth_totp/__manifest__.py:19 (auto_install), models/res_users.py:33 (totp_secret), :38-41 (colonne), :43-47 (_mfa_type) ;
+   addons/web/controllers/session.py:36-55 (authenticate) ; requirements.txt:30 (passlib==1.7.4) ;
+   addons/web/static/src/public/database_manager.create_form.qweb.html:10-12 (champ login libellé « Email »).
+  Écart 19→20 : aucun retenu. 19.0 publique (raw.githubusercontent, relue le 21/10) : MIN_ROUNDS 600_000 (:79), même init (:287),
+   même CryptContext ['pbkdf2_sha512', 'plaintext'] (:1206, seule différence get_param → get_int pour les rounds, :1211),
+   shell.py rollback identique (:147, :149), auth_totp totp_secret identique (:33, :41).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Odoo 20 mot de passe oublié : réinitialiser l'admin en shell ou SQL</h1>
+                <p class="lead mt-3 text-white">L'écran de connexion refuse l'administrateur et plus personne n'a ses
+                    droits pour changer son mot de passe. Il te reste l'accès au serveur : quatre lignes dans
+                    <code class="text-white">odoo-bin shell</code>, ou une requête SQL, et tu te reconnectes sans
+                    redémarrer Odoo.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau débutant · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration avec un serveur lancé. Les mots de passe montrés (<code>Demo-Odoo20-a</code>,
+                        <code>-b</code>, <code>-c</code>) sont des valeurs de démonstration : choisis les tiens.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li><strong>Shell</strong> (le plus sûr) : <code>env['res.users'].search([('login', '=', 'admin')]).password = 'nouveau'</code>
+                                puis <strong><code>env.cr.commit()</code></strong>, dans <code>odoo-bin shell -d ma_base</code>.</li>
+                            <li><strong>SQL</strong> (sans Python) : <code>UPDATE res_users SET password = 'nouveau' WHERE login = 'admin';</code>
+                                Odoo accepte ce texte en clair et le remplace par un hachage à la première connexion.</li>
+                            <li>Pas de redémarrage : la connexion marche tout de suite.</li>
+                            <li>Si l'écran demande ensuite un code de vérification, la double authentification est active :
+                                <code>UPDATE res_users SET totp_secret = NULL WHERE login = 'admin';</code></li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. SHELL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Par le shell : retrouver l'admin, puis changer son mot de passe</h2>
+                <p>Avant de changer un mot de passe, vérifie quel compte est administrateur : son identifiant n'est pas
+                    toujours <code>admin</code>, surtout sur une base créée depuis le gestionnaire de bases, où
+                    l'identifiant est souvent une adresse électronique. Le groupe
+                    <code>base.group_system</code> (rôle Administrateur) donne la réponse. Le second script change le
+                    mot de passe. Les deux passent à <code>odoo-bin shell</code> par redirection d'entrée, avec le même
+                    fichier de configuration que ton serveur :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : le script qui_est_admin.py affiche 2 admin Mitchell Admin True, puis reset_admin.py affiche fait pour admin" loading="lazy"/>
+                    <figcaption>Un seul administrateur actif sur la base de démonstration, l'utilisateur 2 ; son mot de passe est changé et validé.</figcaption>
+                </figure>
+                <p>Ce qui se passe à l'affectation <code>admin.password = '…'</code> : le champ
+                    <code>password</code> de <code>res.users</code> est un champ calculé dont la méthode inverse,
+                    <code>_set_password</code>, hache la valeur avant de l'écrire en base. Tu ne manipules jamais le
+                    hachage toi-même. Le shell tourne en super-utilisateur, il peut donc modifier l'administrateur
+                    sans connaître l'ancien mot de passe.</p>
+                <p>Le serveur peut rester allumé : la connexion avec <code>Demo-Odoo20-a</code> a été acceptée
+                    aussitôt après le script, et l'ancien mot de passe refusé. En production, lance plutôt le shell
+                    avec <code>--no-http</code> (comme ici) pour ne pas ouvrir un second port HTTP à côté du
+                    service.</p>
+                <p>Pour un autre utilisateur, remplace simplement le login dans le <code>search</code>. Dans
+                    l'interface, un administrateur qui se connecte peut aussi le faire depuis la fiche de
+                    l'utilisateur ; le shell sert quand plus personne ne peut entrer.</p>
+
+                <div class="pitfall-box">
+                    <h4>Sans <code>env.cr.commit()</code>, rien n'est enregistré</h4>
+                    <p><code>odoo-bin shell</code> annule la transaction à sa sortie. Le même script sans la ligne
+                        <code>env.cr.commit()</code> affiche bien <code>fait pour admin</code>, mais la connexion avec
+                        le nouveau mot de passe échoue (<code>AccessDenied</code>, et dans le journal
+                        <code>Login failed for login:admin from 127.0.0.1</code>) : c'est toujours l'ancien qui
+                        marche. Pas de message, pas d'avertissement : le <code>print</code> te trompe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. SQL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. En SQL : le mot de passe en clair, haché à la connexion</h2>
+                <p>Sans accès au Python d'Odoo (une base restaurée sur un autre serveur, un conteneur dont seul
+                    PostgreSQL est joignable), une requête suffit. La colonne s'appelle <code>password</code>,
+                    dans la table <code>res_users</code> :</p>
+<pre class="language-sql"><code class="language-sql">UPDATE res_users SET password = 'Demo-Odoo20-b' WHERE login = 'admin';</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal psql : UPDATE 1, mot de passe lisible en clair dans res_users, journal Login successful, puis la colonne commence par pbkdf2-sha512 600000" loading="lazy"/>
+                    <figcaption>Stocké en clair juste après l'<code>UPDATE</code>, haché dès la première connexion réussie.</figcaption>
+                </figure>
+                <p>Pourquoi ça marche : Odoo vérifie les mots de passe avec une <code>CryptContext</code> de
+                    <code>passlib</code> qui connaît deux formats, <code>pbkdf2_sha512</code> et
+                    <code>plaintext</code>, ce dernier marqué « déprécié ». Un mot de passe en clair est donc reconnu,
+                    puis, la connexion réussie, remplacé par un hachage <code>pbkdf2-sha512</code> à 600 000 tours.
+                    La dernière requête le montre.</p>
+                <p>Tant que personne ne s'est connecté, le mot de passe reste <strong>lisible</strong> dans la table,
+                    et dans toute sauvegarde faite entre-temps. Pour ne jamais l'écrire en clair, calcule le hachage
+                    toi-même avec le <code>passlib</code> du venv d'Odoo, et colle-le dans l'<code>UPDATE</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python -c "from passlib.context import CryptContext; print(CryptContext(['pbkdf2_sha512'], pbkdf2_sha512__rounds=600_000).hash('Demo-Odoo20-c'))"</code></pre>
+<div class="out">$pbkdf2-sha512$600000$D6E0hpASImSs1VrL.b93zg$XcuekzBtCmvvVk7bt9n0q7TnEx0f/BB2u5qojAnFIojHwec2vr9ute128Q2yXEWESoNQuOJ.KXsVR01Dkg5dSA</div>
+<pre class="language-sql"><code class="language-sql">UPDATE res_users SET password = '$pbkdf2-sha512$600000$D6E0hpASImSs1VrL.b93zg$XcuekzBtCmvvVk7bt9n0q7TnEx0f/BB2u5qojAnFIojHwec2vr9ute128Q2yXEWESoNQuOJ.KXsVR01Dkg5dSA'
+WHERE login = 'admin';</code></pre>
+                <p>Connexion acceptée avec <code>Demo-Odoo20-c</code>. Le nombre de tours (600 000) est le minimum
+                    fixé dans <code>res_users.py</code> ; un paramètre système <code>password.hashing.rounds</code>
+                    plus élevé l'augmente pour les prochains hachages. Tape cette requête dans la console
+                    <code>psql</code> : passée par <code>psql -c "…"</code>, les <code>$</code> du hachage seraient
+                    interprétés par Bash.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. 2FA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le mot de passe passe, mais Odoo demande un code</h2>
+                <p>Le module <code>auth_totp</code> (double authentification) s'installe automatiquement avec le
+                    client web. Si l'administrateur l'avait activée et n'a plus son téléphone, le bon mot de passe
+                    mène à un second écran :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran de connexion Odoo 20 : Enter verification code, Check your Authenticator app for your code, case Ne plus demander sur cet appareil, bouton Se connecter" loading="lazy"/>
+                    <figcaption>L'écran <code>/web/login/totp</code> qui suit un mot de passe correct quand la double authentification est active.</figcaption>
+                </figure>
+                <p>Le secret est rangé dans la colonne <code>totp_secret</code> de <code>res_users</code>. La
+                    vider désactive la double authentification pour ce compte :</p>
+<pre class="language-sql"><code class="language-sql">UPDATE res_users SET totp_secret = NULL WHERE login = 'admin';</code></pre>
+                <p>Après cette requête, la connexion avec le seul mot de passe aboutit de nouveau. Pense à réactiver
+                    la double authentification une fois l'accès retrouvé.</p>
+                <p>À ne pas confondre : le <strong>mot de passe maître</strong> (<code>admin_passwd</code> du
+                    fichier de configuration) protège le gestionnaire de bases, pas la connexion à une base. Le changer
+                    ne rouvre pas l'accès à l'administrateur, et inversement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Shell : <code>user.password = '…'</code> puis <code>env.cr.commit()</code>, sinon tout est annulé à la sortie.</li>
+                    <li>SQL : un mot de passe en clair dans <code>res_users.password</code> est accepté, puis haché à la première connexion.</li>
+                    <li>Pour ne rien laisser en clair, colle un hachage <code>pbkdf2-sha512</code> calculé avec <code>passlib</code>.</li>
+                    <li>Code de vérification demandé : <code>totp_secret = NULL</code> sur le compte.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — l'article pilier : lancer le shell, <code>env</code>, commit et rollback.</li>
+                    <li><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a> — <code>shell</code>, <code>-c</code>, <code>--no-http</code> et les autres.</li>
+                    <li><a href="/blog/developpement-odoo-2/postgresql-pour-le-dev-odoo-psql-select-utiles-dump-propre-sans-casser-sa-base-120">PostgreSQL pour le dev Odoo : psql, SELECT utiles, dump propre</a> — se connecter à la base et faire un dump avant toute requête d'écriture.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, serveur
+                    local), en console, en SQL et dans le navigateur ; branche 19.0 publique relue le même jour
+                    (même mécanisme). Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/res_users.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/res_users.py</code></a> : champ <code>password</code> et son inverse, <code>_crypt_context</code>, remplacement du hachage à la connexion</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/cli/shell.py" target="_blank" rel="noopener"><code>odoo/cli/shell.py</code></a> : annulation de la transaction à la sortie de la console</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/auth_totp/models/res_users.py" target="_blank" rel="noopener"><code>addons/auth_totp/models/res_users.py</code></a> : colonne <code>totp_secret</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

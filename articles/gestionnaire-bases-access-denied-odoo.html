@@ -1,0 +1,327 @@
+<!--
+Article — Gestionnaire de bases Odoo 20 : Access Denied et mot de passe maître
+Série « Astuces dev Odoo 20 » (blog Développement) — AT20
+Date : 2026-10-21
+Slug : gestionnaire-bases-access-denied-odoo
+Mot-clé cible : odoo database creation error access denied, odoo restore / backup access denied, odoo master password, list_db
+Tags : intermediaire, infrastructure, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, serveur dédié (workers = 0, max_cron_threads = 0) lancé avec un fichier
+  de configuration de travail (dbfilter sur la base jetable et ses bases de test, list_db = True, mots de passe maîtres de
+  démonstration Demo-Maitre-20 / Nouveau-Maitre-20). Noms de bases remplacés par ma_base / ma_base_test dans les images
+  (texte de la page réécrit avant capture), chemins locaux et port retirés.
+  Relevés (curl sur /web/database/*, Playwright sur /web/database/manager) :
+   sans admin_passwd → bandeau « Warning, your Odoo database manager is not protected. Please set a master password to secure it. » ;
+   POST /web/database/drop master_pwd=Demo-Maitre-20 (base inexistante) → 422 « Could not drop database. database "…" does not exist »,
+     MAIS le fichier de conf reçoit admin_passwd = $pbkdf2-sha512$600000$… (et une section [colors]) : le 1er mot de passe saisi devient le maître ;
+   mauvais mot de passe : backup → HTTP 403 « Could not backup database. Database management function blocked, bad admin password. » ;
+     create → 403 « Could not create database. Database management function blocked, bad admin password. » ;
+     journal : WARNING … odoo.http: Database management function blocked, bad admin password.
+   bon mot de passe : create → 303 vers /odoo (base de test créée en 9,6 s, sans démo) ; backup zip → 200, application/zip,
+     filename=<base>_<date>.zip ; drop → 303 vers le gestionnaire, base et filestore supprimés.
+   --no-database-list : page « The database manager has been disabled by the administrator », aucune base listée ;
+     backup → 403 « Could not backup database. Database management functions blocked, admin disabled database listing. » ;
+     /web/database/list (jsonrpc) → error AccessDenied, même message.
+   ./odoo-bin --admin_passwd=… → « odoo-bin [--addons-path=PATH,...] server: error: no such option: --admin_passwd ».
+   Réinitialisation : admin_passwd = Nouveau-Maitre-20 en clair + redémarrage → ancien mot de passe 403, nouveau 200 ;
+     conf toujours en clair après usage ; POST change_password → 303, conf réécrite en $pbkdf2-sha512$600000$….
+   Lecture au démarrage : admin_passwd changé dans le fichier serveur lancé → nouveau 403, ancien 200.
+   Fichier de conf en 444 : change_password → 303 sans bandeau, sortie d'erreur « ERROR: couldn't write the config file »,
+     nouveau mot de passe 200 / ancien 403 jusqu'au redémarrage ; après redémarrage : nouveau 403, ancien 200
+     (odoo/tools/config.py:1065-1079, OSError avalée).
+   odoo-bin db -c <conf avec list_db = False, sans admin_passwd> dump <base> <fichier> --format dump → rc 0, « DUMP DB: … format dump with filestore »
+     (odoo/cli/db.py:247-258 appelle odoo.modules.db.dump sans vérification).
+   Liste des bases : avec dbfilter, seules les bases qui correspondent apparaissent (2 sur le serveur PostgreSQL partagé).
+  Code 20.0 relu :
+   addons/web/controllers/database.py:89-121 (_render_template : list_db, insecure = verify_admin_password('admin')),
+     :124-129 (_render_exception : « Could not <verbe> database. <message> », statut http_status de l'exception, 422 par défaut),
+     :132-140 (verify_access : list_db, puis si insecure le mot de passe saisi devient le maître et config.save(['admin_passwd'])),
+     :287-292 (change_password) ;
+   odoo/modules/db.py:240-263 (verify_db_management_enabled, verify_admin_password : les deux messages), :701-728 (list_dbs :
+     db_name sans dbfilter, sinon bases dont le rôle est propriétaire) ; odoo/http/router.py:70-110 (db_list, db_filter) ;
+   odoo/exceptions.py:39-54 (AccessDenied, http_status = 403) ;
+   odoo/tools/config.py:23-25 (pbkdf2_sha512 + plaintext déprécié), :230 (admin_passwd FileOnlyOption, défaut 'admin'),
+     :449-452 (--no-database-list → list_db), :1135-1149 (set/verify_admin_password) ;
+   web/static/src/public/database_manager.qweb.html:35-46 (bandeaux).
+  Écart 19→20 (19.0 publique, raw.githubusercontent, relue le 21/10) : addons/web/controllers/database.py:91 « Database creation
+   error: %s » (idem :108 :123 :147 :163 :175) rendu par _render_template (statut 200) ; odoo/service/db.py:61-64 check_super →
+   AccessDenied() sans message → « Access Denied » (exceptions.py:52) ; :46-53 list_db coupé → AccessDenied() aussi.
+   20 : message explicite + statut 403 (constaté). Non rejoué sur une instance 19 (lecture du source seulement).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Gestionnaire de bases Odoo 20 : Access Denied et mot de passe maître</h1>
+                <p class="lead mt-3 text-white">Créer, sauvegarder ou restaurer une base depuis
+                    <code>/web/database/manager</code> et tomber sur un refus : en Odoo 20, la page dit enfin pourquoi.
+                    Deux causes seulement, <code>list_db</code> coupé ou mauvais mot de passe maître, et chacune se
+                    corrige dans le fichier de configuration.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, serveur lancé
+                        avec son propre fichier de configuration ; mots de passe maîtres de démonstration, base de test
+                        créée, sauvegardée puis supprimée par le gestionnaire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>La page affiche…</th><th>Cause</th><th>Remède</th></tr></thead>
+                            <tbody>
+                                <tr><td><em>The database manager has been disabled by the administrator</em> ou <em>… blocked, admin disabled database listing</em></td><td><code>list_db = False</code> ou <code>--no-database-list</code></td><td><code>list_db = True</code> le temps de l'opération, puis redémarrer</td></tr>
+                                <tr><td><em>… blocked, bad admin password</em></td><td>mot de passe maître faux</td><td>celui de <code>admin_passwd</code> ; oublié : le réécrire dans le fichier et redémarrer</td></tr>
+                                <tr><td>la base n'est pas dans la liste</td><td><code>dbfilter</code>, <code>db_name</code>, propriétaire PostgreSQL</td><td>élargir le filtre</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LIRE LE MESSAGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lis la phrase entière, pas seulement « refusé »</h2>
+                <p>Créer, sauvegarder, restaurer, dupliquer ou supprimer : chaque action du gestionnaire vérifie
+                    d'abord <code>list_db</code>, ensuite le mot de passe maître. Quand l'une
+                    échoue, Odoo 20 réaffiche le gestionnaire avec un bandeau rouge de la forme
+                    <code>Could not &lt;action&gt; database. &lt;raison&gt;</code>, et répond avec le statut HTTP 403.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Gestionnaire de bases Odoo 20 : bandeau rouge Could not backup database. Database management function blocked, bad admin password, au-dessus de la liste des bases" loading="lazy"/>
+                    <figcaption>Sauvegarde demandée avec un mauvais mot de passe maître : la raison est écrite en toutes lettres.</figcaption>
+                </figure>
+                <p>Le serveur écrit la même raison dans son journal, au niveau <code>WARNING</code> :</p>
+<div class="out">WARNING ma_base odoo.http: Database management function blocked, bad admin password.</div>
+                <p>En 19, ces deux refus levaient la même exception sans message : la page disait seulement
+                    <code>Database creation error: Access Denied</code> (ou <code>backup</code>,
+                    <code>restore</code>…), avec un statut 200. En Odoo 20, la raison distingue les deux cas : <em>functions blocked, admin disabled database
+                    listing</em> (au pluriel) pour <code>list_db</code>, <em>function blocked, bad admin
+                    password</em> pour le mot de passe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LIST_DB ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. « Disabled by the administrator » : rallumer <code>list_db</code></h2>
+                <p>L'option <code>list_db</code> (ou <code>--no-database-list</code> en ligne de commande) ne cache
+                    pas seulement la liste : elle coupe tout le gestionnaire. La page n'affiche plus aucune base ni
+                    aucun bouton, et un formulaire envoyé quand même (un <code>curl</code> sur
+                    <code>/web/database/backup</code>, par exemple) est refusé en 403 avec <em>Database management
+                    functions blocked, admin disabled database listing</em>. Ce n'est pas le mot de passe : même le
+                    bon est refusé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Gestionnaire de bases Odoo 20 avec le bandeau The database manager has been disabled by the administrator, sans liste ni bouton" loading="lazy"/>
+                    <figcaption>Serveur lancé avec <code>--no-database-list</code> : plus de liste, plus de boutons.</figcaption>
+                </figure>
+                <p>Cherche l'option dans le fichier de configuration et dans la ligne de commande du service
+                    (unité systemd, <code>command:</code> d'un fichier Compose). Sur un serveur de production : passer
+                    à <code>list_db = True</code>, redémarrer, faire l'opération, remettre <code>False</code> et
+                    redémarrer.</p>
+<pre class="language-ini"><code class="language-ini">[options]
+list_db = True
+dbfilter = ^ma_base
+admin_passwd = $pbkdf2-sha512$600000$…</code></pre>
+                <p>Une sauvegarde de routine n'a pas besoin du gestionnaire : <code>odoo-bin db dump</code> fait la
+                    même archive en ligne de commande, sans mot de passe maître ni <code>list_db</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. MOT DE PASSE MAÎTRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. « Bad admin password » : où vit le mot de passe maître</h2>
+                <p>Le mot de passe maître n'est pas celui de l'utilisateur <code>admin</code> d'une base, ni celui de
+                    PostgreSQL : c'est la clé <code>admin_passwd</code> du fichier de configuration du serveur. Elle
+                    ne se passe <strong>que</strong> par ce fichier :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf --admin_passwd=Demo-Maitre-20</code></pre>
+<div class="out">Usage: odoo-bin [--addons-path=PATH,...] server [options]
+
+odoo-bin [--addons-path=PATH,...] server: error: no such option: --admin_passwd</div>
+                <p>Quand tu le changes par le bouton <em>Set Master Password</em>, Odoo réécrit cette ligne avec une
+                    empreinte <code>$pbkdf2-sha512$600000$…</code> : impossible de la relire. Si personne ne connaît
+                    plus le mot de passe, la marche à suivre est la même partout :</p>
+                <ol>
+                    <li>Ouvre le fichier de configuration du service et remplace la ligne par une valeur en clair :
+                        <code>admin_passwd = Nouveau-Maitre-20</code>.</li>
+                    <li>Redémarre le service : la valeur est lue au démarrage seulement.</li>
+                    <li>Fais ton opération avec ce mot de passe.</li>
+                    <li>Repasse par <em>Set Master Password</em> pour que la ligne redevienne une empreinte.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : après réécriture de admin_passwd en clair et redémarrage, l'ancien mot de passe donne 403, le nouveau 200 ; change_password réécrit la ligne en pbkdf2-sha512" loading="lazy"/>
+                    <figcaption>L'ancien mot de passe ne passe plus (403), le nouveau oui (200) ; la ligne reste en clair jusqu'au changement par le gestionnaire.</figcaption>
+                </figure>
+                <p>Odoo accepte encore la forme en clair mais la tient pour dépréciée : il ne la convertit pas tout
+                    seul dans le fichier. La dernière commande de l'image appelle la route du bouton
+                    (<code>/web/database/change_password</code>) ; dans le navigateur, le bouton fait la même chose.
+</p>
+                <p>Le fichier doit être <strong>modifiable par le compte qui fait tourner Odoo</strong>. Sinon, le
+                    bouton semble réussir : retour au gestionnaire, aucun bandeau, et le nouveau mot de passe marche…
+                    jusqu'au prochain redémarrage. Seule trace, une ligne sur la sortie d'erreur du serveur,
+                    <code>ERROR: couldn't write the config file</code>. Au redémarrage, l'ancien mot de passe revient
+                    et le nouveau prend un <em>bad admin password</em>.</p>
+
+                <div class="pitfall-box">
+                    <h4>Sans <code>admin_passwd</code>, le premier mot de passe tapé devient le maître</h4>
+                    <p>Si la clé est absente, Odoo 20 prend <code>admin</code> par défaut et affiche
+                        <em>Warning, your Odoo database manager is not protected</em>. Dans cet état, la première
+                        action envoyée avec un mot de passe, quel qu'il soit, l'enregistre comme mot de passe maître
+                        et l'écrit dans le fichier de configuration, <strong>même si l'action échoue</strong> : une
+                        suppression d'une base inexistante a suffi à ajouter la ligne <code>admin_passwd =
+                        $pbkdf2-sha512$…</code>. Une faute de frappe à ce moment-là, et le « bon » mot de passe est
+                        refusé ensuite. Pose <code>admin_passwd</code> toi-même avant la première ouverture du
+                        gestionnaire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. BASE ABSENTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. La base n'apparaît pas dans la liste</h2>
+                <p>Pas de refus, mais une liste incomplète, voire le formulaire de création à sa place. Trois
+                    réglages en décident :</p>
+                <ul>
+                    <li><strong><code>dbfilter</code></strong> : seules les bases dont le nom correspond à l'expression
+                        sont montrées. Sur le serveur de test, <code>dbfilter = ^ma_base</code> ne laissait voir que
+                        <code>ma_base</code> et <code>ma_base_test</code> parmi toutes les bases du PostgreSQL.</li>
+                    <li><strong><code>db_name</code></strong> (option <code>-d</code>) <strong>sans</strong>
+                        <code>dbfilter</code> : Odoo ne consulte plus PostgreSQL et montre seulement les bases nommées
+                        là.</li>
+                    <li><strong>Le propriétaire</strong> : Odoo ne liste que les bases dont le propriétaire est le
+                        rôle PostgreSQL de <code>db_user</code>. Une base qui appartient à un autre rôle, même
+                        accessible, n'apparaît pas.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Odoo 20 dit pourquoi : <em>admin disabled database listing</em> = <code>list_db</code>, <em>bad admin password</em> = <code>admin_passwd</code>.</li>
+                    <li><code>admin_passwd</code> se règle seulement dans le fichier de configuration ; oublié, on le réécrit en clair, on redémarre, puis <em>Set Master Password</em> le remet en empreinte.</li>
+                    <li>Pose le mot de passe maître avant la première visite : sinon le premier mot de passe tapé le devient.</li>
+                    <li>Base absente de la liste : <code>dbfilter</code>, <code>db_name</code> ou propriétaire PostgreSQL.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</a> — sauvegarder et restaurer sans le gestionnaire.</li>
+                    <li><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a> — <code>--no-database-list</code>, <code>--db-filter</code> et le reste.</li>
+                    <li><a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a> — servir Odoo, et donc le gestionnaire, en HTTPS.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (gestionnaire dans le navigateur et
+                    formulaires envoyés par <code>curl</code>) ; branche 19.0 publique relue le même jour pour la
+                    comparaison des messages. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/controllers/database.py" target="_blank" rel="noopener"><code>addons/web/controllers/database.py</code></a> : routes du gestionnaire, <code>verify_access</code>, forme du message d'erreur</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/db.py" target="_blank" rel="noopener"><code>odoo/modules/db.py</code></a> : <code>verify_db_management_enabled</code>, <code>verify_admin_password</code>, <code>list_dbs</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : <code>admin_passwd</code> (fichier seulement), <code>--no-database-list</code>, empreinte pbkdf2</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

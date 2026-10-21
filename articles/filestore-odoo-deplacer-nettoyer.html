@@ -1,0 +1,336 @@
+<!--
+Article — Filestore Odoo 20 : où il est, le déplacer, le nettoyer
+Série « Astuces dev Odoo 20 » (blog Développement) — AT18
+Date : 2026-10-21
+Slug : filestore-odoo-deplacer-nettoyer
+Mot-clé cible : odoo filestore location, odoo filestore cleanup, data_dir, déplacer filestore odoo
+Tags : intermediaire, infrastructure, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community (3538ed82), base jetable copie de la démo technique
+  (sale_management + stock, fr_FR). Conf copiée dans le dossier de travail (data_dir = dossier jetable), conf commune intacte.
+  Relevés (odoo-bin shell) :
+   ou.py → défaut ~/.local/share/Odoo ; data_dir …/data ; filestore …/data/filestore/<base> ; stockage file ;
+     pièce 204 res.company.scss → cf/cf769333… ; du 26M ; sous-dossiers 00, 01, 02… + checklist + upload.
+   498 pièces jointes avec store_fname pour 282 store_fname distincts (contenu identique = un seul fichier).
+   lire.py avec la conf pointant vers un dossier vide → INFO « _file_read reading … » + FileNotFoundError dans le journal,
+     file_size 1396, octets lus 0, aucune exception remontée.
+   rsync -a puis verif.py (conf neuve) → 1396 octets lus, 0 manquant ; serveur lancé sur la conf neuve (port de test) :
+     /web/content/204 → 200, 1396 octets ; kanban produits 31 images toutes chargées (regardé).
+   Premier lancement du serveur sur le data_dir neuf : 10 paquets d'assets (web.assets_web.min.js…) écrits, res_model ir.ui.view.
+   gc.py → créé 512 57/574d…, après unlink+commit fichier présent et coché ; _gc_file_store() → « filestore gc 282 checked,
+     0 removed », fichier toujours là ; _gc_file_store_unsafe(grace_period=0) → « 11 checked, 1 removed », fichier parti.
+   poids.py → ir.ui.view 10 / 12 MB, product.template 157 / 6874 kB, quotation.document 5 / 2699 kB, res.partner 215 / 2198 kB…
+   env.ref('base.autovacuum_job') → « Base : données internes de l'aspiration automatique », 1 days, actif.
+  Code 20.0 relu :
+   odoo/tools/config.py:275 (-D/--data-dir), :547-553 (défaut : user_data_dir si dossier personnel, sinon /var/lib/Odoo),
+     :1106-1119 (addons), :1121-1130 (sessions), :1132-1133 (filestore = data_dir/filestore/<base>) ; release.py:19 product_name Odoo.
+   odoo/addons/base/models/ir_attachment.py:96-97 (ir_attachment.location, défaut file), :100-101 (_filestore), :140-143
+     (sha[:2]/sha), :146-153 (_file_read : OSError → log info + vide), :155-222 (_file_write : _mark_for_gc avant écriture, upload/),
+     :224-242 (checklist), :46-48 (GC_GRACE_PERIOD 1800 s, max 1 semaine), :244-259 (_gc_file_store, @api.autovacuum),
+     :261-376 (_gc_file_store_unsafe : upload/ ancien nettoyé, marques plus jeunes que le délai ignorées), :451 (sha1).
+   odoo/addons/base/data/ir_cron_data.xml:3-11 (autovacuum quotidien) ; odoo/modules/db.py:528-547 (drop efface le filestore),
+     :695-698 (rename déplace le filestore).
+  Écart 19→20 confirmé contre la 19.0 publique (raw.githubusercontent, 21/10) : 19 _gc_file_store_unsafe() sans délai
+   (LOCK ir_attachment puis unlink de toute marque non référencée) ; 20 : délai de grâce ≥ 30 min + nettoyage de upload/.
+   Défaut data_dir identique (19.0 config.py:509-514).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Filestore Odoo 20 : où il est, le déplacer, le nettoyer</h1>
+                <p class="lead mt-3 text-white">Les pièces jointes d'Odoo ne sont pas dans PostgreSQL mais dans un dossier
+                    du serveur. Le retrouver, le changer de disque sans perdre une image, et comprendre pourquoi un
+                    fichier supprimé reste sur le disque : trois gestes vérifiés sur Odoo 20.</p>
+                <p class="small text-light mt-2">~5 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes, Inventaire) et une copie de son filestore dans un dossier jetable.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li><strong>Où :</strong> <code>&lt;data_dir&gt;/filestore/&lt;nom de la base&gt;</code>. Le
+                                <code>data_dir</code> vient de ton <code>odoo.conf</code> (ou de <code>-D</code>) ; sans
+                                réglage, c'est <code>~/.local/share/Odoo</code>.</li>
+                            <li><strong>Déplacer :</strong> arrêter Odoo, copier le dossier avec <code>rsync -a</code>,
+                                changer <code>data_dir</code>, relancer, vérifier qu'aucun fichier ne manque.</li>
+                            <li><strong>Nettoyer :</strong> ne rien effacer à la main. Supprime les pièces jointes dans
+                                Odoo ; l'action planifiée quotidienne d'aspiration retire ensuite les fichiers que plus
+                                rien ne référence.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. OÙ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Où est le filestore</h2>
+                <p>Le chemin se calcule en une ligne : <code>data_dir</code> + <code>filestore</code> + le nom de la base.
+                    Plutôt que de le deviner, demande-le à Odoo. Ce script, passé à <code>odoo-bin shell</code> avec le
+                    même fichier de configuration que ton serveur, affiche la valeur par défaut, la valeur retenue et le
+                    fichier d'une pièce jointe :</p>
+<pre class="language-python"><code class="language-python"># ou.py
+from odoo.tools import config
+print("défaut    :", config._default_options['data_dir'])
+print("data_dir  :", config['data_dir'])
+print("filestore :", config.filestore(env.cr.dbname))
+print("stockage  :", env['ir.attachment']._storage())
+att = env['ir.attachment'].search([('store_fname', '!=', False)], order='id', limit=1)
+print("exemple   :", att.id, att.name, att.store_fname)
+print("fichier   :", att._full_path(att.store_fname))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : data_dir, chemin du filestore de la base, exemple de pièce jointe et contenu du dossier" loading="lazy"/>
+                    <figcaption>Le filestore de la base, une pièce jointe et son fichier, puis les sous-dossiers.</figcaption>
+                </figure>
+                <p>Ce qu'il faut lire :</p>
+                <ul>
+                    <li><strong>Défaut</strong> : <code>~/.local/share/Odoo</code> pour un compte qui a un dossier
+                        personnel, <code>/var/lib/Odoo</code> sur Linux pour un compte qui n'en a pas. Sur un serveur
+                        installé avec <code>data_dir = /opt/odoo/data</code>, le filestore de <code>ma_base</code> est
+                        donc <code>/opt/odoo/data/filestore/ma_base</code>.</li>
+                    <li><strong>Les noms de fichiers</strong> sont l'empreinte SHA-1 du contenu, rangée dans un
+                        sous-dossier nommé par ses deux premiers caractères (<code>cf/cf769333…</code>). Deux pièces
+                        jointes identiques partagent le même fichier : la base de démonstration compte 498 pièces jointes
+                        sur disque pour 282 fichiers.</li>
+                    <li><strong><code>checklist</code></strong> et <strong><code>upload</code></strong> ne sont pas des
+                        pièces jointes : ce sont les dossiers de travail du nettoyage, vus au point 3.</li>
+                    <li><strong>Stockage <code>file</code></strong> : c'est le défaut. Le paramètre système
+                        <code>ir_attachment.location</code> à <code>db</code> mettrait les contenus dans PostgreSQL.</li>
+                </ul>
+                <p>Le même <code>data_dir</code> contient aussi <code>sessions/</code> (sessions web) et
+                    <code>addons/</code> : déplacer le dossier entier les emmène avec lui.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. DÉPLACER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Déplacer le filestore vers un autre disque</h2>
+                <ol>
+                    <li><strong>Arrête Odoo</strong> (<code>sudo systemctl stop odoo</code> ou équivalent). Un serveur en
+                        marche écrit dans le filestore : au premier lancement sur le dossier de test, Odoo y a déposé dix
+                        paquets JavaScript et CSS compilés, référencés aussitôt dans la base.</li>
+                    <li><strong>Copie</strong> en gardant droits et dates :
+                        <code>rsync -a /opt/odoo/data/filestore/ma_base/ /srv/odoo-data/filestore/ma_base/</code>
+                        (le <code>/</code> final du chemin source compte). Le compte qui exécute Odoo doit pouvoir y
+                        écrire.</li>
+                    <li><strong>Change la configuration</strong> : <code>data_dir = /srv/odoo-data</code> dans
+                        <code>odoo.conf</code>.</li>
+                    <li><strong>Vérifie avant de relancer</strong>, avec ce script et la nouvelle configuration :</li>
+                </ol>
+<pre class="language-python"><code class="language-python"># verif.py
+import os
+from odoo.tools import config
+racine = config.filestore(env.cr.dbname)
+print("filestore :", racine)
+att = env['ir.attachment'].browse(204)
+print("pièce 204 :", att.file_size, "octets en base,", len(att.raw.content), "lus")
+env.cr.execute("SELECT DISTINCT store_fname FROM ir_attachment WHERE store_fname IS NOT NULL")
+manquants = [f for f, in env.cr.fetchall() if not os.path.exists(os.path.join(racine, f))]
+print("manquants :", len(manquants))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal : nouveau data_dir, copie rsync, tailles identiques, 1396 octets lus et 0 fichier manquant" loading="lazy"/>
+                    <figcaption>Même taille des deux côtés, la pièce jointe se lit, aucun fichier manquant.</figcaption>
+                </figure>
+                <p>Relancé sur la nouvelle configuration, le serveur affiche les images des produits et sert la pièce
+                    jointe 204 en entier. Garde l'ancien dossier quelques jours avant de le supprimer.</p>
+                <p>Pour une base seulement, inutile de toucher à <code>data_dir</code> : <code>odoo-bin db rename</code>
+                    déplace le filestore avec la base, et <code>odoo-bin db drop</code> l'efface avec elle.</p>
+
+                <div class="pitfall-box">
+                    <h4>Un fichier absent ne lève aucune erreur</h4>
+                    <p>Avant la copie, la même lecture avec la nouvelle configuration donne
+                        <code>taille en base : 1396</code> puis <code>octets lus : 0</code>. Odoo renvoie un contenu vide
+                        et se contente d'une ligne <code>INFO … ir_attachment: _file_read reading …</code> dans le journal.
+                        Après un déplacement, compte les manquants
+                        avec <code>verif.py</code> plutôt que de te fier à l'absence d'erreur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. NETTOYER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Nettoyer : pourquoi un fichier supprimé reste sur le disque</h2>
+                <p>Supprimer une pièce jointe n'efface pas son fichier : Odoo pose une marque vide du même nom dans
+                    <code>checklist/</code>, car la transaction peut encore échouer et le même fichier peut servir à une
+                    autre pièce jointe. L'action planifiée « Base : données internes de l'aspiration automatique »,
+                    quotidienne, parcourt ces marques et efface les fichiers que plus aucune ligne de
+                    <code>ir_attachment</code> ne référence. Ce script le montre :</p>
+<pre class="language-python"><code class="language-python"># gc.py
+import os
+Att = env['ir.attachment']
+att = Att.create({'name': 'essai-gc.txt', 'raw': b'fichier a jeter, filestore Odoo 20'})
+env.cr.commit()
+fname = att.store_fname
+chemin = Att._full_path(fname)
+coche = os.path.join(Att._full_path('checklist'), fname)
+print("créé     :", att.id, fname)
+att.unlink()
+env.cr.commit()
+print("supprimé : fichier présent ?", os.path.exists(chemin), "| coché ?", os.path.exists(coche))
+Att._gc_file_store()
+print("gc cron  : fichier présent ?", os.path.exists(chemin))
+Att._gc_file_store_unsafe(grace_period=0)
+print("gc forcé : fichier présent ?", os.path.exists(chemin))</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : le fichier reste après suppression, le nettoyage normal le garde, le nettoyage forcé l'efface" loading="lazy"/>
+                    <figcaption>Le passage normal ignore la marque toute fraîche ; le passage forcé efface le fichier.</figcaption>
+                </figure>
+                <p>Le passage normal (<code>_gc_file_store</code>, celui de l'action planifiée) a examiné 282 marques
+                    anciennes, toutes encore référencées, et n'a rien supprimé : la marque créée une seconde plus tôt
+                    n'est pas encore éligible. Odoo 20 attend au moins <strong>30 minutes</strong> (jusqu'à une semaine
+                    si les délais de transaction PostgreSQL sont plus longs) et vide au passage les fichiers anciens de
+                    <code>upload/</code>. <strong>Venant de la 19</strong> : le nettoyage effaçait toute marque non
+                    référencée sans délai, sous un verrou de la table <code>ir_attachment</code>.</p>
+                <p>Le passage forcé, <code>grace_period=0</code>, sert à un nettoyage ponctuel, serveur arrêté : une
+                    transaction en cours pose sa marque <em>avant</em> d'écrire son fichier, qui n'est donc pas encore
+                    référencé. Pour savoir quoi supprimer dans Odoo, regarde ce qui pèse :</p>
+<pre class="language-python"><code class="language-python">env.cr.execute("""
+    SELECT coalesce(res_model, '(aucun)'), count(*),
+           pg_size_pretty(sum(file_size)::bigint)
+    FROM ir_attachment WHERE store_fname IS NOT NULL
+    GROUP BY 1 ORDER BY sum(file_size) DESC LIMIT 6""")
+for modele, nb, taille in env.cr.fetchall():
+    print(f"{modele:&lt;22} {nb:&gt;4}  {taille}")</code></pre>
+<div class="out">ir.ui.view               10  12 MB
+product.template        157  6874 kB
+quotation.document        5  2699 kB
+res.partner             215  2198 kB
+product.product          46  1886 kB
+mail.call.artifact        4  213 kB</div>
+                <p>Sur la démonstration, la moitié du volume vient des paquets d'assets web (<code>ir.ui.view</code>),
+                    puis des images de produits. Le tri se fait sur les modèles en tête de liste, dans Odoo, puis
+                    l'aspiration retire les fichiers.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Filestore = <code>&lt;data_dir&gt;/filestore/&lt;base&gt;</code> ; <code>config.filestore(env.cr.dbname)</code> donne le chemin exact.</li>
+                    <li>Déplacer : serveur arrêté, <code>rsync -a</code>, nouveau <code>data_dir</code>, puis compter les fichiers manquants.</li>
+                    <li>Un fichier manquant donne un contenu vide, pas une erreur.</li>
+                    <li>Nettoyer dans Odoo, jamais à la main : l'aspiration quotidienne retire les fichiers orphelins après un délai d'au moins 30 minutes.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a> — l'article pilier : le compte <code>odoo</code>, le <code>data_dir</code> et le service.</li>
+                    <li><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</a> — une copie qui emporte le filestore.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour lancer les scripts de cet article.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration et copie de son
+                    filestore), en console et dans le navigateur ; branche 19.0 publique relue le même jour pour le
+                    nettoyage. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a> : <code>data_dir</code> par défaut, <code>filestore()</code>, <code>sessions</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_attachment.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_attachment.py</code></a> : chemin des fichiers, lecture, <code>checklist</code>, <code>_gc_file_store</code> et son délai</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/db.py" target="_blank" rel="noopener"><code>odoo/modules/db.py</code></a> : <code>drop</code> et <code>rename</code> avec le filestore</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
