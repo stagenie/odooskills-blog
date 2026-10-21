@@ -1,0 +1,353 @@
+<!--
+Article — Ajouter un bouton dans l'en-tête d'un formulaire Odoo 20
+Série « Astuces dev Odoo 20 » (blog Développement) — AT7
+Date : 2026-10-21
+Slug : ajouter-bouton-formulaire-odoo
+Mot-clé cible : odoo add button header form, ajouter bouton formulaire odoo, bouton type object, confirm, xpath header
+Tags : intermediaire, web-ui, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR),
+  module d'exemple mon_module (depends sale) installé par --addons-path sur cette base seulement :
+  méthode action_noter_relance sur _inherit = 'sale.order' (message_post + display_notification, next soft_reload),
+  vue héritée de sale.view_order_form, xpath //header/button[@id='action_confirm'] position before.
+  Relevés :
+   -i mon_module → installed ; odoo-bin shell : S00001 | Acme Corporation ; display_notification | {'type': 'ir.actions.client', 'tag': 'soft_reload'} ;
+     <p>Relance téléphonique faite.</p> (rollback ensuite).
+   get_view(form) admin : ordre des boutons de l'en-tête … Envoyer (quotation_send_primary) | Noter une relance | Confirmer (id action_confirm) | Télécharger | Confirmer (sans id) …
+   Navigateur (Chromium, 1280×900) sur S00001 à l'état Devis : boutons visibles Envoyer, Noter une relance, Télécharger, Confirmer, Aperçu, Annuler ;
+     clic → boîte « Relance du client » / texte confirm / « Oui, noter » / « Ignorer » ; validation → notification « Relance notée. Note ajoutée à l'historique. »
+     et message en tête du chatter « Relance téléphonique faite. ».
+   Variante sans 'next' : notification affichée, compteur de messages « Relance téléphonique faite. » dans le chatter 1 → 1 après le clic, 2 après F5.
+   Variante return True : pas de notification, compteur 2 → 3 sans recharger (formulaire relu).
+   Variante _noter_relance (méthode et bouton renommés) + -u : ParseError « _noter_relance sur sale.order est privé et ne peut pas être appelé depuis un bouton. »
+   Sonde (rollback) : position="inside" sur //header → bouton ajouté après « Mettre en devis », « Rouvrir la facturation » (dernier) ;
+     xpath //header/button[@name='action_confirm'] → insertion avant le PREMIER des deux (celui d'id action_confirm) ;
+     groups="sales_team.group_sale_manager" ajouté : admin voit le bouton (True), Marc Demo (pas manager) ne le voit pas (False).
+   icon="fa-phone" → <i class="o_button_icon oi me-1" data-icon="fa-phone"> : un tiret parasite devant le combiné ; icon="phone" → combiné seul.
+  Code 20.0 relu :
+  odoo/addons/base/models/ir_ui_view.py:2031-2063 (_validate_tag_button : méthode inexistante, privée « _ » ou @api.private, paramètres) ;
+  odoo/orm/models.py:200-209 (get_public_method : « Private methods … cannot be called remotely ») ;
+  odoo/tools/template_inheritance.py:93 (xpath : premier nœud trouvé) ;
+  addons/web/controllers/dataset.py:34-41 (/web/dataset/call_button) ;
+  addons/web/static/src/webclient/actions/action_plugin.js:1627-1636 (réponse non-dict → act_window_close, formulaire relu) ;
+  addons/web/static/src/webclient/actions/client_actions.js:9-26 (display_notification, params.next), :94-103 (soft_reload) ;
+  addons/web/static/src/views/view_button/view_button_hook.js:144-158 (confirm, confirm-title, confirm-label) ;
+  addons/web/static/src/views/view_button/view_button.js:24-30 (icône : data-icon direct, sans tri de préfixe) ;
+  addons/sale/views/sale_order_views.xml:314-335 (deux boutons action_confirm), :366-374 (action_cancel avec confirm-title).
+  Écart 19→20 retenu : icônes de bouton. 19.0 publique relue le 21/10 : view_button.js iconFromString trie fa- / oi- / image ; FontAwesome chargé (web/__manifest__.py).
+  Non retenus : _validate_tag_button identique en 19.0 publique ; confirm-title déjà géré en 19.0 (view_button_hook.js:118-119, utils.js:28, translate.py:78),
+  seule l'entrée RNG common.rng:333 est nouvelle (vue form non validée par RNG) → pas d'encadré.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Ajouter un bouton dans l'en-tête d'un formulaire Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un bouton de plus sur le devis, à côté de « Envoyer » et « Confirmer » : une
+                    méthode Python sur le modèle hérité, une vue héritée qui vise l'en-tête, et quelques attributs pour la
+                    visibilité et la confirmation. Exemple complet sur <code>sale.order</code>, rejoué sur la démo.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration (Ventes) et module d'exemple.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Écris une méthode <strong>publique</strong> (sans <code>_</code> devant) dans une classe
+                                <code>_inherit = 'sale.order'</code>.</li>
+                            <li>Crée une vue héritée de <code>sale.view_order_form</code> avec un <code>&lt;xpath&gt;</code>
+                                sur un bouton de <code>//header</code>, en <code>position="before"</code> ou
+                                <code>"after"</code>.</li>
+                            <li>Déclare <code>&lt;button name="ta_methode" type="object"/&gt;</code>, plus
+                                <code>invisible</code>, <code>groups</code>, <code>confirm</code> au besoin.</li>
+                            <li>Mets le module à jour (<code>-u mon_module</code>) et rouvre la fiche.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LA MÉTHODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La méthode que le bouton appelle</h2>
+                <p>Le besoin d'exemple : un bouton « Noter une relance » sur le devis, qui écrit une note dans
+                    l'historique et confirme d'un message. Le module dépend de <code>sale</code> et étend le modèle :</p>
+<pre class="language-python"><code class="language-python"># mon_module/models/sale_order.py
+from odoo import models
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    def action_noter_relance(self):
+        for order in self:
+            order.message_post(body="Relance téléphonique faite.")
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': "Relance notée",
+                'message': "Note ajoutée à l'historique.",
+                'type': 'success',
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
+            },
+        }</code></pre>
+                <p>Un bouton <code>type="object"</code> appelle la méthode sur l'enregistrement affiché : <code>self</code>
+                    est le devis ouvert. Avant d'écrire la vue, teste la méthode dans <code>odoo-bin shell</code>, sur le
+                    premier devis de la démo :</p>
+<pre class="language-python"><code class="language-python">order = env['sale.order'].search([('state', '=', 'draft')], limit=1, order='id')
+print(order.name, '|', order.partner_id.name)
+action = order.action_noter_relance()
+print(action['tag'], '|', action['params']['next'])
+print(order.message_ids[0].body)
+env.cr.rollback()</code></pre>
+<div class="out">S00001 | Acme Corporation
+display_notification | {'type': 'ir.actions.client', 'tag': 'soft_reload'}
+&lt;p&gt;Relance téléphonique faite.&lt;/p&gt;</div>
+                <p>Ce que la méthode <strong>renvoie</strong> décide de la suite à l'écran :</p>
+                <table class="tmc">
+                    <thead><tr><th>Valeur renvoyée</th><th>Effet constaté</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>True</code> ou rien</td><td>pas de message ; le formulaire est relu, la note apparaît dans l'historique</td></tr>
+                        <tr><td>notification seule (sans <code>next</code>)</td><td>la notification s'affiche, mais l'historique reste <strong>tel quel</strong> jusqu'au rechargement de la page</td></tr>
+                        <tr><td>notification + <code>next: soft_reload</code></td><td>la notification s'affiche et le formulaire est relu</td></tr>
+                    </tbody>
+                </table>
+                <p>D'où la clé <code>next</code> : le client web affiche la notification, puis exécute l'action
+                    qu'elle désigne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LA VUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La vue héritée qui place le bouton</h2>
+                <p>Les boutons d'action d'un formulaire vivent dans <code>&lt;header&gt;</code>. La vue héritée vise
+                    l'un d'eux et se glisse à côté :</p>
+<pre class="language-markup"><code class="language-markup">&lt;!-- mon_module/views/sale_order_views.xml --&gt;
+&lt;odoo&gt;
+    &lt;record id="view_order_form_relance" model="ir.ui.view"&gt;
+        &lt;field name="name"&gt;sale.order.form.relance&lt;/field&gt;
+        &lt;field name="model"&gt;sale.order&lt;/field&gt;
+        &lt;field name="inherit_id" ref="sale.view_order_form"/&gt;
+        &lt;field name="arch" type="xml"&gt;
+            &lt;xpath expr="//header/button[@id='action_confirm']" position="before"&gt;
+                &lt;button name="action_noter_relance" string="Noter une relance" type="object"
+                        invisible="state not in ('draft', 'sent')"
+                        confirm="Ajouter une note de relance dans l'historique du devis ?"
+                        confirm-title="Relance du client"
+                        confirm-label="Oui, noter"
+                        icon="phone"/&gt;
+            &lt;/xpath&gt;
+        &lt;/field&gt;
+    &lt;/record&gt;
+&lt;/odoo&gt;</code></pre>
+                <p>Déclare le fichier dans <code>'data'</code> du manifeste, puis
+                    <code>./odoo-bin -c odoo.conf -d ma_base -u mon_module</code>. Le bouton apparaît sur le devis à l'état
+                    Devis, entre « Envoyer » et « Confirmer » :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="En-tête du devis S00001 : boutons Envoyer, Noter une relance avec une icône de téléphone, Télécharger, Confirmer, Aperçu, Annuler" loading="lazy"/>
+                    <figcaption>Le bouton ajouté dans l'en-tête du devis, à sa place parmi les boutons d'origine.</figcaption>
+                </figure>
+                <p>Trois choix de placement, constatés sur cette vue :</p>
+                <ul>
+                    <li><strong><code>//header</code> en <code>position="inside"</code></strong> : le bouton passe en
+                        <strong>dernier</strong>, après « Mettre en devis » et « Rouvrir la facturation ». Simple, mais
+                        souvent loin des autres.</li>
+                    <li><strong><code>before</code> / <code>after</code> sur un bouton existant</strong> : place précise.
+                        Attention, la vue des devis compte <strong>deux</strong> boutons
+                        <code>name="action_confirm"</code> (l'un pour l'état Devis, l'autre pour l'état Envoyé), et un
+                        <code>xpath</code> ne retient que le <strong>premier</strong> trouvé. Vise plutôt par
+                        <code>@id</code> quand le bouton en a un, comme ici.</li>
+                    <li><strong>Jamais par <code>@string</code></strong> : le libellé est traduit, Odoo refuse ce
+                        sélecteur à la validation de la vue. Les mécanismes de l'héritage sont détaillés dans l'article
+                        sur l'héritage de vues (lien en fin d'article).</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. ATTRIBUTS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Visibilité, droits et confirmation</h2>
+                <ul>
+                    <li><strong><code>invisible="state not in ('draft', 'sent')"</code></strong> : une expression sur les
+                        champs de l'enregistrement. Le bouton disparaît sur une commande confirmée ou annulée.</li>
+                    <li><strong><code>groups="sales_team.group_sale_manager"</code></strong> : le bouton est retiré de la
+                        vue des utilisateurs hors groupe. Essai : l'administrateur le voit, l'utilisateur de démonstration
+                        Marc Demo (simple vendeur) ne le reçoit pas. Ce n'est pas une sécurité de la méthode elle-même :
+                        contrôle les droits dans le Python si l'action est sensible.</li>
+                    <li><strong><code>confirm</code></strong>, <strong><code>confirm-title</code></strong>,
+                        <strong><code>confirm-label</code></strong> : une boîte de confirmation avant l'appel, avec son
+                        titre et le texte du bouton de validation (<code>cancel-label</code> renomme l'autre bouton, la vue
+                        des devis l'emploie sur « Annuler »).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Boîte de dialogue Relance du client : texte de confirmation, boutons Oui, noter et Ignorer" loading="lazy"/>
+                    <figcaption>La confirmation produite par <code>confirm</code>, <code>confirm-title</code> et <code>confirm-label</code>.</figcaption>
+                </figure>
+                <p>Validée, la boîte appelle la méthode : la notification « Relance notée » s'affiche en haut à droite et
+                    la note « Relance téléphonique faite. » arrive en tête de l'historique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. MÉTHODE PRIVÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'erreur classique : la méthode privée</h2>
+                <p>Une méthode dont le nom commence par <code>_</code> (ou décorée <code>@api.private</code>) ne peut pas
+                    être appelée depuis le navigateur. Odoo 20 le vérifie dès la validation de la vue : renomme la méthode
+                    et le bouton en <code>_noter_relance</code>, lance <code>-u</code>, et le module ne se charge plus :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : ParseError lors de la mise à jour, message _noter_relance sur sale.order est privé et ne peut pas être appelé depuis un bouton" loading="lazy"/>
+                    <figcaption>Bouton branché sur une méthode privée : la vue est refusée à la mise à jour.</figcaption>
+                </figure>
+                <p>La même validation refuse un nom de méthode qui n'existe pas sur le modèle (« n'est pas une action
+                    valide ») et inscrit un avertissement au journal si la méthode attend des paramètres. Garde le préfixe <code>action_</code>, c'est la convention d'Odoo.</p>
+
+                <div class="pitfall-box">
+                    <h4>Venant de la 19 : les icônes <code>fa-…</code></h4>
+                    <p>En 19, <code>icon="fa-phone"</code> sur un bouton affichait l'icône FontAwesome. Odoo 20 ne charge
+                        plus FontAwesome et passe la valeur telle quelle à sa police d'icônes (Material Symbols) : le bouton
+                        s'installe sans erreur, mais l'icône est fausse, ici un tiret parasite devant le combiné. Écris le
+                        nom Material, sans préfixe : <code>icon="phone"</code>.</p>
+                    <figure class="preview-figure mb-0">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Deux versions du bouton Noter une relance : avec icon=fa-phone un tiret précède le combiné, avec icon=phone le combiné seul" loading="lazy"/>
+                        <figcaption>À gauche l'ancien nom FontAwesome, à droite le nom Material attendu par Odoo 20.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li>Méthode publique sur <code>_inherit</code>, vue héritée qui vise <code>//header</code>, bouton <code>type="object"</code>, puis <code>-u</code>.</li>
+                    <li>Ancre le <code>xpath</code> sur un <code>@id</code> ou un <code>@name</code> unique : sur les devis, deux boutons portent <code>action_confirm</code>.</li>
+                    <li>Renvoie <code>True</code> pour relire le formulaire ; une notification a besoin de <code>next: soft_reload</code> pour en faire autant.</li>
+                    <li>Icônes : noms Material (<code>phone</code>, <code>edit_square</code>…), plus de <code>fa-</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/heritage-vues-odoo-20-192">Héritage de vues en Odoo 20 : l'onglet Emprunts</a> — <code>inherit_id</code>, <code>xpath</code> et positions en détail.</li>
+                    <li><a href="/blog/developpement-odoo-2/methodes-boutons-odoo-20-182">Agir en Odoo 20 : méthodes, boutons et contraintes</a> — les boutons d'en-tête dans un module à soi, avec la barre d'état.</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — le <code>-u</code> qui fait apparaître le bouton.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, module
+                    d'exemple), dans le navigateur et en console ; branche 19.0 publique relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_ui_view.py</code></a> : validation des boutons (<code>_validate_tag_button</code>)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/template_inheritance.py" target="_blank" rel="noopener"><code>odoo/tools/template_inheritance.py</code></a> : un <code>xpath</code> retient le premier nœud trouvé</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/webclient/actions/action_plugin.js" target="_blank" rel="noopener"><code>action_plugin.js</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/webclient/actions/client_actions.js" target="_blank" rel="noopener"><code>client_actions.js</code></a> : appel du bouton, notification, <code>soft_reload</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/views/view_button/view_button.js" target="_blank" rel="noopener"><code>view_button.js</code></a> et <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/views/view_button/view_button_hook.js" target="_blank" rel="noopener"><code>view_button_hook.js</code></a> : icône et confirmation</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>

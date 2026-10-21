@@ -1,0 +1,382 @@
+<!--
+Article — XPath en Odoo 20 : hasclass, move, attributes, replace sans casser
+Série « Astuces dev Odoo 20 » (blog Développement) — AT8
+Date : 2026-10-21
+Slug : xpath-heritage-vue-odoo
+Mot-clé cible : odoo xpath hasclass, odoo xpath move, odoo remove attribute, position attributes, position replace
+Tags : intermediaire, web-ui, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base jetable copie de la démo technique (sale_management + stock, fr_FR).
+  Modules d'exemple installés par --addons-path sur cette base seulement :
+   mon_xpath (vue héritée de base.view_partner_form : hasclass + class add, class remove oe_edit_only, lang invisible add/or,
+   placeholder retiré sur function, function déplacé par position="move", website d'abord replace puis invisible="1") ;
+   mon_xpath_suite (dépend de mon_xpath, <field name="website" position="after"><field name="ref"/></field>).
+  Relevés :
+   hasclass.py (shell) → 0 nœud(s) pour //div[@class='alert-warning'] ; 1 pour hasclass('alert-warning') ; 12 pour hasclass('d-flex').
+   Création de vue avec //div[@class='alert-warning'] → WARNING « Error-prone use of @class … use the hasclass(*classes) function »
+     puis ValidationError « L'élément '<xpath expr="//div[@class='alert-warning']">' ne peut être localisé dans la vue parente » ;
+     avec la valeur complète 'alert alert-warning oe_edit_only' → OK (même WARNING).
+   voir_arch.py (shell, arch combiné) → div class 'o_address_format border rounded p-2' ; div alert class 'alert alert-warning' ;
+     lang invisible '(active_lang_count <= 1) or (not is_company)' ; function {'name': 'function'} (placeholder retiré) ;
+     website invisible '1' ; function dans group « d-flex flex-column gap-md-0 w-100 » (en-tête).
+   separator=" " sur invisible → ValidationError « Séparateur '' non valide pour l'expression python 'invisible'; les valeurs valides sont "and" et "or" » ;
+     sans separator → AttributeError « 'NoneType' object has no attribute 'strip' » ;
+     <field name="function" position="move"/> au premier niveau → ValidationError « Position d'attribut invalide : 'move' ».
+   mon_xpath avec <field name="website" position="replace"/> puis -i mon_xpath_suite → ParseError
+     « L'élément '<field name="website">' ne peut être localisé dans la vue parente », Failed to load registry (rc 255) ;
+     mon_xpath passé en attributes invisible=1, -u mon_xpath puis -i mon_xpath_suite → installé (rc 0).
+   replace avec <div class="o_mon_cadre">$0</div> puis une vue qui cible website → OK, arch : <div class="o_mon_cadre"><field name="website" …/><field name="ref"/></div>.
+   replace mode="inner" sur div[@name='partner_address_country'] avec country_id en move + span → div ne contient plus que country_id + span.
+   Capture Playwright de la fiche Douglas Fletcher (id 20, démo native, contact d'Acme Corporation).
+  Code 20.0 relu :
+   odoo/tools/template_inheritance.py:84-93 (xpath : premier nœud trouvé, nodes[0]), :94-101 (forme courte field : premier champ de ce nom),
+   :103-106 (autres balises : comparaison des attributs), :130-147 (extract, utilisé par move), :44-49 et :209-213 (move dans un spec),
+   :160-213 (replace outer, $0 :163-172), :214-232 (mode inner), :235-311 (attributes ; add/remove :256-304 ; Python :267-292 ;
+   valeur vide = attribut supprimé :308-311), :332-333 (position invalide) ;
+   odoo/addons/base/models/ir_ui_view.py:87-91 (_hasclass : toutes les classes passées), :140 (enregistrement de hasclass), :143 (WRONGCLASS),
+   :419-438 (_valid_inheritance : @string refusé, @class averti), :769 (vues héritées appliquées ORDER BY v.priority, v.id).
+   vues_heritees.py (search order='priority, id') → 11 vues des modules installés + mon_xpath + mon_xpath_suite ; sms.res_partner_view_form
+   et phone_validation.res_partner_view_form visent field[@name='phone'] (lecture de arch_db).
+  Écart 19→20 : aucun. template_inheritance.py de la 19.0 publique (raw.githubusercontent, relu le 21/10) identique octet pour octet
+   (diff vide) ; _hasclass et WRONGCLASS identiques (19.0 ir_ui_view.py:80, :136).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">XPath en Odoo 20 : hasclass, move, attributes, replace sans casser</h1>
+                <p class="lead mt-3 text-white">Cibler un bloc par sa classe, déplacer un champ, retirer ou compléter
+                    un attribut, masquer un champ sans faire tomber le module suivant : les quatre gestes XPath qui
+                    reviennent dans toute vue héritée, rejoués sur la fiche contact d'Odoo 20.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces dev Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Vérifié sur Odoo 20.0 Community, octobre 2026, base de
+                        démonstration et deux petits modules d'exemple qui héritent de <code>base.view_partner_form</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <table class="tmc mb-0">
+                            <thead><tr><th>Tu veux…</th><th>Écris</th></tr></thead>
+                            <tbody>
+                                <tr><td>viser un élément par une de ses classes</td><td><code>//div[hasclass('o_address_format')]</code>, jamais <code>@class='…'</code></td></tr>
+                                <tr><td>changer, compléter ou retirer un attribut</td><td><code>position="attributes"</code> ; <code>add</code> / <code>remove</code> + <code>separator</code> ; balise vide = attribut supprimé</td></tr>
+                                <tr><td>déplacer un champ existant</td><td>un nœud <code>position="move"</code> <strong>à l'intérieur</strong> d'un autre xpath</td></tr>
+                                <tr><td>masquer un champ</td><td><code>invisible="1"</code> par <code>attributes</code>, pas <code>replace</code> : les autres modules le cherchent encore</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. HASCLASS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. <code>hasclass()</code> plutôt que <code>@class</code></h2>
+                <p>En XPath, <code>@class='alert-warning'</code> compare la <strong>chaîne entière</strong> de
+                    l'attribut. Le bandeau des doublons de la fiche contact porte
+                    <code>class="alert alert-warning oe_edit_only"</code> : le test échoue. Odoo 20 fournit une fonction
+                    XPath maison, <code>hasclass()</code>, vraie quand l'élément porte <strong>toutes</strong> les classes
+                    passées, dans n'importe quel ordre. Ce script, passé à <code>odoo-bin shell</code>, compte les nœuds
+                    trouvés dans la vue combinée :</p>
+<pre class="language-python"><code class="language-python"># hasclass.py
+from lxml import etree
+form = env.ref('base.view_partner_form')
+arch = etree.fromstring(form.get_combined_arch())
+for expr in ["//div[@class='alert-warning']",
+             "//div[hasclass('alert-warning')]",
+             "//div[hasclass('d-flex')]"]:
+    print(len(arch.xpath(expr)), "nœud(s) pour", expr)</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Terminal : 0 nœud pour @class='alert-warning', 1 pour hasclass('alert-warning'), 12 pour hasclass('d-flex')" loading="lazy"/>
+                    <figcaption><code>@class</code> ne trouve rien ; <code>hasclass()</code> trouve le bandeau, et douze blocs <code>d-flex</code>.</figcaption>
+                </figure>
+                <p>Dans une vue héritée, <code>@class</code> déclenche en plus un avertissement au chargement :
+                    <code>Error-prone use of @class in view … use the hasclass(*classes) function</code>. La troisième
+                    ligne rappelle l'autre règle : quand l'expression trouve plusieurs nœuds, Odoo ne garde que le
+                    <strong>premier</strong>. Une classe utilitaire comme <code>d-flex</code> est donc un mauvais
+                    repère : pars plutôt d'un nœud nommé, par exemple
+                    <code>//field[@name='phone']/..</code> pour le bloc du téléphone. Même chose pour la forme courte
+                    <code>&lt;field name="email" position="…"&gt;</code> : elle vise le premier champ de ce nom.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ATTRIBUTES + MOVE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. <code>attributes</code> et <code>move</code> : retoucher sans réécrire</h2>
+                <p>Voici la vue héritée du module d'exemple. Chaque bloc correspond à une requête qu'on tape dans
+                    Google :</p>
+<pre class="language-markup"><code class="language-markup">&lt;record id="view_partner_form_xpath" model="ir.ui.view"&gt;
+    &lt;field name="name"&gt;res.partner.form.mon_xpath&lt;/field&gt;
+    &lt;field name="model"&gt;res.partner&lt;/field&gt;
+    &lt;field name="inherit_id" ref="base.view_partner_form"/&gt;
+    &lt;field name="arch" type="xml"&gt;
+        &lt;!-- ajouter des classes à celles qui existent --&gt;
+        &lt;xpath expr="//div[hasclass('o_address_format')]" position="attributes"&gt;
+            &lt;attribute name="class" add="border rounded p-2" separator=" "/&gt;
+        &lt;/xpath&gt;
+        &lt;!-- en retirer une --&gt;
+        &lt;xpath expr="//div[hasclass('alert-warning')]" position="attributes"&gt;
+            &lt;attribute name="class" remove="oe_edit_only" separator=" "/&gt;
+        &lt;/xpath&gt;
+        &lt;!-- compléter une condition Python --&gt;
+        &lt;field name="lang" position="attributes"&gt;
+            &lt;attribute name="invisible" add="not is_company" separator="or"/&gt;
+        &lt;/field&gt;
+        &lt;!-- supprimer un attribut : balise vide --&gt;
+        &lt;field name="function" position="attributes"&gt;
+            &lt;attribute name="placeholder"/&gt;
+        &lt;/field&gt;
+        &lt;!-- déplacer le poste sous le téléphone --&gt;
+        &lt;xpath expr="//field[@name='phone']/.." position="after"&gt;
+            &lt;xpath expr="//field[@name='function']" position="move"/&gt;
+        &lt;/xpath&gt;
+        &lt;!-- masquer le site web --&gt;
+        &lt;field name="website" position="attributes"&gt;
+            &lt;attribute name="invisible"&gt;1&lt;/attribute&gt;
+        &lt;/field&gt;
+    &lt;/field&gt;
+&lt;/record&gt;</code></pre>
+                <p>Après <code>-u mon_xpath</code>, ce script lit l'arch combiné :</p>
+<pre class="language-python"><code class="language-python"># voir_arch.py
+from lxml import etree
+arch = etree.fromstring(env.ref('base.view_partner_form').get_combined_arch())
+for expr in ["//div[hasclass('o_address_format')]",
+             "//div[hasclass('alert-warning')]",
+             "//field[@name='lang']",
+             "//field[@name='function']",
+             "//field[@name='website']"]:
+    node = arch.xpath(expr)[0]
+    print(node.tag, dict(node.attrib))
+fn = arch.xpath("//field[@name='function']")[0]
+print("function dans :", fn.getparent().tag, fn.getparent().get("class"))</code></pre>
+<div class="out">div {'class': 'o_address_format border rounded p-2'}
+div {'class': 'alert alert-warning', 'role': 'alert', 'name': 'warning_tax', 'invisible': 'not same_vat_partner_id'}
+field {'name': 'lang', 'invisible': '(active_lang_count &lt;= 1) or (not is_company)'}
+field {'name': 'function'}
+field {'name': 'website', 'string': 'Site Web', 'widget': 'url', 'placeholder': 'par ex. https://www.odoo.com', 'invisible': '1'}
+function dans : group d-flex flex-column gap-md-0 w-100</div>
+                <p>Ce qu'il faut en retenir :</p>
+                <ul>
+                    <li><strong><code>add</code> / <code>remove</code></strong> travaillent sur une liste séparée par
+                        <code>separator</code> (virgule par défaut : pour <code>class</code>, écris
+                        <code>separator=" "</code>). Les classes
+                        d'origine restent, seule <code>oe_edit_only</code> est partie.</li>
+                    <li>Sur <code>invisible</code>, <code>readonly</code>, <code>required</code>,
+                        <code>column_invisible</code> et <code>decoration-*</code>, le séparateur est un opérateur
+                        Python, <code>and</code> ou <code>or</code> : Odoo met les deux conditions entre parenthèses.</li>
+                    <li><strong>Retirer un attribut</strong> : <code>&lt;attribute name="placeholder"/&gt;</code> sans
+                        contenu. Une valeur vide supprime l'attribut.</li>
+                    <li><strong><code>move</code></strong> n'est valable qu'<strong>à l'intérieur</strong> d'un autre
+                        nœud de positionnement : le nœud est retiré de sa place et posé à la nouvelle. Écrit seul au
+                        premier niveau, il est refusé : <code>Position d'attribut invalide : 'move'</code>.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche contact Odoo 20 : le poste sous le téléphone, l'adresse encadrée, le site web masqué" loading="lazy"/>
+                    <figcaption>La fiche de Douglas Fletcher : « Poste » remonté dans l'en-tête, adresse encadrée, site web et langue masqués.</figcaption>
+                </figure>
+                <p>Le champ déplacé dans le <code>group</code> de l'en-tête y prend son libellé, « Poste ». La langue a
+                    disparu parce que ce contact n'est pas une société. Le champ « Référence » à droite vient du second
+                    module, au point suivant.</p>
+
+                <div class="pitfall-box">
+                    <h4><code>add</code> sur <code>invisible</code> sans <code>separator</code> : plantage</h4>
+                    <p>Oublier <code>separator="or"</code> sur une condition Python ne donne pas une valeur par défaut :
+                        la création de la vue échoue sur <code>AttributeError: 'NoneType' object has no attribute
+                        'strip'</code>, sans un mot sur le séparateur manquant. Avec
+                        <code>separator=" "</code>, le refus est plus clair : <code>Séparateur '' non valide pour
+                        l'expression python 'invisible'; les valeurs valides sont "and" et "or"</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. REPLACE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. <code>replace</code> sans casser les autres modules</h2>
+                <p>Pour cacher le site web, le premier réflexe est <code>&lt;field name="website"
+                    position="replace"/&gt;</code>. Le module s'installe, la fiche est juste. Puis vient un second
+                    module, <code>mon_xpath_suite</code>, qui ajoute un champ <em>après</em> le site web :</p>
+<pre class="language-markup"><code class="language-markup">&lt;field name="website" position="after"&gt;
+    &lt;field name="ref"/&gt;
+&lt;/field&gt;</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : l'installation de mon_xpath_suite échoue, l'élément field name website ne peut être localisé dans la vue parente" loading="lazy"/>
+                    <figcaption>Le <code>replace</code> du premier module empêche l'installation du second.</figcaption>
+                </figure>
+                <p>Les vues héritées s'appliquent l'une après l'autre (par <code>priority</code>, puis par
+                    <code>id</code>, donc dans l'ordre de création) : quand vient le tour de la seconde, le champ n'existe plus. Tout module installé après le
+                    tien et qui vise ce champ tombe ainsi, même s'il ne sait rien de ton module. Trois façons de
+                    remplacer sans retirer le nœud :</p>
+                <ol>
+                    <li><strong>Masquer</strong> : <code>&lt;attribute name="invisible"&gt;1&lt;/attribute&gt;</code>,
+                        comme au point 2. Avec cette version de <code>mon_xpath</code>, <code>-u mon_xpath</code> puis
+                        <code>-i mon_xpath_suite</code> passent, et « Référence » s'affiche sur la fiche.</li>
+                    <li><strong>Envelopper</strong> : dans un <code>replace</code>, un élément dont le texte vaut
+                        <code>$0</code> reçoit une copie du nœud remplacé. Le champ existe toujours, les autres vues le
+                        trouvent :
+<pre class="language-markup"><code class="language-markup">&lt;field name="website" position="replace"&gt;
+    &lt;div class="o_mon_cadre"&gt;$0&lt;/div&gt;
+&lt;/field&gt;</code></pre>
+                        Rejoué dans le shell avec la vue du second module, l'arch donne <code>&lt;div class="o_mon_cadre"&gt;&lt;field
+                        name="website" …/&gt;&lt;field name="ref"/&gt;&lt;/div&gt;</code>.</li>
+                    <li><strong>Vider sans perdre les enfants</strong> : <code>position="replace" mode="inner"</code>
+                        remplace le <em>contenu</em> d'un nœud et garde le nœud lui-même ; un enfant à conserver se
+                        reprend par <code>move</code> :
+<pre class="language-markup"><code class="language-markup">&lt;xpath expr="//div[@name='partner_address_country']" position="replace" mode="inner"&gt;
+    &lt;field name="country_id" position="move"/&gt;
+    &lt;span class="o_mon_drapeau"&gt;FR&lt;/span&gt;
+&lt;/xpath&gt;</code></pre></li>
+                </ol>
+                <p>Garde <code>replace</code> sans contenu pour les nœuds que ton module a lui-même ajoutés, ou que tu
+                    veux réellement faire disparaître en sachant qui les vise. Le shell te donne les vues qui
+                    héritent directement de la fiche, dans leur ordre d'application :</p>
+<pre class="language-python"><code class="language-python">parent = env.ref('base.view_partner_form')
+for v in env['ir.ui.view'].search([('inherit_id', '=', parent.id)], order='priority, id'):
+    print(v.priority, v.xml_id)</code></pre>
+<div class="out">3 sale.res_partner_view_buttons
+5 account.partner_view_buttons
+10 sms.res_partner_view_form
+14 product.view_partner_property_form
+15 payment.view_partners_form_payment_defaultcreditcard
+16 barcodes.view_partner_barcodes_form
+16 base_address_extended.address_street_extended_city_form
+16 mail.res_partner_view_form_inherit_mail
+16 phone_validation.res_partner_view_form
+16 partner_autocomplete.view_partner_form_inherit_partner_autocomplete
+16 stock.view_partner_stock_warnings_form
+16 mon_xpath.view_partner_form_xpath
+16 mon_xpath_suite.view_partner_form_suite</div>
+                <p>Sur la base de démonstration avec Ventes et Inventaire, onze modules retouchent déjà cette fiche ;
+                    <code>sms</code> et <code>phone_validation</code>, par exemple, visent le champ
+                    <code>phone</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul class="mb-0">
+                    <li><code>hasclass('a', 'b')</code> pour les classes ; un xpath ne modifie que le premier nœud trouvé.</li>
+                    <li><code>position="attributes"</code> : <code>add</code>/<code>remove</code> + <code>separator</code> (<code>or</code>/<code>and</code> sur les conditions), balise vide pour supprimer.</li>
+                    <li><code>position="move"</code> se place toujours à l'intérieur d'un autre xpath.</li>
+                    <li>Masquer plutôt que <code>replace</code> ; sinon <code>$0</code> ou <code>mode="inner"</code> pour garder le nœud que d'autres modules visent.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/heritage-vues-odoo-20-192">Héritage de vues en Odoo 20 : l'onglet Emprunts</a> — l'article pilier : <code>inherit_id</code>, les positions, la forme courte, l'interdit de <code>@string</code>.</li>
+                    <li><a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a> — le <code>-u</code> qui recharge tes vues.</li>
+                    <li><a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell Odoo 20 : explorer et corriger une base avec odoo-bin shell</a> — pour tester un xpath sur l'arch combiné avant de l'écrire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt16 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Cas rejoués le 21/10/2026 sur Odoo 20.0 Community (base de démonstration, deux modules
+                    d'exemple), en console, à l'installation et dans le navigateur ; branche 19.0 publique relue le même
+                    jour (moteur d'héritage identique). Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/template_inheritance.py" target="_blank" rel="noopener"><code>odoo/tools/template_inheritance.py</code></a> : recherche du nœud, positions <code>replace</code> (<code>$0</code>, <code>mode="inner"</code>), <code>attributes</code>, <code>move</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_ui_view.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_ui_view.py</code></a> : la fonction <code>hasclass</code> et l'avertissement sur <code>@class</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
