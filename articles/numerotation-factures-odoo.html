@@ -1,0 +1,329 @@
+<!--
+Article — Changer la numérotation des factures dans Odoo 20
+Série « Astuces Odoo 20 » (blog Fonctionnel)
+Date : 2026-10-21
+Slug : numerotation-factures-odoo
+Mot-clé cible : odoo numérotation facture / odoo modifier numéro de facture
+Tags : intermediaire, comptabilite, usage-quotidien, guide, community
+Sources vérifiées le 2026-10-21 : Odoo 20.0 Community, base vs20_func_af6 (copie de vs20_func, démo), société FR Company (admin company_id = 2), Playwright + odoo-bin shell.
+  addons/account/models/account_move.py:4381-4410 (_get_starting_sequence : vente CODE/AAAA/00000 annuel, autres CODE/AAAA/MM/0000, préfixe R pour avoirs si refund_sequence) ;
+  :1014-1021 (name_placeholder du premier numéro d'un journal) ; :2822-2885 (avertissement « Le format de la séquence a changé. », périodicité déduite) ;
+  :825-828 (index unique name/journal, « Une autre pièce avec le même nom existe déjà. ») ; :4296-4297 + sequence_mixin.py:155-185 (contrôle date/numéro, levé si document_sequence_editable) ;
+  :4160-4177 (suppression hors fin de chaîne refusée sans group_account_manager ni document_sequence_editable) ; :6379-6490 (made_sequence_gap) ;
+  views/account_move_views.xml:1102 (champ name visible si name, placeholder ou document_sequence_editable ; readonly hors brouillon), :569 (numéro en rouge si made_sequence_gap) ;
+  models/company.py:272 + views/res_config_settings_views.xml:418-420 (Séquence du document modifiable, bloc Mode Fiduciaires ; absent de la 19.0) ;
+  models/sequence_mixin.py:33-48,166-200 (regex annuel/mensuel/jamais) ; wizard/account_resequence.py + account_resequence_views.xml (Reséquencer, group_no_one, même journal).
+  Joué : liste FAC/2026/00001-00009 + RFAC + FACTURE/2026/09/0001 ; paramètre coché ; brouillon renommé FV-2026-00010 → fenêtre format (année 2026) → confirmé ; suivante FV-2026-00011 ;
+  FV-2026-00011 en double → Erreur de validation ; FV-2026-00015 confirmé → made_sequence_gap, rouge ; FAC/2026/00009 remise en brouillon datée 15/12/2025 → Erreur de validation (capture), numéro vidé → FAC/2025/00001 (shell, annulé) ;
+  shell (annulé) : FAC/2026/00050 → 00051 ; FA-2026-0100 → 0101 → FA-2027-0001 ; FAC/2026/10/0001 → 0002 → FAC/2026/11/0001 ; F00100 → F00101 (2027) ; journal VT2 → placeholder VT2/2026/00001 ;
+  préfixe journal FAC→VTE → facture suivante FV-2026-00016 ; avoir RFAC/2026/00005 ; facture du 01/08 après celle du 21/10 → numéro suivant ; utilisateur « Facturation » : suppression FAC/2026/00005 refusée (message), dernière acceptée ;
+  Reséquencer (mode développeur) : aperçu par date, Confirmer avec FV2026-001 → FV2026-001…009, suivante FV2026-010.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .ee-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ee-box h4 { color: #1e40af; margin-top: 0; }
+  .ee-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Changer la numérotation des factures dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Odoo 20 numérote seul les factures, au format FAC/2026/00001. Un autre
+                    préfixe, un numéro de départ imposé, une remise à zéro chaque mois : tout se règle en saisissant
+                    le premier numéro du nouveau format. Odoo en déduit la suite, et refuse ce qui casserait la
+                    séquence.</p>
+                <p class="small text-light mt-2">~6 minutes de lecture · niveau intermédiaire · série <strong>Astuces Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur la base de démonstration, société « FR Company » (plan comptable français, euros).
+                        La numérotation des factures fonctionne de la même façon dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉPONSE EN BREF ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="card border-primary">
+                    <div class="card-body">
+                        <h2 class="h4 card-title">La réponse en bref</h2>
+                        <ol class="mb-0">
+                            <li>Odoo n'a pas de modèle de numéro à remplir : il prolonge le <strong>dernier numéro</strong>
+                                du journal.</li>
+                            <li>Pour changer de format, cochez <strong>Séquence du document modifiable</strong>
+                                (Facturation › Configuration › Paramètres), puis tapez le numéro voulu sur la
+                                prochaine facture, par exemple <code>FV-2026-00010</code>.</li>
+                            <li>La forme du numéro fixe la remise à zéro : <code>2026</code> seul = chaque année,
+                                <code>2026/10</code> = chaque mois, pas d'année = jamais.</li>
+                            <li>Pour renuméroter des factures existantes : mode développeur, <strong>Actions ›
+                                Reséquencer</strong>.</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FORMAT PAR DÉFAUT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le format par défaut</h2>
+                <p>Une facture en brouillon n'a pas de numéro : son en-tête affiche simplement « Facture brouillon ».
+                    Le numéro est attribué au clic sur <strong>Confirmer</strong>. Sur la société française de la
+                    démonstration, il prend trois formes :</p>
+                <table class="tmc">
+                    <thead><tr><th>Document</th><th>Exemple</th><th>Remise à zéro</th></tr></thead>
+                    <tbody>
+                        <tr><td>Facture client (journal Ventes)</td><td><code>FAC/2026/00009</code></td><td>chaque année</td></tr>
+                        <tr><td>Avoir client</td><td><code>RFAC/2026/00004</code></td><td>chaque année, séquence à part</td></tr>
+                        <tr><td>Facture fournisseur (journal Achats)</td><td><code>FACTURE/2026/09/0001</code></td><td>chaque mois</td></tr>
+                    </tbody>
+                </table>
+                <p>Le début du numéro vient du champ <strong>Préfixe de la Séquence</strong> du journal
+                    (Facturation › Configuration › Journaux). Les avoirs ont leur propre suite grâce à la case
+                    <strong>Séquence dédiée aux avoirs</strong> du même journal. Mais ce préfixe ne sert qu'au
+                    <em>premier</em> numéro d'un journal neuf : sur la démonstration, le préfixe du journal Ventes
+                    passé de FAC à VTE, la facture suivante a gardé le format en cours. Modifier le journal ne
+                    suffit donc pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CHANGER LE FORMAT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Changer le préfixe ou le numéro de départ</h2>
+                <ol>
+                    <li>Ouvrez <strong>Facturation › Configuration › Paramètres</strong>. Dans le bloc
+                        <strong>Mode Fiduciaires</strong>, cochez <strong>Séquence du document modifiable</strong>
+                        (« La séquence du document devient modifiable sur tous les documents »), puis
+                        <strong>Enregistrer</strong>.</li>
+                    <li>Créez la facture suivante comme d'habitude et enregistrez-la en brouillon (icône du nuage).
+                        Le champ du numéro est désormais visible en tête de facture.</li>
+                    <li>Tapez le numéro voulu, ici <code>FV-2026-00010</code>. Odoo compare avec le dernier
+                        numéro du journal et explique ce qu'il a compris :</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Fenêtre Le format de la séquence a changé d'Odoo 20 : c'était auparavant FAC/2026/00009 et c'est maintenant FV-2026-00010, la séquence redémarrera à 1 au début de chaque année, année détectée 2026, nombre d'incrémentation 00010" style="max-width:70%; height:auto;"/>
+                    <figcaption>Odoo annonce le nouveau format et la périodicité de remise à zéro qu'il en déduit.</figcaption>
+                </figure>
+                <ol start="4">
+                    <li>Lisez la fenêtre, fermez-la, puis cliquez sur <strong>Confirmer</strong>. La facture
+                        porte FV-2026-00010, et la suivante reçoit seule FV-2026-00011.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des factures clients d'Odoo 20 : FV-2026-00015 en rouge, FV-2026-00011, FV-2026-00010, puis les anciennes factures FAC/2026/00008, FAC/2026/00002, FAC/2026/00003" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le nouveau format prend la suite de l'ancien ; un numéro sauté s'affiche en rouge.</figcaption>
+                </figure>
+                <p>Le numéro de départ se choisit de la même manière : taper <code>FAC/2026/00050</code> fait
+                    repartir la suite à 00051. Deux autres cas n'exigent pas le paramètre. Sur un journal de vente
+                    neuf, le champ apparaît de lui-même sur la première facture et suggère un numéro bâti sur le
+                    préfixe (<code>VT2/2026/00001</code> pour un journal VT2) : il suffit d'en taper un autre. Et une facture
+                    remise en brouillon garde son numéro, modifiable tant qu'elle n'est pas confirmée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== REMISE À ZÉRO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Remise à zéro annuelle, mensuelle ou jamais</h2>
+                <p>Aucune case ne règle la périodicité : Odoo la lit dans la forme du numéro. Essais faits sur la
+                    démonstration :</p>
+                <table class="tmc">
+                    <thead><tr><th>Numéro saisi</th><th>Facture suivante</th><th>Changement de période</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>FA-2026-0100</code></td><td><code>FA-2026-0101</code></td><td>janvier 2027 : <code>FA-2027-0001</code></td></tr>
+                        <tr><td><code>FAC/2026/10/0001</code></td><td><code>FAC/2026/10/0002</code></td><td>novembre : <code>FAC/2026/11/0001</code></td></tr>
+                        <tr><td><code>F00100</code></td><td><code>F00101</code></td><td>janvier 2027 : <code>F00102</code>, jamais de remise à zéro</td></tr>
+                    </tbody>
+                </table>
+                <p>Le nombre de chiffres tapés est conservé (0100 reste sur quatre chiffres). Une année placée
+                    avant le compteur suffit à déclencher la remise à zéro annuelle ; ajoutez le
+                    mois pour une remise mensuelle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== REFUS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce qu'Odoo refuse</h2>
+                <ul>
+                    <li><strong>Modifier une facture comptabilisée</strong> : le numéro n'est plus modifiable une
+                        fois la facture confirmée. Il faut d'abord <strong>Remettre en brouillon</strong>.</li>
+                    <li><strong>Un numéro déjà pris</strong> : à la confirmation, « Erreur de validation » et
+                        <em>« The operation cannot be completed: Une autre pièce avec le même nom existe
+                        déjà. »</em></li>
+                    <li><strong>Un numéro qui contredit la date</strong> : une facture FAC/2026/00009 remise en
+                        brouillon et redatée au 15/12/2025 ne peut pas être confirmée.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Erreur de validation d'Odoo 20 : Le Date (15/12/2025) que vous avez indiqué n'est pas conforme au numéro de séquence existant (FAC/2026/00009). Réinitialisez le numéro de séquence pour continuer" style="max-width:70%; height:auto;"/>
+                    <figcaption>L'année du numéro doit correspondre à la date de la facture.</figcaption>
+                </figure>
+                <p>La solution est indiquée : vider le numéro avant de confirmer. La facture repart alors dans la
+                    séquence de sa nouvelle année (ici FAC/2025/00001).</p>
+                <p>En revanche, Odoo <strong>ne refuse pas</strong> deux choses. Un numéro qui saute des valeurs
+                    (FV-2026-00015 après FV-2026-00011) est accepté, mais affiché en rouge dans la liste des
+                    factures. Et une facture antidatée reçoit simplement le numéro suivant : datée du 1<sup>er</sup>
+                    août, elle a été numérotée après une facture du 21 octobre. L'ordre des numéros suit l'ordre
+                    des confirmations, pas celui des dates.</p>
+                <p>Enfin, un utilisateur qui a le droit « Facturation » sans être « Administrateur » ne peut supprimer une
+                    facture remise en brouillon que si elle porte le dernier numéro : sinon, <em>« Vous ne pouvez
+                    pas supprimer cette pièce comptable, parce qu'elle a déjà consommé un numéro de séquence et
+                    elle n'est pas la dernière de la chaîne. Vous devriez plutôt l'extourner. »</em></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RESÉQUENCER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Renuméroter des factures existantes : Reséquencer</h2>
+                <p>Odoo 20 Community fournit un assistant pour renuméroter un lot de factures. Il n'apparaît
+                    qu'en mode développeur (<strong>Paramètres › Outils développeur › Activer le mode
+                    développeur</strong>).</p>
+                <ol>
+                    <li>Dans <strong>Facturation › Clients › Factures</strong>, cochez les factures d'un
+                        <strong>même journal</strong>.</li>
+                    <li><strong>Actions › Reséquencer</strong>.</li>
+                    <li>Choisissez <strong>Garder l'ordre actuel</strong> ou <strong>Réordonner par date
+                        comptable</strong>, et au besoin un autre format dans <strong>Première nouvelle
+                        séquence</strong>. Le tableau Avant / Après montre le résultat avant tout changement.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Assistant Reséquencer d'Odoo 20 : option Réordonner par date comptable cochée, Première nouvelle séquence FAC/2026/00001, aperçu des neuf factures de démonstration avec les colonnes Date, Avant et Après" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les factures de démonstration, numérotées hors de l'ordre des dates, remises dans l'ordre chronologique.</figcaption>
+                </figure>
+                <ol start="4">
+                    <li><strong>Confirmer</strong> applique les nouveaux numéros. Essayé sur la démonstration avec
+                        <code>FV2026-001</code> comme première séquence : les neuf factures sont devenues
+                        FV2026-001 à FV2026-009, et la facture suivante FV2026-010.</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : un numéro envoyé ne change pas chez le client</h4>
+                    <p>Reséquencer ou renommer modifie les numéros dans Odoo seulement. Le client garde le PDF reçu
+                        avec l'ancien numéro, et ses paiements risquent de citer une référence qui n'existe plus.
+                        Changez de format au début d'une période, sur une facture pas encore émise, et réservez
+                        l'assistant aux factures qui n'ont pas encore quitté la base.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo prolonge le dernier numéro : pour changer de format, saisissez le premier numéro du
+                        nouveau format.</li>
+                    <li>Le paramètre <strong>Séquence du document modifiable</strong> rend ce numéro saisissable
+                        sur toute facture en brouillon.</li>
+                    <li>La forme du numéro (année, année et mois, ou rien) décide de la remise à zéro.</li>
+                    <li>Numéro déjà pris ou contraire à la date : refusé. Numéro sauté : accepté, mais affiché en
+                        rouge.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POUR ALLER PLUS LOIN ===== -->
+<section class="s_text_block pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pour aller plus loin</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et
+                        avoirs dans Odoo 20</a>, pour la prise en main de la facturation.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Avoir partiel
+                        sur une facture payée</a>, pour corriger une facture déjà émise sans toucher à son
+                        numéro.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/applications-gratuites-odoo-community-198">Odoo 20
+                        Community : les 34 applications gratuites</a>, le tour d'horizon de la version.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
