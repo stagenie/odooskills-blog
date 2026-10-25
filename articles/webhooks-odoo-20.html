@@ -1,0 +1,589 @@
+<!--
+Article — Webhooks en Odoo 20 : recevoir et émettre des appels HTTP
+Série « Intégrer Odoo 20 » (série 56, lot T1, étape 1 — T1.2 du plan vague 3 technique)
+Date : 2026-10-25
+Slug : webhooks-odoo-20
+Mot-clé cible : odoo webhook (example, authentication)
+Catégorie : Développement Odoo
+Tags : intermediaire, integrations, guide, community
+Temps de lecture : ~13 minutes
+Preuves (copie jetable de la base technique, sale_management + stock, démo native fr_FR, Odoo 20.0, PG 16 ;
+base_automation installé sur la copie ; serveur HTTP de travail lancé en boucle locale dans le processus odoo-bin shell,
+dbfilter limité à la copie ; appels réels le 25/10/2026) :
+- Règle 1 « Signature reçue » (on_webhook, record_getter par name, action code message_post + action_confirm,
+  log_webhook_calls) : curl 200 (S00032), 500 (S99999), 404 (mauvaise URL) ; GET ?commande=S00003 → 200 ;
+  ir.logging INFO/ERROR ; auteur des messages et write_uid = Public user.
+- Règle 2 « Commande confirmée → outil externe » (on_state_set state=sale, action webhook, 5 champs) : récepteur
+  recepteur.py ; corps reçu S00032 ; journal « succeeded », « Connection refused » (récepteur arrêté), « timed out after
+  1s » (récepteur à 3 s, requête entrante 1,23 s contre 0,24 s) ; rollback dans un shell → « cancelled due to a rollback ».
+- web.base.url réécrit par la connexion admin (8200 → port du serveur de travail) ; figé ensuite (web.base.url.freeze)
+  sur http://localhost:8069 avant les captures.
+- Module oski_webhook_signe 20.0.1.0.0 : installé sans WARNING ni ERROR ; signe.sh 200 / 401 signature / 401 expired /
+  401 sans signature ; rejeu dans la fenêtre → 200 deux fois ; tests/test_webhook.py 5/5 au vert (lancés dans le processus shell, loader.make_suite + serveur
+  werkzeug ; odoo-bin --test-tags non exécuté ici).
+- Instance multi-base : /web/hook sans en-tête → 404 HTML ; avec X-Odoo-Database → règle atteinte (500, commande inconnue).
+- Source 20.0 : addons/base_automation/controllers/main.py:6-18 ; models/base_automation.py:119-126 (payload),
+  :148-152, :536-538 (Renouveler), :594-636 (_execute_webhook) ; models/ir_actions_server.py:58-60 (payload dans le code) ;
+  odoo/addons/base/models/ir_actions.py:768-781 (champs à groupe refusés), :1058-1101 (_run_action_webhook) ;
+  odoo/http/router.py:507-517 (X-Odoo-Database) ; odoo/addons/base/models/res_users.py:851-861 (web.base.url).
+- 19.0 publique (commit 8b87b900, 25/10/2026, raw.githubusercontent.com) : controllers/main.py identique,
+  _run_action_webhook identique, _execute_webhook identique hormis le texte du journal d'échec ; web.base.url.freeze idem.
+Captures : content/blog/screenshots/webhooks-odoo-20/ (01 schéma, 02/04/06 écran, 03/05 terminal réels, adresses remplacées par localhost:8069 / ma_base).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Webhooks en Odoo 20 : recevoir et émettre des appels HTTP</h1>
+                <p class="lead mt-3 text-white">Un outil externe prévient Odoo qu'un devis est signé, Odoo confirme la
+                    commande et prévient à son tour un autre outil. Les deux sens se règlent sans une ligne de module,
+                    avec les règles d'automatisation. Pour authentifier l'appelant, il faut en revanche un petit contrôleur
+                    signé. Les trois montages sont exécutés ici sur une base Odoo 20 Community.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Intégrations</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Recevoir</h4>
+                        <p>Une règle « Sur webhook » : son URL secrète, la recherche de l'enregistrement cible à partir
+                            du <code>payload</code>, ses réponses <code>200</code>, <code>404</code> et <code>500</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Émettre</h4>
+                        <p>L'action « Envoyer une notification webhook » : le JSON envoyé, le moment de l'envoi, et ce qui
+                            se passe quand le destinataire est lent ou absent.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Authentifier</h4>
+                        <p>Un contrôleur qui vérifie une signature HMAC-SHA256 et un horodatage, puis agit avec les droits
+                            d'un utilisateur dédié plutôt qu'en superutilisateur.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 20 Community avec Ventes et sa base de démonstration, plus le module
+                            <strong>Automatisations</strong> (<code>base_automation</code>) : il n'est pas installé
+                            d'office. Le mode développeur, pour le menu Technique, les boutons Renouveler et Journaux et l'option « Enregistrer les appels ».</li>
+                        <li><code>curl</code> et Python 3 (bibliothèque standard) pour jouer l'outil externe.</li>
+                        <li>Pour la partie 3 : savoir installer un module. Les bases des contrôleurs sont dans
+                            <a href="/blog/developpement-odoo-2/controllers-http-api-rest-odoo-74">Controllers HTTP et API REST</a>
+                            (écrit pour la 19 ; <code>route</code>, <code>Controller</code> et <code>request</code> s'importent toujours de <code>odoo.http</code> en 20).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un webhook est un simple appel HTTP <code>POST</code> envoyé quand un événement se produit. Pour Odoo il
+                    y a deux sens : <strong>recevoir</strong> (un outil appelle une URL d'Odoo) et <strong>émettre</strong>
+                    (Odoo appelle l'URL d'un outil). À l'inverse de l'<a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">API JSON-2</a>,
+                    où le client va chercher ou écrire des données quand il le décide, le webhook pousse l'information
+                    au moment où elle naît.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en trois bandes. 1 Recevoir sans coder : outil externe POST /web/hook/uuid, enregistrement cible record_getter(payload) ou 500, actions de la règle en sudo comme Public user, réponse 200 status ok ou 404 si l'URL est inconnue. 2 Émettre sans coder : commande confirmée, action webhook avec _model, _id, _action et les champs, POST JSON après le commit avec un timeout de 1 seconde et annulé si rollback, l'outil reçoit le JSON sans nouvel essai. 3 Recevoir avec authentification : POST /oski/webhook/signature avec X-Timestamp et X-Signature, contrôle HMAC-SHA256 ou 401, utilisateur dédié via request.update_env, réponse 200, 404 ou 401"/>
+                    <figcaption>Les trois montages de l'article : deux se règlent dans l'interface, le troisième est un petit module.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. RECEVOIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Recevoir un webhook sans coder : la règle « Sur webhook »</h2>
+
+                <p>Le cas d'école : un service de signature électronique appelle Odoo quand un client a signé son
+                    devis, avec un JSON du type <code>{"commande": "S00032", "signataire": "…"}</code>. Odoo doit noter
+                    la signature dans la discussion du devis et confirmer la commande.</p>
+
+                <h3>Créer la règle</h3>
+                <ol>
+                    <li><strong>Paramètres › Technique › Automatisation › Règles d'automatisation</strong>, puis
+                        <strong>Nouveau</strong>. Modèle : <em>Commande client</em> ; Déclencher : <em>Sur webhook</em>.</li>
+                    <li>Odoo affiche aussitôt l'<strong>URL secrète</strong>, de la forme
+                        <code>&lt;URL de la base&gt;/web/hook/&lt;uuid&gt;</code>, avec un bouton pour la copier et un
+                        bouton <strong>Renouveler</strong>.</li>
+                    <li><strong>Enregistrement cible</strong> : une expression Python qui trouve, à partir du corps reçu,
+                        l'enregistrement sur lequel la règle s'exécute. La valeur par défaut,
+                        <code>model.env[payload.get('_model')].browse(int(payload.get('_id')))</code>, attend un appel
+                        venant d'une autre base Odoo (partie 2). Ici, la commande se retrouve par son numéro :</li>
+                </ol>
+<pre class="language-python"><code class="language-python">model.search([('name', '=', payload.get('commande'))], limit=1)</code></pre>
+                <ol start="4">
+                    <li><strong>Ajouter une action</strong> de type <em>Exécuter le code</em>. La variable
+                        <code>payload</code> y est disponible, comme dans l'enregistrement cible :</li>
+                </ol>
+<pre class="language-python"><code class="language-python">record.message_post(body="Devis signé en ligne par %s." % payload.get('signataire'))
+if record.state in ('draft', 'sent'):
+    record.action_confirm()</code></pre>
+                <ol start="5">
+                    <li>En mode développeur, activer <strong>Enregistrer les appels</strong> : chaque appel est consigné, et
+                        le bouton <strong>Journaux</strong> en haut du formulaire les liste.</li>
+                </ol>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Formulaire de la règle d'automatisation Signature reçue : modèle Commande client, Déclencher Sur webhook, URL secrète http://localho… avec les boutons copier et Renouveler, Enregistrer les appels activé, Enregistrement cible model.search([('name', '=', payload… avec l'aide qui liste les variables env, model, time, datetime, dateutil, timezone et payload, onglet Actions à effectuer avec l'action Noter la signature et confirmer, bouton Journaux en haut"/>
+                    <figcaption>La règle terminée. L'aide sous « Enregistrement cible » liste les variables disponibles, dont <code>payload</code> : le corps JSON, ou les paramètres d'URL pour un appel <code>GET</code>.</figcaption>
+                </figure>
+
+                <h3>L'appeler</h3>
+                <p>Trois appels : une commande qui existe, une qui n'existe pas, une URL fausse.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal : curl POST sur /web/hook/fe061ea0… avec commande S00032 répond {&quot;status&quot;: &quot;ok&quot;} HTTP 200 ; avec commande S99999 répond {&quot;status&quot;: &quot;error&quot;} HTTP 500 ; curl sur /web/hook/0000-mauvaise-url répond {&quot;status&quot;: &quot;error&quot;} HTTP 404"/>
+                    <figcaption>Les trois réponses possibles du contrôleur natif : <code>200</code> quand la règle a tourné, <code>500</code> quand l'enregistrement cible est introuvable ou qu'une action échoue, <code>404</code> pour une URL inconnue.</figcaption>
+                </figure>
+
+                <p>Après le premier appel, S00032 est confirmée et sa discussion porte la note « Devis signé en ligne par
+                    Service achats Ready Mat. ». Le corps de la réponse est toujours le même petit JSON
+                    (<code>addons/base_automation/controllers/main.py</code>) : l'appelant ne reçoit jamais le détail de
+                    l'erreur. Ce détail est dans les journaux de la règle :</p>
+<div class="out">INFO   Webhook #1 triggered with payload {'commande': 'S00032', 'signataire': 'Service achats Ready Mat'}
+INFO   Webhook #1 triggered with payload {'commande': 'S99999'}
+ERROR  Webhook #1 could not be triggered because no record to run it on was found.</div>
+                <p>Le même appel en <code>GET</code>, avec <code>?commande=S00003&amp;signataire=…</code> dans l'URL, a
+                    aussi confirmé S00003 : quand le corps n'est pas du JSON, Odoo prend les paramètres de l'URL comme
+                    <code>payload</code>.</p>
+
+                <h3>Avec quels droits la règle s'exécute</h3>
+                <p>La route est publique (<code>auth='public'</code>, sans jeton CSRF) et le contrôleur cherche la règle
+                    en <code>sudo()</code>. Les actions tournent donc en superutilisateur, mais au nom de l'utilisateur
+                    public : la note et la confirmation de S00032 sont signées <strong>Public user</strong> dans la
+                    discussion (capture plus bas). Rien n'empêche un appelant qui connaît l'URL d'agir sur n'importe
+                    quelle commande que l'enregistrement cible sait trouver.</p>
+
+                <div class="pitfall-box">
+                    <h4>L'URL est le seul secret, et elle dépend de <code>web.base.url</code></h4>
+                    <ul>
+                        <li>Aucune authentification : qui a l'URL peut déclencher la règle. Ne la mettre que dans l'outil
+                            appelant, en HTTPS, et la changer par <strong>Renouveler</strong> si elle a circulé (essayé : l'ancienne
+                            répond aussitôt <code>404</code>). Garder l'enregistrement cible et les actions aussi étroits que
+                            possible.</li>
+                        <li>L'URL affichée est construite avec le paramètre système <code>web.base.url</code>. Or Odoo
+                            réécrit ce paramètre à chaque connexion d'un administrateur, avec l'adresse utilisée pour se
+                            connecter : sur la base de test, l'URL a changé de port après une simple connexion. Derrière un
+                            proxy, c'est une adresse interne qui finit copiée dans l'outil tiers. Mettre la bonne adresse
+                            dans <code>web.base.url</code> et ajouter le paramètre <code>web.base.url.freeze</code> à
+                            <code>True</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ÉMETTRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Émettre un webhook sans coder : « Envoyer une notification webhook »</h2>
+
+                <p>Dans l'autre sens, l'outil de facturation doit être prévenu de chaque commande confirmée. Une deuxième
+                    règle sur <em>Commande client</em>, déclenchée par <em>Le statut est défini sur</em> «&nbsp;Commande
+                    client&nbsp;», reçoit une action de type <strong>Envoyer une notification webhook</strong> : une URL et
+                    une liste de champs. La fenêtre montre un exemple du corps qui partira, calculé sur une commande de la
+                    base.</p>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre de l'action Prévenir l'outil de facturation : Type Envoyer une notification webhook sélectionné parmi Mettre à jour l'enregistrement, Créer un enregistrement, Exécuter le code, Envoyer un SMS ; URL http://localhost:8000/odoo/commande ; Champs Total, Date de la commande, Référence commande, Client, Statut ; Exemple de charge utile en JSON avec _action, _id, _model, amount_total, date_order, id, name, partner_id, state"/>
+                    <figcaption>L'action webhook : l'URL du destinataire, les champs à envoyer, et l'aperçu du JSON. <code>_model</code>, <code>_id</code> et <code>_action</code> sont toujours ajoutés.</figcaption>
+                </figure>
+
+                <p>Pour voir ce qui arrive, un « outil externe » de quelques lignes suffit : il affiche chaque requête
+                    reçue, et peut simuler un destinataire lent.</p>
+<pre class="language-python"><code class="language-python"># Un « outil externe » minimal : affiche chaque requête reçue. Usage : python3 recepteur.py [délai_en_s]
+import json
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+DELAI = float(sys.argv[1]) if len(sys.argv) &gt; 1 else 0
+
+
+class Recepteur(BaseHTTPRequestHandler):
+    def do_POST(self):
+        corps = self.rfile.read(int(self.headers["Content-Length"]))
+        print(self.command, self.path, self.headers["Content-Type"], self.headers["User-Agent"])
+        print(json.dumps(json.loads(corps), indent=2, ensure_ascii=False), flush=True)
+        time.sleep(DELAI)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+HTTPServer(("localhost", 8000), Recepteur).serve_forever()</code></pre>
+
+                <p>Avec <code>python3 recepteur.py</code> lancé, l'appel de la partie 1 sur S00032 a confirmé la commande,
+                    ce qui a déclenché la deuxième règle. Le récepteur a affiché :</p>
+<div class="out">POST /odoo/commande application/json python-requests/2.31.0
+{
+  "_action": "Prévenir l'outil de facturation(#491)",
+  "_id": 32,
+  "_model": "sale.order",
+  "amount_total": 72.68,
+  "date_order": "2026-10-25 22:14:37",
+  "id": 32,
+  "name": "S00032",
+  "partner_id": 12,
+  "state": "sale"
+}
+POST /odoo/commande application/json python-requests/2.31.0</div>
+                <p>Trois détails comptent pour l'outil qui reçoit :</p>
+                <ul>
+                    <li>les champs sont lus sans libellé : <code>partner_id</code> vaut <code>12</code>, pas « Ready Mat ».
+                        Ajouter les champs utiles ou rappeler Odoo par l'API pour le reste ;</li>
+                    <li><code>date_order</code> est en <strong>UTC</strong> (<code>22:14:37</code> pour une confirmation
+                        affichée 23:14 à Paris), sous forme de texte ;</li>
+                    <li>la requête porte seulement <code>Content-Type: application/json</code> : ni signature, ni en-tête
+                        d'authentification. Si le destinataire veut s'assurer que l'appel vient bien d'Odoo, il faut mettre
+                        un jeton dans l'URL elle-même.</li>
+                </ul>
+
+                <h3>Quand part l'appel, et s'il échoue</h3>
+                <p>L'action ne poste rien tout de suite : elle inscrit l'envoi pour <strong>après le commit</strong> de la
+                    transaction (<code>_run_action_webhook</code>, <code>odoo/addons/base/models/ir_actions.py</code>). Si la
+                    transaction est annulée, l'appel l'est aussi. Essai dans un <code>odoo-bin shell</code> : confirmer un
+                    devis, puis <code>env.cr.rollback()</code> :</p>
+<div class="out">INFO odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande
+WARNING odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande - cancelled due to a rollback</div>
+                <p>C'est ce qu'on veut : l'outil n'apprend jamais une confirmation qui n'a pas eu lieu. Ensuite, l'envoi
+                    est fait une seule fois, avec un délai d'attente maximal (<em>timeout</em>) d'une seconde. Trois commandes confirmées, avec un récepteur
+                    normal, arrêté, puis réglé pour répondre en 3 secondes (<code>python3 recepteur.py 3</code>), donnent
+                    dans le journal du serveur :</p>
+<div class="out">2026-10-25 22:15:44 INFO ma_base odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande
+2026-10-25 22:15:44 INFO ma_base odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande - succeeded
+2026-10-25 22:15:46 INFO ma_base odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande
+2026-10-25 22:15:46 WARNING ma_base odoo.addons.base.models.ir_actions: Webhook call failed: HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /odoo/commande (Caused by NewConnectionError('&lt;urllib3.connection.HTTPConnection object at 0x7f911d22d1f0&gt;: Failed to establish a new connection: [Errno 111] Connection refused'))
+2026-10-25 22:15:48 INFO ma_base odoo.addons.base.models.ir_actions: Webhook call to http://localhost:8000/odoo/commande
+2026-10-25 22:15:50 WARNING ma_base odoo.addons.base.models.ir_actions: Webhook call timed out after 1s - it may or may not have failed. If this happens often, it may be a sign that the system you're trying to reach is slow or non-functional.</div>
+
+                <div class="pitfall-box">
+                    <h4>Un envoi unique, sans nouvel essai, qui peut ralentir l'appelant</h4>
+                    <ul>
+                        <li>Récepteur arrêté, ou qui répond par une erreur <code>4xx</code>/<code>5xx</code> : un <code>WARNING</code> dans le journal du serveur, et c'est tout. La commande
+                            reste confirmée, rien n'est remis en file, aucune trace sur la commande. Avec un récepteur lent,
+                            Odoo abandonne au bout d'une seconde alors que le récepteur, lui, a bien reçu l'appel : « it may
+                            or may not have failed ».</li>
+                        <li>L'envoi a lieu dans la requête qui a confirmé la commande, juste après le commit. Avec le
+                            récepteur lent, l'appel entrant de la partie 1 a mis <strong>1,23 s</strong> à répondre, contre
+                            0,24 s avec un récepteur normal. Chaque action webhook peut ajouter environ une seconde au clic
+                            de l'utilisateur.</li>
+                        <li>Pour un flux qui ne doit rien perdre, le destinataire doit pouvoir rattraper : relire par
+                            l'API JSON-2 les commandes modifiées depuis son dernier passage, par exemple.</li>
+                    </ul>
+                </div>
+
+                <p>Dernière garde, lue dans le même fichier : un champ réservé à un groupe (attribut <code>groups</code>)
+                    ne peut pas faire partie du corps envoyé, et l'action affiche un avertissement qui demande de le
+                    retirer. Un webhook part sans contrôle de droits, il ne doit pas faire fuiter un champ protégé.</p>
+
+                <p>Le corps envoyé contient <code>_model</code> et <code>_id</code>, exactement ce qu'attend
+                    l'enregistrement cible par défaut d'une règle « Sur webhook ». Deux bases Odoo se branchent donc
+                    l'une sur l'autre sans écrire de code : l'action de la première vise l'URL secrète de la seconde.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CONTRÔLEUR SIGNÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Recevoir avec authentification : un contrôleur signé</h2>
+
+                <p>Les services sérieux (paiement, signature, transport) <strong>signent</strong> leurs webhooks : ils
+                    calculent un HMAC-SHA256 du corps avec un secret partagé et l'envoient dans un en-tête. La règle
+                    native ne sait pas le vérifier. Le module <code>oski_webhook_signe</code> le fait en un contrôleur. Il
+                    signe <code>horodatage.corps</code> pour qu'une requête interceptée ne puisse plus être rejouée au-delà de cinq minutes.</p>
+<pre class="language-python"><code class="language-python">import hashlib
+import hmac
+import json
+import time
+
+from odoo import http
+from odoo.http import request
+
+MAX_AGE = 300  # secondes : au-delà, une requête signée est refusée (rejeu)
+
+
+class SignatureWebhook(http.Controller):
+
+    @http.route('/oski/webhook/signature', type='http', auth='public', methods=['POST'],
+                csrf=False, save_session=False)
+    def signature_received(self):
+        body = request.httprequest.get_data()
+        timestamp = request.httprequest.headers.get('X-Timestamp', '')
+        received = request.httprequest.headers.get('X-Signature', '')
+        secret = request.env['ir.config_parameter'].sudo().get_str('oski_webhook_signe.secret')
+
+        # 1. Authentifier : HMAC-SHA256 de « horodatage.corps » avec le secret partagé
+        expected = hmac.new(secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256).hexdigest()
+        if not secret or not hmac.compare_digest(received.encode(), expected.encode()):
+            return request.make_json_response({'status': 'error', 'error': 'signature'}, status=401)
+        if not timestamp.isdigit() or abs(time.time() - int(timestamp)) &gt; MAX_AGE:
+            return request.make_json_response({'status': 'error', 'error': 'expired'}, status=401)
+
+        # 2. Lire le corps
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return request.make_json_response({'status': 'error', 'error': 'json'}, status=400)
+
+        # 3. Agir avec les droits d'un utilisateur dédié, pas en superutilisateur
+        request.update_env(user=request.env.ref('oski_webhook_signe.user_webhook'))
+        order = request.env['sale.order'].search([('name', '=', data.get('commande'))], limit=1)
+        if not order:
+            return request.make_json_response({'status': 'error', 'error': 'commande'}, status=404)
+        order.message_post(body=request.env._("Devis signé en ligne par %s.", data.get('signataire')))
+        if order.state in ('draft', 'sent'):
+            order.action_confirm()
+        return request.make_json_response({'status': 'ok', 'commande': order.name, 'etat': order.state})</code></pre>
+                <ul>
+                    <li><code>type='http'</code> et non <code>'jsonrpc'</code> : un service tiers envoie un JSON brut, pas
+                        une enveloppe JSON-RPC. Le corps se lit avec <code>request.httprequest.get_data()</code>, en octets :
+                        c'est sur eux qu'il faut calculer la signature, avant tout décodage.</li>
+                    <li><code>csrf=False</code> est obligatoire pour un <code>POST</code> venu d'ailleurs ;
+                        <code>save_session=False</code> évite de créer une session à chaque appel.</li>
+                    <li><code>hmac.compare_digest</code> compare en temps constant, ce que ne fait pas <code>==</code>.</li>
+                    <li>Le secret est lu par <code>get_str</code> : en Odoo 20, <code>get_param</code> et
+                        <code>set_param</code> d'<code>ir.config_parameter</code> n'existent plus.</li>
+                    <li><code>sudo()</code> ne sert qu'à lire ce paramètre. Le travail se fait avec
+                        <code>request.update_env(user=…)</code>, sous un utilisateur dédié créé par le module, qui a les
+                        droits d'un commercial et rien de plus :</li>
+                </ul>
+<pre class="language-xml"><code class="language-xml">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo&gt;
+    &lt;record id="user_webhook" model="res.users"&gt;
+        &lt;field name="name"&gt;Webhook signature&lt;/field&gt;
+        &lt;field name="login"&gt;webhook-signature&lt;/field&gt;
+        &lt;field name="group_ids" eval="[Command.set([ref('sales_team.group_sale_salesman_all_leads')])]"/&gt;
+    &lt;/record&gt;
+&lt;/odoo&gt;</code></pre>
+
+                <p>Le module installé et le secret enregistré (paramètre système <code>oski_webhook_signe.secret</code>),
+                    l'appelant se joue avec <code>openssl</code> :</p>
+<pre class="language-bash"><code class="language-bash"># Envoie un webhook signé : HMAC-SHA256 de « horodatage.corps » avec le secret partagé
+SECRET=${SECRET:-'change-moi-par-un-long-secret'}
+TS=${TS:-$(date +%s)}
+CORPS='{"commande": "S00039", "signataire": "Service achats Gemini Furniture"}'
+SIG=$(printf '%s.%s' "$TS" "$CORPS" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -s -w '  → HTTP %{http_code}\n' -X POST http://localhost:8069/oski/webhook/signature \
+     -H 'Content-Type: application/json' -H "X-Timestamp: $TS" -H "X-Signature: $SIG" -d "$CORPS"</code></pre>
+
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Terminal : bash signe.sh répond status ok, commande S00039, etat sale, HTTP 200 ; SECRET=devine bash signe.sh répond error signature HTTP 401 ; avec un horodatage d'il y a une heure, error expired HTTP 401 ; curl sans en-têtes de signature, error signature HTTP 401"/>
+                    <figcaption>Signature valide : <code>200</code> et la commande confirmée. Secret faux, requête vieille d'une heure ou sans signature : <code>401</code>, et rien ne change en base.</figcaption>
+                </figure>
+
+                <p>La fenêtre de cinq minutes reste ouverte au rejeu : la même requête signée, envoyée deux fois de suite
+                    avec le même horodatage, a reçu deux <code>200</code> et ajouté deux notes à la commande. Si le service
+                    envoie un identifiant d'événement, le mémoriser et refuser un identifiant déjà vu ferme cette fenêtre.</p>
+
+                <p>La différence se voit dans la discussion de S00032 et de S00033, une commande confirmée par le
+                    contrôleur lors d'un premier essai : la règle native agit comme
+                    « Public user », le contrôleur comme l'utilisateur qu'on lui a donné. Et la confirmation de S00033 a,
+                    elle aussi, déclenché le webhook sortant de la partie 2 : les règles réagissent à l'événement, quel que
+                    soit le chemin qui l'a produit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Deux discussions côte à côte. S00032, règle Sur webhook native : Public user a écrit Devis confirmé, Devis → Commande client, puis Devis signé en ligne par Service achats Ready Mat. S00033, contrôleur signé : les mêmes messages signés Webhook signature, Devis signé en ligne par Service achats Gemini Furniture"/>
+                    <figcaption>Mêmes messages, deux auteurs : « Public user » pour la règle native (en sudo), « Webhook signature » pour le contrôleur, qui travaille avec les droits de cet utilisateur.</figcaption>
+                </figure>
+
+                <p>Le module contient aussi <code>tests/test_webhook.py</code>, un <code>HttpCase</code> qui signe ses
+                    requêtes de la même façon : signature valide (commande confirmée, auteur du message vérifié), secret
+                    faux, requête trop ancienne, commande inconnue, corps qui n'est pas un objet JSON. Les cinq tests passent sur Odoo 20 ; le détail des
+                    tests HTTP est dans <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20</a>.</p>
+
+                <h3>Plusieurs bases sur le même serveur</h3>
+                <p>Une route <code>auth='public'</code> a besoin de savoir quelle base servir. Sur un serveur qui en
+                    héberge plusieurs, l'appel sans session ne trouve pas de base et reçoit un <code>404</code>, même
+                    avec une URL secrète juste. Essayé sur une instance à plusieurs bases : sans en-tête,
+                    <code>404</code> ; avec <code>-H 'X-Odoo-Database: ma_base'</code>, la règle est atteinte
+                    (<code>odoo/http/router.py</code> lit cet en-tête quand la requête n'a pas de cookie de session, et la base doit passer le <code>dbfilter</code>). Comme un service tiers ne
+                    laisse pas toujours ajouter un en-tête, le plus simple reste une base par nom de domaine, avec
+                    <code>dbfilter</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CHOISIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lequel choisir</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Montage</th><th>Limite</th></tr></thead>
+                    <tbody>
+                        <tr><td>Un outil interne ou de confiance prévient Odoo</td><td>Règle « Sur webhook »</td><td>Pas d'authentification, actions en sudo, réponse sans détail</td></tr>
+                        <tr><td>Odoo prévient un outil (Zapier, n8n, un service maison)</td><td>Action « Envoyer une notification webhook »</td><td>Un seul envoi, timeout de 1 s, pas de signature ; champs sans libellé</td></tr>
+                        <tr><td>Deux bases Odoo</td><td>Action de l'une → URL secrète de l'autre</td><td>Mêmes limites que les deux lignes précédentes</td></tr>
+                        <tr><td>Un service qui signe ses appels (paiement, signature, transport)</td><td>Contrôleur maison</td><td>Un module à maintenir ; le format de signature est celui du service</td></tr>
+                        <tr><td>Un outil qui doit lire ou écrire à son rythme</td><td>Pas de webhook : <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">API JSON-2</a></td><td>Le client interroge, Odoo ne pousse rien</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19 : rien à changer</h4>
+                    <p>Comparé à la branche 19.0 publique du 25/10/2026 : la route <code>/web/hook</code> est identique,
+                        l'envoi (<code>_run_action_webhook</code> : après le commit, timeout d'une seconde, champs à groupe
+                        refusés) aussi, et l'exécution d'une règle « Sur webhook » ne diffère que par le texte du journal
+                        d'échec. La réécriture de <code>web.base.url</code> à la connexion d'un administrateur existait déjà.
+                        Une règle webhook réglée en 19 garde son comportement après le passage en 20. Dans un contrôleur
+                        maison, en revanche, les lectures de paramètres en <code>get_param</code> sont à remplacer par
+                        <code>get_str</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Recevoir : une règle d'automatisation « Sur webhook » (module <code>base_automation</code>) donne une URL secrète <code>/web/hook/&lt;uuid&gt;</code> ; l'enregistrement cible et les actions lisent le corps dans <code>payload</code>.</li>
+                    <li>Réponses natives : <code>200</code>, <code>500</code> (enregistrement introuvable ou action en erreur), <code>404</code> (URL inconnue), toujours sans détail ; le détail est dans les journaux de la règle.</li>
+                    <li>La règle tourne en sudo comme « Public user » : l'URL est le seul secret. Figer <code>web.base.url</code> pour qu'elle reste juste.</li>
+                    <li>Émettre : l'action « Envoyer une notification webhook » poste <code>_model</code>, <code>_id</code>, <code>_action</code> et les champs choisis, après le commit, une seule fois, avec un timeout d'une seconde.</li>
+                    <li>Authentifier : un contrôleur <code>type='http'</code>, <code>csrf=False</code>, qui vérifie un HMAC sur les octets reçus et un horodatage, puis agit avec <code>request.update_env(user=…)</code>. Dans la fenêtre de cinq minutes, un rejeu passe encore.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Règles, appels <code>curl</code>, récepteur et module exécutés le 25/10/2026 sur un serveur
+                    Odoo 20.0 (PostgreSQL 16), base de démonstration avec Ventes. Comparaison avec la branche 19.0 publique
+                    relue le même jour. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/tree/20.0/addons/base_automation" target="_blank" rel="noopener"><code>addons/base_automation</code></a> : <code>controllers/main.py</code> (route, réponses), <code>models/base_automation.py</code> (<code>payload</code>, enregistrement cible, journaux, Renouveler), <code>models/ir_actions_server.py</code> (<code>payload</code> dans le code)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_actions.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_actions.py</code></a> : <code>_run_action_webhook</code>, avertissement des champs à groupe</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/http/router.py" target="_blank" rel="noopener"><code>odoo/http/router.py</code></a> : choix de la base, en-tête <code>X-Odoo-Database</code></li>
+                    <li>Le module de l'article : <a href="https://github.com/stagenie/odooskills-blog/tree/20.0/modules-odoo20/oski_webhook_signe" target="_blank" rel="noopener"><code>oski_webhook_signe</code></a> (contrôleur, utilisateur dédié, tests)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">env, with_context, sudo, with_company</a></h5>
+                            <p class="small text-muted mb-0">Ce que change <code>sudo()</code>, et pourquoi agir avec un utilisateur précis.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler</a></h5>
+                            <p class="small text-muted mb-0">Retrouver les <code>WARNING</code> d'un webhook qui n'est pas parti.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/automatisation-odoo-studio-343">Créer une règle d'automatisation</a></h5>
+                            <p class="small text-muted mb-0">Côté fonctionnel, avec Studio (Enterprise) : les autres déclencheurs et actions.</p>
+                        </div></div>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-3">
+                    <a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347" class="btn btn-outline-secondary">← L'API de la Bibliothèque en JSON-2</a>
+                    <span class="btn btn-outline-primary disabled">n8n et Odoo 20 (à venir) →</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
