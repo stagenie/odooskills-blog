@@ -1,0 +1,487 @@
+<!--
+Article — Émettre ses factures électroniques avec Odoo 20
+Série « Facturation électronique et TVA avec Odoo 20 » (blog Fonctionnel, série 55), vague 3 F1.3
+Date : 2026-10-27 (routine bodoo19)
+Slug : emettre-factures-electroniques-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-10-27 : Odoo 20.0 Community, base vs20_func_f13 (copie de vs20_func), société FR Company (id 2),
+  mode démo (account_peppol.edi.mode = demo), aucun appel réseau vers la plateforme, aucun courriel envoyé (serveur sortant bloqué).
+  Joué : inscription démo ; contacts « Client professionnel France » (TVA FR12000000000, SIREN 000000000 fictif saisi par le
+  bouton « + » de la TVA), « Client professionnel Belgique » (BE0123456749), « Client professionnel Belgique 2 » (sans rue),
+  Client particulier ; Vérifier → « Le partenaire est dans l'annuaire » ; FAC/2026/00010 (2 Chaise de bureau, 20% G) envoyée par
+  « Facturation électronique française (Démo) » → message « The invoice has been sent to the Approved Platform… »,
+  FAC_2026_00010_ubl_21_fr.xml (CustomizationID en16931, ProfileID B1, notes #PMT#/#PMD#/#AAB#, EndpointID 0225, PDF
+  inclus) ; PDF de l'envoi : factur-x.xml embarqué (urn:factur-x.eu:1p0:extended), PDF/A-3 ; « Imprimer » : PDF sans
+  fichier embarqué ; FAC/2026/00012 (particulier, 90 € « 20% S ») « Générer » → PDF Factur-X ; paiement → flux Paiement
+  2026-10-01 > 2026-10-31 ; FAC/2026/00011 (BE, 0% EU G) et 00012 → flux Transaction 2026-10-21 > 2026-10-31, échéance 10 nov. ;
+  FAC/2026/00013 (BE sans rue) → statut Erreur « Ligne 1 de l'adresse manquante » ; correction de la fiche seule : statut
+  inchangé ; à l'écran, Remettre en brouillon + Confirmer → message « Erreurs d'e-reporting : Ligne 1 de l'adresse
+  manquante » ; rue saisie, puis Remettre en brouillon + Confirmer → « Statut de l'e-reporting : En attente ».
+  FAC/2026/00014 (même client, confirmée, non envoyée) : « Prêt à envoyer ».
+  Code : account/views/partner_view.xml:229-235 (format et envoi en mode développeur) ; odoo/tools/partner_identifiers.py:978-990
+  (SIREN déduit du SIRET, pas de la TVA) ; l10n_fr_pdp/models/res_partner.py:94-106 (adresse 0225 = SIREN) ;
+  l10n_fr_pdp/models/account_move_send.py:8-13 (particulier : courriel par défaut) ; account_edi_ubl_cii/models/account_move_send.py:158-215
+  (Factur-X toujours intégré au PDF de l'envoi, PDF/A pour FR) ; l10n_fr_pdp/models/account_edi_common.py:27-55 (cadre B/S/M) ;
+  l10n_fr_pdp/models/account_move.py:266-277 (mentions par défaut), :551-620 (contrôles e-reporting), :629-670 (b2c / b2bi / B2B
+  domestique hors flux), :530-541 (paiement si TVA sur encaissement ou acompte).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre.xml-extrait { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 0.9rem 1rem; font-size: 0.82em; white-space: pre-wrap; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Émettre ses factures électroniques avec Odoo 20</h1>
+                <p class="lead mt-3 text-white">À l'émission, une même facture Odoo prend trois chemins selon le client :
+                    fichier UBL transmis par la plateforme agréée pour un professionnel établi en France, PDF au format
+                    Factur-X pour les autres, et données d'e-reporting pour les ventes à l'étranger et aux particuliers, puis
+                    pour l'encaissement de celles qui portent une TVA sur les encaissements. Cet article suit les trois chemins sur la base de démonstration,
+                    de la fiche client au flux d'e-reporting prêt à partir.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Facturation électronique et TVA avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, octobre 2026,
+                        sur une copie de la base de démonstration (société « FR Company », plan comptable français), en
+                        mode démonstration de la plateforme agréée : l'envoi est simulé, aucune facture n'est partie sur le
+                        réseau réel et aucun courriel n'a été envoyé. Ce module existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Factur-X, UBL, e-reporting : qui fait quoi</h2>
+                <p>La réforme impose deux obligations distinctes à l'émetteur. Entre entreprises établies en France, la
+                    facture devient électronique : un fichier structuré qui passe par une plateforme agréée. Pour les
+                    autres opérations (vente à un particulier, vente à une entreprise étrangère) et pour certains
+                    encaissements, l'entreprise transmet des <strong>données</strong> à l'administration : c'est
+                    l'e-reporting.</p>
+                <p>Odoo 20 Community traite les deux à partir de la même facture. Le premier article de la série, <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>, présente la réforme et l'inscription de la société ; le deuxième, <a
+                    href="/blog/fonctionnel-odoo-1/recevoir-factures-electroniques-odoo-348">Recevoir ses factures
+                    électroniques dans Odoo 20</a>, traite les factures fournisseurs. Cet article part d'une société
+                    inscrite et regarde le sens sortant.</p>
+                <table class="tmc">
+                    <thead><tr><th>Client</th><th>Ce qu'Odoo produit à l'envoi</th><th>E-reporting</th></tr></thead>
+                    <tbody>
+                        <tr><td>Professionnel établi en France, inscrit à l'annuaire</td><td>fichier XML UBL 2.1 au format
+                            français, transmis par la plateforme agréée, avec le PDF</td><td>non : la facture électronique
+                            suffit</td></tr>
+                        <tr><td>Entreprise étrangère (numéro de TVA étranger)</td><td>PDF Factur-X, par courriel ou à
+                            télécharger</td><td>oui, flux « Transaction », et « Paiement » pour une TVA sur les encaissements</td></tr>
+                        <tr><td>Particulier (sans numéro de TVA)</td><td>PDF Factur-X, par courriel ou à télécharger</td>
+                            <td>oui, flux « Transaction », puis « Paiement » pour une prestation à TVA sur les
+                            encaissements</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>préparer la fiche d'un client professionnel pour l'envoi par la plateforme agréée ;</li>
+                    <li>envoyer une facture par la plateforme et retrouver le fichier UBL transmis ;</li>
+                    <li>obtenir un PDF au format Factur-X, et savoir quel bouton n'en produit pas ;</li>
+                    <li>suivre les flux d'e-reporting des transactions et des paiements ;</li>
+                    <li>repérer et corriger une facture en erreur d'e-reporting.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Les trois chemins d'une facture émise</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma des trois chemins d'une facture émise avec Odoo 20 : 1. client professionnel en France, fiche avec TVA et SIREN, bouton Envoyer avec Facturation électronique française cochée, fichier XML UBL 2.1 au format français contenant le PDF, plateforme agréée d'Odoo, client ; 2. client à l'étranger ou particulier, facture confirmée, Envoyer par courriel ou Générer, PDF au format Factur-X avec XML intégré, la facture rejoint dès sa confirmation le flux E-reporting Transaction de sa période ; 3. encaissement d'une prestation à TVA sur les encaissements, paiement enregistré, flux E-reporting Paiement du mois ; en bas, menu Facturation, Analyse, France, E-reporting" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le client détermine le chemin : plateforme agréée, PDF Factur-X, e-reporting.</figcaption>
+                </figure>
+                <p>Le choix ne se fait pas facture par facture : Odoo le déduit de la fiche client. Un client établi en
+                    France avec un SIREN inscrit à l'annuaire reçoit par la plateforme. Un client sans numéro de TVA est
+                    traité comme un particulier. Un client dont le pays est hors de France relève de l'e-reporting
+                    international. Le travail se fait donc d'abord sur les fiches clients.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Compléter la fiche du client professionnel</h2>
+                <p>Ouvrez la fiche du client (<strong>Facturation › Clients › Clients</strong>, ou l'application
+                    Contacts). Le numéro de TVA intracommunautaire ne suffit pas : Odoo 20 ne déduit pas le SIREN du
+                    numéro de TVA. Cliquez sur le <strong>+</strong> à droite du champ <strong>TVA</strong> : le menu
+                    propose SIRET, SIREN, « France FRCTC Electronic Address », LEI et DUNS. Choisissez
+                    <strong>SIREN</strong> (ou SIRET), saisissez le numéro, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche contact Client professionnel France dans Odoo 20 : adresse 5 place de la Bourse, 69002 Lyon, France, champ TVA FR12000000000 avec un bouton plus, et ligne SIREN 000000000 ajoutée par ce bouton" style="max-width:75%; height:auto;"/>
+                    <figcaption>Le SIREN s'ajoute par le « + » du champ TVA. Numéros fictifs de démonstration.</figcaption>
+                </figure>
+                <p>Le numéro saisi donne au client son adresse de facturation électronique : le code 0225 suivi du
+                    SIREN. Elle apparaît dans l'onglet <strong>Facturation</strong>, bloc <strong>Factures
+                    clients</strong>, sous le nom « Adresse électronique France ». Le bouton
+                    <strong>Vérifier</strong> interroge l'annuaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Onglet Facturation de la fiche client : bloc Factures clients avec Code QR de paiement, Adresse électronique France 000000000, État de la facturation électronique : Le partenaire est dans l'annuaire, bouton Vérifier" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après « Vérifier » : le client est dans l'annuaire (réponse simulée du mode démonstration).</figcaption>
+                </figure>
+                <p>En mode démonstration, toute adresse 0225 est déclarée présente dans l'annuaire ; sur une base réelle,
+                    la réponse vient de l'annuaire de l'État. Les champs <strong>Envoi de la facture</strong> et
+                    <strong>format eInvoice</strong>, qui fixent la méthode et le format par client, ne s'affichent
+                    qu'en mode développeur dans Odoo 20. Laissés vides, ils suffisent : Odoo choisit le format français
+                    (« France E-Invoicing (UBL 2.1) ») pour un client présent dans l'annuaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Envoyer par la plateforme agréée</h2>
+                <p>Sur la facture confirmée (ici FAC/2026/00010, deux chaises de bureau, 168,00 € TTC), cliquez sur
+                    <strong>Envoyer</strong>. À la première utilisation, Odoo propose d'abord de régler la mise en page
+                    des documents ; <strong>Continuer</strong> mène à la fenêtre d'envoi.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Envoyer d'Odoo 20 pour FAC/2026/00010 : cases cochées par e-mail et Facturation électronique française (Démo), destinataire Client professionnel France, sujet FR Company Facture (Réf FAC/2026/00010), texte du courriel en anglais avec le compte bancaire flouté, pièces jointes FAC_2026_00010.pdf et FAC_2026_00010_ubl_21_fr.xml, boutons Envoyer et Ignorer" style="max-width:90%; height:auto;"/>
+                    <figcaption>Deux méthodes cochées d'office : courriel et plateforme agréée. Compte bancaire flouté.</figcaption>
+                </figure>
+                <p>Pour ce client, deux méthodes sont cochées : <strong>par e-mail</strong> et <strong>Facturation
+                    électronique française</strong> (la mention « Démo » rappelle le mode). La pièce
+                    <code>FAC_2026_00010_ubl_21_fr.xml</code> est la facture électronique ; le PDF reste la version
+                    lisible. Le courriel n'est pas nécessaire à l'obligation : décochez <strong>par e-mail</strong>
+                    pour n'envoyer que par la plateforme. Sur la base de démonstration, le texte proposé pour le
+                    courriel est rédigé en anglais, même pour un client en français : à relire avant tout envoi.</p>
+                <p>Après <strong>Envoyer</strong>, l'historique de la facture garde la trace de l'envoi et des
+                    fichiers transmis.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Message de l'historique de la facture : The invoice has been sent to the Approved Platform. The following attachments were sent with the XML, avec les vignettes FAC_2026_00010.pdf et FAC_2026_00010_ubl_21_fr.xml" style="max-width:100%; height:auto;"/>
+                    <figcaption>« The invoice has been sent to the Approved Platform » : le XML et le PDF transmis.</figcaption>
+                </figure>
+                <p>Le fichier XML se télécharge depuis ce message. Il porte, entre autres, les éléments que la
+                    réforme demande et qu'Odoo ajoute seul :</p>
+<pre class="xml-extrait">&lt;cbc:CustomizationID&gt;urn:cen.eu:en16931:2017&lt;/cbc:CustomizationID&gt;
+&lt;cbc:ProfileID&gt;B1&lt;/cbc:ProfileID&gt;
+&lt;cbc:Note&gt;#PMT#En cas de retard de paiement, une indemnité forfaitaire de 40 € pour frais de recouvrement sera facturée (articles L.441-10 et D.441-5 du Code de commerce).&lt;/cbc:Note&gt;
+&lt;cbc:Note&gt;#PMD#Des pénalités de retard au taux annuel de 10 % sont appliquées si le paiement est effectué après la date d’échéance.&lt;/cbc:Note&gt;
+&lt;cbc:Note&gt;#AAB#Aucune remise pour paiement anticipé.&lt;/cbc:Note&gt;
+&lt;cbc:EndpointID schemeID="0225"&gt;000000000&lt;/cbc:EndpointID&gt;</pre>
+                <ul>
+                    <li><strong>ProfileID</strong> : le cadre de facturation. Odoo le déduit des taxes des lignes :
+                        B pour des biens (taxe « 20% G »), S pour des services (« 20% S »), M pour une facture qui
+                        mêle les deux ; le chiffre passe de 1 à 2 pour une facture déjà payée. Le choix de la taxe
+                        sur chaque ligne a donc un effet direct sur le fichier.</li>
+                    <li><strong>Les trois mentions</strong> (indemnité forfaitaire, pénalités de retard, escompte) :
+                        textes par défaut d'Odoo. Pour l'escompte, Odoo reprend la note de la condition de paiement
+                        quand elle prévoit un escompte ; sinon, « Aucune remise pour paiement anticipé ».</li>
+                    <li><strong>EndpointID 0225</strong> : les adresses électroniques du vendeur et du client, issues
+                        des SIREN.</li>
+                </ul>
+                <p>Le fichier contient aussi le PDF de la facture, encodé dans le XML : le client reçoit les deux en un
+                    seul document.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Obtenir un PDF au format Factur-X</h2>
+                <p>Factur-X est un PDF qui embarque un fichier XML (au format CII). Dans Odoo 20, tout PDF de facture
+                    produit par la fenêtre <strong>Envoyer</strong> est un Factur-X : Odoo y intègre un fichier
+                    <code>factur-x.xml</code> et, pour une société française, le convertit en PDF/A-3 quand le client est français ou que le format Factur-X lui est attribué. C'était déjà le
+                    cas du PDF transmis avec le XML UBL de l'étape 2.</p>
+                <p>Pour un client particulier, seul le courriel est coché par défaut ; l'option Peppol apparaît grisée. Décochez <strong>par e-mail</strong> : le bouton devient <strong>Générer</strong>, qui
+                    produit le PDF sans rien envoyer.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Envoyer pour la facture d'un client particulier : case par e-mail décochée, option par Peppol (hors TVA) (Démo) grisée, boutons Générer et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Aucune méthode cochée : « Générer » crée le PDF Factur-X sans l'envoyer.</figcaption>
+                </figure>
+                <p>Le PDF obtenu (FAC_2026_00012.pdf, 108,00 € TTC) s'ouvre comme une facture ordinaire ; un lecteur PDF
+                    qui affiche les pièces jointes y montre <code>factur-x.xml</code>, au profil EXTENDED de Factur-X
+                    1.0, avec les mêmes trois mentions qu'à l'étape 2. Le PDF devient la pièce jointe de la facture
+                    dans Odoo.</p>
+                <p>Le bouton <strong>Imprimer</strong>, lui, télécharge un PDF de facture sans fichier XML intégré : le
+                    même essai sur la même facture n'a donné aucun <code>factur-x.xml</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Suivre l'état d'envoi des factures</h2>
+                <p>Dans <strong>Facturation › Clients › Factures</strong>, ajoutez la colonne <strong>Statut de la
+                    facturation électronique</strong> par le bouton de choix des colonnes, à droite des en-têtes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste des factures clients avec la colonne Statut de la facturation électronique : FAC/2026/00014 Client professionnel France 252,00 euros, Prêt à envoyer, Comptabilisé ; FAC/2026/00013, 00012 et 00011 (Client professionnel Belgique 2, Client particulier, Client professionnel Belgique) sans statut de facturation électronique ; FAC/2026/00010 Client professionnel France 168,00 euros, Terminé, Envoyé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Seules les factures au client professionnel français ont un statut de facturation électronique.</figcaption>
+                </figure>
+                <p>Seules les factures au client professionnel français en ont un : « Prêt à envoyer » pour FAC/2026/00014,
+                    confirmée mais pas encore envoyée, « Terminé » pour FAC/2026/00010, envoyée en mode démonstration.
+                    La colonne repère donc aussi les factures oubliées. Sur une base réelle, ce statut
+                    suit le cycle de vie renvoyé par la plateforme (en file d'attente, en attente de réception, reçu,
+                    approuvé, refusé…). Les factures au client belge et au particulier n'en ont pas : elles ne passent
+                    pas par la plateforme, elles relèvent de l'e-reporting.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Préparer l'e-reporting des transactions et des paiements</h2>
+                <p>L'e-reporting ne demande aucune action à la facturation : Odoo range chaque facture concernée dans un
+                    <em>flux</em> dès sa confirmation. Ouvrez <strong>Facturation › Analyse › France ›
+                    E-reporting</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste E-reporting d'Odoo 20 : flux 2026-10-01 au 2026-10-31 Paiement Ventes Init., du 1 oct. au 31 oct., statut Prêt, type Paiement ; flux 2026-10-21 au 2026-10-31 Transaction Ventes Init., du 21 oct. au 31 oct., statut Prêt, type Transaction" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux flux prêts : les transactions de la décade, les paiements du mois.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Flux Transaction</strong> (21 au 31 octobre) : la facture au client belge (taxe « 0% EU
+                        G », position fiscale « Intra-EU B2B » appliquée seule) et celle au particulier. Avec la
+                        périodicité par défaut (réel normal mensuel), un flux couvre une décade. La facture au client
+                        professionnel français n'y figure pas.</li>
+                    <li><strong>Flux Paiement</strong> (1er au 31 octobre) : le paiement de la facture du particulier. Sa
+                        ligne porte la taxe « 20% S », TVA exigible à l'encaissement : c'est le paiement qui entre dans le flux. Le paiement d'une facture
+                        dont la TVA est exigible dès la facturation (taxe « 20% G ») n'y entre pas ; celui d'un acompte, si.</li>
+                </ul>
+                <p>Chaque flux affiche son échéance (ici le 10 novembre pour les deux) et le bouton
+                    <strong>Envoyer</strong>, qui transmet les données ; il n'a pas été cliqué pour cet article. Le
+                    bouton intelligent <strong>Factures clients</strong> du flux liste les factures qu'il contient,
+                    avec la colonne <strong>Statut de l'e-reporting</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Factures du flux Transaction : FAC/2026/00013 Client professionnel Belgique 2, 70,00 euros, Comptabilisé, statut de l'e-reporting Erreur ; FAC/2026/00012 Client particulier, 108,00 euros, Payé, En attente ; FAC/2026/00011 Client professionnel Belgique, 140,00 euros, Comptabilisé, En attente" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une facture en « Erreur » dans le flux : son client n'a pas de rue dans son adresse.</figcaption>
+                </figure>
+                <p>FAC/2026/00013 est en <strong>Erreur</strong>. Son client belge a été créé sans rue. Pour une vente
+                    à l'étranger, Odoo contrôle l'adresse de livraison (rue, ville, code postal, pays) et le numéro de
+                    TVA du client ; pour toutes les factures, le SIREN de la société, le numéro de facture et les taux
+                    de TVA. Le motif se lit dans l'historique de la facture : à chaque confirmation, Odoo y écrit le
+                    flux, le statut et, le cas échéant, les erreurs.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Message de l'historique de FAC/2026/00013 : Flux d'e-reporting 2026-10-21 au 2026-10-31 Transaction Ventes Init., Statut de l'e-reporting : Erreur, Erreurs d'e-reporting : Ligne 1 de l'adresse manquante" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le message écrit à la confirmation : flux, statut, et l'erreur à corriger.</figcaption>
+                </figure>
+                <p>Pour corriger, complétez la fiche du client (ici, la rue), puis, sur la facture, cliquez sur
+                    <strong>Remettre en brouillon</strong> et à nouveau sur <strong>Confirmer</strong>. Lors de
+                    l'essai, le nouveau message indiquait « Statut de l'e-reporting : En attente », dans le même
+                    flux.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sans SIREN sur la fiche, pas d'adresse électronique</h4>
+                    <p>Le numéro de TVA d'un client français ne suffit pas : tant que son SIREN (ou son SIRET) n'est pas
+                        saisi par le « + » du champ TVA, la fiche n'a pas d'adresse électronique France et l'onglet
+                        Facturation n'affiche ni adresse ni état d'annuaire. Sans SIREN, Odoo traite aussi le client comme un particulier à
+                        l'envoi (courriel seul proposé), et sa facture n'entre dans aucun flux d'e-reporting. Complétez
+                        les fiches de vos clients professionnels avant les premiers envois.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Imprimer » ne produit pas de Factur-X</h4>
+                    <p>Le PDF téléchargé par Imprimer n'embarque aucun XML. Pour remettre un Factur-X à un client, passez
+                        par Envoyer (courriel) ou par Envoyer puis Générer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Corriger la fiche ne corrige pas le statut</h4>
+                    <p>Une facture en Erreur d'e-reporting reste en Erreur après la correction de la fiche client.
+                        Remettez-la en brouillon puis confirmez-la de nouveau, et vérifiez le statut dans le flux avant
+                        son échéance.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir un encaissement entrer dans l'e-reporting.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, société « FR Company »
+                        inscrite en mode démonstration, créez et confirmez une facture de prestation pour un contact
+                        particulier français (sans numéro de TVA), taxe « 20% S », puis enregistrez son paiement avec
+                        le bouton Payer.</p>
+                    <p><strong>Critère de réussite :</strong> dans Facturation › Analyse › France › E-reporting, un flux
+                        de type Paiement couvre le mois en cours, et la facture figure dans le flux Transaction de sa
+                        décade.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le chemin d'une facture dépend de la fiche client : SIREN inscrit à l'annuaire, numéro de TVA
+                        étranger ou absence de numéro de TVA.</li>
+                    <li>Vers un professionnel établi en France, Odoo envoie par la plateforme agréée un XML UBL 2.1 au
+                        format français, avec le PDF, le cadre de facturation et les trois mentions obligatoires.</li>
+                    <li>Tout PDF produit par Envoyer est un Factur-X ; celui d'Imprimer ne l'est pas.</li>
+                    <li>Ventes à l'étranger et aux particuliers rejoignent un flux « Transaction » dès la confirmation ;
+                        l'encaissement de ces ventes, quand leur TVA est exigible à l'encaissement, un flux « Paiement ».</li>
+                    <li>Les flux se suivent dans Facturation › Analyse › France › E-reporting ; une facture en Erreur se
+                        corrige sur la fiche, puis par remise en brouillon et confirmation.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>L'article précédent de la série traite de la réception : <a
+                    href="/blog/fonctionnel-odoo-1/recevoir-factures-electroniques-odoo-348">Recevoir ses factures
+                    électroniques dans Odoo 20</a>. Le prochain reviendra sur les régimes de TVA (TVA sur les
+                    encaissements, ventes intracommunautaires, autoliquidation, franchise), qui décident des taxes et
+                    donc des flux vus ici. Le point de départ de la série reste <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources officielles (consultées le 18 octobre 2026)</h3>
+                <ul class="small">
+                    <li><a href="https://www.impots.gouv.fr/professionnel/je-passe-la-facturation-electronique" target="_blank" rel="noopener">impots.gouv.fr — Je passe à la facturation électronique</a></li>
+                    <li><a href="https://www.impots.gouv.fr/professionnel/questions/partir-de-quand-suis-je-concerne-par-la-reforme-de-la-facturation" target="_blank" rel="noopener">impots.gouv.fr — À partir de quand suis-je concerné par la réforme ?</a></li>
+                    <li><a href="https://www.odoo.com/documentation/20.0/applications/finance/fiscal_localizations/france.html#localizations-france-e-invoicing" target="_blank" rel="noopener">Documentation Odoo 20 — France, facturation électronique</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture client dans Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique : ce que couvre Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La réforme, l'inscription et l'e-reporting.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/recevoir-factures-electroniques-odoo-348">Recevoir ses factures électroniques</a></h5>
+                            <p class="small text-muted mb-0">Le journal de réception et le contrôle du brouillon reçu.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
