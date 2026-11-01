@@ -1,0 +1,501 @@
+<!--
+Article — n8n et Odoo 20 : un flux complet par JSON-2
+Série « Intégrer Odoo 20 » (série 56, lot T1, étape 2 — T1.3 du plan vague 3 technique)
+Date : 2026-11-01
+Slug : n8n-odoo-20
+Mot-clé cible : odoo n8n workflow
+Catégorie : Développement Odoo
+Tags : intermediaire, integrations, guide, community
+Temps de lecture : ~12 minutes
+Preuves (copie jetable de la base technique, sale_management + stock, démo native fr_FR, Odoo 20.0, PG 16 ; base_automation
+installé sur la copie ; serveur HTTP de travail en boucle locale dans le processus odoo-bin shell, dbfilter limité à la copie ;
+n8n 2.45.7 installé par npm sous Node 24.22.2, en boucle locale ; exécutions réelles le 01/11/2026) :
+- Utilisateur « Intégration n8n » (Ventes tous documents + Contact/Création) ; sans Contact/Création → find_or_create 403
+  AccessError (message en anglais, sans context). Clé : _generate sans expiration → « La clé API doit avoir une date
+  d'expiration » ; _selection_duration non admin = 1 Day / 1 Month (défaut 30), admin = + 1 Year / Never.
+- Credential odooApiKeyApi : test db vide → « NOT FOUND » (X-Odoo-Database: localhost → 404 « No database is selected ») ;
+  db renseignée → « Connection successful! ». Credential legacy odooApi (/jsonrpc) → « Authentication successful! ».
+- W1 Demande de devis : exécutions S00029 (contact 52 créé), S00030 (contact 52 retrouvé), INCONNU → Succeeded 122 ms,
+  réponse 500 « No item to return was found ». Sans fullResponse : item = 50 → JSON Body « undefined ». Sans context :
+  « Sales Order créé » ; avec lang fr_FR : « Commande client créé ». user_id du devis = utilisateur de la clé (9).
+- W2 Commande confirmée : règle on_state_set ; sans valeur (filter_domain vide) → déclenchée à la création (essai raté) ;
+  confirmation S00029 dans l'interface → payload reçu, message_post → note « n8n a reçu la commande S00029 ».
+  /webhook-test/commande-confirmee → 404 « is not registered ».
+- Source 20.0 : addons/rpc/controllers/json2.py:48-55 ; odoo/addons/base/models/res_users.py:1596-1606, 1775-1795 ;
+  odoo/addons/base/models/ir_actions.py:1058-1101 ; addons/rpc/controllers/__init__.py:6-11.
+- n8n-nodes-base 2.45.7 : nodes/Odoo/v2/transport/index.js (callJson2), helpers/utils.js (odooGetDBName, buildDomain),
+  credentials/OdooApiKeyApi.credentials.js, OdooApi.credentials.js.
+- 19.0 publique (38c403f44, 31/10/2026) : json2.py sans bearer_scope='rpc' ; _check_expiration_date identique.
+Captures : content/blog/screenshots/n8n-odoo-20/ (01 schéma, 02-04 n8n, 05 terminal réel, 06 Odoo ; nom de base remplacé par ma_base).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">n8n et Odoo 20 : un flux complet par JSON-2</h1>
+                <p class="lead mt-3 text-white">Une demande de devis arrive dans n8n : il lit l'article dans Odoo,
+                    retrouve ou crée le client, crée le devis et répond avec son numéro. Quand la commande est confirmée,
+                    Odoo prévient n8n, qui écrit une note dans le fil. Un workflow Odoo n8n en trois flux, une clé API, aucune ligne de module,
+                    exécutés ici avec n8n 2.45 et Odoo 20 Community.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Intégrations</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lire</h4>
+                        <p>Le nœud Odoo de n8n avec le credential « Odoo API (API Key) » : il appelle
+                            <code>/json/2</code>, et son champ Database Name ne doit pas rester vide.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Créer</h4>
+                        <p>Le nœud HTTP Request avec le même credential, pour appeler n'importe quelle méthode :
+                            <code>find_or_create</code>, un <code>create</code> avec ses lignes, le <code>context</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Réagir</h4>
+                        <p>Une règle d'automatisation Odoo qui appelle un Webhook n8n quand la commande est confirmée,
+                            et n8n qui répond dans le fil de la commande.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 20 Community avec Ventes et sa base de démonstration. Pour la partie 5, le module
+                            <strong>Automatisations</strong> (<code>base_automation</code>), qui n'est pas installé d'office.</li>
+                        <li>Une instance n8n auto-hébergée. L'article a été exécuté avec <strong>n8n 2.45.7</strong>.
+                            Installé par <code>npm</code>, ce paquet exige Node.js 24 ou plus, et n8n signale au démarrage que
+                            l'installation hors conteneur est dépréciée : l'image Docker officielle est la voie qu'il recommande.</li>
+                        <li>Les bases de l'API : <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié :
+                            passer à l'API JSON-2 d'Odoo 20</a>, et pour le sens Odoo → outil,
+                            <a href="/blog/developpement-odoo-2/webhooks-odoo-20-389">Webhooks en Odoo 20</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>n8n parle à Odoo de deux façons. Dans un sens, n8n appelle l'API <strong>JSON-2</strong>
+                    (<code>POST /json/2/&lt;modèle&gt;/&lt;méthode&gt;</code>, une clé API dans l'en-tête
+                    <code>Authorization</code>) pour lire et écrire. Dans l'autre, Odoo appelle un nœud <strong>Webhook</strong>
+                    de n8n quand un événement se produit. Le fil conducteur : une demande de devis venue d'un formulaire,
+                    puis la confirmation de la commande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en trois bandes. 1 Lire : déclencheur n8n Webhook Demande de devis, nœud Odoo Custom Resource Get Many sur product.product filtré par default_code, Odoo 20 reçoit POST /json/2/product.product/search_read avec Authorization bearer clé, résultat un élément par enregistrement et zéro élément arrête le flux. 2 Créer : res.partner/find_or_create retrouve par l'e-mail ou crée, sale.order/create avec order_line [[0, 0, {…}]], relecture par le nœud Odoo Get, réponse JSON renvoyée à l'appelant. 3 Réagir : dans Odoo, état égal Commande client déclenche la règle, action webhook POST après le COMMIT avec timeout 1 s sans nouvel essai, Webhook n8n /webhook/commande-confirmee répond tout de suite, retour vers Odoo par sale.order/message_post, note dans le fil de la commande"/>
+                    <figcaption>Les trois flux de l'article : n8n lit et crée par JSON-2, Odoo prévient n8n par un webhook.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. PRÉPARER ODOO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Côté Odoo : un utilisateur technique et sa clé API</h2>
+
+                <p>n8n agira dans Odoo avec les droits du propriétaire de la clé. Une clé d'administrateur marche,
+                    mais tout ce que fait n8n est alors permis et signé « administrateur ». Mieux vaut un
+                    <strong>utilisateur interne dédié</strong> (ici « Intégration n8n »), avec seulement les droits du flux :</p>
+                <ul>
+                    <li><strong>Ventes</strong> : Utilisateur : tous les documents, pour créer les devis et écrire dans leur fil ;</li>
+                    <li><strong>Contact</strong> : Création, pour créer un client inconnu.</li>
+                </ul>
+                <p>Sans ce second droit, l'appel qui crée le client répond <code>403</code> (essayé), et le message
+                    d'Odoo dit précisément ce qui manque :</p>
+<div class="out">HTTP 403
+{"name": "odoo.exceptions.AccessError",
+ "message": "You are not allowed to create 'Contact' (res.partner) records.\n\nThis operation is allowed for the following groups:\n\t- Sales / Administrator\n\t- Contact / Creation\n …"}</div>
+                <p>Le message est en anglais : l'appel n'envoyait pas de <code>context</code> avec une langue (on y revient
+                    à l'étape 4).</p>
+
+                <h3>Créer la clé</h3>
+                <p>Une clé API se crée par son propriétaire. Connecté en « Intégration n8n », ouvrir le menu utilisateur
+                    › <strong>Mes préférences</strong> › onglet <strong>Sécurité</strong> › <strong>Clés API</strong>, donner une
+                    description (<code>n8n</code>), choisir la durée, puis copier la clé affichée. Elle ne sera plus jamais
+                    montrée. En Odoo 20, une clé a toujours la portée <code>rpc</code>, la seule acceptée par
+                    <code>/json/2</code>.</p>
+                <p>La durée dépend du compte. Pour un utilisateur interne qui n'est pas administrateur, l'assistant propose
+                    seulement <strong>1 jour</strong> ou <strong>1 mois</strong> (1 mois par défaut). <strong>1 an</strong> et
+                    <strong>Jamais</strong> ne sont proposés qu'à un administrateur. Le plafond vient du champ « Durée maximale en jours des clés API » des groupes de l'utilisateur (90 jours pour le rôle Utilisateur sur la base de test). Une clé créée par programme pour cet utilisateur
+                    sans date d'expiration est refusée : « La clé API doit avoir une date d'expiration ». Conséquence pratique : le
+                    flux n8n tombera en <code>401</code> à l'échéance. Il faut noter la date et renouveler la clé avant (nouvelle clé,
+                    mise à jour du credential, suppression de l'ancienne).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CREDENTIAL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Côté n8n : le credential « Odoo API (API Key) »</h2>
+
+                <p>Dans n8n 2.45, le nœud Odoo (version 2) propose deux authentifications. <strong>API Key
+                    (Recommended)</strong> utilise le credential (fiche d'authentification enregistrée dans n8n) <strong>Odoo API (API Key)</strong>, qui appelle
+                    <code>/json/2</code> avec l'en-tête <code>Authorization: bearer &lt;clé&gt;</code>. <strong>Username &amp;
+                    Password</strong> est l'ancienne voie, par <code>/jsonrpc</code>. Pour Odoo 20, c'est la première qui convient.
+                    Trois champs à remplir :</p>
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Valeur</th><th>Remarque</th></tr></thead>
+                    <tbody>
+                        <tr><td>Site URL</td><td><code>http://localhost:8069</code></td><td>L'adresse d'Odoo vue depuis la machine n8n</td></tr>
+                        <tr><td>Database Name</td><td>le nom exact de la base</td><td>À remplir même avec une seule base (encadré ci-dessous)</td></tr>
+                        <tr><td>API Key</td><td>la clé copiée à l'étape 1</td><td>Masquée une fois enregistrée</td></tr>
+                    </tbody>
+                </table>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre du credential Odoo 20 (clé API) de type Odoo API (API Key) dans n8n : bandeau vert Connection tested successfully avec le bouton Retry, avertissement jaune Requires Odoo 19+ and a Custom pricing plan (not available on One App Free or Standard). Uses the /json/2 External JSON-2 API, champs Site URL http://localhost:8069, Database Name ma_base, API Key masquée, Allowed HTTP Request Domains All"/>
+                    <figcaption>Le credential enregistré et testé. Le bandeau jaune parle des formules d'Odoo Online ; sur une instance Community auto-hébergée, le test passe sans abonnement.</figcaption>
+                </figure>
+                <p>Au test, n8n appelle <code>res.partner/search_read</code> avec <code>limit: 1</code> : une réponse
+                    <code>200</code> prouve à la fois l'adresse, la base et la clé.</p>
+
+                <div class="pitfall-box">
+                    <h4>Database Name vide : « NOT FOUND », même sur un serveur à une seule base</h4>
+                    <p>Le champ est marqué facultatif, avec l'aide « Leave blank to auto-detect from the Site URL ».
+                        Laissé vide, n8n n'omet pas la base : il envoie l'en-tête <code>X-Odoo-Database</code> déduit de l'URL :
+                        le <strong>premier mot du nom d'hôte</strong> (<code>localhost</code> pour
+                        <code>http://localhost:8069</code>, <code>odoo</code> pour <code>https://odoo.exemple.fr</code> ; le test du
+                        credential, lui, garde le port : <code>localhost:8069</code>). Odoo
+                        cherche alors une base de ce nom et répond <code>404</code>. Le test du credential affiche
+                        <code>NOT FOUND</code>, alors que le même appel <code>curl</code> sans en-tête passe. Ce comportement
+                        est conçu pour Odoo Online, où le sous-domaine est le nom de la base. En auto-hébergé, il faut saisir
+                        toujours le nom exact.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Lire : le nœud Odoo</h2>
+
+                <p>Le premier workflow, « Demande de devis → Odoo 20 », démarre par un nœud <strong>Webhook</strong>
+                    (méthode <code>POST</code>, chemin <code>demande-devis</code>). Il reçoit le JSON d'un formulaire :
+                    <code>{"nom", "email", "reference", "quantite"}</code>. Il enchaîne ensuite quatre nœuds :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Vue Executions du workflow Demande de devis vers Odoo 20, publié : liste de trois exécutions à gauche, toutes Succeeded (390 ms, 300 ms et 122 ms pour la dernière) ; sur le canevas, cinq nœuds verts reliés par 1 item : Demande de devis (POST), Lire l'article (getAll: custom), Trouver ou créer le client (POST http://localhost:8069/j…), Créer le devis (POST http://localhost:8069/j…), Relire le devis (get: custom)"/>
+                    <figcaption>Le workflow et ses exécutions. La plus récente (en haut de la liste), « Succeeded » en 122 ms, est celle d'une référence inconnue : elle n'a rien créé (étape 4).</figcaption>
+                </figure>
+                <p>« Lire l'article » est un nœud <strong>Odoo</strong>. Le nœud propose quatre ressources toutes prêtes :
+                    Contact, Opportunity (qui demande l'application CRM), Activity et <strong>Custom Resource</strong>,
+                    c'est-à-dire n'importe quel modèle. Pour chacune, cinq opérations : Create, Delete, Get, Get Many,
+                    Update. Réglages utilisés :</p>
+                <table class="tmc">
+                    <thead><tr><th>Paramètre</th><th>Valeur</th></tr></thead>
+                    <tbody>
+                        <tr><td>Resource / Custom Resource</td><td>Custom Resource, modèle <code>product.product</code> (mode By Name)</td></tr>
+                        <tr><td>Operation</td><td>Get Many, Limit <code>1</code></td></tr>
+                        <tr><td>Filters</td><td><code>default_code</code> Equal <code>{{ $json.body.reference }}</code></td></tr>
+                        <tr><td>Options › Fields to Include</td><td><code>id,name,list_price</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le nœud en tire un appel <code>search_read</code>. Ce corps, rejoué en <code>curl</code>, donne :</p>
+<pre class="language-json"><code class="language-json">POST /json/2/product.product/search_read
+{"domain": [["default_code", "=", "E-COM07"]], "fields": ["id", "name", "list_price"], "offset": 0, "limit": 1}
+
+→ 200  [{"id": 20, "name": "Large Cabinet", "list_price": 320.0}]</code></pre>
+                <p>n8n fait de chaque enregistrement un <em>item</em>, l'unité de donnée qui circule entre les nœuds : ici un seul, que les nœuds suivants lisent par
+                    <code>$('Lire l\'article').item.json.id</code>. Le champ Value du filtre est un texte : avec In / Not In,
+                    il est découpé aux virgules et les nombres sont convertis. Pour un domaine plus riche
+                    (<code>|</code>, <code>any</code>, dates relatives), le nœud HTTP Request de l'étape suivante.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CRÉER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Créer : le nœud HTTP Request, avec le même credential</h2>
+
+                <p>Le nœud Odoo ne sait ni appeler une méthode métier, ni écrire des lignes de commande. Pour cela, on
+                    utilise le nœud <strong>HTTP Request</strong>, en lui donnant le credential Odoo : Authentication
+                    <strong>Predefined Credential Type</strong>, Credential Type <strong>Odoo API (API Key)</strong>. L'en-tête
+                    <code>Authorization</code> est ajouté tout seul. En revanche, <code>X-Odoo-Database</code> ne l'est pas : sur
+                    un serveur à plusieurs bases, il faut l'ajouter dans Send Headers. Réglages communs aux deux nœuds HTTP :
+                    Method <code>POST</code>, Send Body, Body Content Type <code>JSON</code>, Specify Body <code>Using JSON</code>.
+                    Une option est à activer sur les deux nœuds : Options › Response › <strong>Include Response Headers and Status</strong> (sans elle, <code>$json.body[0]</code> n'existe pas).</p>
+
+                <h3>Retrouver ou créer le client</h3>
+                <p>Odoo a déjà la méthode qu'il faut : <code>res.partner.find_or_create(email)</code> cherche un contact par
+                    son adresse et le crée s'il n'existe pas, avec le nom tiré de « Nom &lt;adresse&gt; ». URL
+                    <code>http://localhost:8069/json/2/res.partner/find_or_create</code>, corps :</p>
+<pre class="language-javascript"><code class="language-javascript">{{ JSON.stringify({ email: $('Demande de devis').item.json.body.nom + ' <' + $('Demande de devis').item.json.body.email + '>' }) }}</code></pre>
+                <p>Odoo répond <code>[52]</code>, la liste des ids. Sans l'option « Include Response Headers and Status »,
+                    n8n fait de cette liste un item par élément, et un nombre seul n'est pas un objet : lors d'un premier essai,
+                    l'expression suivante valait <code>undefined</code>, et n8n a refusé le corps (« The value in the "JSON Body"
+                    field is not valid JSON »). Avec l'option, la sortie devient
+                    <code>{"body": [52], "statusCode": 200, …}</code> et l'id se lit par <code>$json.body[0]</code>.</p>
+
+                <h3>Créer le devis, lignes comprises</h3>
+                <p>URL <code>…/json/2/sale.order/create</code>, corps :</p>
+<pre class="language-javascript"><code class="language-javascript">{{ JSON.stringify({
+  vals_list: [{
+    partner_id: $json.body[0],
+    order_line: [[0, 0, {
+      product_id: $('Lire l\'article').item.json.id,
+      product_uom_qty: $('Demande de devis').item.json.body.quantite
+    }]]
+  }],
+  context: { lang: 'fr_FR' }
+}) }}</code></pre>
+                <ul>
+                    <li><code>create</code> prend une liste de dictionnaires (<code>vals_list</code>) et rend une liste d'ids,
+                        même pour un seul devis.</li>
+                    <li>Une ligne se crée par la commande <code>[0, 0, {…}]</code> dans le champ <code>order_line</code>,
+                        comme en Python. Le prix et les taxes viennent de l'article.</li>
+                    <li><code>context</code> est une clé du corps JSON-2, à côté des arguments. Sans lui, Odoo travaille en anglais.
+                        Le premier devis créé sans <code>context</code> portait dans son fil « Sales Order créé ». Avec
+                        <code>lang: 'fr_FR'</code>, on lit « Commande client créé ».</li>
+                    <li>Le vendeur du devis est l'utilisateur de la clé (<code>user_id</code> = « Intégration n8n »). Passez
+                        <code>user_id</code> dans les valeurs si un vendeur doit être désigné.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Détail du nœud Créer le devis dans l'exécution : à gauche INPUT du nœud Trouver ou créer le client avec body[0] 52, headers server Werkzeug, statusCode 200, statusMessage OK ; au centre Parameters : Method POST, URL http://localhost:8069/json/2/sale.order/create, Authentication Predefined Credential Type, Credential Type Odoo API (API Key), credential Odoo 20 (clé API), Send Query Parameters et Send Headers désactivés, Send Body activé, Body Content Type JSON, Specify Body Using JSON ; à droite OUTPUT un item, body 0 : 29 et les en-têtes de la réponse"/>
+                    <figcaption>Le nœud « Créer le devis » dans une exécution : il reçoit l'id du client (52) et Odoo rend l'id du devis (29).</figcaption>
+                </figure>
+
+                <h3>Relire et répondre</h3>
+                <p>Dernier nœud : un nœud Odoo, Custom Resource <code>sale.order</code>, opération <strong>Get</strong>, Record
+                    By ID <code>{{ $json.body[0] }}</code>, Fields to Include <code>name,partner_id,amount_total,state</code>.
+                    Le Webhook de départ est réglé sur Respond <strong>When Last Node Finishes</strong> : l'appelant reçoit
+                    ce dernier résultat. Le workflow est <strong>publié</strong> (bouton Publish), ce qui active son URL de production
+                    <code>/webhook/demande-devis</code>. Trois appels :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Terminal : curl POST sur http://localhost:5678/webhook/demande-devis avec nom Nouveau Contact, email nouveau@example.com, reference E-COM07, quantite 3 renvoie id 29, name S00029, partner_id 52 Nouveau Contact, amount_total 1104, state draft ; même adresse avec E-COM12 et quantite 10 renvoie S00030 avec le même partner_id 52 et amount_total 379.5 ; référence INCONNU renvoie code 0, message No item to return was found, HTTP 500"/>
+                    <figcaption>Un nouveau client puis le même retrouvé par son adresse. Une référence inconnue fait échouer la réponse.</figcaption>
+                </figure>
+                <p>Le second appel réutilise le contact 52 au lieu d'en créer un doublon : c'est
+                    <code>find_or_create</code> qui compare les adresses. Les montants sont TTC (3 × 320 + 15 % de taxe = 1 104).</p>
+
+                <div class="pitfall-box">
+                    <h4>Zéro élément : le flux s'arrête, l'exécution est « Succeeded », l'appelant reçoit un 500</h4>
+                    <p>Avec une référence inconnue, « Lire l'article » rend 0 item. n8n n'exécute pas les nœuds suivants,
+                        ce qui est normal, et rien n'est créé dans Odoo. L'exécution est notée <strong>Succeeded</strong> (celle du haut de la liste,
+                        122 ms), donc aucune alerte d'erreur ne part. Mais le Webhook, qui attend le dernier nœud, répond
+                        <code>500 {"code":0,"message":"No item to return was found"}</code>. Si l'appelant compte sur une
+                        réponse, ce cas est à traiter dans le flux : un nœud <strong>If</strong> après la lecture, et un nœud
+                        <strong>Respond to Webhook</strong> pour chaque issue.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RÉAGIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Réagir : Odoo prévient n8n quand la commande est confirmée</h2>
+
+                <p>Ici, ce n'est plus n8n qui interroge Odoo : c'est Odoo qui pousse l'événement. Le montage côté Odoo est celui
+                    de l'article <a href="/blog/developpement-odoo-2/webhooks-odoo-20-389">Webhooks en Odoo 20</a>, dans
+                    Paramètres › Technique › Automatisation › Règles d'automatisation (mode développeur) :</p>
+                <ul>
+                    <li>règle « Commande confirmée → n8n », modèle <strong>Commande client</strong>, déclencheur
+                        <strong>Le statut est défini sur</strong>, valeur <strong>Commande client</strong>. Sans valeur, le filtre
+                        est vide et la règle part à chaque écriture de l'état, création comprise : un premier essai ainsi réglé a
+                        prévenu n8n pour un simple devis ;</li>
+                    <li>action « Prévenir n8n » de type <strong>Envoyer une notification webhook</strong>, URL
+                        <code>http://localhost:5678/webhook/commande-confirmee</code>, champs Référence commande, Client,
+                        Total et Vendeur.</li>
+                </ul>
+                <p>Le second workflow, « Commande confirmée (Odoo 20) → note », a deux nœuds. Le premier est un
+                    <strong>Webhook</strong> (POST, chemin <code>commande-confirmee</code>) réglé sur Respond
+                    <strong>Immediately</strong>. Odoo n'attend la réponse qu'une seconde et ne réessaie jamais : le webhook doit
+                    répondre tout de suite, avant de travailler. Voici ce qu'Odoo a envoyé à la confirmation de S00029 :</p>
+<pre class="language-json"><code class="language-json">{"_action": "Prévenir n8n(#490)", "_id": 29, "_model": "sale.order", "amount_total": 1104,
+ "id": 29, "name": "S00029", "partner_id": 52, "user_id": 9}</code></pre>
+                <p>Les relations arrivent en ids seuls (<code>partner_id: 52</code>), sans libellé. Le second nœud est un HTTP
+                    Request avec le credential Odoo, URL <code>…/json/2/sale.order/message_post</code>, corps :</p>
+<pre class="language-javascript"><code class="language-javascript">{{ JSON.stringify({
+  ids: [$json.body._id],
+  body: 'n8n a reçu la commande ' + $json.body.name + ' : préparation lancée.',
+  message_type: 'comment',
+  subtype_xmlid: 'mail.mt_note',
+  context: { lang: 'fr_FR' }
+}) }}</code></pre>
+                <p>Une méthode d'enregistrement s'appelle avec <code>ids</code> dans le corps. Odoo rend l'id du message créé.
+                    Contrôle : le devis S00029 est confirmé dans Odoo, avec le bouton <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Commande client S00029, client Nouveau Contact, statut Commande client, ligne E-COM07 Grande armoire quantité 3 à 320 avec taxe 15 % ; dans le fil, de bas en haut : Intégration n8n Commande client créé, Mitchell Admin Devis confirmé avec Devis → Commande client (Statut), puis Intégration n8n n8n a reçu la commande S00029 : préparation lancée"/>
+                    <figcaption>Le fil de S00029 : création par n8n, confirmation par l'utilisateur, puis la note écrite par n8n à la même minute.</figcaption>
+                </figure>
+                <p>Deux points de réglage. D'abord, n8n a deux URL par webhook. <code>/webhook-test/…</code> ne répond que
+                    pendant une écoute lancée depuis l'éditeur ; sinon, c'est
+                    <code>404 The requested webhook "commande-confirmee" is not registered.</code> Odoo doit viser
+                    <code>/webhook/…</code>, celle du workflow publié. Ensuite, l'action webhook d'Odoo n'envoie que l'en-tête
+                    <code>Content-Type</code>, sans aucun moyen d'authentification. Le chemin du webhook n8n doit donc avoir une
+                    valeur longue et impossible à deviner (<code>commande-confirmee</code> n'est qu'un exemple lisible ; en production, plutôt <code>commande-confirmee-7f3c…</code>). Côté n8n, l'id reçu sert ensuite à agir sur une seule commande.</p>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19, ou d'un ancien flux n8n</h4>
+                    <p>L'ancien credential <strong>Odoo API</strong> (identifiant + mot de passe ou clé) passe par
+                        <code>/jsonrpc</code>. Il fonctionne encore sur Odoo 20 : son test a répondu « Authentication
+                        successful! ». Mais Odoo écrit un avertissement de dépréciation à chaque appel, et la route doit
+                        disparaître en Odoo 22 ; n8n l'annonce aussi dans le formulaire. L'API JSON-2 existait déjà en 19.
+                        La différence en 20 : la route exige une clé de portée <code>rpc</code>. Une vieille clé 19 sans portée
+                        reçoit un <code>401</code> (voir <a href="/blog/developpement-odoo-2/xmlrpc-vers-json-2-odoo-20-281">Réécrire
+                        un script XML-RPC en JSON-2</a>). Côté règle d'automatisation, rien ne change.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une clé API de portée <code>rpc</code>, portée par un utilisateur interne dédié, avec les seuls droits du flux.
+                        Pour un compte non administrateur, l'assistant propose au plus un mois : son renouvellement est à prévoir.</li>
+                    <li>Credential n8n <strong>Odoo API (API Key)</strong> : il appelle <code>/json/2</code>. Le champ Database
+                        Name est à remplir avec le nom exact de la base, sinon <code>NOT FOUND</code>.</li>
+                    <li>Le nœud Odoo couvre la lecture et le CRUD simple. Pour une méthode (<code>find_or_create</code>,
+                        <code>message_post</code>, <code>action_confirm</code>…) ou des lignes <code>[0, 0, {…}]</code>, c'est le nœud
+                        HTTP Request avec le même credential, l'option « Include Response Headers and Status » et un
+                        <code>context</code> pour la langue.</li>
+                    <li>Un nœud qui rend 0 item arrête le flux sans erreur. Si un appelant attend la réponse, ce cas est à traiter.</li>
+                    <li>Pour réagir, une règle d'automatisation Odoo « Le statut est défini sur » appelle l'URL de production du
+                        Webhook n8n. Ce webhook répond aussitôt (Odoo attend une seconde, sans nouvel essai), puis n8n écrit
+                        dans Odoo par JSON-2.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Workflows, credential et appels exécutés le 01/11/2026 avec n8n 2.45.7 (auto-hébergé) et un
+                    serveur Odoo 20.0 Community (PostgreSQL 16), base de démonstration avec Ventes et Automatisations. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 : <a href="https://github.com/odoo/odoo/blob/20.0/addons/rpc/controllers/json2.py" target="_blank" rel="noopener"><code>addons/rpc/controllers/json2.py</code></a> (route <code>/json/2</code>, portée <code>rpc</code>, <code>ids</code> et <code>context</code>) ; <code>odoo/addons/base/models/res_users.py</code> (durées des clés, expiration obligatoire hors administrateur) ; <code>odoo/addons/base/models/ir_actions.py</code> (<code>_run_action_webhook</code>) ; <code>addons/rpc/controllers/__init__.py</code> (dépréciation de <code>/jsonrpc</code>).</li>
+                    <li>n8n 2.45.7, paquet <code>n8n-nodes-base</code> : nœud Odoo v2 (<code>nodes/Odoo/v2</code> : transport JSON-2, nom de base déduit du nom d'hôte), credentials <code>OdooApiKeyApi</code> et <code>OdooApi</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique du 01/11/2026 : <code>json2.py</code> sans <code>bearer_scope='rpc'</code>, règles d'expiration des clés identiques.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347">L'API de la Bibliothèque en JSON-2</a></h5>
+                            <p class="small text-muted mb-0">Exposer ses propres méthodes à n8n : <code>@api.readonly</code>, erreurs 422 et 403.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Ce que voit et peut faire l'utilisateur technique de la clé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/automatisation-odoo-studio-343">Créer une règle d'automatisation</a></h5>
+                            <p class="small text-muted mb-0">Côté fonctionnel, avec Studio (Enterprise) : les autres déclencheurs.</p>
+                        </div></div>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-3">
+                    <a href="/blog/developpement-odoo-2/webhooks-odoo-20-389" class="btn btn-outline-secondary">← Webhooks en Odoo 20</a>
+                    <span class="btn btn-outline-primary disabled">Piloter Odoo 20 depuis un assistant IA (à venir) →</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
