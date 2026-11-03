@@ -1,0 +1,501 @@
+<!--
+Article — Régimes de TVA dans Odoo 20 : encaissement, UE et franchise
+Série « Facturation électronique et TVA avec Odoo 20 » (blog Fonctionnel, série 55), vague 3 F1.4
+Date : 2026-11-03 (routine bodoo19)
+Slug : regimes-tva-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-11-03 : Odoo 20.0 Community, base vs20_func_f14 (copie de vs20_func), société FR Company (id 2), plan fr_comp.
+  Joué : positions fiscales auto (Client professionnel France → Domestique ; Client professionnel Belgique BE0123456749 et
+  Fournisseur professionnel Belgique BE0111111124 → Intra-EU B2B ; contact BE sans TVA → EU privé) ; article « Installation sur site »
+  livré avec 20% G (sonde : vente BE → 0% EU G), passé en 20% S ; FAC/2026/00010 (90 € 20% S) : 18 € au 445740, paiement →
+  CABA/2026/11/0001 journal TVA sur encaissements, 445740 D 18 / 445710 C 18 ; FAC/2026/00011 (BE) 0% EU G + 0% EU S, notes par défaut
+  « Exempt intra-community supplies - Article 138… » / « VAT Reverse charge - Article 196… » remplacées pour l'essai ; PDF : « Opération mixte » ;
+  FACTURE/2026/11/0001 (10 × 40 €, 20% EU G) : 445662 D 80 / 445200 C 80 ; case Not Subject to VAT cochée à l'écran → aucune taxe de vente
+  active, taxe de vente par défaut vide, taxes d'achat inchangées (20% G → 445660) ; note par défaut « TVA non applicable, art. 293 B du CGI »
+  → FAC/2026/00012 sans taxe. Filtre par défaut de la liste des taxes : « Ventes ou Achats ». Libellé fr.po l10n_fr_pdp :
+  « Régime de franchise de TVA (bimestriel) ». Bouton Écritures comptables de la facture fournisseur : 400 D / 80 D / 80 C / 400 C.
+  Code : account/models/account_tax.py:81-99 (fiscal_position_ids, original_tax_ids) ; account/models/partner.py:161-175 (map_tax), :259-290
+  (_get_fiscal_position) ; account/models/company.py:226-235, :491-532 (vat_disabled : taxes de vente seules), :598-600 (pas de taxe de
+  remplacement, non surchargé par l10n_fr_account) ; account/models/account_move_line.py:1305 (aucune taxe si vat_disabled) ;
+  account/models/account_move.py:2474-2479 + views/report_invoice.xml:403 (mentions légales des taxes) ;
+  l10n_fr_account/data/template/account.tax-fr.csv (taxes, notes légales en anglais, actives) ; account/security/account_security.xml:30-36
+  (écritures masquées hors comptabilité complète).
+  Sources officielles : entreprendre.service-public.gouv.fr F31412, F33340, F37527, F21746, F31808 (lues le 2026-11-03).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre.xml-extrait { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 0.9rem 1rem; font-size: 0.82em; white-space: pre-wrap; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Régimes de TVA dans Odoo 20 : encaissement, UE et franchise</h1>
+                <p class="lead mt-3 text-white">TVA exigible au paiement pour les prestations de services, vente hors taxes
+                    à un professionnel d'un autre pays de l'Union, TVA autoliquidée sur un achat européen, société en
+                    franchise qui ne facture pas de TVA : dans Odoo 20, ces quatre régimes reposent sur le même mécanisme,
+                    une position fiscale qui choisit la taxe de chaque ligne. Cet article les rejoue sur la base de
+                    démonstration et montre ce qu'il faut vérifier avant la première facture.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Facturation électronique et TVA avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « FR Company », plan comptable français). Ces modules
+                        existent aussi dans l'édition Enterprise. Cet article décrit le paramétrage dans Odoo ; les règles
+                        fiscales citées renvoient aux fiches officielles listées en fin d'article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Une taxe par ligne, choisie par la position fiscale</h2>
+                <p>Le régime de TVA d'une opération ne se règle pas facture par facture. Dans Odoo 20, chaque ligne porte
+                    une <strong>taxe</strong>, et la taxe décide de tout : le taux, le moment où la TVA est due, les
+                    comptes, la mention imprimée sur la facture. La <strong>position fiscale</strong>, déduite de la fiche
+                    du client ou du fournisseur, remplace la taxe française par la taxe adaptée.</p>
+                <p>Le plan comptable français installe quatre positions fiscales actives : « Domestique - France et Monaco
+                    et Drom », « Intra-EU B2B », « EU privé » et « Import/Export Hors Europe + DOM-TOM ». Toutes sont en
+                    détection automatique. « Intra-EU B2B » exige un numéro de TVA sur la fiche : un client belge avec
+                    son numéro de TVA la reçoit seul, un particulier belge sans numéro reçoit « EU privé ».</p>
+                <p>Les articles précédents de la série ont traité la réception (<a
+                    href="/blog/fonctionnel-odoo-1/recevoir-factures-electroniques-odoo-348">Recevoir ses factures
+                    électroniques dans Odoo 20</a>) et l'émission (<a
+                    href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>) des factures électroniques. Le choix des taxes y joue un rôle direct : il décide du cadre de
+                    facturation et des flux d'e-reporting. Le présent article remonte à la source, les taxes elles-mêmes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>distinguer les taxes « G » (biens) et « S » (services) du plan français et leur exigibilité ;</li>
+                    <li>facturer une prestation à TVA sur les encaissements et retrouver la pièce créée au paiement ;</li>
+                    <li>vendre hors taxes à un professionnel de l'Union, avec des mentions légales en français ;</li>
+                    <li>lire l'autoliquidation d'un achat européen dans les écritures de la facture fournisseur ;</li>
+                    <li>passer une société en franchise en base et faire apparaître la mention correspondante.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Les quatre régimes en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma des quatre régimes de TVA dans Odoo 20 pour une société française : TVA sur les encaissements, prestation vendue en France, taxe 20% S basée sur le paiement, pièce CABA au paiement ; vente à un professionnel de l'UE, position fiscale Intra-EU B2B, taxes 0% EU G et 0% EU S, facture hors taxes avec mention légale ; achat à un fournisseur de l'UE, position Intra-EU B2B, taxes 20% EU G et 20% EU S, plus 20 % déductible et moins 20 % due ; franchise en base, case Not Subject to VAT, aucune taxe de vente, mention 293 B à ajouter" style="max-width:100%; height:auto;"/>
+                    <figcaption>Même chaîne pour les quatre régimes : la fiche, la position fiscale, la taxe, puis son effet.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire les taxes du plan comptable français</h2>
+                <p>Les réglages généraux se trouvent dans <strong>Facturation › Configuration › Paramètres</strong>, bloc
+                    <strong>Taxes</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bloc Taxes des paramètres de Facturation d'Odoo 20 : case Not Subject to VAT décochée, Taxes par défaut avec Taxe de vente 20% G et Taxe d'achat 20% G, prix hors taxes, Méthode d'arrondi par taxe, Vente à distance intracommunautaire UE avec le lien Correspondance fiscale OSS, Verify VAT Numbers décoché, Comptabilité de trésorerie cochée, Pays d'imposition France" style="max-width:90%; height:auto;"/>
+                    <figcaption>Le bloc Taxes : taxe de vente par défaut « 20% G », comptabilité de trésorerie active.</figcaption>
+                </figure>
+                <p>Trois réglages concernent cet article. La <strong>taxe de vente par défaut</strong> est « 20% G » : elle
+                    s'applique à tout nouvel article, bien ou service. La case <strong>Comptabilité de trésorerie</strong>
+                    (cochée par le plan français) autorise les taxes exigibles au paiement. La case <strong>Not Subject to
+                    VAT</strong>, libellé resté en anglais, sert à la franchise (étape 5). Le lien <strong>Correspondance
+                    fiscale OSS</strong> concerne les ventes à distance aux particuliers d'autres pays de l'Union ; il
+                    n'est pas traité ici.</p>
+                <p>La liste des taxes s'ouvre par <strong>Facturation › Configuration › Taxes</strong>. Le filtre posé à
+                    l'ouverture montre ventes et achats ; retirez « Achats » pour ne garder que les taxes de vente.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des taxes de vente de FR Company dans Odoo 20 : 20% G, 10% G, 5.5% G, 8.5% G, 2.1% G, 0% EXEMPT G, 0% EX G, 0% EU G de portée Biens, puis 20% S, 10% S, 5.5% S, 2.1% S, 0% EXEMPT S, 0% EX S, 0% EU S de portée Services ; les taux de 10 %, 8,5 %, 5,5 % et 2,1 % sont archivés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Chaque taux existe deux fois : « G » pour les biens, « S » pour les services.</figcaption>
+                </figure>
+                <p>Le suffixe du nom indique la portée : <strong>G</strong> pour les biens, <strong>S</strong> pour les
+                    services. Sur la base de démonstration, seuls les taux de 20 % et les taxes à 0 % sont actifs ; les
+                    taux réduits (10 %, 5,5 %, 2,1 %) et le taux de 8,5 % sont archivés et s'activent par l'interrupteur
+                    <strong>Actif</strong>. Les taxes « 0% EU » servent aux ventes à un professionnel de l'Union, les
+                    taxes « 0% EX » à l'export, les taxes « 0% EXEMPT » aux opérations exonérées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Facturer une prestation à TVA sur les encaissements</h2>
+                <p>Pour une livraison de biens, la TVA est exigible à la livraison ; pour une prestation de services, elle
+                    l'est par défaut à l'encaissement, sauf option du prestataire pour les débits (fiche officielle
+                    « Quelles sont les dates d'exigibilité en matière de TVA ? »). Dans Odoo, cette différence tient à un
+                    seul champ de la taxe. Ouvrez « 20% S », onglet <strong>Options avancées</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche de la taxe 20% S dans Odoo 20, onglet Options avancées : positions fiscales Domestique - France et Monaco et Drom, Domestique - Monaco et EU privé ; portée Services, code de catégorie fiscale S - Taux standard ; Exigibilité fiscale Basé sur le paiement ; Compte d'attente pour la TVA sur encaissements : TVA collectée sur opérations non réglées ; zone Mentions légales vide" style="max-width:100%; height:auto;"/>
+                    <figcaption>« 20% S » : exigibilité « Basé sur le paiement » et compte d'attente de la TVA.</figcaption>
+                </figure>
+                <p>« 20% S » est réglée sur <strong>Basé sur le paiement</strong>, avec un <strong>compte d'attente</strong>
+                    (« TVA collectée sur opérations non réglées »). « 20% G », elle, est basée sur la facture. Encore
+                    faut-il que l'article porte la bonne taxe : sur la base de démonstration, les services ont reçu la
+                    taxe de vente par défaut, « 20% G ». Sur la fiche de l'article « Installation sur site » (type
+                    Service), remplacez-la par « 20% S » dans <strong>Taxes de vente</strong>, et faites de même pour
+                    <strong>Taxes d'achat</strong> (« 20% S » d'achat est, elle aussi, basée sur le paiement).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Extrait de la fiche article Installation sur site dans Odoo 20 : Taxes de vente 20% S et Taxes d'achat 20% S" style="max-width:55%; height:auto;"/>
+                    <figcaption>L'article de service porte désormais « 20% S » à la vente et à l'achat.</figcaption>
+                </figure>
+                <p>La facture FAC/2026/00010, une installation à 90,00 € pour un client professionnel français, porte
+                    alors « 20% S » : 18,00 € de TVA, 108,00 € TTC. À la confirmation, Odoo inscrit les 18,00 € au compte
+                    d'attente. Au paiement (bouton <strong>Payer</strong>), il crée une seconde pièce qui vire ces 18,00 €
+                    vers le compte « TVA collectée ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Facture client FAC/2026/00010 payée dans Odoo 20 : boutons intelligents Paiements 1, Pièces comptables de trésorerie et Écritures comptables ; client Client professionnel France, Lyon, TVA FR12000000000 ; ligne Installation sur site 90,00 avec la taxe 20% S ; Montant hors taxes 90,00 euros, TVA 20 % 18,00 euros, Total 108,00 euros, Payé le 03/11/2026, Montant dû 0,00 euro ; bandeau Payé" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture payée affiche le bouton « Pièces comptables de trésorerie ».</figcaption>
+                </figure>
+                <p>Le bouton intelligent <strong>Pièces comptables de trésorerie</strong> apparaît sur la facture payée. Il
+                    mène à la pièce CABA/2026/11/0001, passée dans le journal <strong>TVA sur encaissements</strong>, avec
+                    la facture pour référence.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste des pièces comptables de trésorerie de la facture : CABA/2026/11/0001 du 3 novembre, référence FAC/2026/00010, journal TVA sur encaissements, société FR Company, statut Comptabilisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>La pièce créée au paiement, dans le journal « TVA sur encaissements ».</figcaption>
+                </figure>
+                <p>Le total affiché (108,00 €) cumule la base et la TVA reprises par la pièce. Avec les droits de
+                    l'administrateur de la base de démonstration, qui n'a pas le groupe technique « Show Full Accounting
+                    Features », la pièce s'affiche sans ses lignes, et le bouton <strong>Écritures comptables</strong>
+                    liste débits et crédits sans la colonne des comptes. Lors de l'essai, la pièce CABA débitait de 18,00 €
+                    le compte 445740 (TVA collectée sur opérations non réglées) et créditait d'autant le 445710 (TVA
+                    collectée).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Vendre à un professionnel d'un autre pays de l'Union</h2>
+                <p>Une livraison intracommunautaire exonérée se facture hors taxes, avec les numéros de TVA du vendeur et
+                    de l'acheteur et une mention d'exonération ; une prestation de services à un professionnel de l'Union
+                    porte la mention « autoliquidation » (fiches officielles F33340 et F37527). Dans Odoo, la position
+                    fiscale « Intra-EU B2B » fait le travail. Dans Odoo 20, la correspondance des taxes se lit sur la taxe
+                    de remplacement, et non sur la fiche de la position fiscale : ouvrez « 0% EU G ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche de la taxe 0% EU G dans Odoo 20 : type Ventes, position fiscale Intra-EU B2B, champ Remplace avec 20% G, 10% G, 5.5% G, 8.5% G et 2.1% G ; onglet Options avancées : portée Biens, code de catégorie fiscale K - Exonération de TVA pour les livraisons de biens et les presta… (libellé tronqué à l'écran), code de motif VATEX-EU-IC - Livraison intracommunautaire, exigibilité Basé sur la facture, mention légale Exonération TVA, article 262 ter - I du Code général des impôts (CGI)" style="max-width:100%; height:auto;"/>
+                    <figcaption>« 0% EU G » remplace les taxes « G » sous la position « Intra-EU B2B ». Mention légale modifiée pour l'essai.</figcaption>
+                </figure>
+                <p>Le champ <strong>Position fiscale</strong> de la taxe indique où elle s'applique, le champ
+                    <strong>Remplace</strong> quelles taxes françaises elle remplace : « 0% EU G » remplace les taxes de
+                    biens, « 0% EU S » les taxes de services. La facture FAC/2026/00011 au client professionnel belge
+                    (numéro de TVA BE0123456749, celui de la démonstration d'Odoo) le montre : deux chaises de bureau
+                    passent en « 0% EU G », l'installation en « 0% EU S ». Total : 230,00 €, TVA 0,00 €.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Facture FAC/2026/00011 dans Odoo 20 pour Client professionnel Belgique, Rue de la Loi 16, 1000 Bruxelles, TVA BE0123456749 : ligne Chaise de bureau 2 unités à 70,00 avec la taxe 0% EU G, ligne Installation sur site 1 unité à 90,00 avec la taxe 0% EU S ; Montant hors taxes 230,00 euros, TVA 0 % 0,00 euro, Total 230,00 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Position « Intra-EU B2B » : chaque ligne reçoit la taxe à 0 % de sa portée.</figcaption>
+                </figure>
+                <p>Chaque taxe porte, dans <strong>Options avancées</strong>, une zone <strong>Mentions légales</strong>
+                    (« Cette note sera mentionnée sur les factures utilisant cette taxe »). Le plan français y livre un
+                    texte en anglais : « Exempt intra-community supplies - Article 138 of the Directive 2006/112/EC » pour
+                    « 0% EU G » et « VAT Reverse charge - Article 196 of the Directive 2006/112/EC » pour « 0% EU S »,
+                    imprimés tels quels sur la facture d'un client en français. Pour l'essai, les deux zones ont reçu les
+                    mentions des fiches officielles : « Exonération TVA, article 262 ter - I du Code général des impôts
+                    (CGI) » et « Autoliquidation ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Extrait du PDF de la facture FAC/2026/00011 : type d'opération Opération mixte, lignes Chaise de bureau et Installation sur site à TVA 0 %, mentions Exonération TVA, article 262 ter - I du Code général des impôts (CGI) et Autoliquidation, Montant hors taxes 230,00 euros, TVA 0 % 0,00 euro, Total 230,00 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sur le PDF, une mention par taxe utilisée, sous les lignes.</figcaption>
+                </figure>
+                <p>Le PDF imprime une mention par taxe présente sur la facture. La facture mêlant biens et services, Odoo
+                    indique aussi le type d'opération « Opération mixte ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Autoliquider la TVA d'un achat européen</h2>
+                <p>Sur une acquisition intracommunautaire, le vendeur ne facture pas la TVA : l'entreprise cliente
+                    l'autoliquide, puis la déduit si elle en a le droit, sur la même déclaration (fiche officielle F33340).
+                    Dans Odoo, la position « Intra-EU B2B » s'applique aussi aux fournisseurs. Elle remplace la taxe
+                    d'achat « 20% G » par « 20% EU G ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fiche de la taxe d'achat 20% EU G dans Odoo 20 : montant 20 %, position fiscale Intra-EU B2B, remplace 20% G ; répartition pour les factures : base avec grilles B2 et 08_base, 100 % de la taxe au compte TVA déductible intracommunautaire grille 20, moins 100 % de la taxe au compte TVA due sur acquisitions intracommunautaires grilles 08_taxe et 17 ; même répartition pour les notes de crédit" style="max-width:100%; height:auto;"/>
+                    <figcaption>« 20% EU G » : +100 % en TVA déductible, −100 % en TVA due.</figcaption>
+                </figure>
+                <p>Tout tient dans l'onglet <strong>Définition</strong> : la taxe compte deux lignes de répartition, l'une
+                    à +100 % vers « TVA déductible intracommunautaire », l'autre à −100 % vers « TVA due sur acquisitions
+                    intracommunautaires ». Les grilles de taxes (17, 20) renvoient aux lignes de la déclaration. Pour une
+                    prestation achetée, « 20% EU S » remplace « 20% S » de la même manière.</p>
+                <p>La facture fournisseur de dix chaises à 40,00 €, reçue d'un fournisseur belge muni d'un numéro de TVA,
+                    affiche 400,00 € hors taxes, « TVA 20 % : 0,00 € », et 400,00 € à payer. Le bouton
+                    <strong>Écritures comptables</strong> montre pourquoi.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Écritures comptables de la facture fournisseur FACTURE/2026/11/0001, Fournisseur professionnel Belgique : charge 400,00 euros au débit, ligne 20% EU G 80,00 euros au débit, ligne 20% EU G 80,00 euros au crédit, dette fournisseur BE-2026-118 400,00 euros au crédit ; totaux 480,00 euros au débit et au crédit" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux lignes « 20% EU G » de 80,00 € qui s'annulent : la TVA est autoliquidée.</figcaption>
+                </figure>
+                <p>Les deux lignes « 20% EU G » de 80,00 € s'équilibrent : 80,00 € de TVA déductible (445662) et
+                    80,00 € de TVA due (445200), relevés lors de l'essai. Le fournisseur reçoit 400,00 €, la TVA
+                    n'apparaît que dans la comptabilité de l'acheteur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Passer une société en franchise en base</h2>
+                <p>Une entreprise en franchise en base facture sans TVA et ne déduit pas la TVA de ses achats ; ses
+                    factures portent la mention « TVA non applicable, art. 293 B du CGI » (fiches officielles F21746 et
+                    F31808, seuils de chiffre d'affaires sur la première). Odoo 20 ajoute pour ce cas la case
+                    <strong>Not Subject to VAT</strong> du bloc Taxes. Cochez-la, puis cliquez sur
+                    <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Bloc Taxes des paramètres d'Odoo 20 après enregistrement : case Not Subject to VAT cochée, Taxe de vente par défaut vide, Taxe d'achat 20% G inchangée ; les réglages Vente à distance intracommunautaire et Comptabilité de trésorerie ne sont plus affichés" style="max-width:90%; height:auto;"/>
+                    <figcaption>Après enregistrement : plus de taxe de vente par défaut, la taxe d'achat reste « 20% G ».</figcaption>
+                </figure>
+                <p>À l'enregistrement, Odoo archive toutes les taxes de vente de la société et vide la taxe de vente par
+                    défaut. Les réglages « Vente à distance intracommunautaire UE » et « Comptabilité de trésorerie »
+                    disparaissent du bloc. Une nouvelle facture ne reçoit plus aucune taxe, même pour un article qui porte
+                    « 20% S ».</p>
+                <p>La mention, elle, n'est pas ajoutée : le plan français ne fournit pas de taxe de franchise qui la
+                    porterait. Un emplacement possible est la note par défaut des factures : dans les paramètres de
+                    Facturation, réglage <strong>Conditions générales par défaut</strong>, choisissez <strong>Ajouter une
+                    note</strong> plutôt que « Ajouter un lien vers une page web », et saisissez le texte de la mention. Il apparaît ensuite en bas de chaque
+                    nouvelle facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Facture FAC/2026/00012 au Client particulier de Lyon dans Odoo 20 : ligne Installation sur site 90,00 sans taxe, note TVA non applicable, art. 293 B du CGI en bas de facture, Montant hors taxes 90,00 euros, Total 90,00 euros" style="max-width:100%; height:auto;"/>
+                    <figcaption>Société en franchise : aucune taxe sur la ligne, la mention vient de la note par défaut.</figcaption>
+                </figure>
+                <p>Pour l'e-reporting, le module de facturation électronique française propose la périodicité « Régime
+                    de franchise de TVA (bimestriel) », qui se choisit dans le bloc
+                    de la facturation électronique française, présenté dans le premier article de la série.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Taxes, positions fiscales, TVA sur les encaissements et case Not Subject to VAT font partie des
+                        modules gratuits <code>account</code> et <code>l10n_fr_account</code>. Sans le groupe technique « Show
+                        Full Accounting Features », les écritures s'affichent sans la colonne des comptes et les pièces de
+                        trésorerie sans leurs lignes : les comptes se lisent alors sur la répartition de chaque taxe (onglet
+                        Définition).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un service taxé « 20% G » change deux régimes</h4>
+                    <p>Les services de la base de démonstration portent « 20% G », la taxe de vente par défaut. La TVA
+                        devient alors exigible à la facture, et la même prestation vendue en Belgique reçoit « 0% EU G »,
+                        avec la mention des livraisons de biens, au lieu de « 0% EU S ». Vérifiez la taxe de chaque article
+                        de service avant les premières factures.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Des mentions légales en anglais sur la facture</h4>
+                    <p>Les taxes « 0% EU G » et « 0% EU S » impriment par défaut un texte en anglais, citant la directive
+                        européenne, sur la facture envoyée au client. Relisez la zone Mentions légales de chaque taxe que
+                        vous utilisez et remplacez-la par la mention voulue.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Not Subject to VAT ne touche pas aux achats</h4>
+                    <p>L'aide de la case annonce que seules des taxes non déductibles resteront actives. Lors de l'essai,
+                        seules les taxes de vente ont été archivées : la taxe d'achat par défaut reste « 20% G », dont la
+                        TVA va au compte « TVA déductible sur autres biens et services ». Une société en franchise doit
+                        revoir elle-même ses taxes d'achat.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir la position fiscale changer la taxe d'une prestation.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, société « FR Company »,
+                        donnez la taxe « 20% S » à un article de service. Créez un contact belge avec un numéro de TVA
+                        belge fictif et une adresse complète, puis une facture de cet article pour ce contact.</p>
+                    <p><strong>Critère de réussite :</strong> la ligne porte « 0% EU S », le total de la facture est égal
+                        au hors taxes, et le PDF imprime la mention légale de « 0% EU S ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Dans Odoo 20, le régime de TVA se lit sur la taxe de chaque ligne ; la position fiscale, déduite
+                        de la fiche, remplace la taxe française par la taxe adaptée.</li>
+                    <li>« 20% S » est exigible au paiement : la TVA attend sur un compte d'attente, puis une pièce du
+                        journal « TVA sur encaissements » la vire en TVA collectée.</li>
+                    <li>Un client ou un fournisseur de l'Union avec un numéro de TVA reçoit « Intra-EU B2B » : ventes à
+                        0 %, achats autoliquidés à +20 % / −20 %.</li>
+                    <li>Les mentions légales viennent des taxes, en anglais par défaut ; celle de la franchise est à
+                        ajouter soi-même.</li>
+                    <li>Not Subject to VAT archive les taxes de vente, pas les taxes d'achat.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article clôt la série. L'article précédent traite de l'émission : <a
+                    href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>, où le choix des taxes décide du cadre de facturation et des flux
+                    d'e-reporting. Le point de départ de la série reste <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources officielles (consultées le 3 novembre 2026)</h3>
+                <ul class="small">
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F31412" target="_blank" rel="noopener">Quelles sont les dates d'exigibilité en matière de TVA ? (F31412)</a></li>
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F33340" target="_blank" rel="noopener">TVA applicable aux échanges de biens dans l'Union européenne (F33340)</a></li>
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F37527" target="_blank" rel="noopener">TVA applicable aux échanges de prestations de services dans l'Union européenne (F37527)</a></li>
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F21746" target="_blank" rel="noopener">Franchise en base de TVA (F21746)</a></li>
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F31808" target="_blank" rel="noopener">Mentions obligatoires sur une facture (F31808)</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan, compte de résultat et TVA avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les rapports de fin de période.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures électroniques</a></h5>
+                            <p class="small text-muted mb-0">UBL, Factur-X et flux d'e-reporting.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture client dans Odoo 20.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
