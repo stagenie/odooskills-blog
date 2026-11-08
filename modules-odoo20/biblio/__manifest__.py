@@ -8,7 +8,7 @@ Un modèle Livre, ses droits d'accès, sa liste, son formulaire et son menu.
     'author': "OdooSkills",
     'website': "https://odooskills.com",
     'category': 'Services',
-    'version': '20.0.1.18.0',
+    'version': '20.0.1.19.0',
     'license': 'LGPL-3',
     'depends': ['base', 'mail', 'portal'],
     'data': [
@@ -30,5 +30,14 @@ Un modèle Livre, ses droits d'accès, sa liste, son formulaire et son menu.
         'views/res_partner_views.xml',
         'views/library_portal_templates.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'biblio/static/src/late_badge/late_badge_field.js',
+            'biblio/static/src/late_badge/late_badge_field.xml',
+        ],
+        'web.assets_unit_tests': [
+            'biblio/static/tests/**/*',
+        ],
+    },
     'application': True,
 }
