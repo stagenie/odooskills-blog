@@ -221,3 +221,76 @@ class TestEbookLifecycle(TransactionCase):
         self._order(self.p_e1).action_confirm()
         self.assertFalse(self.partner.with_context(active_test=False).user_ids,
                          "commande sans fichier livrable : aucun compte à créer")
+
+
+@tagged('post_install', '-at_install')
+class TestSameCustomer(TransactionCase):
+    """Achat invité : website_sale crée une fiche neuve même si le courriel
+    est connu. Les étiquettes suivent le client, pas seulement la fiche."""
+
+    SUMMARY = "Doublon client à fusionner"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.cat_e1 = cls.env.ref('oski_ebook_lifecycle.cat_client_e1')
+        eb1 = cls.env.ref('oski_ebook_lifecycle.ebook_e1')
+        cls.list1 = cls.env['mailing.list'].create({'name': 'TEST Extrait E1 bis'})
+        eb1.extract_list_id = cls.list1
+        cls.p_e1 = cls.env['product.product'].create(
+            {'name': 'Ebook E1 bis', 'list_price': 20.0, 'ebook_ids': [(6, 0, eb1.ids)]})
+        Partner = cls.env['res.partner']
+        cls.old = Partner.create({'name': 'Client 19', 'email': 'fidele@test.com'})
+        cls.guest = Partner.create({'name': 'Client 19 invité', 'email': 'Fidele@Test.com'})
+        cls.contact = cls.env['mailing.contact'].create({
+            'name': 'Client 19', 'email': 'fidele@test.com',
+            'subscription_ids': [(0, 0, {'list_id': cls.list1.id})],
+        })
+
+    def _confirm(self, partner):
+        order = self.env['sale.order'].create({
+            'partner_id': partner.id,
+            'order_line': [(0, 0, {'product_id': self.p_e1.id, 'product_uom_qty': 1})],
+        })
+        order.action_confirm()
+        return order
+
+    def _flags(self, order):
+        return order.activity_ids.filtered(lambda a: a.summary == self.SUMMARY)
+
+    def test_old_partner_and_mailing_contact_tagged(self):
+        order = self._confirm(self.guest)
+        self.assertIn(self.cat_e1, self.guest.category_id)
+        self.assertIn(self.cat_e1, self.old.category_id)
+        self.assertIn(self.cat_e1, self.contact.tag_ids)
+        self.assertTrue(self.contact.subscription_ids.filtered(
+            lambda sub: sub.list_id == self.list1).opt_out)
+        self.assertEqual(order.partner_id, self.guest, "la commande n'est pas déplacée")
+
+    def test_duplicate_flagged_once(self):
+        order = self._confirm(self.guest)
+        self.assertEqual(len(self._flags(order)), 1)
+        self.assertIn('#%s' % self.old.id, str(self._flags(order).note))
+        order._apply_ebook_lifecycle()
+        self.assertEqual(len(self._flags(order)), 1)
+
+    def test_single_partner_not_flagged(self):
+        partner = self.env['res.partner'].create({'name': 'Seul', 'email': 'seul@test.com'})
+        contact = self.env['mailing.contact'].create({'name': 'Seul', 'email': 'seul@test.com'})
+        order = self._confirm(partner)
+        self.assertFalse(self._flags(order))
+        self.assertIn(self.cat_e1, contact.tag_ids)
+
+    def test_confirm_by_salesman_without_marketing_rights(self):
+        salesman = self.env['res.users'].create({
+            'name': 'Vendeur', 'login': 'vendeur_oski_test',
+            'group_ids': [(6, 0, self.env.ref('sales_team.group_sale_salesman').ids)],
+        })
+        order = self.env['sale.order'].with_user(salesman).create({
+            'partner_id': self.guest.id,
+            'order_line': [(0, 0, {'product_id': self.p_e1.id, 'product_uom_qty': 1})],
+        })
+        order.action_confirm()
+        self.assertIn(self.cat_e1, self.old.category_id)
+        self.assertIn(self.cat_e1, self.contact.tag_ids)
+        self.assertEqual(len(self._flags(order.sudo())), 1)

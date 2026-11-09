@@ -145,3 +145,20 @@ class TestOskiFidelite(TransactionCase):
     def test_net_price_constraint(self):
         with self.assertRaises(ValidationError):
             self.reward.discount_applicability = 'order'
+
+    def test_code_used_under_other_email_tags_recipient(self):
+        """Achat invité sous un autre courriel avec le code d'Alice : la fiche
+        d'Alice reçoit les étiquettes client et le doublon est signalé."""
+        ebook = self.env.ref('oski_ebook_lifecycle.ebook_e1')
+        self.pack.ebook_ids = [(6, 0, ebook.ids)]
+        guest = self.env['res.partner'].create(
+            {'name': 'TEST Alice invitée', 'email': 'alice.autre@test.oski'})
+        order = self._order(guest)
+        self._apply(order, 'TESTF-A-0001')
+        order.action_confirm()
+        self.assertIn(ebook.partner_category_id, guest.category_id)
+        self.assertIn(ebook.partner_category_id, self.alice.category_id)
+        self.assertEqual(order.partner_id, guest, "la commande reste sur la fiche de l'acheteur")
+        flags = order.activity_ids.filtered(lambda a: a.summary == "Doublon client à fusionner")
+        self.assertEqual(len(flags), 1)
+        self.assertIn('alice@test.oski', str(flags.note))

@@ -34,3 +34,14 @@ class SaleOrder(models.Model):
         for v in values:
             v['price_unit'] = self.currency_id.round(v['price_unit'] * factor)
         return values
+
+    def _oski_same_customer_partners(self):
+        """Ajoute le destinataire du code de fidélité utilisé sur la commande.
+
+        Le code est personnel et envoyé à l'adresse du destinataire : celui qui
+        le saisit est ce client, même s'il a payé sous un autre courriel (achat
+        invité = nouvelle fiche, voir oski_ebook_lifecycle)."""
+        others = super()._oski_same_customer_partners()
+        coupons = (self.order_line.coupon_id | self.applied_coupon_ids).sudo()
+        dests = coupons.oski_partner_id.commercial_partner_id
+        return (others | dests) - self.partner_id.commercial_partner_id
