@@ -1,6 +1,6 @@
 {
     'name': 'OdooSkills - Promotions dynamiques',
-    'version': '19.0.3.2.0',
+    'version': '19.0.3.3.0',
     'category': 'Website/Website',
     'summary': "Campagnes promo datées : prix, bandeau et compte à rebours dynamiques",
     'author': 'ADICOPS',

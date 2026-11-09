@@ -122,11 +122,18 @@ class ProductTemplate(models.Model):
         payer, courant = self._oski_payer_courant()
         campaign = self._oski_running_campaign()
         promo = bool(campaign) and payer < courant - OSKI_EPSILON
+        # Pendant une campagne, on barre le prix de référence (le plus bas
+        # des 30 jours précédents), jamais le barré catalogue. Hors
+        # campagne, l'affichage ne change pas.
+        barre = self.oski_price_regular
+        if promo:
+            line = campaign.line_ids.filtered(lambda l: l.product_tmpl_id == self)[:1]
+            barre = line.price_reference or courant
         return {
-            'barre': self.oski_price_regular,
+            'barre': barre,
             'payer': payer,
             'after': courant,
-            'barre_fmt': oski_fmt(self.oski_price_regular),
+            'barre_fmt': oski_fmt(barre),
             'payer_fmt': oski_fmt(payer),
             'after_fmt': oski_fmt(courant),
             'promo': promo,

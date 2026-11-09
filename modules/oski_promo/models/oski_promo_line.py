@@ -16,6 +16,12 @@ class OskiPromoLine(models.Model):
     price_promo = fields.Float(
         string='Prix promo (€)', digits='Product Price', required=True,
         help="Prix EUR appliqué pendant la campagne.")
+    price_reference = fields.Float(
+        string='Prix de référence (€)', digits='Product Price',
+        help="Prix le plus bas pratiqué dans les 30 jours précédant la campagne "
+             "(directive Omnibus, art. L112-1-1 du Code de la consommation). "
+             "La remise se calcule sur lui et c'est lui qui est barré pendant "
+             "la campagne. Pré-rempli à la génération des lignes.")
     price_current = fields.Float(
         string='Prix courant (€)', compute='_compute_price_current',
         digits='Product Price',

@@ -1,5 +1,6 @@
 from freezegun import freeze_time
 
+from odoo.exceptions import UserError
 from odoo.tests import TransactionCase, tagged
 
 from odoo.addons.oski_promo.models.product_template import oski_fmt
@@ -50,7 +51,10 @@ class TestOskiPriceInfo(TransactionCase):
         self.assertTrue(info['promo'])
         self.assertEqual(info['payer'], 16.80)
         self.assertEqual(info['payer_fmt'], '16,80')
-        self.assertEqual(info['barre'], 27.0)
+        # Pendant la campagne, on barre le prix de référence (le plus bas
+        # des 30 jours : ici le prix courant), jamais le barré catalogue.
+        self.assertEqual(info['barre'], 24.0)
+        self.assertEqual(info['barre_fmt'], '24')
         self.assertEqual(info['after'], 24.0)
         self.assertEqual(info['label'], "Promotion d'été −30 %")
         self.assertEqual(info['deadline_iso'], '2026-08-02T22:00:00Z')
@@ -154,3 +158,75 @@ class TestOskiPriceInfo(TransactionCase):
         })
         self.assertFalse(nu.oski_hub_title)
         self.assertIn(nu, website.oski_catalogue()['monos'])
+
+
+@tagged('post_install', '-at_install')
+class TestOskiPrixReference(TransactionCase):
+    """Directive Omnibus : la réduction se calcule et s'affiche sur le prix le
+    plus bas pratiqué dans les 30 jours précédant la campagne."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        eb1 = cls.env.ref('oski_ebook_lifecycle.ebook_e1')
+        cls.pricelist = cls.env['product.pricelist'].create({'name': 'TEST EUR REF'})
+        ICP = cls.env['ir.config_parameter'].sudo()
+        ICP.set_param('oski.pricing.dzd_rate', '270')
+        ICP.set_param('oski.pricing.eur_pricelist_id', str(cls.pricelist.id))
+        cls.pack = cls.env['product.template'].create({
+            'name': 'TEST REF PACK', 'default_code': 'TESTR-PACK',
+            'ebook_ids': [(6, 0, eb1.ids)],
+            'oski_price_regular': 79.0, 'oski_price_launch': 59.0,
+        })
+        Camp = cls.env['oski.promo.campaign']
+        # Lancement : 22/10 → 01/11 à 44 €
+        cls.lancement = Camp.create({
+            'name': 'Lancement', 'label_public': 'Lancement',
+            'date_start': '2026-10-22 08:00:00', 'date_end': '2026-11-01 22:59:59',
+        })
+        cls.env['oski.promo.line'].create({
+            'campaign_id': cls.lancement.id, 'product_tmpl_id': cls.pack.id, 'price_promo': 44.0})
+        cls.lancement.action_apply()
+
+    def _bf(self, start='2026-11-27 09:00:00', end='2026-11-30 22:59:59'):
+        camp = self.env['oski.promo.campaign'].create({
+            'name': 'BF', 'label_public': 'Black Friday −30 %',
+            'date_start': start, 'date_end': end, 'discount_percent': 30.0,
+        })
+        camp.action_generate_lines()
+        return camp, camp.line_ids.filtered(lambda l: l.product_tmpl_id == self.pack)
+
+    def test_reference_prix_de_lancement_dans_30_jours(self):
+        camp, line = self._bf()
+        self.assertEqual(line.price_reference, 44.0)
+        self.assertAlmostEqual(line.price_promo, 30.80, places=2)
+
+    def test_reference_ignore_campagne_de_plus_de_30_jours(self):
+        camp, line = self._bf(start='2026-12-05 09:00:00', end='2026-12-07 22:59:59')
+        self.assertEqual(line.price_reference, 59.0)
+        self.assertAlmostEqual(line.price_promo, 41.30, places=2)
+
+    def test_reference_compte_une_campagne_archivee(self):
+        self.lancement.active = False
+        camp, line = self._bf()
+        self.assertEqual(line.price_reference, 44.0)
+
+    def test_promo_au_dessus_de_la_reference_refusee(self):
+        camp, line = self._bf()
+        line.price_promo = 45.0
+        with self.assertRaises(UserError):
+            camp.action_apply()
+
+    @freeze_time('2026-11-28 12:00:00')
+    def test_affichage_pendant_puis_apres(self):
+        camp, line = self._bf()
+        camp.action_apply()
+        info = self.pack._oski_price_info()
+        self.assertTrue(info['promo'])
+        self.assertEqual(info['barre'], 44.0)
+        self.assertAlmostEqual(info['payer'], 30.80, places=2)
+        with freeze_time('2026-12-01 12:00:00'):
+            apres = self.pack._oski_price_info()
+        self.assertFalse(apres['promo'])
+        self.assertEqual(apres['barre'], 79.0, "hors campagne, l'affichage ne change pas")
+        self.assertEqual(apres['payer'], 59.0)

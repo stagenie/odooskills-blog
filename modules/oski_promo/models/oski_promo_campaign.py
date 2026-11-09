@@ -79,15 +79,37 @@ class OskiPromoCampaign(models.Model):
             rec.line_ids.unlink()
             facteur = 1.0 - (rec.discount_percent / 100.0)
             produits = Product.search([('ebook_ids', '!=', False)])
-            rec.line_ids = [
-                (0, 0, {
+            lignes = []
+            for produit in produits:
+                reference = rec._oski_reference_price(produit)
+                lignes.append((0, 0, {
                     'product_tmpl_id': produit.id,
-                    'price_promo': round(
-                        (produit.oski_price_launch or produit.oski_price_regular)
-                        * facteur, 2),
-                })
-                for produit in produits
-            ]
+                    'price_reference': reference,
+                    'price_promo': round(reference * facteur, 2),
+                }))
+            rec.line_ids = lignes
+
+    def _oski_reference_price(self, produit):
+        """Prix le plus bas pratiqué dans les 30 jours avant le début.
+
+        Une annonce de réduction se calcule sur ce prix (directive Omnibus,
+        art. L112-1-1 du Code de la consommation), pas sur le prix barré
+        catalogue. Sources : le prix courant, et le prix promotionnel de
+        toute campagne appliquée (archivée comprise) qui a couru pendant
+        ces 30 jours. Hypothèse du module : un prix public ne baisse que
+        par une campagne. Les codes de fidélité, personnels, ne comptent pas.
+        """
+        self.ensure_one()
+        courant = produit.oski_price_launch or produit.oski_price_regular
+        debut = self.date_start - timedelta(days=30)
+        anciennes = self.env['oski.promo.line'].with_context(active_test=False).search([
+            ('product_tmpl_id', '=', produit.id),
+            ('campaign_id', '!=', self.id or False),
+            ('campaign_id.applied', '=', True),
+            ('campaign_id.date_start', '<', self.date_start),
+            ('campaign_id.date_end', '>=', debut),
+        ])
+        return min([courant] + anciennes.mapped('price_promo'))
 
     def _pricelist(self):
         """Liste de prix EUR déclarée en paramètre système."""
@@ -160,6 +182,14 @@ class OskiPromoCampaign(models.Model):
                     "Une remise supérieure à 100 %% n'est pas applicable : "
                     "corrigez la ligne avant d'appliquer la campagne."
                     % (produit.display_name, line.price_promo))
+            reference = line.price_reference or courant
+            if line.price_promo > reference:
+                raise UserError(
+                    "Prix promotionnel supérieur au prix de référence sur "
+                    "« %s » : %.2f € contre %.2f € (prix le plus bas des 30 "
+                    "jours précédents). Ce ne serait pas une réduction : "
+                    "baissez le prix ou retirez le produit de la campagne."
+                    % (produit.display_name, line.price_promo, reference))
             if line.price_promo > courant:
                 raise UserError(
                     "Prix promotionnel supérieur au prix courant sur "

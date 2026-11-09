@@ -48,7 +48,9 @@ class TestOskiPromoRender(TransactionCase):
     def test_bloc_pendant_promo(self):
         html = str(self._render())
         self.assertIn('16,80', html)
-        self.assertIn('27', html)
+        # barré = prix de référence (24 €), plus le barré catalogue (27 €)
+        self.assertIn('24 €', html)
+        self.assertNotIn('27', html)
         self.assertIn('data-deadline="2026-08-02T22:00:00Z"', html)
         self.assertIn('data-after="24"', html)
         self.assertIn('oski-countdown', html)
@@ -59,7 +61,7 @@ class TestOskiPromoRender(TransactionCase):
         JS de Task 8 doit comparer pour décider si le barré survit à
         l'échéance (barre <= after ⇒ le barré n'était que promotionnel)."""
         html = str(self._render())
-        self.assertIn('data-barre="27.0"', html)
+        self.assertIn('data-barre="24.0"', html)
         self.assertIn('data-after-value="24.0"', html)
 
     @freeze_time('2026-08-03 12:00:00')
