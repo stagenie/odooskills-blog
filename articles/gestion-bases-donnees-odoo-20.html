@@ -1,0 +1,718 @@
+<!--
+Article — Gestion des bases de données Odoo 20 : créer, dupliquer, filtrer
+Série « Fondations et données en Odoo 20 » (60), étape 2 ; lot T3 (T3.2 du plan vague 3 technique), jumelle Odoo 20
+du pilier v19 n°57 (gestion-bases-donnees-odoo-57, lien posé dans l'introduction). Sauvegarde et restauration planifiées :
+article T3.4 à venir (survol seulement ici, sans lien).
+Date : 2026-11-10
+Slug : gestion-bases-donnees-odoo-20
+Mot-clé cible : odoo postgresql database, odoo database manager, odoo-bin db, odoo dbfilter, odoo master password
+Catégorie : Développement Odoo
+Tags : debutant, fondamentaux, guide, community
+Temps de lecture : ~15 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16.15, rôle de connexion « Create DB »
+non superutilisateur ; serveur de travail en boucle locale, fichier de configuration jetable, dbfilter limité aux bases
+d'essai, crons coupés ; Chromium piloté par Playwright) :
+- odoo-bin db --help : init, load, dump, duplicate, rename, drop. db init (en_US) : base UTF8 / C / ctype fr_FR.UTF-8,
+  extensions plpgsql + pg_trgm, 16 modules ; db init --language fr_FR --country FR : fr_FR actif, société FR.
+  Nom « ma_base test » → ValueError Invalid db_name. odoo-bin -d <base absente> --stop-after-init → base créée + base installé.
+- unaccent = True avec rôle non superutilisateur : ERROR « must be owner of function unaccent », WARNING « Unable to create
+  PostgreSQL extensions » → base sans pg_trgm NI unaccent ; après -i mail : index mail_blacklist__email_index (gin trgm)
+  absent, présent sur la base créée sans unaccent ; aucun WARNING pendant -i. Réparation : CREATE EXTENSION pg_trgm par le
+  rôle propriétaire, redémarrage seul → index toujours absent ; -u mail → mail_blacklist__email_index créé.
+- db duplicate -n : « Neutralization finished », 3,3 s ; uuid, secret, create_date nouveaux, database.is_neutralized True,
+  crons actifs 21 → 1, serveurs sortants actifs 0 → 1 (leurre) ; filestore 564 fichiers copiés ; cible existante →
+  « Target database … exists, aborting. use `--force` ».
+- db rename pendant une session psql ouverte : session coupée (FATAL terminating connection due to administrator command),
+  filestore déplacé. db drop d'une base absente → psycopg2.errors.InvalidCatalogName + note « When trying to drop ».
+  -r postgres → « Using the database user 'postgres' is a security risk, aborting. »
+- Tri : ORDER BY dans une base C : « Zoé < abc < zoé < Éric < émile » ; COLLATE fr_FR : « abc < émile < Éric < zoé < Zoé ».
+- HTTP : /web/database/list selon dbfilter (^ma_base → 4 bases ; ^ma_base$ → 1 ; ^ma_base_%d$ + Host essai.exemple.com →
+  ma_base_essai, www.vierge.exemple.com:443 → ma_base_vierge, autre.exemple.com → []) ; dbfilter vide + -d a,b → [a, b] ;
+  --no-database-list : AccessDenied « Database management functions blocked, admin disabled database listing. », bandeau
+  « The database manager has been disabled by the administrator », POST create 403. /jsonrpc service db et /xmlrpc/2/db :
+  ValueError « Invalid service name: db ». change_password mauvais → 403 « Could not change_password database. Database
+  management function blocked, bad admin password. » ; bon → 303, admin_passwd = $pbkdf2-sha512$600000$…, commentaires du
+  fichier perdus, section [colors] ajoutée. POST /web/database/rename → 303 (aucun bouton) ; nouveau nom avec espace accepté
+  (base renommée, sortie de la liste filtrée ; remise en état par odoo-bin db rename). POST /web/database/drop d'une base
+  exclue par ^ma_base$ → 303, « DROP DB » au journal.
+- Source 20.0 : release.py:41 ; sql_db.py:712-713 ; tools/config.py:23-25, 230, 308, 404, 429, 431, 449, 484, 1031-1039,
+  1135-1147 ; modules/db.py:44, 241-264, 329-384, 437-464, 467-508, 511-524, 527-547, 672-698, 701-732 ;
+  cli/db.py:26-33, 61-187 ; cli/server.py:37-44, 101-112 ; http/router.py:70-121, 125-141 ; web/controllers/database.py:124,
+  132-141, 218-233, 287-296, 297 ; web/static/src/public/database_manager.qweb.html:58-79 ; service/server.py:112-114 ;
+  orm/registry.py:335-336, 930.
+- 19.0 publique (GitHub, 10/11/2026) : release.py MIN_PG 13 ; odoo/http.py:437-441 (dispatchers common, db, object) et
+  db_filter identique ; odoo/service/db.py (exp_*, list_dbs identique, 'postgres' en dur, bloc d'extensions identique) ;
+  tools/config.py sans --db-system, admin_passwd 'admin', crypt pbkdf2_sha512 600 000 ; web/controllers/database.py sans
+  route rename, DBNAME_PATTERN contrôlé seulement par le contrôleur ; cli/db.py mêmes six sous-commandes ; cli/server.py
+  check_postgres_user identique.
+Captures : content/blog/screenshots/gestion-bases-donnees-odoo-20/ (01 schéma, 02 gestionnaire, 03 formulaires créer et
+dupliquer — noms de bases remplacés par ma_base… dans la page avant capture).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Gestion des bases de données Odoo 20 : créer, dupliquer, filtrer</h1>
+                <p class="lead mt-3 text-white">Créer, dupliquer, renommer, supprimer et lister des bases, depuis le gestionnaire
+                    web ou avec <code>odoo-bin db</code> : ce que chaque opération fait vraiment dans PostgreSQL et sur le disque,
+                    les droits qu'il faut au rôle, le filtre des bases et le mot de passe maître, sur un serveur 20.0.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau débutant · parcours <strong>Fondamentaux</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Les opérations</h4>
+                        <p>Créer, dupliquer, renommer, supprimer : la commande, la sortie réelle, et ce qui arrive au
+                            filestore et aux connexions ouvertes.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Qui voit quelle base</h4>
+                        <p>Propriétaire PostgreSQL, <code>dbfilter</code>, <code>%d</code>, <code>list_db</code> : comment
+                            Odoo choisit les bases qu'il montre, et ce que le filtre ne protège pas.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Ce qui change en 20</h4>
+                        <p>PostgreSQL 16, service <code>db</code> retiré de XML-RPC, <code>--db-system</code>, route de
+                            renommage : chaque écart vérifié contre la 19.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 Community installé (voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>), son fichier de configuration et un PostgreSQL 16
+                            ou plus.</li>
+                        <li>Un terminal avec <code>psql</code> et <code>curl</code>.</li>
+                        <li>Un serveur de développement, pas ta production : on y supprime des bases.</li>
+                    </ul>
+                </div>
+                <p>Tu es en Odoo 19 ? L'article <a href="/blog/developpement-odoo-2/gestion-bases-donnees-odoo-57">Gestion des
+                    bases de données Odoo 19</a> reste valable pour ta version. Celui-ci reprend le sujet pour Odoo 20, avec des
+                    sorties relevées sur un serveur 20.0 et les écarts avec la 19 en fin d'article.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Une instance Odoo peut servir plusieurs bases sur le même PostgreSQL : une par client, une de développement,
+                    une copie de la production pour tester. On les gère par deux portes, le gestionnaire web et la commande
+                    <code>odoo-bin db</code>, qui appellent le même code. Dans les exemples, <code>ma_base</code> est une copie de
+                    démonstration et <code>odoo.conf</code> le fichier de configuration du serveur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la gestion des bases dans Odoo 20. À gauche, trois portes d'entrée : le gestionnaire web /web/database/manager (créer, dupliquer, supprimer, sauvegarder, restaurer ; mot de passe maître admin_passwd haché en pbkdf2-sha512 ; coupé par list_db = False ; route /web/database/rename sans bouton, nouvelle en 20) ; la ligne de commande odoo-bin db (init, duplicate, rename, drop, dump, load ; aucun mot de passe maître, les droits du rôle PostgreSQL suffisent ; odoo-bin -d crée aussi une base absente) ; le service RPC db de XML-RPC et JSON-RPC, retiré en 20 (Invalid service name: db). Les deux premières appellent odoo/modules/db.py, qui était odoo/service/db.py : create contrôle le nom, crée la base en unicode, tri C, à partir de template0, avec l'extension pg_trgm puis installe les modules de base ; duplicate copie à partir de la base source, peut neutraliser, génère un nouvel uuid et un nouveau secret et copie le filestore ; rename et drop coupent d'abord les connexions ouvertes puis déplacent ou effacent le filestore. À droite : PostgreSQL 16 ou plus (minimum 16 ; le rôle CREATEDB suffit, l'utilisateur postgres est refusé au démarrage ; opérations globales par la base système --db-system, option nouvelle, défaut postgres ; une base Odoo est en UTF8, tri C, propriété du rôle) ; le filestore data_dir/filestore/nom de la base, qui suit la base quand Odoo la copie, la renomme ou la supprime, pas avec createdb ou dropdb ; quelles bases un visiteur voit : list_dbs (bases dont le rôle est propriétaire), puis dbfilter testé en début de nom avec %d et %h, ou la liste -d sans filtre, puis sélecteur, gestionnaire et choix de la base de chaque requête ; enfin ce que le filtre ne fait pas : il ne protège pas le gestionnaire, il ne limite pas les tâches planifiées."/>
+                    <figcaption>Les deux portes de la gestion des bases et le chemin d'une base jusqu'à la liste. En brun, ce qui
+                        diffère de la branche 19.0.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. ANATOMIE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Une base Odoo : une base PostgreSQL et un filestore</h2>
+                <p>Une base Odoo, c'est deux morceaux qui vont toujours ensemble : la base PostgreSQL (une table par modèle, plus
+                    la configuration : modules installés, vues, droits, paramètres) et le <strong>filestore</strong>, le dossier
+                    <code>&lt;data_dir&gt;/filestore/&lt;nom de la base&gt;/</code> où vivent les pièces jointes et les images.
+                    Toutes les opérations d'Odoo traitent les deux ; un <code>createdb</code> ou un <code>dropdb</code> lancé à la
+                    main ne touche que le premier.</p>
+                <p>Quand Odoo crée une base, il ne laisse pas PostgreSQL choisir : <code>CREATE DATABASE … ENCODING 'unicode'
+                    LC_COLLATE 'C' TEMPLATE template0</code> (<code>odoo/modules/db.py:352-358</code>), puis l'extension
+                    <code>pg_trgm</code> et un <code>GRANT CREATE ON SCHEMA public TO PUBLIC</code> (<code>:364</code>,
+                    <code>:382</code>). Sur une base fraîchement créée :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d postgres -Atc "select datname, pg_get_userbyid(datdba), pg_encoding_to_char(encoding), datcollate, datctype
+                        from pg_database where datname = 'ma_base_vierge'"
+ma_base_vierge|odoo|UTF8|C|fr_FR.UTF-8
+$ psql -d ma_base_vierge -Atc "select extname from pg_extension"
+plpgsql
+pg_trgm</code></pre>
+                <p>Le tri <code>C</code> est voulu (le commentaire du source parle d'index plus utiles), mais il se voit : les
+                    listes triées par nom suivent l'ordre des octets, majuscules d'abord, lettres accentuées à la fin. L'ORM
+                    n'ajoute aucune clause <code>COLLATE</code> à ses <code>ORDER BY</code>. Comparaison dans la même base :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base -c "SELECT string_agg(n, ' &lt; ' ORDER BY n) AS collation_base,
+                             string_agg(n, ' &lt; ' ORDER BY n COLLATE \"fr_FR\") AS collation_fr
+                      FROM unnest(ARRAY['zoé','Éric','abc','Zoé','émile']) AS n;"
+         collation_base         |          collation_fr
+--------------------------------+--------------------------------
+ Zoé &lt; abc &lt; zoé &lt; Éric &lt; émile | abc &lt; émile &lt; Éric &lt; zoé &lt; Zoé</code></pre>
+                <p>Le choix du modèle passe par l'option <code>--db-template</code> (défaut <code>template0</code>,
+                    <code>odoo/tools/config.py:429</code>) : avec un autre modèle, Odoo n'écrit plus <code>LC_COLLATE 'C'</code> et la
+                    base hérite du tri de ce modèle. Retiens surtout la règle inverse : une base que tu recrées à la main pour y
+                    charger un dump doit l'être avec les mêmes réglages (<code>createdb -T template0 -E UTF8 --lc-collate=C</code>),
+                    sinon le tri change sans prévenir.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE RÔLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le rôle PostgreSQL : <code>CREATEDB</code>, pas superutilisateur</h2>
+                <p>Odoo se connecte avec un seul rôle (<code>db_user</code>). Pour gérer des bases, ce rôle a besoin de créer des
+                    bases, pas d'être superutilisateur. Le serveur de démonstration tourne ainsi :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d postgres -c "\du odoo"
+     List of roles
+ Role name | Attributes
+-----------+------------
+ odoo      | Create DB</code></pre>
+                <p>Trois conséquences à connaître :</p>
+                <ul>
+                    <li><strong>Le rôle <code>postgres</code> est refusé.</strong> Le serveur s'arrête avant même de se connecter
+                        (<code>odoo/cli/server.py:37-44</code>) :
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -r postgres --stop-after-init
+Using the database user 'postgres' is a security risk, aborting.</code></pre></li>
+                    <li><strong>Odoo ne voit que les bases dont son rôle est propriétaire.</strong> La liste vient de
+                        <code>pg_database</code>, filtrée sur <code>datdba</code> = rôle courant, sans les modèles ni la base
+                        <code>postgres</code> (<code>odoo/modules/db.py:701-732</code>). Quand la liste vient de PostgreSQL (cas
+                        habituel, section 6), une base restaurée par un autre rôle n'y apparaît pas tant que tu n'as pas fait
+                        <code>ALTER DATABASE … OWNER TO odoo</code>.</li>
+                    <li><strong>Les opérations globales passent par une base système.</strong> Créer, renommer ou supprimer une
+                        base demande d'être connecté à une autre : Odoo 20 lit pour cela l'option <code>--db-system</code>
+                        (défaut <code>postgres</code>, <code>config.py:431</code>), nouvelle en 20 ; son aide cite aussi le bus et la
+                        maintenance. À régler si ton rôle n'a pas accès à la base <code>postgres</code>.</li>
+                </ul>
+                <p>Enfin, PostgreSQL lui-même : Odoo 20 demande la version 16 ou plus (<code>odoo/release.py:41</code>). Sur un
+                    serveur plus ancien, il démarre avec un simple avertissement (<code>odoo/sql_db.py:712-713</code>) : vérifie
+                    <code>select version()</code> avant de créer quoi que ce soit.</p>
+                <div class="pitfall-box">
+                    <h4><code>unaccent = True</code> sans superutilisateur : la base perd aussi <code>pg_trgm</code></h4>
+                    <p>L'option <code>unaccent</code> demande à Odoo d'activer l'extension du même nom à la création des bases, puis
+                        de rendre la fonction <code>unaccent()</code> immuable. Avec un rôle qui n'est pas superutilisateur, cette
+                        dernière étape échoue, et comme les trois ordres partagent la même transaction
+                        (<code>odoo/modules/db.py:360-377</code>), <strong>tout</strong> est annulé, <code>pg_trgm</code> compris.
+                        Le journal de création le dit une fois, puis plus rien :</p>
+<pre class="language-bash"><code class="language-bash">ERROR ? odoo.sql_db: bad query: b'ALTER FUNCTION unaccent(text) IMMUTABLE'
+ERROR: must be owner of function unaccent
+WARNING ? odoo.modules.db: Unable to create PostgreSQL extensions : must be owner of function unaccent</code></pre>
+                    <p>La base est utilisable, mais sans extension : les champs déclarés <code>index='trigram'</code> n'ont pas
+                        leur index, sans message. Après installation de Discussion sur deux bases,
+                        <code>ma_base_fr</code> créée avec <code>unaccent = True</code> et <code>ma_base_vierge</code> sans :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base_fr -Atc "select indexname from pg_indexes where tablename = 'mail_blacklist'"
+mail_blacklist_pkey
+mail_blacklist_unique_email
+$ psql -d ma_base_vierge -Atc "select indexname from pg_indexes where tablename = 'mail_blacklist'"
+mail_blacklist_pkey
+mail_blacklist_unique_email
+mail_blacklist__email_index</code></pre>
+                    <p>Le comportement est le même en 19 (bloc identique). Avec un rôle non superutilisateur, laisse
+                        <code>unaccent</code> à <code>False</code> et contrôle <code>pg_extension</code> après chaque création.
+                        Pour réparer une base touchée : <code>CREATE EXTENSION pg_trgm;</code> (le propriétaire de la base peut le
+                        faire lui-même), puis une mise à jour des modules concernés ; un simple redémarrage ne suffit pas. Relevé :
+                        après l'extension et <code>-u mail</code>, <code>mail_blacklist__email_index</code> apparaît.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CRÉER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Créer une base</h2>
+                <h3>En ligne de commande : <code>odoo-bin db init</code></h3>
+                <p>La sous-commande <code>db</code> est la version ligne de commande du gestionnaire. Elle n'a pas de mot de passe
+                    maître : elle se connecte avec le rôle du fichier de configuration, donc quiconque peut la lancer sur le
+                    serveur a déjà les droits. Ses six actions :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db --help
+…
+Command-line version of the database manager.
+
+Commands are all filestore-aware.
+
+positional arguments:
+  {init,load,dump,duplicate,rename,drop}
+    init                Create and initialize a database
+    load                Load a dump file.
+    dump                Create a dump with filestore.
+    duplicate           Duplicate a database including filestore.
+    rename              Rename a database including filestore.
+    drop                Delete a database including filestore</code></pre>
+                <p>Les options de connexion (<code>-c</code>, <code>-D</code>, <code>--db_host</code>…) se placent <strong>avant</strong>
+                    l'action. <code>init</code> accepte <code>--with-demo</code>, <code>--language</code> (défaut
+                    <code>en_US</code>), <code>--country</code>, <code>--username</code> et <code>--password</code> (défaut
+                    <code>admin</code> pour les deux : change-les dès qu'une base n'est plus jetable), et <code>--force</code>
+                    qui supprime d'abord une base du même nom.</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf init ma_base_fr --language fr_FR --country FR --password '…'
+INFO ? odoo.modules.db: Create database `ma_base_fr`.
+INFO ? odoo.modules.loading: Initializing database ma_base_fr
+INFO ma_base_fr odoo.modules.loading: Loading module base (1/1)
+…
+INFO ma_base_fr odoo.modules.loading: Loading module base_report_wkhtmltox (2/16)
+…</code></pre>
+                <p>Moins de dix secondes sur le serveur de démonstration : sans <code>--with-demo</code>, la base reçoit seulement
+                    <code>base</code> et les modules qui s'installent d'office avec lui (seize au total ici, dont
+                    <code>web</code>, <code>base_setup</code>, <code>bus</code>, <code>auth_totp</code>, <code>auth_passkey</code>,
+                    <code>rpc</code>, <code>api_doc</code>). La langue française est active, la société principale porte le pays
+                    demandé. Pour ajouter des applications, enchaîne avec <code>odoo-bin -c odoo.conf -d ma_base_fr -i sale
+                    --stop-after-init</code> ou <code>odoo-bin module install</code>.</p>
+                <p>Deux contrôles valent d'être connus. Le nom d'abord : lettres, chiffres, <code>_</code>, <code>-</code> et
+                    <code>.</code>, premier caractère alphanumérique, deux caractères au minimum (<code>DB_NAME_RE</code>, <code>odoo/modules/db.py:44</code>),
+                    vérifié dans la fonction de création elle-même, donc aussi en ligne de commande :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf init "ma_base test"
+…
+ValueError: Invalid db_name='ma_base test'</code></pre>
+                <p>L'autre, plus traître : le serveur crée lui-même toute base passée à <code>-d</code> qui n'existe pas
+                    (<code>odoo/cli/server.py:101-105</code>) et y installe <code>base</code>. Une faute de frappe dans
+                    <code>-d ma_bsae</code> ne donne pas d'erreur, elle donne une base vide de plus.</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base_fautedefrappe --stop-after-init
+INFO ma_base_fautedefrappe odoo.modules.loading: Initializing database ma_base_fautedefrappe
+INFO ma_base_fautedefrappe odoo.modules.loading: 1 modules loaded in 3.48s, 8630 queries (+8630 extra)
+INFO ma_base_fautedefrappe odoo.modules.loading: 16 modules loaded in 1.72s, 5321 queries (+5321 extra)</code></pre>
+
+                <h3>Depuis le gestionnaire web</h3>
+                <p>Le bouton <strong>Create Database</strong> du gestionnaire (section 7) ouvre le même formulaire qu'au premier
+                    lancement d'un serveur sans base : mot de passe maître, nom, identifiant et mot de passe de l'administrateur,
+                    téléphone, langue, pays, données de démonstration. Le bouton <strong>Duplicate</strong> d'une ligne demande le
+                    nouveau nom et propose la case <strong>Neutralize</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Deux fenêtres du gestionnaire de bases d'Odoo 20, en anglais. À gauche, Create Database : champs Master Password, Database Name, Email, Password, Phone Number, Language (English (US) par défaut), Country, case Demo Data, mention de l'envoi de données aux services en ligne d'Odoo avec un lien Privacy Policy, bouton Continue. À droite, Duplicate Database : Master Password, Database Name pré-rempli avec ma_base et non modifiable, New Name, case Neutralize, bouton Continue."/>
+                    <figcaption>Créer (à gauche) et dupliquer (à droite) depuis <code>/web/database/manager</code>. L'interface du
+                        gestionnaire n'est pas traduite.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. DUPLIQUER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Dupliquer une base</h2>
+                <p>Dupliquer, c'est le geste de tous les jours : une copie pour tester une mise à jour, une base de recette, une
+                    base de formation. Odoo fait un <code>CREATE DATABASE … TEMPLATE &lt;source&gt;</code> (la copie est faite par
+                    PostgreSQL lui-même, bien plus vite qu'un dump suivi d'une restauration), puis copie le filestore
+                    (<code>odoo/modules/db.py:467-508</code>). Avec <code>-n</code>, la copie est neutralisée avant de devenir
+                    visible :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf duplicate -n ma_base ma_base_copie
+INFO ? odoo.modules.db: Duplicate database `ma_base` to `ma_base_copie`.
+INFO ? odoo.modules.neutralize: Neutralization finished
+INFO ma_base_copie odoo.modules.loading: loading 69 modules...
+INFO ma_base_copie odoo.registry: Registry loaded in 0.948s</code></pre>
+                <p>Trois secondes pour une base de démonstration avec ses 564 fichiers de filestore. Ce qui distingue la copie de
+                    l'original :</p>
+                <table class="tmc">
+                    <thead><tr><th>Relevé</th><th><code>ma_base</code></th><th><code>ma_base_copie</code></th></tr></thead>
+                    <tbody>
+                        <tr><td><code>database.uuid</code></td><td><code>9473…</code></td><td><code>2f6a…</code> (nouveau)</td></tr>
+                        <tr><td><code>database.secret</code></td><td>valeur d'origine</td><td>nouvelle valeur</td></tr>
+                        <tr><td><code>database.create_date</code></td><td>date d'origine</td><td>date de la copie</td></tr>
+                        <tr><td><code>database.is_neutralized</code></td><td>absent</td><td><code>True</code></td></tr>
+                        <tr><td>Actions planifiées actives</td><td>21</td><td>1</td></tr>
+                        <tr><td>Serveurs de courriel sortant actifs</td><td>0</td><td>1 (le leurre de la neutralisation)</td></tr>
+                        <tr><td>Fichiers du filestore</td><td>564</td><td>564</td></tr>
+                    </tbody>
+                </table>
+                <p>Le nouvel identifiant n'est pas un détail : c'est lui qui distingue la copie de l'original auprès des services
+                    externes ; le secret, lui, sert notamment à signer les jetons anti-CSRF des formulaires
+                    (<code>odoo/http/requestlib.py:234</code>) : la copie ne partage pas ceux de l'original. Ce que la neutralisation coupe exactement, module par module, est détaillé dans
+                    <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 :
+                    db dump, load, neutralize</a>.</p>
+                <p>Si la cible existe déjà, la commande refuse sans rien toucher, et <code>-f</code> la supprimerait d'abord :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf duplicate ma_base ma_base_copie
+Target database ma_base_copie exists, aborting.
+
+	use `--force` to delete the existing database anyway.</code></pre>
+                <p>Attention à la source : pour que PostgreSQL accepte de la copier, personne ne doit y être connecté. Odoo coupe
+                    donc toutes les connexions ouvertes sur la base d'origine avant la copie (<code>_drop_conn</code>,
+                    <code>odoo/modules/db.py:487</code>). Sur une production en service, cela coupe les utilisateurs : dans ce cas,
+                    passe par une sauvegarde.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RENOMMER, SUPPRIMER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Renommer et supprimer</h2>
+                <p><code>rename</code> fait un <code>ALTER DATABASE … RENAME TO</code> puis déplace le dossier du filestore ;
+                    <code>drop</code> fait un <code>DROP DATABASE</code> puis efface le dossier
+                    (<code>odoo/modules/db.py:527-547</code>, <code>672-698</code>). Les deux commencent par couper les connexions
+                    ouvertes sur la base. Démonstration avec une session <code>psql</code> laissée ouverte pendant le renommage :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base_copie -c "select pg_sleep(20)" &amp;
+$ odoo-bin db -c odoo.conf rename ma_base_copie ma_base_recette
+INFO ? odoo.modules.db: RENAME DB: ma_base_copie -> ma_base_recette
+FATAL:  terminating connection due to administrator command
+…</code></pre>
+                <p>La ligne <code>FATAL</code> vient de la session <code>psql</code>, coupée par Odoo. Un serveur Odoo qui
+                    travaillait sur cette base perd de même ses connexions.</p>
+                <p>Supprimer une base qui n'existe pas ne donne pas un message propre mais une trace Python ; la dernière ligne
+                    suffit :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf drop ma_base_absente
+…
+psycopg2.errors.InvalidCatalogName: database "ma_base_absente" does not exist
+
+When trying to drop ma_base_absente</code></pre>
+                <p>Le gestionnaire web, lui, a un bouton <strong>Delete</strong> par base, mais <strong>aucun bouton de
+                    renommage</strong> : la route <code>/web/database/rename</code> existe en 20
+                    (<code>web/controllers/database.py:217</code>) sans que la page ne l'utilise. On l'appelle donc à la main, avec
+                    le mot de passe maître :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -w "%{http_code}\n" -d master_pwd='…' -d name=ma_base_recette -d new_name=ma_base_essai \
+    http://localhost:8069/web/database/rename
+303</code></pre>
+                <p>Préfère tout de même <code>odoo-bin db rename</code> : la route contrôle le format du nom de la base
+                    <em>source</em>, pas celui du nouveau nom. Un nouveau nom contenant une espace est accepté, la base est
+                    renommée et disparaît de la liste filtrée ; il faut ensuite la renommer de nouveau en ligne de commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. LISTER ET FILTRER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lister et filtrer les bases : <code>dbfilter</code>, <code>-d</code>, <code>list_db</code></h2>
+                <p>La liste que voit un visiteur (sélecteur de base, gestionnaire, choix de la base d'une requête sans session) se
+                    construit en deux temps (<code>odoo/http/router.py:70-121</code>) : les bases du rôle (section 2), puis un
+                    filtre. La route JSON <code>/web/database/list</code> renvoie le résultat ; on la questionne en faisant varier
+                    le filtre au démarrage du serveur.</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"call","params":{}}' \
+    http://localhost:8069/web/database/list</code></pre>
+                <table class="tmc">
+                    <thead><tr><th>Réglage du serveur</th><th>En-tête <code>Host</code></th><th>Bases listées</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>--db-filter='^ma_base'</code></td><td>indifférent</td><td><code>ma_base</code>,
+                            <code>ma_base_essai</code>, <code>ma_base_fr</code>, <code>ma_base_vierge</code></td></tr>
+                        <tr><td><code>--db-filter='^ma_base$'</code></td><td>indifférent</td><td><code>ma_base</code></td></tr>
+                        <tr><td rowspan="3"><code>--db-filter='^ma_base_%d$'</code></td><td><code>essai.exemple.com</code></td><td><code>ma_base_essai</code></td></tr>
+                        <tr><td><code>www.vierge.exemple.com:443</code></td><td><code>ma_base_vierge</code></td></tr>
+                        <tr><td><code>autre.exemple.com</code></td><td>aucune</td></tr>
+                        <tr><td>pas de filtre, <code>-d ma_base,ma_base_essai</code></td><td>indifférent</td><td><code>ma_base</code>,
+                            <code>ma_base_essai</code></td></tr>
+                        <tr><td><code>--no-database-list</code></td><td>indifférent</td><td>erreur <code>AccessDenied</code> :
+                            « Database management functions blocked, admin disabled database listing. »</td></tr>
+                    </tbody>
+                </table>
+                <p>À lire dans ce tableau :</p>
+                <ul>
+                    <li>Le filtre est une expression régulière testée <strong>en début de nom</strong> (<code>re.match</code>) :
+                        <code>^ma_base</code> laisse passer toutes les bases qui commencent ainsi. Termine par <code>$</code>
+                        dès que tu vises une base précise.</li>
+                    <li><code>%d</code> vaut le premier mot du nom d'hôte, après retrait du port et d'un <code>www.</code> initial ;
+                        <code>%h</code> vaut l'hôte entier, lui aussi sans port ni <code>www.</code>. C'est le réglage classique d'un serveur qui sert un client par
+                        sous-domaine (<code>dbfilter = ^%d$</code>).</li>
+                    <li>Sans filtre, <code>-d</code> (ou <code>db_name</code> dans le fichier) donne la liste exposée, séparée par
+                        des virgules. Avec un filtre, c'est le filtre qui décide.</li>
+                    <li><code>list_db = False</code> (ou <code>--no-database-list</code>) coupe la liste <em>et</em> le
+                        gestionnaire : la page affiche « The database manager has been disabled by the administrator » et un
+                        <code>POST /web/database/create</code> répond 403. Il faut alors une base désignée par <code>db_name</code>
+                        ou par le filtre.</li>
+                </ul>
+                <div class="pitfall-box">
+                    <h4>Le filtre choisit ce qu'on voit, pas ce qu'on peut détruire</h4>
+                    <p>Le <code>dbfilter</code> n'est pas une barrière de sécurité. Les actions du gestionnaire contrôlent le mot de
+                        passe maître, pas le filtre : serveur lancé avec <code>--db-filter='^ma_base$'</code>, un
+                        <code>POST /web/database/drop</code> sur <code>ma_base_essai</code>, absente de la liste, répond 303 et
+                        le journal écrit <code>DROP DB: ma_base_essai</code>. Le mot de passe maître donne la main sur
+                        <strong>toutes</strong> les bases du rôle. De même, sans <code>db_name</code>, les tâches planifiées
+                        tournent sur toutes ces bases, filtre ou pas (<code>odoo/service/server.py:112-114</code>).</p>
+                    <p>Pour isoler des clients sur un même PostgreSQL : un rôle par instance, et en production
+                        <code>list_db = False</code>. Le diagnostic d'un gestionnaire qui refuse d'agir est dans
+                        <a href="/blog/developpement-odoo-2/gestionnaire-bases-access-denied-odoo-382">Gestionnaire de bases Odoo 20 :
+                        Access Denied et mot de passe maître</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. GESTIONNAIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le gestionnaire <code>/web/database/manager</code> et le mot de passe maître</h2>
+                <p>Le gestionnaire web liste les bases filtrées, avec pour chacune <strong>Backup</strong>,
+                    <strong>Duplicate</strong> et <strong>Delete</strong>, et en bas <strong>Create Database</strong>,
+                    <strong>Restore Database</strong> et <strong>Set Master Password</strong>
+                    (<code>web/static/src/public/database_manager.qweb.html:58-79</code>). Une base créée par une autre version
+                    d'Odoo y porte une icône d'avertissement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Le gestionnaire de bases d'Odoo 20 : logo Odoo, puis quatre bases (ma_base, ma_base_essai, ma_base_fr, ma_base_vierge), chacune suivie de trois boutons Backup en bleu, Duplicate en gris et Delete en rouge ; sous la liste, trois boutons bleus Create Database, Restore Database et Set Master Password. Aucun bouton de renommage."/>
+                    <figcaption>Le gestionnaire sur un serveur filtré par <code>^ma_base</code> : quatre bases, aucun bouton pour
+                        renommer.</figcaption>
+                </figure>
+                <p>Chaque action (sauf le changement du mot de passe maître lui-même) vérifie d'abord que <code>list_db</code> est actif, puis le mot de passe maître,
+                    <code>admin_passwd</code> dans le fichier de configuration (<code>web/controllers/database.py:132-141</code>).
+                    Un mauvais mot de passe donne une page en 403 qui dit pourquoi :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -d master_pwd=faux -d master_pwd_new=x http://localhost:8069/web/database/change_password | grep -o 'Could not[^&lt;]*'
+Could not change_password database. Database management function blocked, bad admin password.</code></pre>
+                <p>Trois règles sur ce mot de passe :</p>
+                <ul>
+                    <li>Sa valeur par défaut est <code>admin</code> (<code>odoo/tools/config.py:230</code>). Tant qu'il vaut
+                        <code>admin</code>, le gestionnaire affiche un avertissement et le premier mot de passe saisi dans une
+                        action devient le nouveau mot de passe maître (<code>database.py:132-139</code>).</li>
+                    <li>Il est stocké haché, en <code>pbkdf2_sha512</code> à 600 000 tours (<code>config.py:23-25</code>). Une valeur
+                        en clair dans le fichier reste acceptée. Après <strong>Set Master Password</strong>, la ligne devient :
+<pre class="language-ini"><code class="language-ini">admin_passwd = $pbkdf2-sha512$600000$…</code></pre></li>
+                    <li>Perdu, il ne se retrouve pas : on remplace la ligne par une nouvelle valeur et on redémarre. Pour le mot de
+                        passe d'un utilisateur, c'est un autre sujet :
+                        <a href="/blog/developpement-odoo-2/mot-de-passe-admin-oublie-odoo-374">Odoo 20 mot de passe oublié :
+                        réinitialiser l'admin en shell ou SQL</a>.</li>
+                </ul>
+                <div class="pitfall-box">
+                    <h4>« Set Master Password » réécrit ton fichier de configuration</h4>
+                    <p>Pour enregistrer le nouveau mot de passe, Odoo relit le fichier, change la ligne et réécrit toutes les options
+                        (<code>odoo/tools/config.py:1031-1039</code>). Relevé sur un fichier qui commençait par un commentaire :
+                        après le changement, <strong>les commentaires ont disparu</strong> et une section <code>[colors]</code> de
+                        huit lignes a été ajoutée à la fin. Et si le compte qui fait tourner Odoo ne peut pas écrire ce fichier, la
+                        page revient sans erreur (seule la sortie d'erreur du serveur le signale) alors que le nouveau mot de passe ne vit qu'en mémoire, jusqu'au prochain
+                        redémarrage. Si ton <code>odoo.conf</code> est versionné ou commenté, change le mot de passe dans le fichier, à la main,
+                        et garde le gestionnaire pour le reste.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. NEUTRALISER, SAUVEGARDER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Neutraliser, sauvegarder, restaurer : le survol</h2>
+                <p>Trois opérations complètent la gestion des bases ; on ne fait ici que les situer.</p>
+                <ul>
+                    <li><strong>Neutraliser</strong> une copie (tâches planifiées, courriels, paiements) : case
+                        <strong>Neutralize</strong> du gestionnaire, option <code>-n</code> de <code>db duplicate</code> et de
+                        <code>db load</code>, ou <code>odoo-bin neutralize</code> sur une base existante. Détail et vérifications
+                        dans <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test
+                        Odoo 20</a>.</li>
+                    <li><strong>Sauvegarder</strong> : <code>odoo-bin db dump ma_base ma_base.zip</code> ou le bouton
+                        <strong>Backup</strong> produisent un zip (dump SQL, manifeste, filestore). Un <code>pg_dump</code> seul
+                        oublie le filestore.</li>
+                    <li><strong>Restaurer</strong> : <code>odoo-bin db load</code> ou <strong>Restore Database</strong>, sous un
+                        nouveau nom de préférence.</li>
+                </ul>
+                <p>La sauvegarde planifiée, sa rotation et la restauration complète auront leur propre article dans cette série,
+                    à venir.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. 19 → 20 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Ce qui change entre Odoo 19 et Odoo 20</h2>
+                <p>Comparaison du source 20.0 avec la branche 19.0 publique, et des appels réels sur le serveur 20 :</p>
+                <table class="tmc">
+                    <thead><tr><th>Sujet</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>PostgreSQL minimum</td><td>13</td><td>16 (<code>release.py:41</code>)</td></tr>
+                        <tr><td>Service <code>db</code> en XML-RPC / JSON-RPC (<code>list</code>, <code>create_database</code>,
+                            <code>dump</code>…)</td><td>disponible</td><td>retiré : <code>ValueError: Invalid service name: db</code>
+                            (<code>http/router.py:136-141</code>)</td></tr>
+                        <tr><td>Code des opérations</td><td><code>odoo/service/db.py</code> (<code>exp_*</code>)</td>
+                            <td><code>odoo/modules/db.py</code> (<code>create</code>, <code>duplicate</code>, <code>rename</code>,
+                            <code>drop</code>, <code>dump</code>, <code>restore</code>)</td></tr>
+                        <tr><td>Base système</td><td><code>postgres</code> en dur</td><td>option <code>--db-system</code>, défaut
+                            <code>postgres</code></td></tr>
+                        <tr><td>Renommer depuis le web</td><td>pas de route</td><td>route <code>/web/database/rename</code>, sans
+                            bouton</td></tr>
+                        <tr><td>Contrôle du nom de base</td><td>dans le contrôleur web seulement</td><td>aussi dans
+                            <code>create</code> et <code>duplicate</code> : la ligne de commande refuse un nom invalide</td></tr>
+                        <tr><td>Refus du gestionnaire</td><td>200, « Access Denied »</td><td>403, « Could not &lt;action&gt;
+                            database. » suivi de la raison</td></tr>
+                        <tr><td>Inchangé</td><td colspan="2">les six actions de <code>odoo-bin db</code> ; <code>dbfilter</code>
+                            (<code>%d</code>, <code>%h</code>, <code>re.match</code>) ; la liste par propriétaire ; tri
+                            <code>C</code> et <code>template0</code> ; mot de passe maître <code>pbkdf2_sha512</code> ; refus du rôle
+                            <code>postgres</code> ; le piège <code>unaccent</code></td></tr>
+                    </tbody>
+                </table>
+                <p>La ligne qui casse des scripts : un outil d'administration qui listait ou créait des bases par
+                    <code>/xmlrpc/2/db</code> échoue en 20.</p>
+<pre class="language-python"><code class="language-python">>>> import xmlrpc.client
+>>> xmlrpc.client.ServerProxy("http://localhost:8069/xmlrpc/2/db").list()
+xmlrpc.client.Fault: &lt;Fault 1: 'Traceback (most recent call last):\n … ValueError: Invalid service name: db\n'&gt;</code></pre>
+                <p>Le remplacement : <code>odoo-bin db</code> sur le serveur, ou la route <code>/web/database/list</code> pour
+                    lire la liste. Les autres changements techniques de la version sont rassemblés dans
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer une base</td><td><code>odoo-bin db -c odoo.conf init ma_base --language fr_FR --country FR</code></td></tr>
+                        <tr><td>Copier une base de test</td><td><code>odoo-bin db -c odoo.conf duplicate -n ma_base ma_base_copie</code></td></tr>
+                        <tr><td>Renommer</td><td><code>odoo-bin db -c odoo.conf rename ma_base_copie ma_base_recette</code></td></tr>
+                        <tr><td>Supprimer</td><td><code>odoo-bin db -c odoo.conf drop ma_base_recette</code></td></tr>
+                        <tr><td>Bases visibles</td><td><code>POST /web/database/list</code> (JSON) ; règle :
+                            <code>dbfilter</code>, sinon <code>-d</code> / <code>db_name</code></td></tr>
+                        <tr><td>Un client par sous-domaine</td><td><code>dbfilter = ^%d$</code></td></tr>
+                        <tr><td>Couper le gestionnaire</td><td><code>list_db = False</code></td></tr>
+                        <tr><td>Mot de passe maître</td><td><code>admin_passwd</code>, haché ou en clair, jamais <code>admin</code></td></tr>
+                        <tr><td>Droits du rôle</td><td><code>CREATEDB</code>, propriétaire des bases, jamais <code>postgres</code></td></tr>
+                        <tr><td>Recréer une base à la main</td><td><code>createdb -T template0 -E UTF8 --lc-collate=C</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une base Odoo = une base PostgreSQL + un filestore : passe par Odoo (gestionnaire ou
+                        <code>odoo-bin db</code>) pour que les deux suivent.</li>
+                    <li>Le rôle d'Odoo a besoin de <code>CREATEDB</code> et doit être propriétaire de ses bases ; Odoo ne voit
+                        pas les autres.</li>
+                    <li>Dupliquer, renommer et supprimer coupent les connexions ouvertes sur la base concernée, la source
+                        comprise pour une duplication.</li>
+                    <li><code>dbfilter</code> filtre en début de nom et ne protège rien : la sécurité, c'est
+                        <code>list_db = False</code>, un mot de passe maître solide et un rôle par instance.</li>
+                    <li>En 20, le service <code>db</code> de XML-RPC n'existe plus et PostgreSQL 16 est le minimum.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes et appels exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community (PostgreSQL 16,
+                    rôle de connexion non superutilisateur), copies jetables d'une base de démonstration. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 :
+                        <a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/db.py" target="_blank" rel="noopener"><code>odoo/modules/db.py</code></a> ;
+                        <code>odoo/cli/db.py</code>, <code>odoo/cli/server.py</code> ; <code>odoo/tools/config.py</code> ;
+                        <code>odoo/http/router.py</code> ; <code>odoo/release.py</code>, <code>odoo/sql_db.py</code> ;
+                        <code>addons/web/controllers/database.py</code>,
+                        <code>addons/web/static/src/public/database_manager.qweb.html</code> ; <code>odoo/service/server.py</code> ;
+                        <code>odoo/orm/registry.py</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>odoo/release.py</code> (PostgreSQL 13),
+                        <code>odoo/http.py</code> (dispatchers <code>common</code>, <code>db</code>, <code>object</code>),
+                        <code>odoo/service/db.py</code>, <code>odoo/tools/config.py</code>, <code>odoo/cli/db.py</code>,
+                        <code>addons/web/controllers/database.py</code>.</li>
+                    <li>Documentation PostgreSQL : <a href="https://www.postgresql.org/docs/16/manage-ag-templatedbs.html" target="_blank" rel="noopener">Template Databases</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</a></h5>
+                            <p class="small text-muted mb-0">La suite naturelle : une copie de production sûre, vérifiée module par module.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/gestionnaire-bases-access-denied-odoo-382">Gestionnaire de bases Odoo 20 : Access Denied et mot de passe maître</a></h5>
+                            <p class="small text-muted mb-0">Quand le gestionnaire refuse : lire la raison, rallumer <code>list_db</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a></h5>
+                            <p class="small text-muted mb-0">Les autres sous-commandes de <code>odoo-bin</code>, option par option.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
