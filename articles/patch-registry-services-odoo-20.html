@@ -1,0 +1,782 @@
+<!--
+Article — Patch, registres et services : étendre le JS d'Odoo 20 sans le casser
+Série « Le front OWL 3 en Odoo 20 » (59), étape 2 ; lot T2 (T2.3 du plan vague 3 technique)
+Précédent dans la série : « Un composant OWL 3 de A à Z en Odoo 20 » (post 396, brouillon au dépôt de celui-ci :
+lien non posé dans le corps ; à ajouter en carte « À lire aussi » à la mise en ligne de 396).
+Date : 2026-11-10
+Slug : patch-registry-services-odoo-20
+Mot-clé cible : odoo javascript patch, odoo registry systray, odoo service owl
+Catégorie : Développement Odoo
+Tags : intermediaire, web-ui, guide, community
+Temps de lecture : ~13 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, module oski_owl_recents 20.0.1.0.0 installé
+sans WARNING ; serveur de travail en boucle locale, dbfilter limité à la copie, crons coupés ; navigateur Chromium par Playwright) :
+- Écran : fiches Azure Interior (16), Gemini Furniture (11), Wood Corner (9) ouvertes → systray « 3 », menu Wood Corner, Gemini Furniture,
+  Azure Interior ; localStorage oski_owl_recents.2 ; clic sur une ligne → fiche ouverte ; menu utilisateur « Vider les derniers consultés »
+  → compteur et entrée disparus, valeur « [] ».
+- Hoot : /web/tests?debug=assets&filter="@oski_owl_recents" → « Passed 5 tests (17 assertions) ».
+- Sonde Hoot temporaire (retirée) : service format 19 {dependencies, start} démarré, deps notification + action reçues, useService OK ;
+  useService("oski_inexistant") → « Service oski_inexistant is not available » ; Plugin absent de services → « Unknown plugin "Orphelin" » ;
+  Plugin absent de services mais démarré par un pont registry → monté sans erreur ; user_menuitems show: () => false affiché, hide: true masqué ;
+  clé systray en double → « Cannot add key "oski_owl_recents.systray" in the "systray" registry: it already exists ».
+- Contre-épreuves à l'écran : import @web/webclient/actions/action_service dans recents_plugin.js → 4 fichiers du module non chargés, systray absent,
+  aucune trace hors debug, bandeau rouge en debug ; super.setup() commenté → « Oups ! » TypeError … 'size' of 'this.ui' sur res.partner,
+  sale.order et product.template ; setup: () => { super.setup() } → pageerror « 'super' keyword unexpected here », page blanche.
+- Source 20.0 : core/utils/patch.js (72-75, 118-136 ; identique à 19.0), core/services.js 7-10, core/legacy_service_starter.js 1-4,
+  core/utils/hooks.js 160, core/registry.js 15 et 101, webclient/user_menu/user_menu.js 34 (19.0 : filtre show l.30),
+  webclient/navbar/navbar.js 146-154, views/form/form_controller.js 405 et 426, model/relational_model/relational_model.js 233,
+  module_loader.js 190-205, lib/owl/owl.js 1748-1756, mail/static/src/chatter/web/form_controller.js 16-19.
+Captures : content/blog/screenshots/patch-registry-services-odoo-20/ (01 schéma, 02 systray, 03 menu utilisateur, 04 patch sans super
+— hôte remplacé par localhost:8069, 05 Hoot).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Patch, registres et services : étendre le JS d'Odoo 20 sans le casser</h1>
+                <p class="lead mt-3 text-white">Un module qui retient les derniers enregistrements ouverts et les propose dans la
+                    barre du haut. Pour y arriver, trois outils du client web : un service maison, un <code>patch()</code> du
+                    formulaire natif et deux registres. Avec cinq tests Hoot, et ce qui se passe quand on s'y prend mal.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Web et interface</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Partager</h4>
+                        <p>Un service écrit à la manière d'Odoo 20 : une classe <code>Plugin</code>, ses dépendances, son état,
+                            et le pont qui le rend accessible par <code>useService</code>.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Modifier</h4>
+                        <p><code>patch()</code> sur un composant natif, l'appel à <code>super</code>, l'ordre des patchs et leur
+                            retrait.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Brancher</h4>
+                        <p>Les registres <code>systray</code> et <code>user_menuitems</code>, et l'écart avec la 19 qui ne lève
+                            aucune erreur (<code>show</code> ignoré).</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community. Le module ne dépend que de <code>web</code>.</li>
+                        <li>Connaître un composant OWL 3 : <code>useProps</code>, <code>proxy</code>, gabarit en <code>this.</code>
+                            (voir <a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">le badge de retard, un
+                            widget OWL 3</a>).</li>
+                        <li>Savoir installer un module et ouvrir le client en <code>?debug=1</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un composant OWL sait afficher un écran. Mais beaucoup de besoins ne demandent pas d'écran nouveau : ajouter une
+                    icône dans la barre du haut, une entrée dans le menu de l'utilisateur, un comportement à toutes les vues
+                    formulaire. Pour cela, le client web d'Odoo offre trois outils :</p>
+                <ul>
+                    <li>un <strong>service</strong> porte l'état ou le comportement partagé par plusieurs composants ;</li>
+                    <li>un <strong>registre</strong> branche ton code là où le client web l'a prévu : on ajoute une clé, sans
+                        toucher au code d'Odoo. C'est toujours le premier choix ;</li>
+                    <li>un <strong>patch</strong> modifie une classe existante quand rien n'est prévu, et doit le faire sans
+                        casser ce qu'elle faisait.</li>
+                </ul>
+                <p>L'exemple les réunit. À chaque ouverture d'un formulaire, le formulaire patché signale l'enregistrement au
+                    service. Le service garde les huit derniers, par utilisateur. Une icône du systray les liste, et une entrée du
+                    menu utilisateur vide la liste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en trois bandes. 1 Le service RecentsPlugin, un état partagé démarré une fois pour tout le client web : déclarer class RecentsPlugin extends Plugin, dépendre action = usePlugin(ActionPlugin), partager items = proxy([]) lu par tous les composants, démarrer services.add(RecentsPlugin) plus un pont oski_recents pour useService. 2 Le patch de FormController, toutes les vues formulaire sans copier leur code : cibler patch(FormController.prototype), compléter setup() avec super.setup(...arguments) puis this.recents = usePlugin, brancher async onRootLoaded vers this.recents.visit, empiler : patch A puis patch B, B s'exécute d'abord, unpatch réapplique les autres. 3 Les registres systray et user_menuitems : systray add(clé, Component, sequence 5), menu utilisateur add(clé, fonction) appelée dans la portée du menu, masquer par hide true car show n'est plus lu en 20, clé en double : Cannot add key it already exists sauf force true"/>
+                    <figcaption>Les trois outils du module « Derniers consultés » et la façon dont ils s'appellent.</figcaption>
+                </figure>
+                <p>Le module tient en huit fichiers :</p>
+<pre class="language-bash"><code class="language-bash">oski_owl_recents/
+├── __init__.py                       # vide : aucun modèle Python
+├── __manifest__.py                   # dépend de web, déclare les assets
+├── static/src/
+│   ├── recents_plugin.js             # le service
+│   ├── form_controller_patch.js      # le patch du formulaire
+│   ├── recents_systray.js / .xml     # l'icône de la barre du haut
+│   └── user_menu_item.js             # l'entrée du menu utilisateur
+└── static/tests/recents.test.js      # cinq tests Hoot</code></pre>
+                <p>Le manifeste ne déclare aucune donnée : tout se passe dans les assets.</p>
+<pre class="language-python"><code class="language-python">{
+    'name': "Derniers consultés (démo patch, registres, services OWL 3)",
+    'summary': "Étendre le client web d'Odoo 20 sans le casser : un service, un patch du formulaire, "
+               "une entrée du systray et du menu utilisateur",
+    'description': """
+Garde la liste des derniers enregistrements ouverts en formulaire et les propose
+dans la barre du haut. Module d'exemple du blog OdooSkills.
+    """,
+    'version': '20.0.1.0.0',
+    'category': 'Hidden',
+    'author': "OdooSkills",
+    'website': "https://odooskills.com",
+    'license': 'LGPL-3',
+    'depends': ['web'],
+    'assets': {
+        'web.assets_backend': [
+            'oski_owl_recents/static/src/**/*',
+        ],
+        'web.assets_unit_tests': [
+            'oski_owl_recents/static/tests/**/*',
+        ],
+    },
+}</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE SERVICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le service : une classe <code>Plugin</code></h2>
+                <p>Un service est un objet unique, créé au démarrage du client web et partagé par tous les composants. En Odoo 20,
+                    on l'écrit comme une classe qui étend <code>Plugin</code> (fourni par OWL 3), puis on l'ajoute à la ressource
+                    <code>services</code> du cœur :</p>
+<pre class="language-javascript"><code class="language-javascript">import { Plugin, proxy, usePlugin } from "@odoo/owl";
+import { browser } from "@web/core/browser/browser";
+import { registry } from "@web/core/registry";
+import { services } from "@web/core/services";
+import { user } from "@web/core/user";
+import { ActionPlugin } from "@web/webclient/actions/action_plugin";
+
+export const MAX_RECENTS = 8;
+
+export function storageKey() {
+    return `oski_owl_recents.${user.userId}`;
+}
+
+/** Service : les derniers enregistrements ouverts en formulaire, par utilisateur. */
+export class RecentsPlugin extends Plugin {
+    // dépendance : un autre service, déclaré comme un champ
+    action = usePlugin(ActionPlugin);
+    // état partagé par tous les composants qui utilisent le service
+    items = proxy([]);
+
+    setup() {
+        try {
+            this.items.push(...(JSON.parse(browser.localStorage.getItem(storageKey())) || []));
+        } catch {
+            // valeur illisible : on repart d'une liste vide
+        }
+    }
+
+    visit({ resModel, resId, displayName }) {
+        const index = this.items.findIndex((i) =&gt; i.resModel === resModel &amp;&amp; i.resId === resId);
+        if (index &gt;= 0) {
+            this.items.splice(index, 1);
+        }
+        this.items.unshift({ resModel, resId, displayName });
+        this.items.splice(MAX_RECENTS);
+        this.save();
+    }
+
+    open(item) {
+        return this.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: item.resModel,
+            res_id: item.resId,
+            views: [[false, "form"]],
+        });
+    }
+
+    clear() {
+        this.items.splice(0);
+        this.save();
+    }
+
+    save() {
+        browser.localStorage.setItem(storageKey(), JSON.stringify(this.items));
+    }
+}
+
+// 1. le service lui-même : démarré par le client web avec les autres
+services.add(RecentsPlugin);
+
+// 2. un pont facultatif, pour le code qui appelle encore useService("oski_recents")
+registry.category("services").add("oski_recents", {
+    start() {
+        return usePlugin(RecentsPlugin);
+    },
+});</code></pre>
+                <p>Les points à retenir :</p>
+                <ul>
+                    <li><strong>Les dépendances sont des champs.</strong> <code>action = usePlugin(ActionPlugin)</code> demande le
+                        gestionnaire d'actions. Le service n'a ni liste <code>dependencies</code> ni fonction <code>start</code> :
+                        OWL démarre ce dont il a besoin.</li>
+                    <li><strong>L'état est réactif.</strong> <code>items</code> est un <code>proxy</code>. Un composant qui lit
+                        <code>this.recents.items</code> dans son gabarit se redessine quand la liste change, comme pour son propre
+                        état.</li>
+                    <li><strong><code>services.add(RecentsPlugin)</code> inscrit le service</strong> : le client web le démarre avec ceux du
+                        cœur. La ressource n'accepte que des classes <code>Plugin</code> (<code>core/services.js</code>, lignes 7 à 10).</li>
+                    <li><strong>Le pont <code>registry.category("services")</code> est facultatif.</strong> Il permet d'écrire
+                        <code>useService("oski_recents")</code>. Le cœur garde ce pont pour ses propres services convertis, avec la
+                        mention « temporary » (<code>notification_plugin.js</code>, <code>action_plugin.js</code>). Un test le
+                        vérifie plus bas : il rend la même instance que <code>usePlugin(RecentsPlugin)</code>.</li>
+                </ul>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>En 19, un service s'écrivait <code>registry.category("services").add("nom", { dependencies: […],
+                        start(env, deps) { … } })</code>. Cette forme démarre encore en 20 : un service d'essai déclaré ainsi a reçu
+                        <code>notification</code> et <code>action</code>, et <code>useService</code> l'a rendu. Le cœur la fait
+                        tourner par <code>legacy_service_starter.js</code>, dont l'en-tête dit « temporary - to remove when all
+                        service are converted ». Ce qui ne passe plus, c'est son contenu habituel : <code>reactive</code> n'est plus
+                        exporté par OWL 3 (<code>undefined</code> à l'import). Pour un service neuf, écris une classe
+                        <code>Plugin</code>.</p>
+                    <p>Deux erreurs à reconnaître. <code>useService("nom")</code> sur un nom inconnu lève <em>Service nom is not
+                        available</em> (<code>core/utils/hooks.js</code>, ligne 160). Un <code>Plugin</code> oublié dans
+                        <code>services.add</code> et demandé par un composant lève <em>Unknown plugin "Orphelin"</em>
+                        (<code>owl.js</code>, ligne 1755) : l'identifiant d'un plugin est le nom de sa classe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE PATCH ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le patch : compléter le formulaire natif</h2>
+                <p>Aucun registre ne permet d'être prévenu qu'un formulaire vient de charger son enregistrement. Il faut donc
+                    modifier <code>FormController</code>, la classe qui pilote toutes les vues formulaire. On ne copie pas la
+                    classe, on la <strong>patche</strong> :</p>
+<pre class="language-javascript"><code class="language-javascript">import { usePlugin } from "@odoo/owl";
+import { patch } from "@web/core/utils/patch";
+import { FormController } from "@web/views/form/form_controller";
+import { RecentsPlugin } from "./recents_plugin";
+
+patch(FormController.prototype, {
+    setup() {
+        super.setup(...arguments);
+        this.recents = usePlugin(RecentsPlugin);
+    },
+
+    async onRootLoaded() {
+        await super.onRootLoaded(...arguments);
+        const root = this.model.root;
+        if (root.resId &amp;&amp; !this.env.inDialog) {
+            this.recents.visit({
+                resModel: root.resModel,
+                resId: root.resId,
+                displayName: this.displayName(),
+            });
+        }
+    },
+});</code></pre>
+                <ul>
+                    <li><strong>On patche le <code>prototype</code>.</strong> Les méthodes d'une classe vivent sur son prototype ;
+                        patcher <code>FormController</code> lui-même ne toucherait que ses propriétés statiques.</li>
+                    <li><strong><code>super</code> appelle le code d'avant.</strong> <code>patch()</code> place l'ancienne version
+                        derrière la nouvelle (<code>web/static/src/core/utils/patch.js</code>), si bien que
+                        <code>super.setup(...arguments)</code> exécute le <code>setup</code> d'origine, ou celui d'un autre module
+                        qui l'aurait patché avant toi. Dans le cœur Community, <code>mail</code> patche déjà ce même
+                        <code>setup</code>.</li>
+                    <li><strong>On choisit le bon crochet.</strong> <code>onRootLoaded</code> est appelé par le modèle après chaque
+                        chargement de l'enregistrement principal, à l'ouverture comme avec les flèches de pagination
+                        (<code>model/relational_model/relational_model.js</code>, ligne 233). Le formulaire s'en sert déjà pour
+                        afficher le nom de l'enregistrement dans le fil d'Ariane.</li>
+                    <li><strong>On écarte ce qui ne doit pas compter</strong> : un enregistrement pas encore créé (pas de
+                        <code>resId</code>) et un formulaire ouvert dans une fenêtre (<code>this.env.inDialog</code>).</li>
+                </ul>
+                <div class="pitfall-box">
+                    <h4>Oublier <code>super</code> casse tous les formulaires</h4>
+                    <p>Pour l'essai, on a mis en commentaire la ligne <code>super.setup(...arguments)</code>. Le <code>setup</code>
+                        d'origine ne s'exécute plus, le formulaire n'a plus ses services, et toute fiche s'ouvre sur une fenêtre
+                        « Oups ! » : contacts, devis, articles… pas seulement ceux que le module vise.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Oups ! d'Odoo 20, détails techniques ouverts : Erreur client Odoo, UncaughtPromiseError, TypeError Cannot destructure property size of this.ui as it is undefined, at get className, at FormController.template_web_FormView"/>
+                        <figcaption>Sans <code>super.setup()</code>, <code>this.ui</code> n'existe pas et le gabarit du formulaire
+                            plante au premier rendu.</figcaption>
+                    </figure>
+                    <p>Autre erreur fréquente : écrire la méthode en fonction fléchée, <code>setup: () =&gt; { super.setup(); }</code>.
+                        Le navigateur refuse le fichier (<em>'super' keyword unexpected here</em>) et, comme tous les fichiers
+                        JavaScript sont regroupés dans un même bundle, une erreur de syntaxe en bloque la lecture et <strong>le client web entier reste une page blanche</strong>. Écris
+                        toujours <code>setup() { … }</code>.</p>
+                </div>
+                <h3>Plusieurs patchs sur la même méthode</h3>
+                <p><code>patch()</code> rend une fonction qui retire le patch. Le dernier test du module montre comment les patchs
+                    s'empilent, sur un objet simple :</p>
+<pre class="language-javascript"><code class="language-javascript">test("patch : ordre d'application et dépatch", () =&gt; {
+    const salut = {
+        dire() {
+            return "original";
+        },
+    };
+    const unpatchA = patch(salut, {
+        dire() {
+            return `A(${super.dire()})`;
+        },
+    });
+    const unpatchB = patch(salut, {
+        dire() {
+            return `B(${super.dire()})`;
+        },
+    });
+    expect(salut.dire()).toBe("B(A(original))"); // le dernier patch appliqué s'exécute en premier
+
+    unpatchA(); // retire A, réapplique B
+    expect(salut.dire()).toBe("B(original)");
+    unpatchB();
+    expect(salut.dire()).toBe("original");
+
+    expect(() =&gt; patch(salut, "mon_patch", {})).toThrow(/Second argument is not the patch name anymore/);
+});</code></pre>
+                <ul>
+                    <li>Le <strong>dernier patch appliqué s'exécute en premier</strong> ; chaque <code>super</code> descend d'un
+                        cran.</li>
+                    <li>Retirer un patch du milieu (<code>unpatchA()</code>) remet l'original puis <strong>réapplique les autres
+                        patchs</strong> (<code>patch.js</code>, lignes 118 à 136) : B reste en place.</li>
+                    <li>L'ancienne signature avec un nom, <code>patch(obj, "nom", {…})</code>, lève <em>Patch "nom": Second argument
+                        is not the patch name anymore</em>.</li>
+                </ul>
+                <p>Le code de <code>patch.js</code> est identique en 19.0 et en 20.0 : un patch écrit en 19 se porte tel quel, à
+                    condition que ce qu'il appelle existe encore (voir la section 4).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LES REGISTRES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les registres : le systray et le menu utilisateur</h2>
+                <p>Un registre est une liste de clés que le client web parcourt à un endroit précis. La barre du haut lit
+                    <code>systray</code> (la zone d'icônes à droite), le menu de l'avatar lit <code>user_menuitems</code>, les vues lisent <code>fields</code>,
+                    les actions client <code>actions</code>. Ajouter une clé suffit : aucun patch n'est nécessaire.</p>
+                <h3>Une icône dans le systray</h3>
+<pre class="language-javascript"><code class="language-javascript">import { Component, usePlugin } from "@odoo/owl";
+import { Dropdown } from "@web/core/dropdown/dropdown";
+import { DropdownItem } from "@web/core/dropdown/dropdown_item";
+import { registry } from "@web/core/registry";
+import { RecentsPlugin } from "./recents_plugin";
+
+export class RecentsSystray extends Component {
+    static template = "oski_owl_recents.RecentsSystray";
+    static components = { Dropdown, DropdownItem };
+
+    recents = usePlugin(RecentsPlugin);
+}
+
+registry.category("systray").add("oski_owl_recents.systray", { Component: RecentsSystray }, { sequence: 5 });</code></pre>
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;templates xml:space="preserve"&gt;
+
+    &lt;t t-name="oski_owl_recents.RecentsSystray"&gt;
+        &lt;Dropdown position="'bottom-end'" menuClass="'o_recents_menu'"&gt;
+            &lt;button type="button" class="o_recents_systray o_nav_entry" title="Derniers consultés"&gt;
+                &lt;i class="oi" data-icon="history"/&gt;
+                &lt;span t-if="this.recents.items.length" class="o_recents_count badge rounded-pill"
+                      t-out="this.recents.items.length"/&gt;
+            &lt;/button&gt;
+            &lt;t t-set-slot="content"&gt;
+                &lt;div class="dropdown-header"&gt;Derniers consultés&lt;/div&gt;
+                &lt;t t-if="this.recents.items.length"&gt;
+                    &lt;t t-foreach="this.recents.items" t-as="item" t-key="item.resModel + ',' + item.resId"&gt;
+                        &lt;DropdownItem class="'o_recents_item'" onSelected="() =&gt; this.recents.open(item)"&gt;
+                            &lt;span t-out="item.displayName"/&gt;
+                            &lt;small class="text-muted ms-2" t-out="item.resModel"/&gt;
+                        &lt;/DropdownItem&gt;
+                    &lt;/t&gt;
+                &lt;/t&gt;
+                &lt;div t-else="" class="o_recents_empty dropdown-item-text text-muted"&gt;Aucun enregistrement ouvert.&lt;/div&gt;
+            &lt;/t&gt;
+        &lt;/Dropdown&gt;
+    &lt;/t&gt;
+
+&lt;/templates&gt;</code></pre>
+                <ul>
+                    <li>L'entrée du registre est un objet <code>{ Component }</code>. La <code>sequence</code> place l'icône : la
+                        barre affiche les entrées dans l'ordre inverse de leur séquence (<code>webclient/navbar/navbar.js</code>),
+                        le menu de l'avatar (séquence 0) reste donc tout à droite.</li>
+                    <li>Le composant demande le service par <code>usePlugin(RecentsPlugin)</code> et lit
+                        <code>this.recents.items</code> dans son gabarit : le compteur suit la liste sans rien de plus.</li>
+                    <li>Le menu déroulant est le composant <code>Dropdown</code> du cœur : le bouton en contenu par défaut, la
+                        liste dans le slot <code>content</code>.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche contact Wood Corner dans Odoo 20 ; dans la barre du haut, l'icône historique porte le compteur 3 et son menu ouvert, titré Derniers consultés, liste Wood Corner, Gemini Furniture et Azure Interior, chacun suivi de res.partner"/>
+                    <figcaption>Trois fiches ouvertes l'une après l'autre : la plus récente en tête, le compteur à 3.</figcaption>
+                </figure>
+                <p>Cliquer sur une ligne appelle <code>open()</code> du service, qui ouvre la fiche par le gestionnaire
+                    d'actions. La liste est gardée dans le navigateur sous la clé <code>oski_owl_recents.&lt;id de
+                    l'utilisateur&gt;</code> : deux utilisateurs sur le même poste ont chacun la leur.</p>
+                <h3>Une entrée dans le menu utilisateur</h3>
+<pre class="language-javascript"><code class="language-javascript">import { usePlugin } from "@odoo/owl";
+import { registry } from "@web/core/registry";
+import { RecentsPlugin } from "./recents_plugin";
+
+export function clearRecentsItem() {
+    // en Odoo 20, la fonction est appelée dans la portée du menu : les hooks y sont permis
+    const recents = usePlugin(RecentsPlugin);
+    return {
+        type: "item",
+        id: "oski_recents_clear",
+        description: "Vider les derniers consultés",
+        hide: !recents.items.length,
+        callback: () =&gt; recents.clear(),
+        sequence: 45,
+    };
+}
+
+registry.category("user_menuitems").add("oski_recents_clear", clearRecentsItem);</code></pre>
+                <p>Une entrée de <code>user_menuitems</code> est une fonction qui rend la description de la ligne. En Odoo 20, le
+                    menu l'appelle dans sa propre portée (<code>this.scope.run(…)</code>, <code>user_menu.js</code>, ligne 34) :
+                    on peut y appeler <code>usePlugin</code> ou <code>useService</code>, comme le fait le cœur pour « Mes
+                    préférences ». En 19, elle recevait déjà <code>env</code>, mais était appelée hors de toute portée : les services passaient par <code>env.services</code>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Menu de l'avatar ouvert dans Odoo 20 : Aide, Shortcuts CTRL+K, En ligne, Vider les derniers consultés, Mes préférences, My Subscription, Se déconnecter ; le compteur du systray affiche 3"/>
+                    <figcaption>L'entrée n'apparaît que si la liste n'est pas vide. Après un clic sur cette entrée, le compteur
+                        du systray disparaît, et l'entrée avec lui.</figcaption>
+                </figure>
+                <div class="v19-box">
+                    <h4>Les registres : un écart silencieux, une erreur à connaître</h4>
+                    <p><strong><code>show</code> n'est plus lu.</strong> En 19, le menu utilisateur filtrait les entrées par
+                        <code>show()</code> (<code>user_menu.js</code> 19.0, ligne 30). Ce filtre a disparu en 20 : une entrée qui
+                        renvoie <code>show: () =&gt; false</code> <strong>s'affiche</strong>, sans erreur. Seul
+                        <code>hide: true</code> la masque. Un test Hoot jetable l'a vérifié pour les deux clés.</p>
+                    <p><strong>Une clé déjà prise lève une erreur</strong> au chargement du fichier, comme en 19 : <em>Cannot add key
+                        "oski_owl_recents.systray" in the "systray" registry: it already exists</em>. Pour remplacer volontairement
+                        l'entrée d'un autre module, passe <code>{ force: true }</code>. La validation des entrées par schéma, elle,
+                        n'est faite qu'en mode debug (<code>core/registry.js</code>, ligne 15).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CE QUI CASSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un import mort : le module disparaît sans bruit</h2>
+                <p>Le piège le plus courant en portant une extension 19 vers 20 n'est pas dans le patch lui-même mais dans ses
+                    imports. Odoo 20 a remplacé une partie de ses services par des plugins et supprimé les fichiers
+                    correspondants : <code>@web/webclient/actions/action_service</code>, <code>@web/core/orm_service</code>,
+                    <code>@web/core/ui/ui_service</code>… Pour l'essai, on a ajouté à <code>recents_plugin.js</code> une seule
+                    ligne venue de la 19 :</p>
+<pre class="language-javascript"><code class="language-javascript">import { actionService } from "@web/webclient/actions/action_service";</code></pre>
+                <p>Le client web démarre, le formulaire s'affiche, mais l'icône du systray n'est plus là, ni l'entrée du menu.
+                    Rien à l'écran ne le signale. La console du navigateur, elle, dit tout :</p>
+<pre class="language-none"><code class="language-none">The following modules are needed by other modules but have not been defined, they may not be
+present in the correct asset bundle: [@web/webclient/actions/action_service]
+The following modules could not be loaded because they have unmet dependencies, this is a secondary
+error which is likely caused by one of the above problems: [@oski_owl_recents/form_controller_patch,
+@oski_owl_recents/recents_plugin, @oski_owl_recents/recents_systray, @oski_owl_recents/user_menu_item]</code></pre>
+                <p>Le chargeur écarte le fichier fautif <strong>et tous ceux qui l'importent</strong> : ici les quatre fichiers JavaScript du
+                    module (les trois autres importent <code>recents_plugin.js</code>). Seul le mode debug ajoute un bandeau rouge en bas de page, « An error occurred while loading javascript
+                    modules » (<code>web/static/src/module_loader.js</code>). D'où la règle : développe en <code>?debug=1</code>,
+                    console ouverte.</p>
+                <table class="tmc">
+                    <thead><tr><th>Erreur</th><th>Ce qu'on voit en Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Import d'un fichier supprimé</td><td>Le module et ses dépendants ne se chargent pas ; rien à l'écran
+                            hors debug.</td></tr>
+                        <tr><td><code>super.setup()</code> oublié dans un patch de composant</td><td>« Oups ! » sur chaque écran qui
+                            utilise ce composant.</td></tr>
+                        <tr><td><code>super</code> dans une fonction fléchée</td><td>Page blanche : le client entier ne démarre
+                            pas.</td></tr>
+                        <tr><td><code>show: () =&gt; false</code> dans <code>user_menuitems</code></td><td>L'entrée s'affiche,
+                            sans erreur.</td></tr>
+                        <tr><td>Clé déjà prise dans un registre</td><td><em>Cannot add key … it already exists</em></td></tr>
+                        <tr><td><code>Plugin</code> absent de <code>services</code></td><td><em>Unknown plugin "Nom"</em> au montage
+                            du composant.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. TESTS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les tests Hoot</h2>
+                <p>Le manifeste ajoute <code>static/tests/</code> au bundle <code>web.assets_unit_tests</code>. Ces tests tournent
+                    dans le navigateur, contre un serveur simulé : aucune donnée de la base n'est lue.</p>
+<pre class="language-javascript"><code class="language-javascript">import { beforeEach, describe, expect, test } from "@odoo/hoot";
+import { queryAllTexts } from "@odoo/hoot-dom";
+import { browser } from "@web/core/browser/browser";
+import { registry } from "@web/core/registry";
+import { patch } from "@web/core/utils/patch";
+import { UserMenu } from "@web/webclient/user_menu/user_menu";
+import {
+    clearRegistry,
+    contains,
+    defineModels,
+    fields,
+    getService,
+    makeTestApp,
+    mockService,
+    models,
+    mountView,
+    mountWithCleanup,
+    serverState,
+} from "@web/../tests/web_test_helpers";
+import { MAX_RECENTS, RecentsPlugin } from "@oski_owl_recents/recents_plugin";
+import { RecentsSystray } from "@oski_owl_recents/recents_systray";
+import { clearRecentsItem } from "@oski_owl_recents/user_menu_item";
+
+class Partner extends models.Model {
+    name = fields.Char();
+    _records = [
+        { id: 1, name: "Azure Interior" },
+        { id: 2, name: "Wood Corner" },
+    ];
+}
+defineModels([Partner]);
+
+describe.current.tags("desktop");
+
+function mockDoAction() {
+    mockService("action", {
+        doAction(action) {
+            expect.step(`${action.res_model},${action.res_id}`);
+        },
+    });
+}
+
+beforeEach(() =&gt; {
+    serverState.userId = 7;
+});
+
+test("le service garde les derniers consultés, sans doublon, par utilisateur", async () =&gt; {
+    await makeTestApp();
+    const recents = getService(RecentsPlugin);
+    expect(getService("oski_recents")).toBe(recents); // le pont rend la même instance
+
+    for (let id = 1; id &lt;= MAX_RECENTS + 2; id++) {
+        recents.visit({ resModel: "partner", resId: id, displayName: `P${id}` });
+    }
+    recents.visit({ resModel: "partner", resId: 5, displayName: "P5" });
+    expect(recents.items.length).toBe(MAX_RECENTS);
+    expect(recents.items.slice(0, 3).map((i) =&gt; i.displayName)).toEqual(["P5", "P10", "P9"]);
+    const stored = JSON.parse(browser.localStorage.getItem("oski_owl_recents.7"));
+    expect(stored[0]).toEqual({ resModel: "partner", resId: 5, displayName: "P5" });
+});
+
+test("le formulaire patché alimente le service", async () =&gt; {
+    await mountView({ type: "form", resModel: "partner", resId: 1, resIds: [1, 2] });
+    const recents = getService(RecentsPlugin);
+    expect(recents.items.map((i) =&gt; i.displayName)).toEqual(["Azure Interior"]);
+
+    await contains(".o_pager_next").click();
+    expect(recents.items.map((i) =&gt; i.displayName)).toEqual(["Wood Corner", "Azure Interior"]);
+});
+
+test("le systray liste les récents et rouvre l'enregistrement", async () =&gt; {
+    mockDoAction();
+    await mountWithCleanup(RecentsSystray);
+    expect(".o_recents_count").toHaveCount(0);
+
+    getService(RecentsPlugin).visit({ resModel: "partner", resId: 2, displayName: "Wood Corner" });
+    await contains(".o_recents_systray").click();
+    expect(".o_recents_count").toHaveText("1");
+    expect(queryAllTexts(".o_recents_item span")).toEqual(["Wood Corner"]);
+
+    await contains(".o_recents_item").click();
+    expect.verifySteps(["partner,2"]);
+});</code></pre>
+                <ul>
+                    <li><code>getService(RecentsPlugin)</code> rend l'instance du service démarrée pour le test ;
+                        <code>getService("oski_recents")</code> rend ce que le pont a démarré ; le premier test vérifie que c'est le même objet.</li>
+                    <li><code>mountView</code> monte un vrai formulaire : le patch est actif dans les tests, car le bundle de tests
+                        inclut le code du module. Le clic sur la flèche suivante recharge l'enregistrement, et le service en
+                        reçoit un second.</li>
+                    <li><code>mockService("action", { doAction })</code> remplace l'ouverture de la fiche par une trace,
+                        vérifiée par <code>expect.verifySteps</code>.</li>
+                    <li>Dans Hoot, <code>patch</code> est remplacé par une version qui se retire seule à la fin du test. Le test de
+                        l'ordre des patchs appelle quand même <code>unpatchA()</code> et <code>unpatchB()</code> : c'est ce qu'il vérifie.</li>
+                </ul>
+                <p>Le fichier complet compte cinq tests, dont celui du menu utilisateur et celui de l'ordre des patchs. Pour les
+                    lancer, ouvre dans le navigateur, connecté :</p>
+<pre class="language-none"><code class="language-none">http://localhost:8069/web/tests?debug=assets&amp;filter="@oski_owl_recents"</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Lanceur Hoot d'Odoo 20, filtre @oski_owl_recents : 5 tests completed, cinq tests verts, le service garde les derniers consultés sans doublon par utilisateur, le formulaire patché alimente le service, le systray liste les récents et rouvre l'enregistrement, menu utilisateur l'entrée n'apparaît que s'il y a des récents, patch ordre d'application et dépatch"/>
+                    <figcaption>Les cinq tests du module, verts. Les guillemets autour du filtre limitent l'exécution aux tests de ce
+                        module.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Déclarer un service</td><td><code>class X extends Plugin { … }</code> + <code>services.add(X)</code>
+                            (<code>@web/core/services</code>)</td></tr>
+                        <tr><td>Dépendre d'un autre service</td><td>Champ <code>action = usePlugin(ActionPlugin)</code></td></tr>
+                        <tr><td>Utiliser un service</td><td><code>usePlugin(X)</code> ; <code>useService("nom")</code> si un pont
+                            existe</td></tr>
+                        <tr><td>Modifier une classe</td><td><code>patch(Classe.prototype, { methode() { super.methode(...arguments); … } })</code></td></tr>
+                        <tr><td>Retirer un patch</td><td>La fonction rendue par <code>patch()</code></td></tr>
+                        <tr><td>Icône dans la barre du haut</td><td><code>registry.category("systray").add(clé, { Component }, { sequence })</code></td></tr>
+                        <tr><td>Entrée du menu utilisateur</td><td><code>registry.category("user_menuitems").add(clé, fonction)</code>,
+                            masquée par <code>hide</code></td></tr>
+                        <tr><td>Remplacer l'entrée d'un autre</td><td><code>{ force: true }</code></td></tr>
+                        <tr><td>Tester</td><td><code>getService</code>, <code>mountView</code>, <code>mockService</code>,
+                            filtre <code>"@module"</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Cherche d'abord un registre. Un patch n'est utile que si le client web n'a rien prévu.</li>
+                    <li>Un service Odoo 20 est une classe <code>Plugin</code> ajoutée à <code>services</code> ; ses dépendances
+                        sont des champs <code>usePlugin(…)</code>.</li>
+                    <li>Un patch se pose sur le <code>prototype</code>, en méthodes classiques, et appelle toujours
+                        <code>super</code> avec <code>...arguments</code>.</li>
+                    <li>En 20, <code>user_menuitems</code> ignore <code>show</code> : utilise <code>hide</code>.</li>
+                    <li>Un import vers un fichier supprimé ne casse pas l'écran, il fait disparaître ton module. Travaille en
+                        <code>?debug=1</code>, console ouverte.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module, captures et tests exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community
+                    (PostgreSQL 16), module <code>oski_owl_recents</code> en 20.0.1.0.0, navigateur Chromium. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0, client web : <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/core/utils/patch.js" target="_blank" rel="noopener"><code>core/utils/patch.js</code></a>
+                        (signature, retrait) ; <code>core/services.js</code> et <code>core/legacy_service_starter.js</code>
+                        (services) ; <code>core/registry.js</code> (clé en double, validation en debug) ;
+                        <code>core/utils/hooks.js</code> (<code>useService</code>) ; <code>webclient/user_menu/user_menu.js</code> ;
+                        <code>webclient/navbar/navbar.js</code> ; <code>views/form/form_controller.js</code> ;
+                        <code>module_loader.js</code> ; <code>lib/owl/owl.js</code> (<code>Plugin</code>,
+                        <code>usePlugin</code>).</li>
+                    <li>Comparaison avec la branche 19.0 : <code>patch.js</code> identique ; menu utilisateur filtré par
+                        <code>show()</code> ; services déclarés uniquement par <code>registry.category("services")</code>, pas de
+                        classe <code>Plugin</code> dans OWL 2.8.1.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">Un widget OWL 3 en Odoo 20 : le badge de retard des emprunts</a></h5>
+                            <p class="small text-muted mb-0">Le registre <code>fields</code> : un composant posé sur une vue par son nom.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module Odoo 20 qui ne prend pas tes modifications</a></h5>
+                            <p class="small text-muted mb-0">JavaScript modifié mais rien ne change à l'écran : cache des assets et mode debug.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">OWL 3 et les plugins parmi les autres ruptures : ORM, sécurité, QWeb, API.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
