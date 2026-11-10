@@ -1,0 +1,467 @@
+<!--
+Article — Du prospect à l'encaissement dans Odoo 20
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), vague 3 F2.1
+Date : 2026-11-10 (routine bodoo19)
+Slug : prospect-encaissement-odoo
+Tags : intermediaire, ventes, guide, community
+Sources vérifiées le 2026-11-10 : Odoo 20.0 Community, base vs20_func_f21 (copie de vs20_func), société My Company (San Francisco), USD, taxe 15 %.
+  Joué à l'écran : piste de démo id 3 « Pricing for 25 desks » → Convertir en opportunité (client « The Kompany, John Miller » créé) →
+  étape Proposition, revenu attendu 19 000 $ → Nouveau devis S00082 (lignes ajoutées en shell : 25 × DESK0006 à 750 $, politique
+  « Quantités livrées » ; 1 × Installation sur site 90 $, politique « Quantités commandées ») → Confirmer → 3 transferts (entrepôt de
+  vs20_func réglé en 3 étapes ; défaut ship_only, stock/models/stock_warehouse.py:62-67) WH/PICK/00018, WH/PACK/00002, WH/OUT/00085
+  validés → Créer une facture (Facture normale, Créer brouillon) → FAC/2026/00015 Confirmer → Payer (Banque, Manual Payment) →
+  PBNK1/2026/00012 état reconciled, facture PAYÉ ; bons suivants créés à la validation du précédent (create_date PACK = done PICK, OUT = done PACK) → opportunité Gagné (bouton, message « Opportunité gagnée »).
+  Prouvé en shell (rollback) : une commande confirmée et facturée avant livraison ne facture que la ligne « Quantités commandées ».
+  Historique de l'opportunité : étape restée Proposition après la confirmation de S00082, passée à Gagné au clic.
+  Code : sale_crm/models/sale_order.py:14-18 (confirmation = mise à jour du revenu seulement) ; sale_crm/models/crm_lead.py:10,20-22
+  (« Commandes » = amount_total, TTC), :107 (revenu relevé seulement si HT de la commande supérieur) ; sale/models/product_template.py:43-50
+  (Politique de facturation) ; sale/models/sale_order_line.py:1336-1346 (quantité à facturer selon la politique) ; licences LGPL-3 de
+  crm, sale_crm, sale_stock, account (manifestes) ; account_accountant absent de odoo/addons.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Du prospect à l'encaissement dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une demande de prix arrive, elle devient une opportunité, puis un devis,
+                    une commande, une livraison, une facture et enfin un paiement. Dans Odoo 20, ce parcours traverse
+                    quatre applications sans ressaisie : chaque document naît d'un bouton du précédent. Cet article le
+                    rejoue en entier sur la base de démonstration et signale les trois points d'attention entre applications.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %). Ces modules existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Un processus, quatre applications</h2>
+                <p>Le cycle « lead-to-cash », du prospect à l'encaissement, est le premier processus d'une entreprise qui
+                    vend. Dans Odoo 20 Community, il mobilise le <strong>CRM</strong> (piste et opportunité), les
+                    <strong>Ventes</strong> (devis et commande), l'<strong>Inventaire</strong> (livraison) et la
+                    <strong>Facturation</strong> (facture et paiement). Chaque application a son article dans les séries
+                    par application du blog ; le présent article les enchaîne et s'attache aux passages de l'une à
+                    l'autre.</p>
+                <p>Le fil conducteur est une piste livrée avec la démonstration, « Pricing for 25 desks » : un prospect
+                    demande un prix pour 25 bureaux. La vente porte sur 25 bureaux et une prestation d'installation, deux
+                    lignes qui ne se facturent pas de la même façon.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>faire passer une piste à l'état d'opportunité, puis de devis, sans ressaisir le client ;</li>
+                    <li>lire les documents de livraison créés par la confirmation d'une commande ;</li>
+                    <li>facturer une commande au bon moment selon la politique de facturation des articles ;</li>
+                    <li>enregistrer le paiement et vérifier qu'il ne reste rien à encaisser ;</li>
+                    <li>refermer la boucle dans le CRM et remonter la chaîne d'un document à l'autre.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du cycle du prospect à l'encaissement dans Odoo 20 : CRM, piste Pricing for 25 desks, bouton Convertir en opportunité ; CRM, opportunité, bouton Nouveau devis ; Ventes, devis puis commande S00082, bouton Confirmer ; Inventaire, livraison WH/OUT/00085, bouton Valider ; Facturation, facture FAC/2026/00015, boutons Créer une facture puis Confirmer ; Facturation, paiement PBNK1/2026/00012, bouton Payer ; CRM, opportunité gagnée, bouton Gagné" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sept étapes, quatre applications : chaque document est créé par un bouton du précédent.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Qualifier la piste et la convertir</h2>
+                <p>Les demandes entrantes arrivent dans <strong>CRM › Pistes</strong> lorsque les pistes sont activées
+                    (réglage décrit dans <a href="/blog/fonctionnel-odoo-1/pistes-equipes-crm-odoo-209">Pistes et équipes
+                    commerciales dans le CRM d'Odoo 20</a>). Ouvrez la piste « Pricing for 25 desks ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche de la piste Pricing for 25 desks dans Odoo 20 : boutons Convertir en opportunité, Enrichir et Perdu, badge Piste, probabilité 0 %, champ Contact vide, e-mail contact@thekompany.example.com, téléphone, vendeur Mitchell Admin, étiquettes Informations et Conception" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une piste : pas encore de client, seulement des coordonnées.</figcaption>
+                </figure>
+                <p>La piste n'a pas de client : le champ <strong>Contact</strong> est vide, seuls l'e-mail et le téléphone
+                    sont connus. Cliquez sur <strong>Convertir en opportunité</strong>. En Odoo 20, la conversion se fait
+                    en un clic, sans fenêtre intermédiaire : Odoo rattache la piste au client existant qui porte la même
+                    adresse e-mail ou, à défaut, crée le client à partir du nom de la société et du nom du contact
+                    enregistrés sur la piste, ici « The Kompany, John Miller ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche de l'opportunité Pricing for 25 desks dans Odoo 20 après conversion : boutons Nouveau devis, Gagné, Enrichir, Perdu ; étapes Nouveau, Qualifié, Proposition, Gagné ; revenu attendu 0,00 $, probabilité 17,73 %, contact The Kompany, John Miller" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après conversion : le contact est créé et le bouton Nouveau devis apparaît.</figcaption>
+                </figure>
+                <p>L'opportunité entre dans le pipeline à l'étape « Nouveau ». Avant de chiffrer, le commercial la fait
+                    avancer à l'étape <strong>Proposition</strong> (clic sur l'étape) et saisit un <strong>Revenu
+                    attendu</strong> : 19 000 $ dans l'essai. Ce montant sert aux prévisions du pipeline ; il ne sera pas
+                    recopié dans le devis.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Du devis à la commande confirmée</h2>
+                <p>Sur l'opportunité, cliquez sur <strong>Nouveau devis</strong>. Le devis s'ouvre dans l'application
+                    Ventes, avec le client, ses adresses de facturation et de livraison et la liste de prix déjà
+                    remplis ; il reste lié à l'opportunité. Ajoutez les lignes par <strong>Ajouter une ligne</strong> :
+                    25 « Bureau personnalisable » (Noir, Personnalisé) à 750 $ et une « Installation sur site » à 90 $.
+                    Le devis S00082 totalise 18 840 $ hors taxes, 21 666 $ taxes comprises.</p>
+                <p>Le devis est ensuite envoyé au client par <strong>Envoyer</strong> (voir <a
+                    href="/blog/fonctionnel-odoo-1/devis-commande-ventes-odoo-202">Du devis à la commande confirmée dans
+                    Odoo 20</a>), puis confirmé par <strong>Confirmer</strong> lorsque le client accepte. La barre d'état
+                    passe à <strong>Commande client</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Commande client S00082 confirmée dans Odoo 20 : bouton intelligent Livraison 1 en haut, boutons Créer une facture, Envoyer une facture PRO FORMA, Envoyer, Aperçu, Annuler ; état Commande client ; client The Kompany, John Miller ; badge Non livré ; lignes 25 Bureau personnalisable à 750,00 et 1 Installation sur site à 90,00, taxe 15 %, colonnes Délivré et Facturé à 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande confirmée : bouton Livraison en haut, colonnes Délivré et Facturé à zéro.</figcaption>
+                </figure>
+                <p>La confirmation a deux effets visibles. En haut de la fiche, le bouton intelligent
+                    <strong>Livraison</strong> donne accès au premier bon de transfert créé pour les articles stockables. Les
+                    colonnes <strong>Délivré</strong> et <strong>Facturé</strong> des lignes suivront désormais
+                    l'avancement de la commande. Le bouton <strong>Créer une facture</strong> est déjà proposé : l'étape 4
+                    explique pourquoi il vaut mieux attendre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Livrer</h2>
+                <p>Cliquez sur le bouton <strong>Livraison</strong> de la commande. Le nombre de bons dépend du réglage de
+                    l'entrepôt : par défaut, une seule étape, donc un seul bon de livraison. L'entrepôt de la base de
+                    démonstration utilisée ici est réglé en trois étapes (prélèvement, colisage, expédition), comme dans
+                    l'article <a href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions
+                    et livraisons en plusieurs étapes dans Odoo 20</a>. La confirmation n'a créé que le premier bon, le
+                    prélèvement WH/PICK/00018 ; la validation de chaque bon crée le suivant. Au terme du parcours, la
+                    commande compte trois transferts.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste des transferts de la commande S00082 dans Odoo 20 : WH/PICK/00018 de WH/Stock vers la zone de colisage, Terminé ; WH/PACK/00002 vers WH/Sortie, Terminé ; WH/OUT/00085 de WH/Sortie vers Customers, Prêt, date planifiée Aujourd'hui" style="max-width:100%; height:auto;"/>
+                    <figcaption>Entrepôt en trois étapes : prélèvement et colisage terminés, la livraison est prête.</figcaption>
+                </figure>
+                <p>Le magasinier valide les bons dans l'ordre par le bouton <strong>Valider</strong> : la validation du
+                    prélèvement crée le colisage WH/PACK/00002, celle du colisage crée la livraison. Le dernier, WH/OUT/00085, est celui qui fait sortir les bureaux vers le
+                    client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Bon de livraison WH/OUT/00085 terminé dans Odoo 20 : état Terminé, adresse de livraison The Kompany, John Miller, type d'opération YourCompany: Bons de livraison, document d'origine S00082, ligne 25 Bureau personnalisable, demande 25,00, quantité 25,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison est terminée : 25 bureaux sortis, document d'origine S00082.</figcaption>
+                </figure>
+                <p>De retour sur la commande, la colonne <strong>Délivré</strong> affiche 25 pour les bureaux et l'état de
+                    livraison devient « Entièrement livré ». L'installation n'est pas concernée par le stock : c'est un
+                    service.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Facturer</h2>
+                <p>Ce qu'une facture reprend dépend de la <strong>Politique de facturation</strong> de chaque article.
+                    « Bureau personnalisable » est facturé sur <strong>Quantités livrées</strong> : seules les unités
+                    sorties du stock sont facturables. « Installation sur site » est facturée sur <strong>Quantités
+                    commandées</strong> : elle l'est dès la confirmation. La livraison étant faite, cliquez sur
+                    <strong>Créer une facture</strong> depuis la commande.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Créer facture(s) dans Odoo 20 : choix Facture normale sélectionné, Acompte (pourcentage), Acompte (montant fixe), boutons Créer brouillon et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Facture normale, ou acompte en pourcentage ou en montant fixe.</figcaption>
+                </figure>
+                <p>Gardez <strong>Facture normale</strong> et cliquez sur <strong>Créer brouillon</strong>. Le brouillon
+                    reprend les deux lignes ; vérifiez-le puis cliquez sur <strong>Confirmer</strong>. La facture reçoit
+                    son numéro, FAC/2026/00015, dans le journal Ventes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Facture client FAC/2026/00015 comptabilisée dans Odoo 20 : boutons intelligents Écritures comptables et Commandes clients 1, boutons Envoyer, Imprimer, Payer, Aperçu, Avoir, Remettre en brouillon ; état Comptabilisé ; client The Kompany, John Miller ; journal Ventes en USD ; lignes 25 Bureau personnalisable 750,00 et 1 Installation sur site 90,00, taxe 15 %" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture confirmée garde le lien vers sa commande (bouton Commandes clients).</figcaption>
+                </figure>
+                <p>Les acomptes et la facturation partielle sont traités dans <a
+                    href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande dans
+                    Odoo 20</a> ; l'envoi et la correction d'une facture, dans <a
+                    href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs dans Odoo
+                    20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Encaisser</h2>
+                <p>Lorsque le client règle, cliquez sur <strong>Payer</strong> sur la facture. La fenêtre propose le
+                    journal, le mode de paiement, le montant restant dû et la date de règlement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Payer dans Odoo 20 : journal Banque, mode de paiement Manual Payment, Recipient Account BANK134567890, montant 21 666,00 USD, date de règlement 10 nov., mémo FAC/2026/00015, boutons Créer un paiement et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Montant, journal et mémo sont préremplis depuis la facture.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un paiement</strong>. Sur la base de démonstration (journal Banque, mode
+                    « Manual Payment »), la facture passe aussitôt à l'état payé : un ruban <strong>PAYÉ</strong> apparaît
+                    et un bouton intelligent <strong>Paiements</strong> mène au paiement PBNK1/2026/00012.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Haut de la facture FAC/2026/00015 dans Odoo 20 après paiement : boutons intelligents Paiements 1, Écritures comptables, Commandes clients 1 ; ruban vert PAYÉ ; état Comptabilisé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le ruban PAYÉ et le bouton Paiements.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Totaux de la facture FAC/2026/00015 dans Odoo 20 : montant hors taxes 18 840,00 $, taxe 15 % 2 826,00 $, total 21 666,00 $, ligne Payé le 10/11/2026 21 666,00 $, montant dû 0,00 $" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le pied de facture : le paiement daté, et plus rien à encaisser.</figcaption>
+                </figure>
+                <p>Le suivi des factures en retard et les relances sont présentés dans <a
+                    href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a>,
+                    le rapprochement avec le relevé de la banque dans <a
+                    href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et
+                    rapprochement dans Odoo 20 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Refermer la boucle dans le CRM</h2>
+                <p>Revenez à l'opportunité, par <strong>CRM › Ventes › Mon pipeline</strong> ou par le champ
+                    <strong>Opportunité</strong> de l'onglet <strong>Autres informations</strong> de la commande. Elle est toujours à l'étape « Proposition » : la confirmation de
+                    la commande ne l'a pas fait avancer. Cliquez sur <strong>Gagné</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Opportunité Pricing for 25 desks gagnée dans Odoo 20 : boutons intelligents Aucune réunion, Devis 0, Commandes 21 666,00 $ ; étape Gagné ; ruban vert GAGNÉ ; revenu attendu 19 000,00 $ à 100 % de probabilité" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'opportunité gagnée : le bouton Commandes totalise la commande confirmée.</figcaption>
+                </figure>
+                <p>L'opportunité passe à 100 % de probabilité. Le bouton intelligent
+                    <strong>Commandes</strong> donne le montant des commandes confirmées, et chaque document mène au
+                    suivant : opportunité → commande → livraison et facture → paiement. C'est cette chaîne de boutons qui
+                    permet, six mois plus tard, de retrouver d'où vient un encaissement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Application</th><th>Bouton</th><th>Document obtenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>Qualifier la demande</td><td>CRM</td><td>Convertir en opportunité</td><td>Opportunité et client</td></tr>
+                        <tr><td>Chiffrer</td><td>CRM → Ventes</td><td>Nouveau devis</td><td>Devis S00082</td></tr>
+                        <tr><td>Engager</td><td>Ventes</td><td>Confirmer</td><td>Commande client et transferts</td></tr>
+                        <tr><td>Livrer</td><td>Inventaire</td><td>Valider</td><td>Bon WH/OUT/00085 terminé</td></tr>
+                        <tr><td>Facturer</td><td>Ventes → Facturation</td><td>Créer une facture, Confirmer</td><td>Facture FAC/2026/00015</td></tr>
+                        <tr><td>Encaisser</td><td>Facturation</td><td>Payer</td><td>Paiement PBNK1/2026/00012</td></tr>
+                        <tr><td>Clore</td><td>CRM</td><td>Gagné</td><td>Opportunité gagnée</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Les quatre applications du parcours (CRM, Ventes, Inventaire, Facturation) et le lien entre CRM et
+                    Ventes font partie d'Odoo 20 Community : tout ce qui est montré ici est disponible sans abonnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Confirmer la commande ne gagne pas l'opportunité</h4>
+                    <p>Lors de l'essai, l'opportunité est restée à l'étape « Proposition » après la confirmation de
+                        S00082 ; seul le clic sur <strong>Gagné</strong> l'a fait passer à « Gagné ». Une opportunité
+                        oubliée reste dans le pipeline et fausse les prévisions : faites du clic sur Gagné une étape de la
+                        confirmation.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Facturer avant de livrer ne facture que les quantités commandées</h4>
+                    <p>Le bouton <strong>Créer une facture</strong> est proposé dès la confirmation, parce que
+                        l'installation (politique « Quantités commandées ») est facturable. Sur une commande identique,
+                        confirmée puis facturée avant toute livraison, la facture ne contenait que l'installation : les
+                        bureaux (politique « Quantités livrées ») attendent leur sortie du stock. Pour facturer d'avance
+                        une commande entière, utilisez un acompte ou changez la politique de l'article.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Deux montants différents sur l'opportunité</h4>
+                    <p>Le bouton <strong>Commandes</strong> affiche 21 666 $, total <strong>taxes comprises</strong> des
+                        commandes confirmées. Le <strong>Revenu attendu</strong>, lui, est resté à 19 000 $ : à la
+                        confirmation, Odoo ne le remplace par le montant hors taxes de la commande (18 840 $) que si ce
+                        dernier est plus élevé. Pour suivre le chiffre réalisé hors taxes, le rapport Ventes › Analyse est l'outil adapté.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> rejouer le cycle complet sur une autre piste de démonstration.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration avec CRM, Ventes,
+                        Inventaire et Facturation, convertissez la piste « Office chairs », créez un devis de 10 « Chaise
+                        de conférence » depuis l'opportunité, confirmez-le, validez la livraison, facturez, payez, puis
+                        marquez l'opportunité gagnée.</p>
+                    <p><strong>Critère de réussite :</strong> la facture porte le ruban PAYÉ avec un montant dû de 0, la
+                        commande est « Entièrement livré », et le bouton Commandes de l'opportunité gagnée affiche le
+                        total taxes comprises de la commande.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le cycle du prospect à l'encaissement traverse CRM, Ventes, Inventaire et Facturation ; chaque
+                        document naît d'un bouton du précédent et garde le lien vers lui.</li>
+                    <li>En Odoo 20, « Convertir en opportunité » crée le client en un clic (ou retrouve le client existant)
+                        à partir des informations de la piste.</li>
+                    <li>Le nombre de bons de livraison dépend du réglage de l'entrepôt (une à trois étapes) ; chaque bon
+                        validé crée le suivant.</li>
+                    <li>La politique de facturation de chaque article décide de ce que la facture reprend : quantités
+                        commandées ou livrées.</li>
+                    <li>L'opportunité se clôt à la main par Gagné ; le bouton Commandes affiche un total taxes comprises.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article ouvre la série <strong>Odoo 20 de bout en bout</strong>. Le prochain article suit le
+                    chemin inverse, côté fournisseurs : de la demande d'achat au paiement fournisseur. Pour revoir chaque
+                    application séparément, le point de départ reste <a
+                    href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités du CRM
+                    d'Odoo 20</a> et <a href="/blog/fonctionnel-odoo-1/crm-devis-odoo-212">Du CRM au devis dans Odoo
+                    20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/crm-devis-odoo-212">Du CRM au devis dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le passage de l'opportunité au devis en détail.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/livrer-facturer-ventes-odoo-205">Livrer et facturer une commande</a></h5>
+                            <p class="small text-muted mb-0">Reliquats, acomptes et politiques de facturation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Encaisser et relancer les factures en retard.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
