@@ -1,0 +1,838 @@
+<!--
+Article — Sauvegarder et restaurer Odoo 20 : base, filestore, planification
+Série « Fondations et données en Odoo 20 » (60), étape 3 ; lot T3 (T3.4 du plan vague 3 technique), dernier du lot.
+Date : 2026-11-10
+Slug : sauvegarder-restaurer-odoo-20
+Mot-clé cible : odoo backup command line, odoo filestore, odoo restore database, pg_dump odoo
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~15 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16.15, rôle non superutilisateur ;
+serveur de travail en boucle locale, fichier de configuration jetable, dbfilter limité aux bases d'essai, crons coupés ;
+source rendue « comme une prod » : web.base.url https://erp.exemple.com, serveur sortant fictif smtp.exemple.com) :
+- Filestore : config.filestore(db) = data_dir/filestore/<base> ; data_dir non réglé → ~/.local/share/Odoo ; 498 pièces jointes
+  avec store_fname pour 282 fichiers + 282 marqueurs checklist ; nom = sha1 du contenu (sha1sum vérifié).
+- POST /web/database/backup : zip 13,7 Mo en 1,1 s (dump.sql 24,5 Mo + manifest.json + 564 fichiers filestore/),
+  filestore=0 → 2 entrées (2,8 Mo), backup_format=dump → « PostgreSQL custom database dump - v1.15-0 » 6,1 Mo ; nom de
+  fichier horodaté en UTC ; mauvais mot de passe → 403. manifest.json : odoo_dump, db_name, version 20.0, version_info,
+  major_version, pg_version « 16.0 » (serveur 16.15), modules (69).
+- odoo-bin db dump : mêmes tailles ; « dump ma_base --format dump f » → « unrecognized arguments » ; « dump --format dump
+  ma_base - » et « dump --no-filestore ma_base » vers la sortie standard → zip complet (cli/db.py:247-257 ; idem 19.0 publique).
+- pg_dump -Fc --no-owner 0,42 s / tar du filestore 0,24 s (10,9 Mo) ; createdb -T template0 -E UTF8 --lc-collate=C +
+  pg_restore --no-owner 4,4 s rc 0 ; identité identique à la source (uuid, secret, create_date, web.base.url) ;
+  odoo-bin neutralize puis ir.config_parameter.init(force=True) → nouvelle identité, 1 cron, leurre invalid.
+- POST /web/database/restore (zip) : copy=true 5,2 s, copy=false 5,7 s, copy+neutralize 6,1 s ; état comparé (tableau
+  section 5) ; .dump → 422 « Could not restore database. File is not a zip file » et base vide (0 table) laissée ; nouvel
+  essai même nom → « Database '…' already exists ». odoo-bin db load --move 6,1 s identité conservée ; db load d'un .dump →
+  « Not a zipped dump file… », aucune base créée.
+- Scripts sauvegarde-odoo.sh (rotation : fichiers de 20 et 15 jours supprimés, 3 jours gardés ; sha256sum -c OK sur la copie ;
+  DATA_DIR faux → tar « Cannot open », code 2) et verifier-sauvegarde.sh (OK 282/0 en 7,3 s, code 0 ; filestore partiel →
+  263 manquants, code 1) ; exécution dans une unité systemd transitoire (success) et par une minuterie transitoire (journal) ;
+  systemd-analyze verify (silencieux / « is not executable ») et calendar.
+- Source 20.0 : odoo/modules/db.py:550-563, 565-613, 616-669 ; odoo/cli/db.py:106-157, 219-257 ;
+  addons/web/controllers/database.py:236-284 ; database_manager.qweb.html:120-160, 267-302 ; odoo/tools/config.py:547-552,
+  1132-1133 ; base/models/ir_config_parameter.py:23-30 ; base/models/res_users.py:851-861 ; base/models/ir_attachment.py:451 ;
+  mail/models/update.py:25-66 ; odoo/service/server.py:112-114.
+- 19.0 publique (GitHub, 10/11/2026) : odoo/service/db.py restore_db accepte un fichier non zip (pg_restore --no-owner) ;
+  neutralisation après chargement du registre ; cli/db.py dump identique (sortie standard).
+Après relecture : scripts durcis et réexécutés (fichiers .part + trap ERR, tar code 1 toléré, rotation ${BASE}_20*, garde-fou _verif → code 2, journal $LOG) ; échec DATA_DIR → code 1, seuls des .part ; curl --data-urlencode master_pwd@fichier → 200 (403 si retour à la ligne final) ; router.py:136-141 (service db) ; neutralize.sql:35-38 (dummysecret absent de la 19.0 publique).
+Captures : content/blog/screenshots/sauvegarder-restaurer-odoo-20/ (01 schéma, 02 fenêtres Backup et Restore — nom de base
+remplacé par ma_base dans la page avant capture).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Sauvegarder et restaurer Odoo 20 : base, filestore, planification</h1>
+                <p class="lead mt-3 text-white">Ce que contient une sauvegarde complète, les trois façons de la faire, ce qui
+                    change vraiment quand on restaure une base « copiée » ou « déplacée », et un script de sauvegarde nocturne
+                    avec rotation, copie hors du serveur et restauration de contrôle.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Tout sauvegarder</h4>
+                        <p>La base et le filestore, par le gestionnaire, par <code>odoo-bin db dump</code> ou par
+                            <code>pg_dump</code> : ce que chaque fichier contient réellement.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Restaurer sans surprise</h4>
+                        <p>« Copie » ou « déplacée » : identifiant de base, URL, tâches planifiées, serveur de courriel, relevés
+                            sur les bases restaurées.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Automatiser et vérifier</h4>
+                        <p>Un script nocturne lancé par une minuterie systemd, sa rotation, sa copie distante, et la restauration
+                            de contrôle qui dit si la sauvegarde sert à quelque chose.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 Community sur un serveur Linux, installé par exemple comme dans
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur
+                            Ubuntu</a> : utilisateur système <code>odoo</code>, fichier <code>/etc/odoo/odoo.conf</code>,
+                            <code>data_dir = /opt/odoo/data</code>. Adapte les chemins aux tiens.</li>
+                        <li>Les outils clients de PostgreSQL 16 (<code>pg_dump</code>, <code>pg_restore</code>, <code>psql</code>),
+                            <code>tar</code>, <code>rsync</code>, <code>curl</code>.</li>
+                        <li>Des essais sur une base de test d'abord : on y restaure, on y écrase, on y supprime.</li>
+                    </ul>
+                </div>
+                <p>Pour fabriquer une base de recette à partir de la production (sauvegarde, chargement neutralisé, contrôle
+                    module par module), l'article
+                    <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 :
+                    db dump, load, neutralize</a> fait le tour. Ici, on protège la production elle-même : une sauvegarde complète,
+                    régulière, conservée ailleurs, et dont on a prouvé qu'elle se restaure.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la sauvegarde et de la restauration dans Odoo 20 : une base = la base PostgreSQL et le filestore data_dir/filestore/nom de la base ; trois façons de sauvegarder (gestionnaire, odoo-bin db dump, pg_dump puis filestore) et trois de restaurer (gestionnaire limité au zip, odoo-bin db load, createdb puis pg_restore) ; en bas, un tableau montre qu'une restauration en copie change l'identité de la base mais laisse actives les tâches planifiées et le serveur de courriel, que seule la neutralisation coupe."/>
+                    <figcaption>Deux morceaux, trois chemins dans chaque sens, et ce que chaque restauration change. En orange et
+                        en brun, ce qui piège.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. QUOI ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ce qu'il faut sauvegarder : la base et le filestore</h2>
+                <p>Une base Odoo vit à deux endroits. Dans PostgreSQL, les tables ; sur le disque, le <strong>filestore</strong> :
+                    les pièces jointes, les images des produits et des contacts, les PDF générés, les paquets de fichiers web. La
+                    table <code>ir_attachment</code> ne garde que le nom du fichier (<code>store_fname</code>) ; le contenu est
+                    sous <code>&lt;data_dir&gt;/filestore/&lt;nom de la base&gt;/</code> (<code>odoo/tools/config.py:1132-1133</code>).
+                    Pour savoir où il est sur ton serveur, demande-le à Odoo plutôt que de le deviner :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin shell -c /etc/odoo/odoo.conf -d ma_base --no-http
+>>> from odoo.tools import config
+>>> config.filestore(env.cr.dbname)
+'/opt/odoo/data/filestore/ma_base'
+>>> env['ir.attachment']._filestore()
+'/opt/odoo/data/filestore/ma_base'</code></pre>
+                <p>Sans ligne <code>data_dir</code> dans le fichier de configuration, Odoo prend
+                    <code>~/.local/share/Odoo</code> <strong>du compte qui le lance</strong>, ou <code>/var/lib/Odoo</code> si ce compte n'a
+                    pas de dossier personnel (<code>config.py:547-552</code>).
+                    Lancé une fois en <code>root</code> ou depuis ton compte, il écrit ailleurs que le service : c'est la première
+                    chose à vérifier quand une sauvegarde « contient » un filestore vide.</p>
+                <p>Le filestore de la base de démonstration, vu des deux côtés :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base -Atc "select count(*), count(distinct store_fname) from ir_attachment where store_fname is not null"
+498|282
+$ ls /opt/odoo/data/filestore/ma_base | head -3; ls /opt/odoo/data/filestore/ma_base | grep -v '^..$'
+01
+02
+05
+checklist
+upload
+$ sha1sum /opt/odoo/data/filestore/ma_base/35/35d3dbae2b787dbbe1154b164c49641f530c8b1d
+35d3dbae2b787dbbe1154b164c49641f530c8b1d  /opt/odoo/data/filestore/ma_base/35/35d3…</code></pre>
+                <p>Trois choses à en tirer pour la sauvegarde. Un fichier est nommé par l'empreinte SHA-1 de son contenu
+                    (<code>odoo/addons/base/models/ir_attachment.py:451</code>) : deux pièces jointes identiques partagent un
+                    fichier (498 pièces, 282 fichiers), et un fichier n'est jamais réécrit, un contenu modifié en crée un autre. Une
+                    copie incrémentale (<code>rsync</code>) ne transfère donc que les nouveautés. Le dossier <code>checklist</code>
+                    sert au nettoyage des fichiers orphelins et <code>upload</code> aux envois en cours ; ils se
+                    sauvegardent avec le reste. Enfin, une base PostgreSQL restaurée
+                    sans son filestore démarre sans erreur, mais ses pièces jointes sont vides : c'est ce que la vérification de la
+                    section 6 détecte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. GESTIONNAIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Première voie : le gestionnaire de bases</h2>
+                <p>Sur <code>/web/database/manager</code>, le bouton <strong>Backup</strong> d'une base ouvre une fenêtre à deux
+                    choix : le format (<em>zip</em> ou <em>pg_dump custom format (without filestore)</em>) et la case
+                    <strong>Include filestore</strong>. Le bouton <strong>Restore Database</strong>, en bas de la page, fait le
+                    chemin inverse (section 5).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Deux fenêtres du gestionnaire de bases d'Odoo 20, en anglais. À gauche, Backup Database : Master Password vide, Database Name ma_base non modifiable, Backup Format sur zip, case Include filestore cochée, bouton Backup. À droite, Restore Database : Master Password, File avec le bouton Choose File, Database Name ma_base_verif, case Neutralize décochée, puis le texte This database might have been moved or copied, In order to avoid conflicts between databases, Odoo needs to know if this database was moved or copied, If you don't know, answer This database is a copy, et deux boutons radio : This database is a copy (coché) et This database was moved ; bouton Continue."/>
+                    <figcaption>Sauvegarder (à gauche) et restaurer (à droite) depuis le gestionnaire. Par défaut, une restauration
+                        est une « copie ».</figcaption>
+                </figure>
+                <p>Le bouton envoie un simple <code>POST</code> sur <code>/web/database/backup</code>
+                    (<code>addons/web/controllers/database.py:236-263</code>), qu'on peut appeler sans navigateur. Le mot de passe
+                    maître est contrôlé (un mauvais mot de passe répond 403), et le fichier arrive avec un nom horodaté en UTC. Dans un
+                    script, lis le mot de passe dans un fichier en 600 (<code>--data-urlencode master_pwd@fichier</code> ; le fichier sans retour à la ligne final, sinon 403) plutôt
+                    que de l'écrire sur la ligne de commande, visible dans <code>ps</code> et l'historique :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -D - -o ma_base.zip -d master_pwd='…' -d name=ma_base -d backup_format=zip \
+    http://localhost:8069/web/database/backup | grep -i disposition
+content-disposition: attachment; filename=ma_base_2026-11-10_19-30-35.zip
+$ unzip -l ma_base.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+ 24544831  2026-11-10 19:30   dump.sql
+     2758  2026-11-10 19:30   manifest.json
+     2855  2026-10-07 06:16   filestore/35/35d3dbae2b787dbbe1154b164c49641f530c8b1d
+…
+---------                     -------
+ 36230365                     566 files</code></pre>
+                <p><code>dump.sql</code> est un <code>pg_dump --no-owner</code> en SQL texte, rechargeable par un autre rôle (qui doit pouvoir créer l'extension <code>pg_trgm</code>) ;
+                    <code>manifest.json</code> décrit la base (<code>odoo/modules/db.py:550-563</code>) :</p>
+<pre class="language-json"><code class="language-json">{
+    "odoo_dump": "1",
+    "db_name": "ma_base",
+    "version": "20.0",
+    "version_info": [20, 0, 0, "final", 0, ""],
+    "major_version": "20.0",
+    "pg_version": "16.0",
+    "modules": {
+        "web_unsplash": "20.0.1.1",
+        "auth_passkey": "20.0.1.1",
+        "base_setup": "20.0.1.0",
+        …
+    }
+}</code></pre>
+                <p>La liste des modules (69 ici, avec leur version) sert à vérifier qu'une restauration a tout retrouvé. Ne te fie
+                    pas à <code>pg_version</code> : le serveur était en 16.15, le calcul hérité des anciennes numérotations de
+                    PostgreSQL ne garde que la version majeure. Les trois variantes, sur la même base (14 Mo de filestore) :</p>
+                <table class="tmc">
+                    <thead><tr><th>Choix dans la fenêtre</th><th>Fichier reçu</th><th>Taille</th></tr></thead>
+                    <tbody>
+                        <tr><td>zip, filestore coché</td><td><code>dump.sql</code> + <code>manifest.json</code> + 564 fichiers</td><td>13,7 Mo, en 1,1 s</td></tr>
+                        <tr><td>zip, filestore décoché (<code>filestore=0</code>)</td><td><code>dump.sql</code> + <code>manifest.json</code></td><td>2,8 Mo</td></tr>
+                        <tr><td>pg_dump custom format</td><td><code>.dump</code> : « PostgreSQL custom database dump », sans filestore</td><td>6,1 Mo</td></tr>
+                    </tbody>
+                </table>
+                <p>Cette voie a deux limites en production. Le gestionnaire n'existe que si <code>list_db</code> est actif, ce
+                    qu'on coupe justement sur un serveur exposé (voir
+                    <a href="/blog/developpement-odoo-2/gestionnaire-bases-access-denied-odoo-382">Gestionnaire de bases Odoo 20 :
+                    Access Denied et mot de passe maître</a>). Et l'archive est fabriquée en entier sur le serveur, dans un
+                    fichier temporaire, avant d'être envoyée : prévois la place, et la patience, pour un gros filestore.</p>
+                <p>Ne cherche plus le service <code>db</code> de XML-RPC pour automatiser la sauvegarde à distance : il n'existe plus
+                    en 20 (<code>Invalid service name: db</code>, <code>odoo/http/router.py:136-141</code>). Un ancien script qui appelait <code>dump</code> par
+                    <code>/xmlrpc/2/db</code> échoue ; il passe soit par cette route HTTP, soit, mieux, par les deux voies
+                    suivantes, sur le serveur lui-même.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. ODOO-BIN DB DUMP ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Deuxième voie : <code>odoo-bin db dump</code></h2>
+                <p>Même fonction, même zip, sans mot de passe maître : la commande se connecte avec le rôle du fichier de
+                    configuration, et doit tourner sous le compte qui peut lire le filestore.</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin db -c /etc/odoo/odoo.conf dump ma_base /var/backups/odoo/ma_base.zip
+INFO ? odoo.modules.db: DUMP DB: ma_base format zip with filestore
+$ sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin db -c /etc/odoo/odoo.conf dump --format dump ma_base /var/backups/odoo/ma_base.dump
+INFO ? odoo.modules.db: DUMP DB: ma_base format dump with filestore</code></pre>
+                <p>La seconde ligne de journal dit « with filestore », mais le fichier n'en contient pas : le format
+                    <code>dump</code> n'est qu'un <code>pg_dump --format=c</code> (<code>odoo/modules/db.py:610-613</code>). Place les
+                    options avant le nom de la base : glissée entre le nom et le chemin, une option fait échouer la commande
+                    (<code>dump ma_base --format dump fichier</code> → <code>error: unrecognized arguments: fichier</code>).</p>
+                <p>Dans le zip, Odoo copie le filestore <strong>puis</strong> lance <code>pg_dump</code>
+                    (<code>odoo/modules/db.py:587-603</code>). Une pièce jointe créée entre les deux est dans le SQL sans son
+                    fichier. Sur une base au repos, c'est sans effet ; sur une production active la nuit (tâches planifiées,
+                    courriels entrants), c'est une raison de préférer la troisième voie, qui fait l'inverse.</p>
+                <div class="pitfall-box">
+                    <h4>Vers la sortie standard, <code>--format</code> et <code>--no-filestore</code> sont ignorés</h4>
+                    <p>Sans chemin (ou avec <code>-</code>), <code>db dump</code> écrit sur la sortie standard, pratique pour
+                        compresser ou envoyer à la volée. Mais cette branche appelle la fonction sans ses options
+                        (<code>odoo/cli/db.py:247-249</code>) : tu reçois toujours le zip complet.</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin db -c odoo.conf dump --format dump ma_base - > ma_base.dump
+INFO ? odoo.modules.db: DUMP DB: ma_base format zip with filestore
+$ file ma_base.dump
+ma_base.dump: Zip archive data, at least v2.0 to extract, compression method=deflate</code></pre>
+                    <p>Même chose avec <code>--no-filestore</code> : 13,7 Mo et 566 entrées au lieu de 2,8 Mo. Le code est le même
+                        dans la branche 19.0. Donne toujours un chemin de fichier quand tu passes une option.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. PG_DUMP ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Troisième voie : <code>pg_dump -Fc</code> et le filestore à part</h2>
+                <p>C'est la voie des sauvegardes planifiées : les outils de PostgreSQL pour la base, une copie de dossier pour le
+                    filestore, chacun dans le format qui lui convient. Toujours dans cet ordre, la base d'abord :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo pg_dump --format=custom --no-owner --file=/var/backups/odoo/ma_base.dump ma_base
+$ sudo -u odoo tar -C /opt/odoo/data/filestore -czf /var/backups/odoo/ma_base.filestore.tar.gz ma_base</code></pre>
+                <p>0,4 s et 6,1 Mo pour la base, 0,2 s et 10,9 Mo pour le filestore sur la démonstration. Le format personnalisé (<code>-Fc</code>) est
+                    compressé et se relit avec <code>pg_restore</code>, qui sait restaurer une seule table ou lister le contenu ;
+                    <code>--no-owner</code> fait comme Odoo et permet de recharger avec un autre rôle. Pourquoi la base d'abord : un
+                    fichier ajouté au filestore pendant l'opération sera en trop dans l'archive, sans conséquence. Dans l'ordre
+                    inverse, la base citerait un fichier absent de l'archive.</p>
+                <p>Avec <code>sudo -u odoo</code>, <code>pg_dump</code> se connecte par la socket locale avec l'authentification
+                    <em>peer</em> du serveur décrit en prérequis : pas de mot de passe à écrire dans un script. Sur un PostgreSQL
+                    distant, utilise un fichier <code>~/.pgpass</code> en 600 plutôt qu'une variable d'environnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RESTAURER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Restaurer : copie ou base déplacée</h2>
+                <h3>Ce que demande le gestionnaire</h3>
+                <p>La fenêtre <strong>Restore Database</strong> (figure plus haut) prend un fichier, un nom, la case
+                    <strong>Neutralize</strong>, et pose une question : <em>This database is a copy</em> (choix par défaut) ou
+                    <em>This database was moved</em>. Elle envoie <code>copy=true</code> ou <code>copy=false</code> à
+                    <code>/web/database/restore</code>, qui appelle <code>odoo.modules.db.restore</code>
+                    (<code>odoo/modules/db.py:616-669</code>). La seule différence entre les deux réponses est une ligne :
+                    pour une copie, <code>ir.config_parameter.init(force=True)</code> régénère six paramètres
+                    (<code>odoo/addons/base/models/ir_config_parameter.py:23-30</code>) : les quatre du tableau, et les deux réglages
+                    anti-force brute <code>base.login_cooldown_after</code> et <code>base.login_cooldown_duration</code>, remis à 10 et
+                    60 (à reprendre si tu les avais changés). La même sauvegarde, restaurée trois
+                    fois, comparée à la source :</p>
+                <table class="tmc">
+                    <thead><tr><th>Relevé</th><th>Source</th><th>« was moved »</th><th>« is a copy »</th><th>copy + Neutralize</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>database.uuid</code></td><td><code>9473240c-…</code></td><td><code>9473240c-…</code></td><td><code>41a2cd3e-…</code></td><td><code>48adb0f0-…</code></td></tr>
+                        <tr><td><code>database.secret</code></td><td>valeur d'origine</td><td>identique</td><td>nouvelle</td><td>nouvelle</td></tr>
+                        <tr><td><code>database.create_date</code></td><td>date d'origine</td><td>identique</td><td>date de la restauration</td><td>date de la restauration</td></tr>
+                        <tr><td><code>web.base.url</code></td><td><code>https://erp.exemple.com</code></td><td>identique</td><td><code>http://localhost:8069</code></td><td><code>http://localhost:8069</code></td></tr>
+                        <tr><td>Actions planifiées actives</td><td>21</td><td>21</td><td><strong>21</strong></td><td>1</td></tr>
+                        <tr><td>Serveur sortant actif</td><td><code>smtp.exemple.com</code></td><td><code>smtp.exemple.com</code></td><td><strong><code>smtp.exemple.com</code></strong></td><td>le leurre <code>invalid</code></td></tr>
+                        <tr><td>Durée, fichiers du filestore</td><td>—</td><td>5,7 s, 564</td><td>5,2 s, 564</td><td>6,1 s, 564</td></tr>
+                    </tbody>
+                </table>
+                <p>L'identifiant de base compte : c'est lui qu'Odoo envoie à son serveur de notifications avec le nombre
+                    d'utilisateurs et l'URL (tâche « Publisher: Update Notification », <code>addons/mail/models/update.py:25-66</code>),
+                    et c'est lui qui distingue deux bases auprès des services en ligne. D'où la règle :</p>
+                <ul>
+                    <li><strong>« was moved »</strong> quand la base restaurée <em>remplace</em> l'originale : nouveau serveur, retour
+                        arrière après incident. L'identité est conservée, la base reprend sa place.</li>
+                    <li><strong>« is a copy »</strong> dès que l'originale continue de tourner à côté : test, formation, recette.</li>
+                </ul>
+                <p>L'URL remise à <code>http://localhost:&lt;port du serveur&gt;</code> ne reste pas : à la connexion suivante
+                    d'un administrateur, Odoo l'écrit d'après l'adresse utilisée, sauf si <code>web.base.url.freeze</code> est
+                    vrai (<code>odoo/addons/base/models/res_users.py:851-861</code>).</p>
+                <div class="pitfall-box">
+                    <h4>« This database is a copy » ne coupe ni les tâches planifiées ni les courriels</h4>
+                    <p>Le tableau le montre : la copie change d'identité, mais garde ses 21 actions planifiées et son serveur sortant
+                        de production. Les tâches en retard (ici presque toutes, la sauvegarde datant de plusieurs jours) partent au premier
+                        passage du planificateur, et un serveur lancé sans <code>db_name</code> les exécute sur
+                        <strong>toutes</strong> les bases de son rôle, filtre ou pas (<code>odoo/service/server.py:112-114</code>).
+                        File d'attente des courriels, relances, envois de factures : la copie parle au monde réel. Une base
+                        remise par <code>pg_restore</code> est dans le même cas dès sa création, avant même ta commande
+                        <code>neutralize</code> : restaure-la sur une machine sans service Odoo, ou sur un serveur dont le fichier
+                        de configuration fixe <code>db_name</code>. Pour une base de
+                        test, coche <strong>Neutralize</strong> (ou <code>-n</code> en ligne de commande) ; le détail de ce qu'elle
+                        coupe est dans <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base
+                        de test</a>, et le fonctionnement du planificateur dans
+                        <a href="/blog/developpement-odoo-2/cron-ne-s-execute-pas-odoo-20-289">L'action planifiée ne s'exécute pas
+                        en Odoo 20</a>.</p>
+                </div>
+
+                <h3>Le gestionnaire ne restaure plus un <code>.dump</code></h3>
+                <p>Le gestionnaire propose de produire un fichier « pg_dump custom format », mais en 20 il ne sait plus le
+                    relire : <code>restore</code> ouvre le fichier comme un zip, sans autre branche.</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o reponse.html -w "%{http_code}\n" -F master_pwd='…' -F backup_file=@ma_base.dump \
+    -F name=ma_base_essai -F copy=true http://localhost:8069/web/database/restore
+422
+$ grep -o 'Could not restore[^&lt;]*' reponse.html
+Could not restore database. File is not a zip file
+$ psql -d ma_base_essai -Atc "select count(*) from pg_tables where schemaname = 'public'"
+0</code></pre>
+                <div class="pitfall-box">
+                    <h4>Après l'échec, une base vide porte déjà le nom choisi</h4>
+                    <p>La base est créée <em>avant</em> l'ouverture du fichier (<code>odoo/modules/db.py:628-632</code>). Elle reste,
+                        vide, et un nouvel essai sous le même nom répond « Database 'ma_base_essai' already exists ». Supprime-la
+                        (<code>odoo-bin db drop</code> ou bouton <strong>Delete</strong>) avant de recommencer. En 19, le même
+                        formulaire passait un fichier non zip à <code>pg_restore</code> ; en 20, un <code>.dump</code> se restaure à
+                        la main (plus bas). La ligne de commande, elle, contrôle le format avant de créer quoi que ce soit :
+                        <code>db load ma_base_x ma_base.dump</code> répond « Not a zipped dump file, use `pg_restore` to restore
+                        raw dumps… » et aucune base n'apparaît.</p>
+                </div>
+
+                <h3>En ligne de commande : <code>odoo-bin db load</code></h3>
+                <p>Pour un zip, <code>db load</code> fait la même chose que le gestionnaire, avec la copie par défaut,
+                    <code>--move</code> pour une base déplacée et <code>-n</code> pour neutraliser. Restauration de la production à
+                    côté de l'originale, identité conservée :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin db -c /etc/odoo/odoo.conf load --move ma_base_retour ma_base.zip
+Restoring ma_base.zip...
+INFO ? odoo.modules.db: RESTORING DB: ma_base_retour
+INFO ma_base_retour odoo.modules.db: RESTORE DB: ma_base_retour</code></pre>
+                <p>Six secondes ici ; uuid, secret, date de création et URL identiques à la source, 564 fichiers dans
+                    <code>filestore/ma_base_retour</code>. Restaurer sous un autre nom puis échanger, plutôt qu'écraser la base en
+                    place avec <code>-f</code>, garde l'originale tant que la restauration n'est pas contrôlée ; l'échange se fait
+                    service arrêté, en deux renommages qui déplacent aussi le filestore :
+                    <code>db rename ma_base ma_base_avant</code> puis <code>db rename ma_base_retour ma_base</code>.</p>
+
+                <h3>À la main : <code>createdb</code>, <code>pg_restore</code>, filestore</h3>
+                <p>Pour la troisième voie, et pour tout fichier <code>.dump</code>. Trois règles : recréer la base comme Odoo la
+                    crée (<code>template0</code>, UTF-8, tri <code>C</code>), restaurer sans propriétaire, et poser le filestore sous
+                    le <strong>nouveau</strong> nom de base.</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo createdb -T template0 -E UTF8 --lc-collate=C ma_base_retour
+$ sudo -u odoo pg_restore --no-owner -d ma_base_retour /var/backups/odoo/ma_base.dump
+$ sudo -u odoo tar -C /opt/odoo/data/filestore -xzf /var/backups/odoo/ma_base.filestore.tar.gz \
+    --transform 's/^ma_base/ma_base_retour/'
+$ psql -d postgres -Atc "select datname, pg_get_userbyid(datdba), datcollate, datctype from pg_database where datname = 'ma_base_retour'"
+ma_base_retour|odoo|C|fr_FR.UTF-8</code></pre>
+                <p>4,4 s pour <code>pg_restore</code>, code de sortie 0. Sans <code>-T template0 --lc-collate=C</code>, la base
+                    hériterait du modèle du serveur (ici <code>template1</code> en <code>fr_FR.UTF-8</code>) et les listes triées
+                    par nom changeraient d'ordre. Une base restaurée ainsi est une base <strong>déplacée</strong> : PostgreSQL
+                    recopie les paramètres tels quels, uuid compris. Pour en faire une copie de test, neutralise-la puis donne-lui
+                    une nouvelle identité, dans cet ordre (la neutralisation remplace le secret par <code>dummysecret</code>,
+                    <code>base/data/neutralize.sql:35-38</code>, la seconde commande le régénère) :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin neutralize -c odoo.conf -d ma_base_retour
+INFO ? odoo.cli.neutralize: Starting ma_base_retour database neutralization
+INFO ? odoo.modules.neutralize: Neutralization finished
+$ echo "env['ir.config_parameter'].init(force=True); env.cr.commit()" | odoo-bin shell -c odoo.conf -d ma_base_retour --no-http
+$ psql -d ma_base_retour -Atc "select key, value from ir_config_parameter where key in ('database.uuid', 'database.is_neutralized')"
+database.is_neutralized|True
+database.uuid|7ef31f7f-dd3d-11f1-87e9-000c29329803</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. VÉRIFIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Vérifier une sauvegarde : la restaurer</h2>
+                <p>Un fichier qui existe et qui a une taille raisonnable ne prouve rien : un <code>data_dir</code> mal réglé donne
+                    un filestore vide sans aucune erreur dans la base. La seule preuve, c'est une restauration, dans une base de
+                    test neutralisée, suivie d'un contrôle. Ce script le fait pour une sauvegarde de la troisième voie :</p>
+<pre class="language-bash"><code class="language-bash">#!/usr/bin/env bash
+# verifier-sauvegarde.sh : restaure une sauvegarde (dump + filestore) dans une base de test neutralisée, puis la contrôle.
+set -euo pipefail
+DUMP=$1; FILESTORE_TGZ=$2
+CONF=${CONF:-/etc/odoo/odoo.conf}
+DATA_DIR=${DATA_DIR:-/opt/odoo/data}
+PY=${PY:-/opt/odoo/venv/bin/python}
+ODOO_BIN=${ODOO_BIN:-/opt/odoo/odoo/odoo-bin}
+TEST=${TEST:-ma_base_verif}
+LOG=${LOG:-$DATA_DIR/verifier-sauvegarde.log}
+[[ $TEST == *_verif ]] || { echo "refus : la base de contrôle doit finir par _verif" &gt;&amp;2; exit 2; }
+
+# 0. Les fichiers se relisent-ils ?
+pg_restore --list "$DUMP" &gt; /dev/null
+tar -tzf "$FILESTORE_TGZ" &gt; /dev/null
+
+# 1. Restaurer à côté, avec les réglages d'une base créée par Odoo
+if psql -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = '$TEST'" | grep -q 1; then
+    "$PY" "$ODOO_BIN" db -c "$CONF" drop "$TEST" 2&gt;&gt;"$LOG"      # base et filestore
+fi
+createdb -T template0 -E UTF8 --lc-collate=C "$TEST"
+pg_restore --no-owner --exit-on-error -d "$TEST" "$DUMP"
+mkdir -p "$DATA_DIR/filestore/$TEST"
+tar -C "$DATA_DIR/filestore/$TEST" --strip-components=1 -xzf "$FILESTORE_TGZ"
+
+# 2. En faire une copie de test : neutraliser, puis nouvelle identité
+"$PY" "$ODOO_BIN" neutralize -c "$CONF" -d "$TEST" 2&gt;&gt;"$LOG"
+echo "env['ir.config_parameter'].init(force=True); env.cr.commit()" |
+    "$PY" "$ODOO_BIN" shell -c "$CONF" -d "$TEST" --no-http 2&gt;&gt;"$LOG"
+
+# 3. Contrôler : chaque pièce jointe a-t-elle son fichier ?
+RES=$("$PY" "$ODOO_BIN" shell -c "$CONF" -d "$TEST" --no-http 2&gt;&gt;"$LOG" &lt;&lt;'PY'
+import os
+fs = env['ir.attachment']._filestore()
+env.cr.execute("SELECT DISTINCT store_fname FROM ir_attachment WHERE store_fname IS NOT NULL")
+noms = [r[0] for r in env.cr.fetchall()]
+manquants = [n for n in noms if not os.path.isfile(os.path.join(fs, n))]
+mods = env['ir.module.module'].search_count([('state', '=', 'installed')])
+print(f"modules installés : {mods} | fichiers attendus : {len(noms)} | manquants : {len(manquants)}")
+print("VERDICT :", "OK" if not manquants else "FILESTORE INCOMPLET")
+PY
+)
+echo "${RES:-ÉCHEC du contrôle : voir $LOG}"
+grep -q "VERDICT : OK" &lt;&lt;&lt; "$RES"</code></pre>
+                <p>Le contrôle passe par SQL et non par <code>search()</code> : l'ORM écarte par défaut les pièces jointes liées
+                    à un champ, images des produits et des contacts comprises (<code>ir_attachment.py:816-824</code>). Sur la sauvegarde de la nuit, puis sur
+                    une archive de filestore incomplète :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo ./verifier-sauvegarde.sh /var/backups/odoo/ma_base_2026-11-10_2048.dump /var/backups/odoo/ma_base_2026-11-10_2048.filestore.tar.gz
+modules installés : 69 | fichiers attendus : 282 | manquants : 0
+VERDICT : OK
+$ echo $?
+0
+$ sudo -u odoo ./verifier-sauvegarde.sh /var/backups/odoo/ma_base_2026-11-10_2048.dump filestore-partiel.tar.gz
+modules installés : 69 | fichiers attendus : 282 | manquants : 263
+VERDICT : FILESTORE INCOMPLET
+$ echo $?
+1</code></pre>
+                <p>Moins de sept secondes pour la démonstration. Le garde-fou du début refuse tout nom qui ne finit pas par
+                    <code>_verif</code> (<code>TEST=ma_base</code> → « refus : la base de contrôle doit finir par _verif », code 2) :
+                    le script supprime puis recrée cette base à chaque passage. Les messages d'Odoo vont dans
+                    <code>$LOG</code>.</p>
+                <p>Lance-le de préférence sur une autre machine que la production, ou sur un serveur qui fixe
+                    <code>db_name</code> : entre <code>pg_restore</code> et la neutralisation, la base restaurée est visible du
+                    planificateur d'un serveur qui n'en fixe pas (encadré de la section 5).</p>
+                <p>Compare le nombre de modules à celui du
+                    <code>manifest.json</code> si ta sauvegarde est un zip, et ouvre au moins une fois la base de contrôle dans
+                    un navigateur : un bandeau rouge signale qu'elle est neutralisée. Lance ce script chaque semaine sur la
+                    dernière sauvegarde, et à chaque changement de serveur, de version de PostgreSQL ou de script.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. PLANIFIER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Planifier : script, rotation, copie hors du serveur</h2>
+                <h3>Le script</h3>
+                <p>La troisième voie, une empreinte par fichier, une rotation et une copie vers une autre machine. Installé en
+                    <code>/usr/local/bin/sauvegarde-odoo.sh</code>, exécuté par le compte <code>odoo</code> :</p>
+<pre class="language-bash"><code class="language-bash">#!/usr/bin/env bash
+# Sauvegarde complète d'une base Odoo 20 : base PostgreSQL, puis filestore.
+set -euo pipefail
+
+BASE=${BASE:-ma_base}
+DATA_DIR=${DATA_DIR:-/opt/odoo/data}          # data_dir du fichier de configuration
+DEST=${DEST:-/var/backups/odoo}
+GARDER_JOURS=${GARDER_JOURS:-14}
+DISTANT=${DISTANT:-sauvegarde@autre-serveur:/srv/sauvegardes/odoo/}
+
+H=$(date +%Y-%m-%d_%H%M)
+P="$DEST/${BASE}_$H"
+umask 077
+# En cas d'échec, on ne laisse que des fichiers .part, que ni la rotation ni la copie ne prennent pour une sauvegarde.
+trap 'echo "ÉCHEC de la sauvegarde $BASE" &gt;&amp;2' ERR
+
+# 1. La base d'abord : un fichier ajouté ensuite sera en trop dans le filestore, jamais manquant.
+pg_dump --format=custom --no-owner --file="$P.dump.part" "$BASE"
+# 2. Le filestore ensuite ; tar sort en 1 si un fichier change pendant la lecture : ce n'est pas une erreur ici.
+tar -C "$DATA_DIR/filestore" --warning=no-file-changed -czf "$P.filestore.tar.gz.part" "$BASE" || [ $? -eq 1 ]
+mv "$P.dump.part" "$P.dump"
+mv "$P.filestore.tar.gz.part" "$P.filestore.tar.gz"
+# 3. Les empreintes, pour contrôler la copie distante.
+(cd "$DEST" &amp;&amp; sha256sum "${BASE}_$H.dump" "${BASE}_$H.filestore.tar.gz" &gt; "${BASE}_$H.sha256")
+# 4. La rotation : on efface ce qui a plus de GARDER_JOURS jours (sauvegardes de cette base seulement).
+find "$DEST" -maxdepth 1 -name "${BASE}_20*" -mtime +"$GARDER_JOURS" -print -delete
+# 5. La copie hors du serveur : sans --delete, l'autre côté garde sa propre rotation.
+rsync -a --exclude='*.part' -e "ssh -o BatchMode=yes" "$DEST"/ "$DISTANT"
+
+echo "sauvegarde $BASE terminée : $(du -ch "$P".dump "$P".filestore.tar.gz | tail -1 | cut -f1)"</code></pre>
+                <p>Le script ne crée pas son dossier : <code>/var/backups</code> appartient à <code>root</code>. Une fois pour
+                    toutes, <code>sudo install -d -o odoo -g odoo -m 700 /var/backups/odoo</code>. Exécution sur un dossier qui
+                    contenait trois anciennes sauvegardes, datées de 20, 15 et 3 jours ; pour la démonstration,
+                    <code>DISTANT</code> est un dossier monté qui joue le rôle de l'autre machine :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo env DISTANT=/mnt/sauvegardes/odoo/ /usr/local/bin/sauvegarde-odoo.sh
+/var/backups/odoo/ma_base_2026-10-21_0230.sha256
+/var/backups/odoo/ma_base_2026-10-21_0230.filestore.tar.gz
+/var/backups/odoo/ma_base_2026-10-21_0230.dump
+/var/backups/odoo/ma_base_2026-10-26_0230.filestore.tar.gz
+/var/backups/odoo/ma_base_2026-10-26_0230.dump
+/var/backups/odoo/ma_base_2026-10-26_0230.sha256
+sauvegarde ma_base terminée : 17M
+$ ls -l /var/backups/odoo/
+-rw-rw-r-- 1 odoo odoo        7 Nov  7 20:48 ma_base_2026-11-07_0230.dump
+-rw-rw-r-- 1 odoo odoo        7 Nov  7 20:48 ma_base_2026-11-07_0230.filestore.tar.gz
+-rw-rw-r-- 1 odoo odoo        7 Nov  7 20:48 ma_base_2026-11-07_0230.sha256
+-rw------- 1 odoo odoo  6080901 Nov 10 20:48 ma_base_2026-11-10_2048.dump
+-rw------- 1 odoo odoo 10868225 Nov 10 20:48 ma_base_2026-11-10_2048.filestore.tar.gz
+-rw------- 1 odoo odoo      214 Nov 10 20:48 ma_base_2026-11-10_2048.sha256</code></pre>
+                <p>Moins d'une seconde. <code>-mtime +14</code> signifie « au moins 15 jours entiers » : les sauvegardes de 20 et
+                    15 jours partent, celle de 3 jours reste (les trois anciennes étaient des fichiers d'essai de 7 octets). Les
+                    nouvelles sont en <code>600</code> grâce au <code>umask</code> : une sauvegarde contient les mots de passe
+                    hachés et toutes les données de l'entreprise. De l'autre côté, les empreintes se contrôlent :</p>
+<pre class="language-bash"><code class="language-bash">$ sha256sum -c ma_base_2026-11-10_2048.sha256
+ma_base_2026-11-10_2048.dump: OK
+ma_base_2026-11-10_2048.filestore.tar.gz: OK</code></pre>
+                <p>Et quand quelque chose ne va pas, le script s'arrête au lieu de produire une sauvegarde creuse. Avec un
+                    <code>DATA_DIR</code> erroné :</p>
+<pre class="language-bash"><code class="language-bash">$ sudo -u odoo env DATA_DIR=/opt/odoo/mauvais /usr/local/bin/sauvegarde-odoo.sh
+tar: /opt/odoo/mauvais/filestore: Cannot open: No such file or directory
+tar: Error is not recoverable: exiting now
+ÉCHEC de la sauvegarde ma_base
+$ echo $?
+1
+$ ls /var/backups/odoo/ | grep part
+ma_base_2026-11-10_2048.dump.part
+ma_base_2026-11-10_2048.filestore.tar.gz.part</code></pre>
+                <p>Seuls des fichiers <code>.part</code> restent : la rotation ne les compte pas comme des sauvegardes, la copie
+                    distante les exclut, et ni l'une ni l'autre n'a eu lieu. C'est <code>set -euo pipefail</code> qui arrête tout ;
+                    sans lui, le script continuerait et copierait une archive vide sur l'autre serveur. La seule exception voulue
+                    est le code 1 de <code>tar</code>, qui signale un fichier modifié ou supprimé pendant la lecture (le
+                    filestore est sauvegardé à chaud) : c'est l'objet du <code>|| [ $? -eq 1 ]</code>.</p>
+
+                <h3>La minuterie systemd</h3>
+                <p>Deux fichiers dans <code>/etc/systemd/system/</code>. Le service, de type <code>oneshot</code>, lancé sous le
+                    compte <code>odoo</code> :</p>
+<pre class="language-ini"><code class="language-ini"># odoo-sauvegarde.service
+[Unit]
+Description=Sauvegarde Odoo (base + filestore)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=odoo
+Environment=BASE=ma_base DATA_DIR=/opt/odoo/data DEST=/var/backups/odoo
+ExecStart=/usr/local/bin/sauvegarde-odoo.sh</code></pre>
+<pre class="language-ini"><code class="language-ini"># odoo-sauvegarde.timer
+[Unit]
+Description=Sauvegarde Odoo chaque nuit
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target</code></pre>
+                <p><code>OnCalendar</code> suit le fuseau horaire du serveur. <code>Persistent=true</code> rattrape une sauvegarde manquée parce que le serveur était éteint à l'heure dite.
+                    Avant de les installer, fais relire les deux fichiers par systemd ; il ne dit rien quand tout va bien, et
+                    signale par exemple un script absent :</p>
+<pre class="language-bash"><code class="language-bash">$ systemd-analyze verify ./odoo-sauvegarde.timer ./odoo-sauvegarde.service
+odoo-sauvegarde.service: Command /usr/local/bin/sauvegarde-odoo.sh is not executable: No such file or directory
+$ systemd-analyze calendar --iterations=2 "*-*-* 02:30:00"
+Normalized form: *-*-* 02:30:00
+    Next elapse: Wed 2026-11-11 02:30:00 UTC
+       From now: 6h left
+   Iteration #2: Thu 2026-11-12 02:30:00 UTC
+       From now: 1 day 6h left</code></pre>
+                <p>Puis <code>systemctl daemon-reload</code>, <code>systemctl enable --now odoo-sauvegarde.timer</code>, et un
+                    premier passage à la main : <code>systemctl start odoo-sauvegarde.service</code>, suivi de
+                    <code>journalctl -u odoo-sauvegarde</code>. systemd exécute le script hors de ton terminal, sans tes variables
+                    d'environnement : c'est là que se révèlent les chemins et les droits oubliés. Le même script lancé par une
+                    unité temporaire (ici en unité utilisateur, d'un compte qui a une session ; le compte système
+                    <code>odoo</code> n'en a pas, d'où le service ci-dessus) :</p>
+<pre class="language-bash"><code class="language-bash">$ systemd-run --user --wait --collect --unit=sauvegarde-essai -p Type=oneshot \
+    --setenv=BASE=ma_base --setenv=DATA_DIR=/opt/odoo/data --setenv=DEST=/var/backups/odoo /usr/local/bin/sauvegarde-odoo.sh
+Running as unit: sauvegarde-essai.service; invocation ID: 69d3b2e0…
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 838ms
+CPU time consumed: 626ms
+$ journalctl --user -u sauvegarde-essai -o cat
+Starting sauvegarde-essai.service - /usr/local/bin/sauvegarde-odoo.sh...
+sauvegarde ma_base terminée : 17M
+Finished sauvegarde-essai.service - /usr/local/bin/sauvegarde-odoo.sh.</code></pre>
+                <p>En cron, l'équivalent est une ligne dans la table du compte <code>odoo</code>
+                    (<code>30 2 * * * /usr/local/bin/sauvegarde-odoo.sh</code>), avec les mêmes précautions : chemins absolus,
+                    <code>PATH</code> réduit, et une adresse <code>MAILTO</code> qui reçoit les sorties. La minuterie a l'avantage
+                    de tout écrire dans le journal et de signaler l'échec dans <code>systemctl status</code>.</p>
+
+                <h3>Hors du serveur</h3>
+                <p>Une sauvegarde rangée sur le même disque que la base ne protège que des erreurs de manipulation. La ligne
+                    <code>rsync</code> du script pousse les fichiers vers une autre machine, joignable par une clé SSH dédiée,
+                    sans mot de passe et limitée à ce dossier. Deux choix à faire en connaissance de cause :</p>
+                <ul>
+                    <li><strong>Sans <code>--delete</code></strong>, comme ici, une suppression ou un chiffrement malveillant sur le
+                        serveur ne se propage pas ; en contrepartie, l'autre machine applique sa propre rotation (la même ligne
+                        <code>find</code>, plus généreuse).</li>
+                    <li><strong>Mieux encore, inverser le sens</strong> : c'est la machine de sauvegarde qui vient chercher les
+                        fichiers, et le serveur Odoo n'a aucun accès en écriture chez elle. Un serveur compromis ne peut alors pas
+                        effacer ses propres sauvegardes.</li>
+                </ul>
+                <p>Pour un gros filestore, archiver tout le dossier chaque nuit devient lourd. Puisque ses fichiers ne changent
+                    jamais (section 1), un <code>rsync -a</code> du dossier lui-même vers l'autre machine ne transfère que les
+                    nouveaux ; la base, elle, reste sauvegardée chaque nuit en entier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. 19 → 20 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce qui change entre Odoo 19 et Odoo 20</h2>
+                <table class="tmc">
+                    <thead><tr><th>Sujet</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Restaurer un <code>.dump</code> depuis le gestionnaire</td><td>accepté (<code>pg_restore --no-owner</code>)</td>
+                            <td>refusé : « File is not a zip file », base vide laissée</td></tr>
+                        <tr><td>Sauvegarde et restauration par XML-RPC (service <code>db</code>)</td><td>disponible</td>
+                            <td>retiré : <code>Invalid service name: db</code></td></tr>
+                        <tr><td>Neutralisation (<code>base/data/neutralize.sql</code>)</td><td><code>database.secret</code> conservé</td>
+                            <td>remplacé par <code>dummysecret</code> (lignes 35-38)</td></tr>
+                        <tr><td>Code</td><td><code>odoo/service/db.py</code> (<code>dump_db</code>, <code>restore_db</code>)</td>
+                            <td><code>odoo/modules/db.py</code> (<code>dump</code>, <code>restore</code>)</td></tr>
+                        <tr><td>Inchangé</td><td colspan="2">le zip (<code>dump.sql</code>, <code>manifest.json</code>,
+                            <code>filestore/</code>, filestore copié avant le SQL) ; le format <code>dump</code> sans filestore ;
+                            copie ou déplacée et les paramètres régénérés ; <code>db load</code> limité au zip ; la sortie standard
+                            de <code>db dump</code> qui ignore les options</td></tr>
+                    </tbody>
+                </table>
+                <p>Les autres changements techniques de la version sont rassemblés dans
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Où est le filestore</td><td><code>config.filestore(env.cr.dbname)</code> en shell ;
+                            <code>&lt;data_dir&gt;/filestore/&lt;base&gt;</code></td></tr>
+                        <tr><td>Sauvegarde complète en un fichier</td><td><code>odoo-bin db -c odoo.conf dump ma_base ma_base.zip</code></td></tr>
+                        <tr><td>Sauvegarde planifiée</td><td><code>pg_dump --format=custom --no-owner</code>, <strong>puis</strong>
+                            le filestore</td></tr>
+                        <tr><td>Remettre la production</td><td><code>db load --move ma_base_retour ma_base.zip</code>, contrôle, puis
+                            <code>db rename</code> service arrêté</td></tr>
+                        <tr><td>Base de test depuis une sauvegarde</td><td>gestionnaire : copy + Neutralize ; <code>db load -n</code> ;
+                            après <code>pg_restore</code> : <code>neutralize</code> puis <code>init(force=True)</code></td></tr>
+                        <tr><td>Recréer la base pour <code>pg_restore</code></td><td><code>createdb -T template0 -E UTF8 --lc-collate=C</code></td></tr>
+                        <tr><td>Prouver une sauvegarde</td><td>la restaurer et compter les fichiers manquants</td></tr>
+                        <tr><td>Automatiser</td><td>service <code>oneshot</code> + minuterie <code>OnCalendar</code>,
+                            <code>Persistent=true</code>, copie vers une autre machine</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une sauvegarde Odoo = la base <strong>et</strong> le filestore ; demande à Odoo où est ce dernier.</li>
+                    <li>En script, la base d'abord, le filestore ensuite ; et toujours un chemin de fichier avec
+                        <code>odoo-bin db dump</code> quand tu passes une option.</li>
+                    <li>« Copie » change l'identité de la base, pas son comportement : sans neutralisation, tâches planifiées et
+                        courriels repartent.</li>
+                    <li>En 20, le gestionnaire ne restaure que des zip ; un <code>.dump</code> passe par <code>pg_restore</code>.</li>
+                    <li>Une sauvegarde n'est prouvée que restaurée : planifie aussi le contrôle, et garde une copie hors du serveur.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes et scripts exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community (PostgreSQL 16,
+                    rôle de connexion non superutilisateur), copies jetables d'une base de démonstration. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 :
+                        <a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/db.py" target="_blank" rel="noopener"><code>odoo/modules/db.py</code></a>
+                        (<code>dump</code>, <code>restore</code>) ; <code>odoo/cli/db.py</code> ; <code>odoo/tools/config.py</code> ;
+                        <code>addons/web/controllers/database.py</code>,
+                        <code>addons/web/static/src/public/database_manager.qweb.html</code> ;
+                        <code>odoo/addons/base/models/ir_config_parameter.py</code>, <code>res_users.py</code>,
+                        <code>ir_attachment.py</code> ; <code>addons/mail/models/update.py</code> ; <code>odoo/service/server.py</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>odoo/service/db.py</code> (<code>dump_db</code>,
+                        <code>restore_db</code>), <code>odoo/cli/db.py</code>.</li>
+                    <li>Documentation PostgreSQL : <a href="https://www.postgresql.org/docs/16/app-pgdump.html" target="_blank" rel="noopener">pg_dump</a>,
+                        <a href="https://www.postgresql.org/docs/16/app-pgrestore.html" target="_blank" rel="noopener">pg_restore</a> ;
+                        systemd : <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html" target="_blank" rel="noopener">systemd.timer</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</a></h5>
+                            <p class="small text-muted mb-0">La sauvegarde du jour devient une base de recette sûre : ce que la neutralisation coupe, module par module.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Le serveur que ces scripts supposent : compte <code>odoo</code>, <code>data_dir</code>, service systemd.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">Installer Odoo 20 avec Docker</a></h5>
+                            <p class="small text-muted mb-0">En conteneur, la base et le filestore vivent dans des volumes : les mêmes deux morceaux à sauvegarder.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
