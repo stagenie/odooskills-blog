@@ -1,0 +1,792 @@
+<!--
+Article — Un composant OWL 3 de A à Z en Odoo 20 : props, état, hooks, gabarit
+Série « Le front OWL 3 en Odoo 20 » (59), étape 1 ; lot T2 (T2.2 du plan vague 3 technique)
+Date : 2026-11-10
+Slug : composant-owl-3-odoo-20
+Mot-clé cible : odoo owl tutorial, odoo owl props
+Catégorie : Développement Odoo
+Tags : intermediaire, web-ui, guide, community
+Temps de lecture : ~12 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, module oski_owl_annuaire 20.0.1.0.0 installé
+sans WARNING ; serveur de travail en boucle locale, dbfilter limité à la copie, crons coupés ; navigateur Chromium par Playwright) :
+- Écran : 7 sociétés de démo, champ de recherche focalisé au montage, « in » → Azure Interior, Gemini Furniture, Lumber Inc ; 2 favoris
+  gardés dans localStorage ([16,9]) et relus après rechargement ; touche / → focus ; aucune erreur console ni journal serveur.
+- Hoot : /web/tests?debug=assets&filter="@oski_owl_annuaire" → « Passed 4 tests (18 assertions) », sans defineMailModels (module qui ne dépend que de web).
+- Ordre des hooks relevé par le test : setup, effet n=0, onWillStart, onMounted ; écriture → nettoyage, effet n=1, onWillPatch, onPatched ;
+  t-if faux → onWillUnmount, onWillDestroy, nettoyage de l'effet. Effet qui lit un signal.ref : null au 1er passage, INPUT après onMounted.
+- Contre-épreuves (sonde Hoot temporaire, retirée) : useState/useRef/reactive/onRendered = undefined (OWL 3.0.0-alpha.49) ; t-out="state.query" →
+  TypeError … reading 'query' ; t-out="title" → vide sans erreur ; t-model sans .proxy → OwlError Invalid t-model expression ; t-ref="searchInput"
+  → OwlError Ref is undefined or null ; static props avec prop manquante → aucune erreur ; static defaultProps → Error … which Owl 3 ignores.
+- Prop manquante dans le gabarit du parent : sans debug, 7 cartes et TypeError au clic (this.props.onToggleFavorite is not a function) ;
+  avec debug=1 → fenêtre « Oups ! », OwlError Invalid component props (ContactCard), missingKeys onToggleFavorite.
+- Source 20.0 : owl.js 753 (signal.ref), 1697-1699 (useEffect = onWillDestroy(effect)), 1712 (useListener), 3715 (ctx = { this }),
+  4143, 4201, 4779 (messages) ; env.js:104 (dev = odoo.debug || test_mode) ; owl2/owl3_compatibility_layer.js:44-51 ;
+  webclient/actions/action_plugin.js:101-109 ; core/orm_plugin.js:240-246. 19.0 : owl.js 6212 (useEffect lancé par onMounted/onPatched).
+Captures : content/blog/screenshots/composant-owl-3-odoo-20/ (01 schéma, 02 annuaire, 03 filtre et favoris, 04 props invalides en debug
+— hôte remplacé par localhost:8069, 05 Hoot).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Un composant OWL 3 de A à Z en Odoo 20 : props, état, hooks, gabarit</h1>
+                <p class="lead mt-3 text-white">Un annuaire express des sociétés, ouvert depuis le menu d'Odoo 20 : un composant parent
+                    qui charge et filtre, un composant enfant qui affiche une carte et remonte le clic sur l'étoile. Chaque brique
+                    d'OWL 3 y passe, avec un test Hoot et ce qui casse quand on l'écrit comme en Odoo 19.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Web et interface</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Découper</h4>
+                        <p>Un parent et un enfant : des props typées avec <code>useProps</code> et <code>t</code>, une valeur par
+                            défaut, un rappel qui remonte l'action de l'enfant vers le parent.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Réagir</h4>
+                        <p>L'état avec <code>proxy</code>, une valeur dérivée avec <code>computed</code>, une référence avec
+                            <code>signal.ref()</code>, et les hooks dans l'ordre où OWL 3 les appelle.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Vérifier</h4>
+                        <p>Quatre tests Hoot, et les erreurs exactes que produit le code écrit à la manière d'Odoo 19.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community, avec les données de démonstration pour avoir des sociétés à afficher. Le
+                            module ne dépend que de <code>web</code> : aucune application à installer.</li>
+                        <li>Savoir créer et installer un module (voir
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>).</li>
+                        <li>Un navigateur récent. Aucun outil JavaScript à installer : Odoo assemble lui-même les fichiers du module.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Dans <a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">le badge de retard</a>, un
+                    widget de champ n'affichait qu'une valeur fournie par la vue. Un écran complet demande plus : charger des
+                    données, garder un état, réagir à la saisie, se souvenir d'un choix.</p>
+                <p>L'exemple de cet article est une <strong>action client</strong> : un écran entièrement écrit en OWL, ouvert par
+                    un menu, sans vue liste ni formulaire. Il affiche les sociétés de la base, les filtre à la frappe et marque des
+                    favoris d'une étoile. Deux composants se partagent le travail.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en trois bandes. 1 Le parent Annuaire, action client oski_owl_annuaire.annuaire : props useProps avec standardActionServiceProps, état proxy avec partners, query, onlyFavorites et favoriteIds, valeur dérivée computed visiblePartners lue dans le gabarit, hooks onWillStart, onMounted, useEffect et useListener. 2 L'enfant ContactCard, une carte par société avec t-foreach et t-key : reçoit partner, isFavorite et onToggleFavorite.bind, valide t.object id et name, t.boolean optional false et t.function, affiche this.props.partner.name dans t-out car tout membre prend this., remonte this.props.onToggleFavorite(id) et le parent écrit puis tout se redessine. 3 Le cycle de vie relevé par le test Hoot : montage setup, useEffect premier passage, onWillStart, onMounted ; mise à jour écriture d'état, nettoyage et effet, onWillPatch, onPatched ; destruction t-if faux, onWillUnmount, onWillDestroy, nettoyage de l'effet"/>
+                    <figcaption>Les deux composants de l'annuaire et l'ordre dans lequel OWL 3 appelle leurs hooks.</figcaption>
+                </figure>
+                <p>Le module tient en huit fichiers :</p>
+<pre class="language-bash"><code class="language-bash">oski_owl_annuaire/
+├── __init__.py                          # vide : aucun modèle Python
+├── __manifest__.py                      # dépend de web, déclare les assets
+├── views/annuaire_action.xml            # l'action client et son menu
+├── static/description/icon.png          # l'icône du menu principal
+├── static/src/annuaire/
+│   ├── annuaire.js / annuaire.xml       # le parent : données, état, hooks
+│   └── contact_card.js / contact_card.xml   # l'enfant : une carte
+└── static/tests/annuaire.test.js        # quatre tests Hoot</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module : un manifeste, une action client, un menu</h2>
+                <p>Le manifeste ne déclare aucun modèle. Il charge le JavaScript et les gabarits dans le client web
+                    (<code>web.assets_backend</code>) et les tests dans le lanceur Hoot (<code>web.assets_unit_tests</code>) :</p>
+<pre class="language-python"><code class="language-python">{
+    'name': "Annuaire express (démo OWL 3)",
+    'summary': "Un composant OWL 3 de A à Z : props, état, hooks, gabarit et test Hoot",
+    'description': """
+Action client OWL 3 qui liste les sociétés, filtre à la frappe et garde des favoris
+dans le navigateur. Module d'exemple du blog OdooSkills.
+    """,
+    'version': '20.0.1.0.0',
+    'category': 'Hidden',
+    'author': "OdooSkills",
+    'website': "https://odooskills.com",
+    'license': 'LGPL-3',
+    'depends': ['web'],
+    'data': [
+        'views/annuaire_action.xml',
+    ],
+    'assets': {
+        'web.assets_backend': [
+            'oski_owl_annuaire/static/src/**/*',
+        ],
+        'web.assets_unit_tests': [
+            'oski_owl_annuaire/static/tests/**/*',
+        ],
+    },
+    'application': True,
+}</code></pre>
+                <p>L'action client ne porte qu'un nom et un <code>tag</code>. Le <code>tag</code> est la clé sous laquelle le
+                    composant s'enregistre côté JavaScript. Il n'y a pas de modèle propre au module, donc pas de fichier
+                    <code>ir.access.csv</code> : le composant lit <code>res.partner</code> avec les droits de l'utilisateur connecté.</p>
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;odoo&gt;
+    &lt;record id="action_annuaire" model="ir.actions.client"&gt;
+        &lt;field name="name"&gt;Annuaire express&lt;/field&gt;
+        &lt;field name="tag"&gt;oski_owl_annuaire.annuaire&lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;menuitem id="menu_annuaire_root"
+              name="Annuaire express"
+              action="action_annuaire"
+              web_icon="oski_owl_annuaire,static/description/icon.png"
+              sequence="90"/&gt;
+&lt;/odoo&gt;</code></pre>
+                <p>Le lien entre les deux se fait à la dernière ligne de <code>annuaire.js</code>, dans le registre
+                    <code>actions</code> :</p>
+<pre class="language-javascript"><code class="language-javascript">registry.category("actions").add("oski_owl_annuaire.annuaire", Annuaire);</code></pre>
+                <p>Installation classique, puis le menu « Annuaire express » apparaît parmi les applications :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base --addons-path=…/odoo/addons,…/mes_modules -i oski_owl_annuaire --stop-after-init</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. L'ENFANT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. L'enfant : une carte, trois props validées</h2>
+                <p>On commence par le plus simple. <code>ContactCard</code> ne charge rien et ne garde aucun état : elle affiche ce
+                    que le parent lui donne. Ce sont ses <strong>props</strong>. Quand on clique sur l'étoile, elle prévient le parent
+                    par une fonction reçue elle aussi en prop.</p>
+<pre class="language-javascript"><code class="language-javascript">import { Component, t, useProps } from "@odoo/owl";
+
+/** Carte d'une société : n'affiche que ce que le parent lui passe. */
+export class ContactCard extends Component {
+    static template = "oski_owl_annuaire.ContactCard";
+
+    props = useProps({
+        partner: t.object({ id: t.number(), name: t.string() }),
+        isFavorite: t.boolean().optional(false),
+        onToggleFavorite: t.function(),
+    });
+
+    toggle() {
+        this.props.onToggleFavorite(this.props.partner.id);
+    }
+}</code></pre>
+                <ul>
+                    <li><code>props = useProps({ … })</code> remplace le <code>static props</code> d'OWL 2. Chaque prop reçoit un
+                        type <code>t</code> : <code>t.object({ id: t.number(), name: t.string() })</code> exige ces deux clés et
+                        accepte les autres (<code>email</code>, <code>city</code>), car <code>t.object</code> est un schéma ouvert.</li>
+                    <li><code>t.boolean().optional(false)</code> rend la prop facultative et lui donne une valeur par défaut. C'est la
+                        manière de déclarer un défaut avec <code>useProps</code> ; <code>static defaultProps</code> est refusé.</li>
+                    <li><code>t.function()</code> sans <code>optional()</code> rend le rappel obligatoire.</li>
+                </ul>
+                <p>Le gabarit, dans le fichier XML voisin :</p>
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;templates xml:space="preserve"&gt;
+
+    &lt;t t-name="oski_owl_annuaire.ContactCard"&gt;
+        &lt;div class="o_annuaire_card card h-100" t-att-class="{ 'border-warning': this.props.isFavorite }"&gt;
+            &lt;div class="card-body d-flex align-items-start gap-2"&gt;
+                &lt;div class="flex-grow-1"&gt;
+                    &lt;div class="o_annuaire_name fw-bold" t-out="this.props.partner.name"/&gt;
+                    &lt;div t-if="this.props.partner.city" class="text-muted small" t-out="this.props.partner.city"/&gt;
+                    &lt;a t-if="this.props.partner.email" class="small" t-att-href="'mailto:' + this.props.partner.email"
+                       t-out="this.props.partner.email"/&gt;
+                &lt;/div&gt;
+                &lt;button type="button" class="o_annuaire_star btn btn-link p-0" t-on-click="this.toggle"
+                        t-att-title="this.props.isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'"&gt;
+                    &lt;i class="oi fs-4 text-warning" t-att-class="{ 'oi-filled': this.props.isFavorite }" data-icon="star"/&gt;
+                &lt;/button&gt;
+            &lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/t&gt;
+
+&lt;/templates&gt;</code></pre>
+                <p>Tout ce qui appartient au composant s'écrit avec <code>this.</code> : <code>this.props.partner.name</code>,
+                    <code>t-on-click="this.toggle"</code>. En OWL 3, le gabarit n'hérite plus du composant. Son contexte ne contient
+                    que <code>this</code> (<code>owl.js</code>, ligne 3715 : <code>{ this: this.component, __owl__: this }</code>).</p>
+                <p>L'icône est une icône Material (<code>class="oi" data-icon="star"</code>, pleine avec <code>oi-filled</code>),
+                    comme le champ favori natif d'Odoo 20 : FontAwesome n'est plus chargé.</p>
+                <div class="pitfall-box">
+                    <h4>Les props ne sont vérifiées qu'en mode debug</h4>
+                    <p>Pour l'essai, on a retiré <code>onToggleFavorite</code> du gabarit du parent. En mode normal, les sept cartes
+                        s'affichent sans erreur. L'erreur n'arrive qu'au clic sur une étoile : <em>TypeError:
+                        this.props.onToggleFavorite is not a function</em>. Avec <code>?debug=1</code>, l'écran s'arrête dès le
+                        premier rendu :</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Oups ! en mode debug, détails techniques ouverts : Erreur client Odoo, OwlError Invalid component props (ContactCard), received partner id 10 name Acme Corporation email et city Pleasant Hill, isFavorite false, message object value has missing keys, missingKeys onToggleFavorite"/>
+                        <figcaption>En mode debug, la prop manquante est nommée dès le premier rendu : <code>missingKeys: ["onToggleFavorite"]</code>.</figcaption>
+                    </figure>
+                    <p>La validation dépend du mode de l'application OWL : <code>dev: odoo.debug || session.test_mode</code>
+                        (<code>web/static/src/env.js</code>, ligne 104). Développe donc en mode debug. Les tests Hoot tournent aussi
+                        dans ce mode : le troisième test, plus bas, s'en sert.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LE PARENT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le parent : l'état, une valeur dérivée, le gabarit</h2>
+                <p><code>Annuaire</code> fait le reste : il charge les sociétés, garde la recherche et les favoris, et dit à chaque
+                    carte ce qu'elle doit afficher. Voici le fichier complet :</p>
+<pre class="language-javascript"><code class="language-javascript">import {
+    Component,
+    computed,
+    onMounted,
+    onWillStart,
+    proxy,
+    signal,
+    useEffect,
+    useListener,
+    usePlugin,
+    useProps,
+} from "@odoo/owl";
+import { browser } from "@web/core/browser/browser";
+import { ORM } from "@web/core/orm_plugin";
+import { registry } from "@web/core/registry";
+import { standardActionServiceProps } from "@web/webclient/actions/action_plugin";
+import { ContactCard } from "./contact_card";
+
+export const FAVORITES_KEY = "oski_owl_annuaire.favoris";
+
+function readFavorites() {
+    try {
+        return JSON.parse(browser.localStorage.getItem(FAVORITES_KEY)) || [];
+    } catch {
+        return [];
+    }
+}
+
+export class Annuaire extends Component {
+    static template = "oski_owl_annuaire.Annuaire";
+    static components = { ContactCard };
+
+    // 1. Props : celles que le gestionnaire d'actions passe à toute action client
+    props = useProps({ ...standardActionServiceProps });
+    orm = usePlugin(ORM);
+    searchInput = signal.ref();
+
+    setup() {
+        // 2. État réactif : toute écriture redessine ce qui la lit
+        this.state = proxy({
+            partners: [],
+            query: "",
+            onlyFavorites: false,
+            favoriteIds: readFavorites(),
+        });
+        // 3. Valeur dérivée, recalculée seulement quand ce qu'elle lit change
+        this.visiblePartners = computed(() =&gt; {
+            const query = this.state.query.trim().toLowerCase();
+            return this.state.partners.filter(
+                (p) =&gt;
+                    (!query || p.name.toLowerCase().includes(query)) &amp;&amp;
+                    (!this.state.onlyFavorites || this.state.favoriteIds.includes(p.id))
+            );
+        });
+
+        // 4. Hooks de cycle de vie
+        onWillStart(async () =&gt; {
+            this.state.partners = await this.orm.searchRead(
+                "res.partner",
+                [["is_company", "=", true]],
+                ["name", "email", "city"],
+                { order: "name" }
+            );
+        });
+        onMounted(() =&gt; this.searchInput()?.focus());
+        useEffect(() =&gt; {
+            browser.localStorage.setItem(FAVORITES_KEY, JSON.stringify(this.state.favoriteIds));
+        });
+        useListener(browser, "keydown", (ev) =&gt; {
+            // pas de raccourci pendant une saisie, dans la recherche ou ailleurs
+            if (ev.key === "/" &amp;&amp; !["INPUT", "TEXTAREA"].includes(ev.target.tagName)) {
+                ev.preventDefault();
+                this.searchInput()?.focus();
+            }
+        });
+    }
+
+    toggleFavorite(partnerId) {
+        const ids = this.state.favoriteIds;
+        const index = ids.indexOf(partnerId);
+        if (index &gt;= 0) {
+            ids.splice(index, 1);
+        } else {
+            ids.push(partnerId);
+        }
+    }
+
+    toggleOnlyFavorites() {
+        this.state.onlyFavorites = !this.state.onlyFavorites;
+    }
+}
+
+registry.category("actions").add("oski_owl_annuaire.annuaire", Annuaire);</code></pre>
+                <p>OWL 3 repose sur des <strong>signaux</strong> : une valeur réactive se lit par un appel, <code>x()</code>, et
+                    tout rendu ou effet qui l'a lue est relancé quand elle change. <code>proxy</code> applique la même mécanique à un
+                    objet entier, propriété par propriété. Quatre briques sont à repérer :</p>
+                <ul>
+                    <li><strong>Les props d'une action client.</strong> Le gestionnaire d'actions passe toujours <code>action</code>,
+                        et parfois <code>actionId</code>, <code>state</code>… Le cœur les réunit dans
+                        <code>standardActionServiceProps</code> (<code>webclient/actions/action_plugin.js</code>, lignes 101 à 109).
+                        Les déclarer donne la même validation qu'à l'enfant.</li>
+                    <li><strong>L'état : <code>proxy()</code>.</strong> Il remplace <code>useState()</code>, qui n'existe plus. Le
+                        proxy est profond : <code>ids.push(…)</code> ou <code>ids.splice(…)</code> dans <code>toggleFavorite</code>
+                        suffit à redessiner les cartes concernées.</li>
+                    <li><strong>La valeur dérivée : <code>computed()</code>.</strong> <code>visiblePartners</code> est une fonction :
+                        on la lit avec des parenthèses, <code>this.visiblePartners()</code>. Elle ne recalcule le filtre que si la
+                        recherche, la case « Favoris seulement », la liste ou les favoris ont changé.</li>
+                    <li><strong>La référence : <code>signal.ref()</code>.</strong> Elle remplace <code>useRef("nom")</code>. On la
+                        passe au gabarit par <code>t-ref="this.searchInput"</code> et on lit l'élément en l'appelant :
+                        <code>this.searchInput()</code>. Il n'y a plus de <code>.el</code>.</li>
+                </ul>
+                <p>Le gabarit du parent :</p>
+<pre class="language-markup"><code class="language-markup">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;templates xml:space="preserve"&gt;
+
+    &lt;t t-name="oski_owl_annuaire.Annuaire"&gt;
+        &lt;div class="o_action o_annuaire h-100 overflow-auto p-4"&gt;
+            &lt;h2 class="mb-3"&gt;Annuaire express&lt;/h2&gt;
+            &lt;div class="d-flex flex-wrap align-items-center gap-3 mb-4"&gt;
+                &lt;input type="search" class="o_annuaire_search form-control" style="width: 20rem" placeholder="Rechercher une société (touche /)"
+                       t-ref="this.searchInput" t-model.proxy="this.state.query"/&gt;
+                &lt;button type="button" class="o_annuaire_only_fav btn"
+                        t-att-class="this.state.onlyFavorites ? 'btn-warning' : 'btn-outline-secondary'"
+                        t-on-click="this.toggleOnlyFavorites"&gt;Favoris seulement&lt;/button&gt;
+                &lt;span class="o_annuaire_count text-muted"&gt;
+                    &lt;t t-out="this.visiblePartners().length"/&gt; société(s) affichée(s),
+                    &lt;t t-out="this.state.favoriteIds.length"/&gt; favori(s)
+                &lt;/span&gt;
+            &lt;/div&gt;
+            &lt;div t-if="this.visiblePartners().length" class="row g-3"&gt;
+                &lt;div class="col-12 col-md-6 col-xl-4" t-foreach="this.visiblePartners()" t-as="partner" t-key="partner.id"&gt;
+                    &lt;ContactCard partner="partner"
+                                 isFavorite="this.state.favoriteIds.includes(partner.id)"
+                                 onToggleFavorite.bind="this.toggleFavorite"/&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;div t-else="" class="o_annuaire_empty alert alert-info"&gt;
+                Aucune société ne correspond à « &lt;t t-out="this.state.query"/&gt; ».
+            &lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/t&gt;
+
+&lt;/templates&gt;</code></pre>
+                <ul>
+                    <li><code>t-model.proxy="this.state.query"</code> relie le champ de saisie à l'état. Sans le suffixe
+                        <code>.proxy</code>, OWL 3 refuse le gabarit (voir l'encadré « Venant de la 19 »).</li>
+                    <li><code>t-foreach</code> exige un <code>t-key</code>. La variable de boucle <code>partner</code> n'appartient
+                        pas au composant : elle s'écrit sans <code>this.</code></li>
+                    <li><code>onToggleFavorite.bind="this.toggleFavorite"</code> passe la méthode liée au parent. Quand la carte
+                        l'appelle, <code>this</code> désigne bien l'annuaire.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Écran Annuaire express dans Odoo 20 : champ Rechercher une société (touche /) avec le curseur, bouton Favoris seulement, compteur 7 société(s) affichée(s), 0 favori(s), et sept cartes de sociétés de démonstration avec ville, courriel et une étoile vide : Acme Corporation, Azure Interior, Gemini Furniture, Lumber Inc, Ready Mat, The Jackson Group, Wood Corner"/>
+                    <figcaption>À l'ouverture : les sept sociétés de la base de démonstration, le curseur déjà dans la recherche.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Même écran après avoir tapé in dans la recherche : 3 société(s) affichée(s), 2 favori(s) ; cartes Azure Interior avec étoile pleine et bordure jaune, Gemini Furniture et Lumber Inc avec étoile vide"/>
+                    <figcaption>« in » filtre à chaque frappe ; Azure Interior, en favori, garde son étoile pleine.</figcaption>
+                </figure>
+                <p>Les deux favoris de la seconde capture (Azure Interior et Wood Corner, masqué par le filtre) ont été posés avant de
+                    recharger la page. Ils sont revenus tels quels : le navigateur les avait gardés sous la clé
+                    <code>oski_owl_annuaire.favoris</code>, avec la valeur <code>[16,9]</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LES HOOKS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les hooks : qui s'exécute, et quand</h2>
+                <p>Un hook est une fonction appelée dans <code>setup()</code> qui accroche du code à un moment de la vie du
+                    composant. L'annuaire en utilise quatre :</p>
+                <table class="tmc">
+                    <thead><tr><th>Hook</th><th>Dans l'annuaire</th><th>Pourquoi là</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>onWillStart(async () =&gt; …)</code></td><td>charge les sociétés par
+                            <code>this.orm.searchRead(…)</code></td><td>Le premier rendu attend la promesse : l'écran n'apparaît jamais vide.</td></tr>
+                        <tr><td><code>onMounted(() =&gt; …)</code></td><td>place le curseur dans la recherche</td><td>Premier moment où
+                            l'élément existe dans la page.</td></tr>
+                        <tr><td><code>useEffect(() =&gt; …)</code></td><td>écrit les favoris dans <code>localStorage</code></td><td>Se
+                            relance seul quand ce qu'il lit change.</td></tr>
+                        <tr><td><code>useListener(cible, "keydown", …)</code></td><td>touche « / » → recherche (sauf pendant une saisie)</td><td>L'écouteur est
+                            retiré à la destruction du composant, sans code de nettoyage.</td></tr>
+                    </tbody>
+                </table>
+                <p>Le chargement passe par le plugin <code>ORM</code> (<code>usePlugin(ORM)</code>, de
+                    <code>@web/core/orm_plugin</code>). En Odoo 20, les services du client web sont devenus des <em>plugins</em>.
+                    <code>useService("orm")</code> marche encore, par un pont que le cœur marque comme temporaire.</p>
+                <p>Pour connaître l'ordre réel des appels, le module contient un test qui monte un composant « sonde ». Chaque hook y
+                    note son passage. Résultat, sur Odoo 20 :</p>
+                <table class="tmc">
+                    <thead><tr><th>Moment</th><th>Ordre relevé</th></tr></thead>
+                    <tbody>
+                        <tr><td>Montage</td><td><code>setup</code> → <code>useEffect</code> (1er passage) → <code>onWillStart</code> → <code>onMounted</code></td></tr>
+                        <tr><td>Écriture dans l'état</td><td>nettoyage de l'effet → <code>useEffect</code> → <code>onWillPatch</code> → <code>onPatched</code></td></tr>
+                        <tr><td>Retrait par <code>t-if</code></td><td><code>onWillUnmount</code> → <code>onWillDestroy</code> → nettoyage de l'effet</td></tr>
+                    </tbody>
+                </table>
+                <div class="pitfall-box">
+                    <h4><code>useEffect</code> n'attend plus le montage</h4>
+                    <p>En Odoo 19, <code>useEffect(fn, () =&gt; [deps])</code> s'exécutait dans <code>onMounted</code> et
+                        <code>onPatched</code>, quand ses dépendances changeaient (<code>owl.js</code> de la 19.0, ligne 6212). En Odoo 20, c'est
+                        <code>onWillDestroy(effect(fn))</code> (<code>owl.js</code>, lignes 1697 à 1699). L'effet tourne
+                        <strong>dès <code>setup</code></strong>, avant tout élément dans la page. Il se relance quand une valeur
+                        réactive qu'il a lue change, et le second argument est ignoré. Un effet qui lit
+                        <code>this.searchInput()</code> reçoit <code>null</code> au premier passage, puis <code>INPUT</code> après
+                        <code>onMounted</code>, car la référence est elle-même un signal. </p>
+                    <p>Pour toucher au DOM, utilise
+                        <code>onMounted</code>. La fonction que rend l'effet sert de nettoyage, avant chaque nouveau passage et à la
+                        destruction.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. HOOT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Tester avec Hoot</h2>
+                <p>Hoot est le lanceur de tests JavaScript d'Odoo 20. <code>mountWithCleanup</code> monte un composant seul, sans
+                    menu ni action, et <code>onRpc</code> répond à la place du serveur. Le fichier complet :</p>
+<pre class="language-javascript"><code class="language-javascript">import { expect, test } from "@odoo/hoot";
+import { queryAllTexts } from "@odoo/hoot-dom";
+import { animationFrame } from "@odoo/hoot-mock";
+import {
+    Component,
+    onMounted,
+    onPatched,
+    onWillDestroy,
+    onWillPatch,
+    onWillStart,
+    onWillUnmount,
+    proxy,
+    useEffect,
+    xml,
+} from "@odoo/owl";
+import { browser } from "@web/core/browser/browser";
+import { contains, mountWithCleanup, onRpc } from "@web/../tests/web_test_helpers";
+import { Annuaire, FAVORITES_KEY } from "@oski_owl_annuaire/annuaire/annuaire";
+import { ContactCard } from "@oski_owl_annuaire/annuaire/contact_card";
+
+const PARTNERS = [
+    { id: 16, name: "Azure Interior", email: "azure@example.com", city: "Fremont" },
+    { id: 11, name: "Gemini Furniture", email: false, city: "Fairfield" },
+    { id: 9, name: "Wood Corner", email: "wood@example.com", city: false },
+];
+const ACTION = { action: { type: "ir.actions.client", tag: "oski_owl_annuaire.annuaire" } };
+
+function mockPartners() {
+    onRpc("res.partner", "search_read", ({ kwargs }) =&gt; {
+        expect.step(JSON.stringify(kwargs.domain));
+        return PARTNERS;
+    });
+}
+
+test("charge les sociétés au démarrage, filtre à la frappe", async () =&gt; {
+    mockPartners();
+    await mountWithCleanup(Annuaire, { props: ACTION });
+    expect.verifySteps(['[["is_company","=",true]]']);
+    expect(queryAllTexts(".o_annuaire_name")).toEqual(["Azure Interior", "Gemini Furniture", "Wood Corner"]);
+    expect(".o_annuaire_search").toBeFocused();
+
+    await contains(".o_annuaire_search").edit("wood");
+    expect(queryAllTexts(".o_annuaire_name")).toEqual(["Wood Corner"]);
+
+    await contains(".o_annuaire_search").edit("zzz");
+    expect(".o_annuaire_card").toHaveCount(0);
+    expect(".o_annuaire_empty").toHaveText("Aucune société ne correspond à « zzz ».");
+});
+
+test("l'étoile garde le favori dans le navigateur", async () =&gt; {
+    browser.localStorage.setItem(FAVORITES_KEY, "[11]");
+    mockPartners();
+    await mountWithCleanup(Annuaire, { props: ACTION });
+    expect.verifySteps(['[["is_company","=",true]]']);
+    expect(".o_annuaire_card.border-warning .o_annuaire_name").toHaveText("Gemini Furniture");
+
+    await contains(".o_annuaire_card:eq(0) .o_annuaire_star").click();
+    expect(".o_annuaire_card.border-warning").toHaveCount(2);
+    expect(browser.localStorage.getItem(FAVORITES_KEY)).toBe("[11,16]");
+
+    await contains(".o_annuaire_only_fav").click();
+    expect(queryAllTexts(".o_annuaire_name")).toEqual(["Azure Interior", "Gemini Furniture"]);
+    expect(".o_annuaire_count").toHaveText("2 société(s) affichée(s), 2 favori(s)");
+});
+
+test("props validées : un rappel manquant est refusé", async () =&gt; {
+    await expect(
+        mountWithCleanup(ContactCard, { props: { partner: { id: 1, name: "Azure Interior" } } })
+    ).rejects.toThrow(/Invalid component props \(ContactCard\)/);
+});
+
+test("ordre des hooks d'un composant", async () =&gt; {
+    class Sonde extends Component {
+        static template = xml`&lt;span class="o_sonde" t-out="this.state.n"/&gt;`;
+        setup() {
+            this.state = proxy({ n: 0 });
+            expect.step("setup");
+            useEffect(() =&gt; {
+                expect.step(`effet n=${this.state.n}`);
+                return () =&gt; expect.step("nettoyage de l'effet");
+            });
+            onWillStart(() =&gt; expect.step("onWillStart"));
+            onMounted(() =&gt; expect.step("onMounted"));
+            onWillPatch(() =&gt; expect.step("onWillPatch"));
+            onPatched(() =&gt; expect.step("onPatched"));
+            onWillUnmount(() =&gt; expect.step("onWillUnmount"));
+            onWillDestroy(() =&gt; expect.step("onWillDestroy"));
+        }
+    }
+    class Parent extends Component {
+        static template = xml`&lt;div&gt;&lt;Sonde t-if="this.state.show"/&gt;&lt;/div&gt;`;
+        static components = { Sonde };
+        setup() {
+            this.state = proxy({ show: true });
+        }
+    }
+    const parent = await mountWithCleanup(Parent);
+    expect.verifySteps(["setup", "effet n=0", "onWillStart", "onMounted"]);
+
+    const sonde = Object.values(parent.__owl__.children)[0].component;
+    sonde.state.n = 1;
+    await animationFrame();
+    expect(".o_sonde").toHaveText("1");
+    expect.verifySteps(["nettoyage de l'effet", "effet n=1", "onWillPatch", "onPatched"]);
+
+    parent.state.show = false;
+    await animationFrame();
+    expect(".o_sonde").toHaveCount(0);
+    expect.verifySteps(["onWillUnmount", "onWillDestroy", "nettoyage de l'effet"]);
+});</code></pre>
+                <ul>
+                    <li>Le composant est monté avec <code>{ props: ACTION }</code> : <code>action</code> est obligatoire, et le test
+                        tourne en mode debug, où les props sont vérifiées.</li>
+                    <li><code>onRpc</code> reçoit le domaine dans <code>kwargs.domain</code> : <code>searchRead</code> le place dans
+                        les arguments nommés de <code>search_read</code> (<code>core/orm_plugin.js</code>, lignes 240 à 246).</li>
+                    <li>Le module ne dépend que de <code>web</code> : pas de <code>defineMailModels()</code>, contrairement au widget
+                        de la Bibliothèque, qui dépend de <code>mail</code>.</li>
+                    <li>Le troisième test vérifie le refus d'une prop manquante, le quatrième relève l'ordre des hooks du tableau
+                        précédent.</li>
+                </ul>
+                <p>On lance la suite du module dans le navigateur, connecté à la base :</p>
+<p><code>http://localhost:8069/web/tests?debug=assets&amp;filter=%22%40oski_owl_annuaire%22</code></p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Interface Hoot, filtre &quot;@oski_owl_annuaire&quot; : 4 tests completed, quatre tests en vert, charge les sociétés au démarrage filtre à la frappe, l'étoile garde le favori dans le navigateur, props validées un rappel manquant est refusé, ordre des hooks d'un composant ; à gauche la suite @oski_owl_annuaire (4) parmi celles des autres modules"/>
+                    <figcaption>Les quatre tests passent ; la console du navigateur indique « Passed 4 tests (18 assertions) ».</figcaption>
+                </figure>
+                <div class="v19-box">
+                    <h4>Venant de la 19 : ce qui casse, et comment</h4>
+                    <p>Chaque ligne a été essayée dans un test Hoot temporaire, sur la même base :</p>
+                    <table class="tmc">
+                        <thead><tr><th>Écrit comme en 19</th><th>Résultat en Odoo 20</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>import { useState, useRef } from "@odoo/owl"</code></td><td><code>undefined</code> (de même
+                                <code>reactive</code>, <code>onRendered</code>) → <em>TypeError</em> à l'appel. Remplaçants :
+                                <code>proxy</code>, <code>signal.ref()</code>.</td></tr>
+                            <tr><td><code>t-out="state.query"</code></td><td><em>TypeError: Cannot read properties of undefined
+                                (reading 'query')</em> au montage.</td></tr>
+                            <tr><td><code>t-out="title"</code> (membre du composant)</td><td>Rien d'affiché, <strong>aucune erreur</strong>.</td></tr>
+                            <tr><td><code>t-model="this.state.query"</code></td><td><em>OwlError: Invalid t-model expression:
+                                expression should evaluate to a function with a 'set' method defined on it</em> → <code>t-model.proxy</code>.</td></tr>
+                            <tr><td><code>t-ref="searchInput"</code></td><td><em>OwlError: Ref is undefined or null</em> →
+                                <code>t-ref="this.searchInput"</code> sur un <code>signal.ref()</code>.</td></tr>
+                            <tr><td><code>static props = { … }</code></td><td>Ignoré : une prop requise absente passe sans erreur, même en debug.</td></tr>
+                            <tr><td><code>static defaultProps = { … }</code></td><td><em>Error: Component "…" defines a static
+                                "defaultProps", which Owl 3 ignores…</em> → <code>t.x().optional(valeur)</code>.</td></tr>
+                        </tbody>
+                    </table>
+                    <p>Les deux lignes qui ne lèvent rien sont les plus coûteuses : un texte qui manque, une prop jamais vérifiée.
+                        La version d'OWL embarquée par Odoo 20 est la <code>3.0.0-alpha.49</code> (<code>owl.js</code>, ligne 1776).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20 (OWL 3)</th></tr></thead>
+                    <tbody>
+                        <tr><td>Déclarer les props</td><td><code>props = useProps({ nom: t.string(), … })</code></td></tr>
+                        <tr><td>Valeur par défaut</td><td><code>t.boolean().optional(false)</code></td></tr>
+                        <tr><td>État réactif</td><td><code>this.state = proxy({ … })</code></td></tr>
+                        <tr><td>Valeur dérivée</td><td><code>this.x = computed(() =&gt; …)</code>, lue <code>this.x()</code></td></tr>
+                        <tr><td>Élément du DOM</td><td><code>ref = signal.ref()</code> + <code>t-ref="this.ref"</code>, lu <code>this.ref()</code></td></tr>
+                        <tr><td>Champ de saisie lié</td><td><code>t-model.proxy="this.state.champ"</code></td></tr>
+                        <tr><td>Données au démarrage</td><td><code>onWillStart(async () =&gt; …)</code> + <code>usePlugin(ORM)</code></td></tr>
+                        <tr><td>Après insertion dans la page</td><td><code>onMounted(() =&gt; …)</code></td></tr>
+                        <tr><td>Réagir à un changement</td><td><code>useEffect(() =&gt; …)</code>, sans tableau de dépendances</td></tr>
+                        <tr><td>Écouteur global</td><td><code>useListener(cible, "événement", fn)</code></td></tr>
+                        <tr><td>Rappel vers le parent</td><td><code>onX.bind="this.methode"</code> + <code>t.function()</code></td></tr>
+                        <tr><td>Action client</td><td><code>registry.category("actions").add(tag, Composant)</code> + <code>ir.actions.client</code></td></tr>
+                        <tr><td>Tester</td><td><code>mountWithCleanup</code>, <code>onRpc</code>, <code>contains().edit()</code>, <code>expect.step</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un composant OWL 3 se déclare toujours de la même façon : <code>useProps</code> pour ce qu'il reçoit,
+                        <code>proxy</code> et <code>computed</code> pour ce qu'il garde, des hooks dans <code>setup()</code>, un
+                        gabarit où chaque membre prend <code>this.</code></li>
+                    <li>Les props ne sont vérifiées qu'en mode debug et dans les tests. Développe en <code>?debug=1</code>.</li>
+                    <li><code>useEffect</code> tourne dès <code>setup</code> et suit tout seul ce qu'il lit. Ce qui touche au DOM va dans
+                        <code>onMounted</code>.</li>
+                    <li>L'enfant ne modifie pas les données du parent : il appelle un rappel reçu en prop, et c'est le parent qui écrit
+                        dans son état.</li>
+                    <li>Hoot vérifie le composant seul, sans serveur : <code>mountWithCleanup</code> et <code>onRpc</code>, filtre
+                        <code>"@module"</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module, captures et tests exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community
+                    (PostgreSQL 16), module <code>oski_owl_annuaire</code> en 20.0.1.0.0, navigateur Chromium. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0, client web : <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/lib/owl/owl.js" target="_blank" rel="noopener"><code>lib/owl/owl.js</code></a>
+                        (<code>signal.ref</code>, <code>useEffect</code>, <code>useListener</code>, contexte des gabarits, messages
+                        d'erreur) ; <code>env.js</code> (mode <code>dev</code>) ; <code>owl2/owl3_compatibility_layer.js</code>
+                        (refus de <code>defaultProps</code>) ; <code>webclient/actions/action_plugin.js</code>
+                        (<code>standardActionServiceProps</code>) ; <code>core/orm_plugin.js</code> ;
+                        <code>views/fields/boolean_favorite/boolean_favorite_field.xml</code> (icône étoile).</li>
+                    <li>Comparaison avec la branche 19.0 : OWL 2.8.1, <code>useState</code>, <code>useRef</code> et
+                        <code>useEffect(effect, computeDependencies)</code> lancé par <code>onMounted</code>/<code>onPatched</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">Un widget OWL 3 en Odoo 20 : le badge de retard des emprunts</a></h5>
+                            <p class="small text-muted mb-0">L'autre forme d'un composant : un widget de champ, posé sur une vue par son nom.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module Odoo 20 qui ne prend pas tes modifications</a></h5>
+                            <p class="small text-muted mb-0">JavaScript modifié mais rien ne change à l'écran : cache des assets et mode debug.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">OWL 3 parmi les autres ruptures : ORM, sécurité, QWeb, API.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
