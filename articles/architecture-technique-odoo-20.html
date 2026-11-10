@@ -1,0 +1,701 @@
+<!--
+Article — Architecture technique d'Odoo 20 : couches, registre, requêtes
+Série « Fondations et données en Odoo 20 » (60), étape 1 ; lot T3 (T3.1 du plan vague 3 technique), jumelle Odoo 20
+du pilier v19 n°56 (architecture-technique-odoo-56, lien posé dans l'introduction).
+Date : 2026-11-10
+Slug : architecture-technique-odoo-20
+Mot-clé cible : odoo architecture, odoo 20 architecture, odoo registry, odoo workers, odoo request lifecycle
+Catégorie : Développement Odoo
+Tags : debutant, fondamentaux, guide, community
+Temps de lecture : ~14 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16.15, Python 3.12.3, base neutralisée ;
+serveur de travail en boucle locale, dbfilter limité à la copie, crons coupés ; Chromium piloté par Playwright) :
+- Shell : MIN_PY (3,12), MAX_PY (3,14), MIN_PG 16 ; registre odoo.orm.registry.Registry, 450 modèles (451 après mon_module),
+  69 puis 70 modules installés sur 677 puis 679 connus ; 'ir.access' in env True, 'ir.model.access' / 'ir.rule' False ;
+  MRO res.partner [odoo.orm.models, sale, account_edi_ubl_cii, stock…] ; env.tz ZoneInfo(key='Europe/Brussels') ;
+  import odoo.osv → ModuleNotFoundError ; Domain & Domain → liste préfixée ; routes /websocket http public, /json/2 json2 bearer,
+  /jsonrpc ×2 jsonrpc none, /web/dataset/call_kw jsonrpc user, /odoo http none.
+- psql : tables orm_signaling_{assets,default,groups,registry,routing,stable,templates}.
+- scaffold 20 : security/ir.model.access.csv (gabarit odoo/cli/templates/default/security/ir.model.access.csv.template:5),
+  ligne commentée au manifeste ; décommentée + modèle → -i : exit 255, KeyError: 'ir.model.access' (registry.py:222 →
+  loading.py:449/211/56 → convert.py:771 → registry.py:385) ; ir.access.csv (id,name,model_id,group_id/id,operation) → exit 0,
+  « Registry loaded » ; manifeste 19.0.1.0.0 → WARNING incompatible version, exit 0, state uninstallable.
+- JSON-2 (clé rpc d'un jour, supprimée avec la copie) : mon_module.mon_module/create → [1] ; search_read → value2 0.42 ;
+  sans clé 401 « User not authenticated, use an API Key with a Bearer Authorization header. » ; res.partnr → 404 « the model
+  'res.partnr' does not exist ».
+- Prefork (--workers=2 --max-cron-threads=1, port 8069 libre, 25 s) : HTTP service running on 127.0.0.1:8069, WorkerHTTP ×2,
+  WorkerCron, GeventServer Evented/WebSocket service running on 127.0.0.1:8072 ; GET /web/login 200 … 82 req. rw ;
+  GET /websocket 400 sur le port HTTP.
+- Client web (Ventes) : requêtes relevées (document /odoo/sales, load_menus, translations, mail/store, action/load, call_kw
+  get_views, web_search_read, has_group, res.currency/read, sale.order.template/search_read, retrieve_sale_dashboard) ;
+  journal : web_search_read 200 7192 21 0.014 0.012 rw ; load_menus 21 puis 2 requêtes ; /websocket?version=saas-19.5-1 101
+  (ouvert par le SharedWorker, invisible à page.on('websocket')) ; console : owl.__info__.version 3.0.0-alpha.49,
+  useState/useRef/reactive undefined, signal/computed/useProps/plugin function, __WOWL_DEBUG__.root WebClient.
+- Source 20.0 : release.py:39-41 ; init.py:16 ; sql_db.py:712-713 ; tools/config.py:289, 498-501 ; http/router.py:245, 377,
+  397, 507, 586 ; http/dispatcher.py:226, 315, 414 ; http/retrying.py:27 ; http/server_log.py:36 ; orm/registry.py:1144 ;
+  orm/models.py:3443, 3603 ; base/models/ir_http.py:375 ; base/models/ir_access.py:64-66 ; base/models/res_currency.py:431 ;
+  modules/module.py:500-502, 598-608 ; service/server.py:1553-1592 ; bus/websocket.py:861 ; rpc/controllers/__init__.py:6-9 ;
+  rpc/controllers/json2.py:49 ; web/static/lib/owl/owl.js:1776 ; requirements.txt sans pytz, 0 import pytz dans le source.
+- 19.0 publique (GitHub, 10/11/2026) : release.py MIN_PY (3,10) MAX (3,14) MIN_PG 13 ; tools/config.py:262 http-interface
+  0.0.0.0, pas de --gevent-workers ; odoo/http.py, odoo/osv/expression.py, base/models/ir_rule.py présents ;
+  requirements.txt pytz ; owl.js « 2.8.4 ». Source 19.0 locale 7196ee375 : 131 fichiers importent pytz ; check_version identique.
+Captures : content/blog/screenshots/architecture-technique-odoo-20/ (01 schéma des couches, 02 schéma du trajet, 03 journal
+prefork — nom de base remplacé par ma_base, lignes de chemins et de connexion retirées).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Architecture technique d'Odoo 20 : couches, registre, requêtes</h1>
+                <p class="lead mt-3 text-white">PostgreSQL, le registre, les modules, la couche HTTP, les workers et le client web
+                    OWL 3 : ce qui se trouve sous le capot d'Odoo 20, chaque couche observée sur un serveur qui tourne, et ce qui a
+                    changé depuis la 19.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau débutant · parcours <strong>Fondamentaux</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Les couches</h4>
+                        <p>Du navigateur à PostgreSQL : à quoi sert chaque étage, où il vit dans le code source, ce que ton module
+                            y ajoute.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le trajet d'une requête</h4>
+                        <p>Session, registre, route, authentification, dispatcher, ORM, transaction : et la ligne de journal qui
+                            résume le tout.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Ce qui change en 20</h4>
+                        <p>Python 3.12, PostgreSQL 16, <code>ir.access</code>, <code>zoneinfo</code>, OWL 3, écoute sur
+                            127.0.0.1 : chaque écart prouvé, rien de supposé.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 Community qui démarre (voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>) et une base de test avec l'application Ventes.</li>
+                        <li>Un terminal : on lance <code>odoo-bin</code>, <code>odoo-bin shell</code> et <code>curl</code>.</li>
+                        <li>Aucune connaissance de l'ORM n'est demandée : cet article est la carte, les suivants sont le terrain.</li>
+                    </ul>
+                </div>
+                <p>Tu viens d'Odoo 19 ? L'article <a href="/blog/developpement-odoo-2/architecture-technique-odoo-56">Architecture
+                    technique Odoo 19</a> reste valable pour ta version. Celui-ci reprend la même question pour Odoo 20, avec des
+                    sorties relevées sur un serveur 20.0.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Odoo est une application web écrite en Python, posée sur PostgreSQL. Un seul programme, <code>odoo-bin</code>,
+                    sert à la fois les écrans, l'API et les tâches planifiées. Entre le clic dans le navigateur et la ligne écrite
+                    en base, la requête traverse une pile de couches qu'il vaut mieux connaître avant d'écrire son premier
+                    module : c'est là que se logent la plupart des « ça marche chez moi, pas en production ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma des couches d'Odoo 20. À gauche, de haut en bas : navigateur avec le client web (composants OWL 3 3.0.0-alpha, bundles d'assets, appels /web/dataset/call_kw, bus temps réel dans un SharedWorker) ; HTTP et WebSocket ; paquet odoo/http/ (application WSGI root, session et base, fichiers statiques, dispatchers http, jsonrpc, json2), marqué paquet en 20 ; ir.http et contrôleurs (routes, authentification user, public, bearer) ; registre, un par base, rechargé quand orm_signaling_registry change ; ORM (env, recordsets, Domain, droits ir.access qui remplace ir.model.access et ir.rule, cache, env.tz en zoneinfo) ; SQL ; PostgreSQL 16 ou plus ; filestore. À droite : le processus odoo-bin (workers 0 : un processus et des fils ; workers supérieur à 0 : un maître, des WorkerHTTP, des WorkerCron, un serveur gevent pour /websocket sur le port 8072, option --gevent-workers ; écoute 127.0.0.1 par défaut, était 0.0.0.0 ; Python 3.12 à 3.14) ; addons_path (un module n'est installable que si sa version commence par 20.0) ; autres entrées (JSON-2 avec clé d'API, xmlrpc et jsonrpc dépréciés, odoo-bin shell, module et db sans HTTP)."/>
+                    <figcaption>Les couches d'Odoo 20. En brun, ce qui diffère de la branche 19.0.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. VUE D'ENSEMBLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les couches, un seul programme</h2>
+                <p>Chaque couche a son dossier dans le code source d'Odoo 20, et ton module intervient sur la plupart d'entre
+                    elles sans jamais les recoder :</p>
+                <table class="tmc">
+                    <thead><tr><th>Couche</th><th>Dans le source 20.0</th><th>Ce que ton module y apporte</th></tr></thead>
+                    <tbody>
+                        <tr><td>Client web</td><td><code>addons/web/static/src/</code>, OWL dans <code>web/static/lib/owl/</code></td>
+                            <td>vues XML, composants OWL, styles</td></tr>
+                        <tr><td>HTTP</td><td><code>odoo/http/</code> (router, dispatcher, session, stream…)</td>
+                            <td>rien : la couche est fournie</td></tr>
+                        <tr><td>Contrôleurs</td><td><code>controllers/</code> de chaque module, table des routes dans
+                            <code>ir.http</code></td><td>tes routes <code>@http.route</code>, si tu en as besoin</td></tr>
+                        <tr><td>Registre</td><td><code>odoo/orm/registry.py</code>, chargement dans <code>odoo/modules/loading.py</code></td>
+                            <td>tes classes de modèles, rangées au chargement du module</td></tr>
+                        <tr><td>ORM</td><td><code>odoo/orm/</code> (models, fields, domains, environments)</td>
+                            <td>champs, méthodes, contraintes, droits <code>ir.access</code></td></tr>
+                        <tr><td>PostgreSQL</td><td><code>odoo/sql_db.py</code> (pool de connexions, curseurs)</td>
+                            <td>tes tables, créées par l'ORM</td></tr>
+                        <tr><td>Filestore</td><td>dossier <code>filestore/&lt;base&gt;</code> du répertoire de données</td>
+                            <td>les fichiers de tes champs binaires et pièces jointes</td></tr>
+                        <tr><td>Serveur</td><td><code>odoo/service/server.py</code> (threaded, prefork, gevent)</td>
+                            <td>tes actions planifiées, exécutées par les fils ou workers cron</td></tr>
+                    </tbody>
+                </table>
+                <p>La particularité d'Odoo par rapport à un framework web classique tient en une phrase : tu n'écris presque jamais
+                    de contrôleur. Le client web appelle les méthodes de tes modèles par une route générique,
+                    <code>/web/dataset/call_kw</code>, et l'API externe fait de même par <code>/json/2</code>. Ton travail se
+                    concentre sur le modèle et la vue ; le reste de la pile est fourni et commun à tous les modules.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. POSTGRESQL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. PostgreSQL et le filestore : là où vivent les données</h2>
+                <p>Une base PostgreSQL par instance cliente : tout y est, les données métier comme la configuration (modules
+                    installés, vues, droits, paramètres). Chaque modèle a sa table : <code>res.partner</code> devient
+                    <code>res_partner</code>, <code>sale.order</code> devient <code>sale_order</code>. Les fichiers (pièces
+                    jointes, images) vont dans le <strong>filestore</strong>, une arborescence sur disque par base, référencée
+                    par la colonne <code>store_fname</code> de <code>ir_attachment</code>. Une sauvegarde sans le filestore est
+                    une sauvegarde incomplète.</p>
+                <p>Odoo 20 relève le minimum à <strong>PostgreSQL 16</strong> (13 en 19.0) et Python à
+                    <strong>3.12</strong> (3.10 en 19.0). Sur la base de démonstration :</p>
+<pre class="language-python"><code class="language-python">>>> odoo.release.MIN_PY_VERSION, odoo.release.MAX_PY_VERSION, odoo.release.MIN_PG_VERSION
+((3, 12), (3, 14), 16)
+>>> env.cr.execute("show server_version"); env.cr.fetchone()[0]
+'16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)'</code></pre>
+                <p>Dans la base, à côté des tables des modèles, Odoo tient des tables techniques que tu croiseras dans
+                    <code>psql</code>. Les plus utiles à reconnaître sont les tables de <strong>signalisation</strong> :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base -Atc "select relname from pg_class where relname like 'orm_signaling%' and relkind = 'r' order by 1"
+orm_signaling_assets
+orm_signaling_default
+orm_signaling_groups
+orm_signaling_registry
+orm_signaling_routing
+orm_signaling_stable
+orm_signaling_templates</code></pre>
+                <p>Elles servent à prévenir les autres processus Odoo qui partagent la base : quand un module est installé, une
+                    ligne est ajoutée à <code>orm_signaling_registry</code> et chaque processus recharge son registre à sa
+                    prochaine requête ; les autres tables font de même pour les caches (assets, routes, groupes, gabarits…).</p>
+                <div class="pitfall-box">
+                    <h4>PostgreSQL plus ancien que 16 : un simple avertissement</h4>
+                    <p>Odoo 20 ne refuse pas de démarrer sur un PostgreSQL plus ancien que 16 : il compare la version du serveur à
+                        <code>MIN_PG_VERSION</code> et émet seulement un avertissement
+                        (<code>odoo/sql_db.py:712-713</code>, journal <code>py.warnings</code>), comme le faisait déjà la 19 avec son
+                        minimum de 13. Or le source 20.0 emploie déjà de la
+                        syntaxe récente, par exemple un index unique <code>NULLS NOT DISTINCT</code> sur les taux de change
+                        (<code>odoo/addons/base/models/res_currency.py:431</code>), apparue avec PostgreSQL 15 : sur un PostgreSQL 14,
+                        cet index ne peut pas se créer, et même sur un 15 rien n'est garanti. Un démarrage réussi sur une version
+                        plus ancienne que 16 ne prouve donc rien : vérifie la version du serveur avant tout le reste.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. REGISTRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le registre : les modèles d'une base, assemblés en mémoire</h2>
+                <p>Le registre est la pièce la moins visible et la plus centrale. Pour chaque base qu'il sert, Odoo charge les
+                    modules installés dans l'ordre de leurs dépendances et <strong>assemble</strong> une classe par modèle à partir
+                    de tous les fichiers Python qui le définissent ou l'étendent. Le résultat est gardé en mémoire tant que
+                    personne ne signale de changement. Dans <code>odoo-bin shell</code> (voir
+                    <a href="/blog/developpement-odoo-2/shell-odoo-20-272">le shell Odoo 20</a>), après l'installation du petit
+                    module de la section suivante :</p>
+<pre class="language-python"><code class="language-python">>>> env.registry
+&lt;odoo.orm.registry.Registry object at 0x7f68f0db5b80&gt;
+>>> len(env.registry)
+451
+>>> 'mon_module.mon_module' in env.registry
+True
+>>> env['mon_module.mon_module']._table
+'mon_module_mon_module'
+>>> [c.__module__ for c in type(env['res.partner']).__mro__[:4]]
+['odoo.orm.models', 'odoo.addons.sale.models.res_partner', 'odoo.addons.account_edi_ubl_cii.models.res_partner', 'odoo.addons.stock.models.res_partner']</code></pre>
+                <p>Quatre choses à retenir de cette sortie :</p>
+                <ul>
+                    <li><strong>451 modèles</strong> dans ce registre : ceux des 70 modules installés sur cette base, pas ceux des
+                        679 modules trouvés dans l'<code>addons_path</code>. Un modèle d'un module non installé n'existe pas, même si son code est sur le disque.</li>
+                    <li>La classe de <code>res.partner</code> est une pile : la classe assemblée par le registre, puis les extensions
+                        de <code>sale</code>, <code>account_edi_ubl_cii</code>, <code>stock</code>… La plus récemment chargée est
+                        en tête : ton <code>super()</code> appelle l'extension chargée avant la tienne. Ici, une méthode
+                        redéfinie dans l'extension de <code>sale</code> qui appelle <code>super()</code> passe la main à celle
+                        d'<code>account_edi_ubl_cii</code>, puis à <code>stock</code>, et ainsi de suite jusqu'au code de base.</li>
+                    <li><strong>Un registre par base</strong> : deux bases sur le même serveur peuvent avoir des modèles différents.
+                        C'est le registre, pas le code, qui décide de ce qui existe.</li>
+                    <li><code>env</code> relie un registre, un curseur PostgreSQL, un utilisateur et un contexte. C'est par lui que
+                        tout code métier passe : <code>env['res.partner']</code> donne un recordset vide du modèle.</li>
+                </ul>
+                <p>Le même registre sert le serveur web, le shell, les commandes <code>odoo-bin module</code> et les tests : c'est
+                    pour cela qu'une erreur de chargement d'un module bloque tout, comme on va le voir.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. MODULES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les modules et l'<code>addons_path</code></h2>
+                <p>Un module est un dossier Python avec un <code>__manifest__.py</code>. Odoo le cherche dans les dossiers de
+                    l'<code>addons_path</code> (option <code>--addons-path</code> ou clé du fichier de configuration) ; sur un
+                    serveur, on y met d'ordinaire <code>…/odoo/addons</code> et un dossier à soi, par exemple
+                    <code>…/mes_modules</code>. Le squelette le plus rapide reste <code>scaffold</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin scaffold mon_module …/mes_modules
+$ find mon_module -type f | sort
+mon_module/controllers/controllers.py
+mon_module/controllers/__init__.py
+mon_module/demo/demo.xml
+mon_module/__init__.py
+mon_module/__manifest__.py
+mon_module/models/__init__.py
+mon_module/models/models.py
+mon_module/security/ir.model.access.csv
+mon_module/views/templates.xml
+mon_module/views/views.xml</code></pre>
+                <p>Le modèle d'exemple et la ligne <code>'security/ir.model.access.csv'</code> du manifeste sont livrés en
+                    commentaire. Le réflexe de tout développeur venu d'une version précédente est de les décommenter. Sur Odoo 20,
+                    l'installation s'arrête net :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base --addons-path=…/odoo/addons,…/mes_modules -i mon_module --stop-after-init --no-http
+INFO ma_base odoo.modules.loading: loading mon_module/security/ir.model.access.csv
+ERROR ma_base odoo.registry: Failed to load registry
+CRITICAL ma_base odoo.service.server: Failed to initialize database `ma_base`.
+Traceback (most recent call last):
+  …
+  File "…/odoo/orm/registry.py", line 222, in new
+  File "…/odoo/modules/loading.py", line 449, in load_modules
+  File "…/odoo/modules/loading.py", line 211, in load_module_graph
+  File "…/odoo/modules/loading.py", line 56, in load_data
+  …
+  File "…/odoo/tools/convert.py", line 771, in convert_csv_import
+    result = env[model].with_context(**context).load(fields, datas)
+  …
+  File "…/odoo/orm/registry.py", line 385, in __getitem__
+    return self.models[model_name]
+KeyError: 'ir.model.access'</code></pre>
+                <p>La trace se lit comme une coupe de l'architecture : le registre (<code>Registry.new</code>) charge les modules
+                    (<code>load_modules</code>), qui chargent leurs fichiers de données (<code>load_data</code>), qui demandent au
+                    registre le modèle nommé par le fichier CSV. Ce modèle, <code>ir.model.access</code>, n'existe plus en
+                    Odoo 20.</p>
+                <div class="pitfall-box">
+                    <h4>Le scaffold d'Odoo 20 génère encore l'ancien fichier de droits</h4>
+                    <p>Le gabarit de <code>scaffold</code> écrit toujours <code>security/ir.model.access.csv</code> au format 19
+                        (<code>odoo/cli/templates/default/security/ir.model.access.csv.template</code>). En Odoo 20, les droits
+                        d'accès et les règles d'enregistrement sont réunis dans un seul modèle, <code>ir.access</code>
+                        (<code>odoo/addons/base/models/ir_access.py:64-66</code>). Supprime le fichier généré et écris
+                        <code>security/ir.access.csv</code> :</p>
+<pre class="language-bash"><code class="language-bash">id,name,model_id,group_id/id,operation
+access_mon_module_user,mon_module user,mon_module.mon_module,base.group_user,crud</code></pre>
+                    <p>Avec ce fichier et le manifeste qui le cite, le même <code>-i mon_module</code> se termine sans erreur
+                        (« Registry loaded »). Le détail des colonnes, des groupes et du domaine est dans
+                        <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>.</p>
+                </div>
+                <p>Deuxième règle de l'<code>addons_path</code> : la <strong>version</strong> du manifeste. Odoo n'installe que les
+                    modules dont la version commence par la série courante (<code>20.0.x.y.z</code>, ou une version courte comme
+                    <code>0.1</code>, complétée en <code>20.0.0.1</code>). Le même module, manifeste réglé sur
+                    <code>19.0.1.0.0</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base --addons-path=…/odoo/addons,…/mes_modules -i mon_module19 --stop-after-init --no-http
+WARNING ma_base odoo.modules.module: The module mon_module19 has an incompatible version, setting installable=False
+$ echo $?
+0
+$ psql -d ma_base -Atc "select name, state from ir_module_module where name = 'mon_module19'"
+mon_module19|uninstallable</code></pre>
+                <p>Code retour 0, aucune erreur : seul l'avertissement dit que rien n'a été installé. La règle n'est pas nouvelle
+                    (la même fonction <code>check_version</code> existe en 19.0), mais c'est le premier piège d'un portage : un
+                    module 19 recopié tel quel dans un <code>addons_path</code> Odoo 20 est ignoré sans bruit. La liste des
+                    erreurs qui suivent, une fois la version changée, est dans
+                    <a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages
+                    d'erreur et leur correctif</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. HTTP ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. La couche HTTP : d'une adresse à une méthode Python</h2>
+                <p>En Odoo 20, la couche HTTP n'est plus un gros fichier <code>odoo/http.py</code> mais un paquet,
+                    <code>odoo/http/</code> : <code>router.py</code> (l'application WSGI et le service d'une requête),
+                    <code>dispatcher.py</code>, <code>session.py</code>, <code>stream.py</code>, <code>retrying.py</code>… Les
+                    imports d'un module ordinaire ne changent pas : <code>from odoo.http import request, route, Controller,
+                    Response</code> fonctionne toujours. Voici le trajet d'une requête du client web :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Le trajet d'une requête dans Odoo 20, en huit étapes, sur l'exemple de sale.order.web_search_read : 1 application WSGI, root(environ) lit la session et choisit la base selon db_filter, un fichier statique est servi tout de suite (odoo/http/router.py:245) ; 2 registre et curseur, Registry(db) puis un curseur lecture seule, réplique si db_replica_host, sinon base principale (router.py:377, orm/registry.py:1144) ; 3 route, ir.http._match trouve le contrôleur, sinon page du site ou 404 (router.py:397) ; 4 authentification user, public, bearer, none (base/models/ir_http.py:375) ; 5 dispatcher http, jsonrpc ou json2 (odoo/http/dispatcher.py:226, 315, 414) ; 6 contrôleur et ORM, droits ir.access, domaines, calculs, SQL (orm/models.py:3443, 3603) ; 7 transaction, retrying() valide, sur conflit de concurrence rollback et jusqu'à 5 essais (odoo/http/retrying.py:27) ; 8 réponse et journal (odoo/http/server_log.py:36). En bas, la ligne de journal réelle : POST /web/dataset/call_kw/sale.order/web_search_read 200 7192 21 0.014 0.012 rw, soit statut 200, 7192 octets, 21 requêtes SQL, 0,014 s dans PostgreSQL, 0,012 s hors SQL, curseur lecture-écriture."/>
+                    <figcaption>Le trajet d'une requête, avec la fonction du source 20.0 à chaque étape.</figcaption>
+                </figure>
+                <p>(<code>/jsonrpc</code> apparaît deux fois : la table contient deux règles pour cette adresse, qui mènent à la
+                    même fonction.)</p>
+                <p>Trois <strong>dispatchers</strong> se partagent les routes, selon le <code>type</code> déclaré par
+                    <code>@http.route</code>. La table des routes est calculée par <code>ir.http</code> à partir des contrôleurs
+                    des modules installés ; on la parcourt dans le shell :</p>
+<pre class="language-python"><code class="language-python">>>> for rule in env['ir.http'].routing_map().iter_rules():
+...     if rule.rule in ('/odoo', '/web/dataset/call_kw/&lt;path:path&gt;', '/json/2/&lt;__model__&gt;/&lt;__method__&gt;', '/jsonrpc', '/websocket'):
+...         e = rule.endpoint
+...         print(rule.rule, e.routing['type'], e.routing['auth'], e.func.__name__)
+/websocket http public websocket
+/json/2/&lt;__model__&gt;/&lt;__method__&gt; json2 bearer web_json_2_rpc
+/jsonrpc jsonrpc none jsonrpc
+/jsonrpc jsonrpc none jsonrpc
+/web/dataset/call_kw/&lt;path:path&gt; jsonrpc user call_kw
+/odoo http none web_client</code></pre>
+                <table class="tmc">
+                    <thead><tr><th>Type</th><th>Pour qui</th><th>Exemple</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>http</code></td><td>pages, fichiers, téléchargements, poignée de main WebSocket</td>
+                            <td><code>/odoo</code>, <code>/web/login</code>, <code>/websocket</code></td></tr>
+                        <tr><td><code>jsonrpc</code></td><td>le client web, connecté par cookie de session</td>
+                            <td><code>/web/dataset/call_kw/…</code>, <code>/web/action/load</code></td></tr>
+                        <tr><td><code>json2</code></td><td>les programmes externes, authentifiés par clé d'API</td>
+                            <td><code>/json/2/&lt;modèle&gt;/&lt;méthode&gt;</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le module installé à la section 4 n'a pas une ligne de contrôleur. Il est pourtant appelable de l'extérieur dès
+                    son installation, parce que JSON-2 expose les méthodes publiques de tous les modèles, sous les droits de
+                    l'utilisateur de la clé :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -X POST http://localhost:8069/json/2/mon_module.mon_module/create \
+    -H "Authorization: bearer $CLE" -H "Content-Type: application/json" \
+    -d '{"vals_list": [{"name": "Premier", "value": 42}]}'
+[1]
+$ curl -s -X POST http://localhost:8069/json/2/mon_module.mon_module/search_read \
+    -H "Authorization: bearer $CLE" -H "Content-Type: application/json" \
+    -d '{"domain": [], "fields": ["name", "value", "value2"]}'
+[{"id": 1, "name": "Premier", "value": 42, "value2": 0.42}]</code></pre>
+                <p>Sans clé, la réponse est un <code>401</code> au message explicite (<code>User not authenticated, use an API Key
+                    with a Bearer Authorization header.</code>) ; sur un modèle mal orthographié, un <code>404</code> (<code>the
+                    model 'res.partnr' does not exist</code>). Quand plusieurs bases tournent sur le même serveur, l'en-tête
+                    <code>X-Odoo-Database</code> désigne la base visée (<code>odoo/http/router.py:507</code>). Le détail de l'API
+                    est dans <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié : passer à l'API JSON-2
+                    d'Odoo 20</a>. Les anciennes routes <code>/xmlrpc</code> et <code>/jsonrpc</code> répondent encore, avec
+                    un avertissement au journal : dépréciées depuis Odoo 19, leur retrait est annoncé pour Odoo 22
+                    (<code>addons/rpc/controllers/__init__.py:6-9</code>).</p>
+                <p>Dernier détail du schéma, l'étape 2 : Odoo ouvre d'abord un curseur <em>en lecture seule</em> pour les routes
+                    déclarées <code>readonly</code> dans <code>@http.route</code> ; <code>/web/dataset/call_kw</code> le calcule
+                    selon la méthode appelée (<code>addons/web/controllers/dataset.py:28</code>), si bien qu'un
+                    <code>web_search_read</code> peut en profiter. Il ne l'obtient vraiment que si une réplique PostgreSQL est configurée
+                    (<code>db_replica_host</code>) ; sinon il prend la base principale, et le journal note <code>rw</code> en fin
+                    de ligne, comme ici sur un serveur sans réplique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. SERVEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le serveur : fils, workers, cron et WebSocket</h2>
+                <p><code>odoo-bin</code> choisit son mode au démarrage (<code>odoo/service/server.py:1553-1592</code>) :</p>
+                <ul>
+                    <li><strong><code>--workers=0</code></strong> (défaut) : <code>ThreadedServer</code>, un seul processus ; les
+                        requêtes HTTP et les actions planifiées tournent dans des fils. C'est le mode du poste de développement.</li>
+                    <li><strong><code>--workers=N</code></strong> : <code>PreforkServer</code>, un processus maître qui lance
+                        <code>N</code> processus <code>WorkerHTTP</code>, des <code>WorkerCron</code> (autant que
+                        <code>--max-cron-threads</code>) et un serveur gevent pour les connexions longues (<code>/websocket</code>,
+                        port <code>--gevent-port</code>, 8072 par défaut). C'est le mode de production.</li>
+                </ul>
+                <p>Le démarrage en prefork se lit dans le journal : le maître charge le registre, puis chaque worker annonce qu'il
+                    est vivant, avec son propre numéro de processus.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Journal réel du démarrage d'Odoo 20 en mode prefork avec --workers=2 et --max-cron-threads=1 : Odoo version 20.0 ; HTTP service running on 127.0.0.1:8069 ; chargement de 1 puis 69 modules ; Registry loaded in 0.381s par le processus maître 5291 ; WorkerHTTP Alive pour les processus 5303 et 5304 ; WorkerCron Alive pour 5308 ; le processus 5305 recharge le registre puis annonce Evented/WebSocket service running on 127.0.0.1:8072 ; enfin deux lignes de requêtes servies par le worker 5303 : GET /web/login 200 7310 82 0.053 0.378 rw, et GET /websocket 400 sur le port HTTP."/>
+                    <figcaption>Démarrage en prefork : un maître, deux workers HTTP, un worker cron, un serveur gevent.</figcaption>
+                </figure>
+                <p>Trois lignes méritent l'attention. <code>HTTP service running on 127.0.0.1:8069</code> : Odoo 20 n'écoute que
+                    la boucle locale par défaut. <code>Evented/WebSocket service running on 127.0.0.1:8072</code> : le temps réel
+                    (messages, notifications) passe par ce port en prefork, et le proxy doit lui envoyer le chemin
+                    <code>/websocket</code> ; adressé au port HTTP, il échoue (dernière ligne, <code>400</code>, et le code du bus
+                    le dit : « Is the connection opened on the evented port (8072)? », <code>addons/bus/websocket.py:861</code>).
+                    Enfin, Odoo 20 ajoute <code>--gevent-workers</code> (systèmes POSIX seulement, 1 par défaut,
+                    <code>odoo/tools/config.py:498-501</code>) pour lancer plusieurs serveurs gevent sur le même port ;
+                    l'option n'existe pas en 19.0.</p>
+                <div class="pitfall-box">
+                    <h4>Joint par son adresse IP, le serveur reste muet</h4>
+                    <p>La valeur par défaut de <code>--http-interface</code> est passée de <code>0.0.0.0</code> (19.0) à
+                        <code>127.0.0.1</code> (<code>odoo/tools/config.py:289</code>). Un serveur sans proxy, appelé par
+                        <code>http://IP:8069</code>, ne répond donc plus, sans erreur au journal. Derrière Nginx sur la même
+                        machine, c'est exactement ce qu'il faut ; sans proxy ou en conteneur, règle
+                        <code>http_interface = 0.0.0.0</code> dans le fichier de configuration. Les deux montages sont décrits dans
+                        <a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a> et
+                        <a href="/blog/developpement-odoo-2/installer-odoo-20-docker-241">Installer Odoo 20 avec Docker</a>.</p>
+                </div>
+                <p>Chaque ligne de requête suit le même format (<code>odoo/http/server_log.py:36</code>) : statut, taille de la
+                    réponse, nombre de requêtes SQL, temps passé dans PostgreSQL, temps passé hors SQL, mode du curseur. La première
+                    requête d'un worker paie le calcul à froid (82 requêtes SQL pour <code>/web/login</code>, table des routes
+                    comprise) ; en mode développement, <code>/web/webclient/load_menus</code> passe de 21 requêtes au premier appel
+                    à 2 au suivant. Cette ligne est le premier outil de diagnostic des lenteurs, avant tout profileur (voir
+                    <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler,
+                    --log-sql</a>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. CLIENT WEB ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le client web : OWL 3 et des appels JSON</h2>
+                <p>Le client web est une application JavaScript chargée une fois, puis qui ne parle plus au serveur que par des
+                    appels JSON. Ouvrir l'application Ventes déclenche ces requêtes, relevées dans le navigateur :</p>
+<pre class="language-bash"><code class="language-bash">GET  /odoo/sales                                          (la page, une seule fois)
+GET  /web/webclient/load_menus
+GET  /web/webclient/translations?hash=…&amp;lang=fr_FR
+POST /mail/store
+POST /web/action/load
+POST /web/dataset/call_kw/sale.order/get_views
+POST /web/dataset/call_kw/sale.order/web_search_read
+POST /web/dataset/call_kw/res.users/has_group
+POST /web/dataset/call_kw/res.currency/read
+POST /web/dataset/call_kw/sale.order.template/search_read
+POST /web/dataset/call_kw/sale.order/retrieve_sale_dashboard</code></pre>
+                <p>Toute la logique d'affichage est dans le navigateur ; le serveur ne fait que répondre aux appels de méthodes,
+                    toujours par <code>call_kw</code>, toujours sous les droits de l'utilisateur connecté. Le temps réel ne passe
+                    pas par la page : un <em>SharedWorker</em> partagé par les onglets ouvre la connexion, et seul le journal du
+                    serveur la montre (<code>"GET /websocket?version=saas-19.5-1 HTTP/1.1" 101</code>).</p>
+                <p>Les composants sont écrits avec <strong>OWL 3</strong>. La console du navigateur, sur la même page :</p>
+<pre class="language-javascript"><code class="language-javascript">> owl.__info__.version
+'3.0.0-alpha.49'
+> ['useState', 'useRef', 'reactive', 'signal', 'computed', 'useProps', 'plugin'].map(k => k + ':' + typeof owl[k])
+['useState:undefined', 'useRef:undefined', 'reactive:undefined', 'signal:function', 'computed:function', 'useProps:function', 'plugin:function']
+> odoo.__WOWL_DEBUG__.root.constructor.name
+'WebClient'</code></pre>
+                <p>La branche 19.0 embarque OWL 2.8. En 20, <code>useState</code>, <code>useRef</code> et <code>reactive</code>
+                    ont disparu au profit des signaux, de <code>proxy</code> et de <code>useProps</code> : tout composant écrit
+                    pour la 19 est à revoir. La mise en pratique est dans
+                    <a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">Un widget OWL 3 en Odoo 20 : le badge
+                    de retard des emprunts</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. CE QUI CHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce qui change entre Odoo 19 et Odoo 20</h2>
+                <p>Chaque ligne a été vérifiée dans le source 20.0 et comparée à la branche 19.0 ; la colonne « Preuve » donne le
+                    fichier 20.0 ou l'exécution.</p>
+                <table class="tmc">
+                    <thead><tr><th>Sujet</th><th>Odoo 19</th><th>Odoo 20</th><th>Preuve</th></tr></thead>
+                    <tbody>
+                        <tr><td>Python</td><td>3.10 à 3.14</td><td>3.12 à 3.14</td>
+                            <td><code>odoo/release.py:39-40</code>, vérifié au démarrage (<code>odoo/init.py:16</code>)</td></tr>
+                        <tr><td>PostgreSQL</td><td>13 minimum</td><td>16 minimum (avertissement en dessous)</td>
+                            <td><code>odoo/release.py:41</code>, <code>odoo/sql_db.py:712-713</code></td></tr>
+                        <tr><td>Interface d'écoute par défaut</td><td><code>0.0.0.0</code></td><td><code>127.0.0.1</code></td>
+                            <td><code>odoo/tools/config.py:289</code> ; journal de démarrage</td></tr>
+                        <tr><td>Couche HTTP</td><td>fichier <code>odoo/http.py</code></td><td>paquet <code>odoo/http/</code></td>
+                            <td><code>odoo/http/__init__.py</code></td></tr>
+                        <tr><td>Serveurs gevent en prefork</td><td>un</td><td><code>--gevent-workers</code> (1 par défaut)</td>
+                            <td><code>odoo/tools/config.py:498-501</code></td></tr>
+                        <tr><td>Droits et règles</td><td><code>ir.model.access</code> + <code>ir.rule</code></td>
+                            <td><code>ir.access</code> (opérations <code>crud</code> et domaine)</td>
+                            <td><code>'ir.rule' in env</code> → <code>False</code> ; installation du CSV 19 →
+                            <code>KeyError</code></td></tr>
+                        <tr><td>Domaines en Python</td><td><code>odoo.osv.expression</code> ou <code>Domain</code></td>
+                            <td><code>from odoo.fields import Domain</code> seulement</td>
+                            <td><code>import odoo.osv</code> → <code>ModuleNotFoundError</code></td></tr>
+                        <tr><td>Fuseaux horaires</td><td><code>pytz</code> (dépendance déclarée)</td>
+                            <td><code>zoneinfo</code> ; <code>pytz</code> absent de <code>requirements.txt</code> et des imports du source</td>
+                            <td><code>env.tz</code> → <code>ZoneInfo(key='Europe/Brussels')</code></td></tr>
+                        <tr><td>Client web</td><td>OWL 2.8</td><td>OWL 3.0.0-alpha.49</td>
+                            <td><code>web/static/lib/owl/owl.js:1776</code> ; console</td></tr>
+                        <tr><td><code>/xmlrpc</code>, <code>/jsonrpc</code></td><td>dépréciés</td><td>dépréciés, retrait annoncé en
+                            Odoo 22</td><td><code>addons/rpc/controllers/__init__.py:6-9</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le domaine, lui, s'écrit de la même façon qu'en 19 avec la classe <code>Domain</code>, qui se combine par
+                    <code>&amp;</code> et <code>|</code> :</p>
+<pre class="language-python"><code class="language-python">>>> from odoo.fields import Domain
+>>> Domain('is_company', '=', True) &amp; Domain('country_id.code', '=', 'BE')
+['&amp;', ('is_company', '=', True), ('country_id.code', '=', 'BE')]
+>>> import odoo.osv
+ModuleNotFoundError: No module named 'odoo.osv'</code></pre>
+                <p>La revue complète des écarts, module par module, est dans
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a> ;
+                    les domaines ont leur article : <a href="/blog/developpement-odoo-2/domaines-odoo-20-274">Les domaines en Odoo 20 :
+                    opérateurs, Domain, any et chemins</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Modèles présents dans une base</td><td><code>env.registry</code>, <code>'x.y' in env.registry</code></td></tr>
+                        <tr><td>Qui étend un modèle</td><td><code>type(env['x.y']).__mro__</code></td></tr>
+                        <tr><td>Où Odoo cherche les modules</td><td><code>--addons-path</code> ou <code>addons_path</code> dans le
+                            fichier de configuration</td></tr>
+                        <tr><td>Module installable</td><td>version <code>20.0.x.y.z</code> dans le manifeste</td></tr>
+                        <tr><td>Droits d'un nouveau modèle</td><td><code>security/ir.access.csv</code> (pas le fichier du scaffold)</td></tr>
+                        <tr><td>Routes d'une base</td><td><code>env['ir.http'].routing_map().iter_rules()</code></td></tr>
+                        <tr><td>Appel externe</td><td><code>POST /json/2/&lt;modèle&gt;/&lt;méthode&gt;</code>,
+                            <code>Authorization: bearer &lt;clé&gt;</code></td></tr>
+                        <tr><td>Mode production</td><td><code>--workers=N</code>, <code>--max-cron-threads</code>,
+                            <code>/websocket</code> vers le port 8072</td></tr>
+                        <tr><td>Joindre le serveur par son IP</td><td><code>http_interface = 0.0.0.0</code> (ou un proxy local)</td></tr>
+                        <tr><td>Coût d'une requête</td><td>la ligne du journal : requêtes SQL, temps SQL, temps hors SQL</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 = un processus Python, une base PostgreSQL 16 ou plus, un filestore, un client web OWL 3 : à
+                        sauvegarder, surveiller et dimensionner ensemble.</li>
+                    <li>Le registre décide de ce qui existe dans une base : un modèle d'un module non installé n'existe pas, un
+                        module dont la version ne commence pas par <code>20.0</code> n'est jamais installé.</li>
+                    <li>Toute requête suit le même trajet : session, registre, route, authentification, dispatcher, ORM,
+                        transaction, ligne de journal.</li>
+                    <li>Ton module touche surtout l'ORM et les vues ; JSON-2 expose ses méthodes sans contrôleur, sous les droits de
+                        la clé.</li>
+                    <li>Les pièges d'architecture d'Odoo 20 sont silencieux ou trompeurs : écoute en 127.0.0.1, module 19 ignoré,
+                        scaffold qui génère encore <code>ir.model.access.csv</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes, journaux et appels exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community
+                    (PostgreSQL 16, Python 3.12), base de démonstration avec Ventes, navigateur Chromium. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 : <code>odoo/release.py</code> ; <code>odoo/init.py</code> ; <code>odoo/sql_db.py</code> ;
+                        <code>odoo/tools/config.py</code> ;
+                        <a href="https://github.com/odoo/odoo/blob/20.0/odoo/http/router.py" target="_blank" rel="noopener"><code>odoo/http/router.py</code></a>,
+                        <code>dispatcher.py</code>, <code>retrying.py</code>, <code>server_log.py</code> ;
+                        <code>odoo/orm/registry.py</code> ; <code>odoo/modules/module.py</code>, <code>loading.py</code> ;
+                        <code>odoo/service/server.py</code> ; <code>odoo/addons/base/models/ir_access.py</code>,
+                        <code>ir_http.py</code> ; <code>odoo/cli/templates/default/</code> ;
+                        <code>addons/rpc/controllers/</code> ; <code>addons/bus/websocket.py</code> ;
+                        <code>addons/web/static/lib/owl/owl.js</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>odoo/release.py</code> (Python 3.10, PostgreSQL 13),
+                        <code>odoo/tools/config.py</code> (<code>http-interface</code> à <code>0.0.0.0</code>, pas de
+                        <code>--gevent-workers</code>), <code>odoo/http.py</code>, <code>odoo/osv/expression.py</code>,
+                        <code>odoo/addons/base/models/ir_rule.py</code>, <code>requirements.txt</code> (<code>pytz</code>),
+                        <code>web/static/lib/owl/owl.js</code> (2.8.4).</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/creer-premier-module-odoo-20-179">Créer son premier module Odoo 20 : le modèle Livre</a></h5>
+                            <p class="small text-muted mb-0">La suite logique : un module complet, du manifeste au premier écran.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a></h5>
+                            <p class="small text-muted mb-0">Le programme qui porte toutes les couches, option par option.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Workers, service et PostgreSQL 16 sur une vraie machine.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
