@@ -1,0 +1,569 @@
+<!--
+Article — Piloter Odoo 20 depuis Claude Code : JSON-2 et un serveur MCP minimal en Community
+Série « Intégrer Odoo 20 » (série 56, lot T1, étape 3 — T1.4 du plan vague 3 technique)
+Date : 2026-11-10
+Slug : claude-code-mcp-odoo-20
+Mot-clé cible : odoo mcp claude code
+Catégorie : Développement Odoo
+Tags : intermediaire, integrations, guide, community
+Temps de lecture : ~12 minutes
+Preuves (poste de l'auteur, copie jetable de la base technique : sale_management + stock, démo native fr_FR, Odoo 20.0
+3538ed82, PG 16, serveur HTTP local, dbfilter limité à la copie ; Claude Code 2.1.322 authentifié ; exécutions réelles le 10/11/2026) :
+- Utilisateur « Assistant IA » (Ventes : Utilisateur : tous les documents + Rôle / Utilisateur). _generate('rpc', …, False)
+  en tant que lui → ValidationError « La clé API doit avoir une date d'expiration » ; clé à 30 jours acceptée.
+- curl JSON-2 avec cette clé : sale.order/search_read draft trié → S00002 3389.63, S00001 2001.0, S00005 465.75 ;
+  sale.order/unlink → 403 odoo.exceptions.AccessError « You are not allowed to delete 'Sales Order' (sale.order) records » ;
+  res.users/search_read → 200 (l'utilisateur interne lit les utilisateurs : la liste blanche du serveur est la seule barrière).
+- odoo_mcp.py (= tools/blog/odoo20_mcp/odoo_mcp.py) testé par un pipe : initialize, tools/list, tools/call OK ;
+  res.users → isError « modèle non autorisé : res.users (autorisés : res.partner, sale.order) » ;
+  domaine ('bogus','=',1) → isError « HTTP 500 builtins.ValueError : Invalid field res.partner.bogus in condition … ».
+- message_post par JSON-2, body "<b>gras</b> <a …>" → stocké « <p>&lt;b&gt;gras&lt;/b&gt; … </p> » (texte échappé).
+- claude mcp add odoo -s project … → .mcp.json (type stdio, "${ODOO_API_KEY}" gardé tel quel) ; claude mcp list sans la variable :
+  « ⏸ Pending approval (run `claude` to approve) » + « [Warning] [odoo] mcpServers.odoo: Missing environment variables: ODOO_API_KEY ».
+  Session interactive (--permission-mode default, affichée « manual mode on ») : dialogue « New MCP server found in this project: odoo »,
+  choix « Use this MCP server » → .claude/settings.local.json {"enabledMcpjsonServers": ["odoo"]} ; /mcp → « ✔ odoo 3 tools ».
+  Prompt réel → search_read (sale.order, draft, amount_total desc, limit 3) puis post_note (sale.order 2) : deux demandes
+  d'autorisation, réponse avec S00002/S00001/S00005, message 1171 « Devis le plus élevé du moment : à relancer cette semaine. »
+  auteur Assistant IA, sous-type Notes (vérifié en base et à l'écran). Second prompt (utilisateurs + suppression S00005) :
+  demande d'autorisation search_read sur res.users acceptée, isError liste blanche, aucune suppression, l'assistant n'a pas cherché d'autre voie.
+  Arguments du 1er search_read (capture) : fields name, partner_id, amount_total, currency_id, date_order ; order amount_total desc ; limit 3.
+  Brouillons en base : S00002, S00001, S00005, S00003 (4, réponse -p exacte).
+- Repris de preuves antérieures (skill odoo-v20) : clé 19 sans portée → 401 en JSON-2 (article 281) ; module rpc auto-installé ;
+  UserError → 422 ; parcours Mes préférences › Sécurité › Clés API (T1.3, 01/11/2026).
+  Après approbation : claude mcp list → « odoo: python3 odoo_mcp.py - ✔ Connected ».
+  claude -p sans --allowedTools : outil refusé ; avec --allowedTools mcp__odoo__search_read : « 4 devis en brouillon » (exact) ;
+  --permission-mode manual accepté.
+- Source 20.0 : addons/rpc/controllers/json2.py:48-52 (route /json/2, auth='bearer', bearer_scope='rpc') ;
+  odoo/addons/base/models/res_users.py:1596-1606 (_check_expiration_date). Aucun module ai_* ni « mcp » dans le code Community ;
+  module ai_mcp présent dans la liste des modules d'une base Enterprise 20 (docs/blog-odoo20/captures-base-edu/*/modules_avant.*).
+Captures : content/blog/screenshots/claude-code-mcp-odoo-20/ (01 schéma ; 02-04, 06 extraits réels du terminal, chemin du dossier
+réduit à …/pilote-odoo ; 05 Odoo). Adresse et base remplacées par localhost:8069 et ma_base dans les blocs de code.
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Piloter Odoo 20 depuis Claude Code : JSON-2 et un serveur MCP minimal</h1>
+                <p class="lead mt-3 text-white">On pose une question en français dans le terminal ; l'assistant interroge Odoo,
+                    répond avec les bons devis et écrit une note dans le fil, après avoir demandé la permission. Le tout repose
+                    sur un serveur MCP d'une centaine de lignes de Python, sans dépendance ni module Odoo. Il parle à
+                    l'API JSON-2 avec la clé d'un utilisateur technique, sur une liste blanche de modèles.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Intégrations</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Exposer</h4>
+                        <p>Écrire un serveur MCP minimal : trois outils (<code>search_read</code>, <code>fields</code>,
+                            <code>post_note</code>) au-dessus de <code>/json/2</code>, limités à deux modèles.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Brancher</h4>
+                        <p>Le déclarer dans Claude Code avec <code>claude mcp add</code>, sans écrire la clé dans le
+                            projet, puis l'approuver.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Encadrer</h4>
+                        <p>Ce que l'assistant peut faire et ce qu'il ne peut pas faire : demandes d'autorisation, liste
+                            blanche, et surtout les droits de l'utilisateur de la clé.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Odoo 20 Community avec Ventes et sa base de démonstration. Aucun module à installer :
+                            la route <code>/json/2</code> est fournie par le module <code>rpc</code>, installé d'office.</li>
+                        <li>Python 3 sur la machine de l'assistant : le serveur n'utilise que la bibliothèque standard.</li>
+                        <li>Claude Code, connecté à un compte. L'article a été exécuté avec la <strong>version 2.1.322</strong> ;
+                            les écrans de la CLI sont en anglais.</li>
+                        <li>Les bases de l'API : <a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié :
+                            passer à l'API JSON-2 d'Odoo 20</a>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p><strong>MCP</strong> (Model Context Protocol) est un protocole qui permet à un assistant d'appeler des
+                    <em>outils</em> déclarés par un programme à part, le <strong>serveur MCP</strong>. En mode
+                    <code>stdio</code>, l'assistant lance ce programme et lui parle par l'entrée et la sortie standard, une
+                    ligne JSON-RPC par message. Chaque outil a un nom, une description et un schéma d'arguments. L'assistant
+                    choisit l'outil, le serveur fait l'appel à Odoo et renvoie le résultat.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en deux bandes. 1 Le chemin d'un appel : Claude Code, l'assistant choisit un outil, par exemple search_read sur sale.order ; serveur MCP odoo_mcp.py en stdio, une ligne JSON-RPC par message ; Odoo 20 reçoit POST /json/2/sale.order/search_read avec Authorization bearer clé ; retour, le résultat JSON devient une réponse rédigée, une erreur est rendue à l'assistant (isError). 2 Quatre barrières, la dernière tient même si l'assistant contourne le serveur MCP : approbation du serveur puis de chaque outil (Yes, Yes and don't ask again, No) ; liste blanche ODOO_MODELS res.partner et sale.order, le reste est refusé ; outils exposés search_read, fields, post_note, aucun write, unlink ni méthode libre ; droits Odoo de l'utilisateur technique Assistant IA, Ventes tous les documents, pas de suppression"/>
+                    <figcaption>Un appel de bout en bout, et les quatre barrières qui le limitent.</figcaption>
+                </figure>
+                <p>Odoo 20 Enterprise contient un module <code>ai_mcp</code> (il figure dans la liste des modules d'une base
+                    Enterprise 20). Le code Community 20.0 n'a ni module <code>ai_*</code>, ni aucune mention de MCP. En Community,
+                    on écrit donc soi-même le serveur. Le plus simple est de le poser au-dessus de JSON-2, l'API externe
+                    d'Odoo 20.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. UTILISATEUR TECHNIQUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Côté Odoo : un utilisateur technique et sa clé API</h2>
+
+                <p>L'assistant agira avec les droits du propriétaire de la clé. Ne lui donnez jamais une clé d'administrateur.
+                    Créez un <strong>utilisateur interne dédié</strong>, ici « Assistant IA », avec le seul droit
+                    <strong>Ventes : Utilisateur : tous les documents</strong>. Tout ce qu'il écrit sera signé de son nom
+                    dans les fils de discussion. Les traces restent donc lisibles.</p>
+                <p>La clé se crée connecté en « Assistant IA » : menu utilisateur › <strong>Mes préférences</strong> › onglet
+                    <strong>Sécurité</strong> › <strong>Clés API</strong>, description <code>Claude Code</code>, puis copier la clé
+                    affichée. Elle ne sera plus jamais montrée. Elle a la portée <code>rpc</code>, la seule acceptée par
+                    <code>/json/2</code>. Pour un utilisateur qui n'est pas administrateur, la date d'expiration est obligatoire :
+                    créée par programme sans date, la clé est refusée (« La clé API doit avoir une date d'expiration »). Notez
+                    l'échéance : à cette date, le serveur MCP recevra des <code>401</code>.</p>
+                <p>Ces droits sont la barrière qui tient quoi qu'il arrive. Avec la clé de « Assistant IA », un
+                    <code>unlink</code> envoyé directement à JSON-2 est refusé par Odoo :</p>
+<div class="out">POST /json/2/sale.order/unlink   {"ids": [999999]}
+HTTP 403
+{"name": "odoo.exceptions.AccessError",
+ "message": "You are not allowed to delete 'Sales Order' (sale.order) records.\n\nThis operation is allowed for the following groups:\n\t- Sales / Administrator\n\t- Default access for new users\n …"}</div>
+                <p>À l'inverse, le même utilisateur interne peut lire <code>res.users</code> par JSON-2 (réponse
+                    <code>200</code>). Si l'assistant ne doit pas y toucher, c'est le serveur MCP qui doit l'en empêcher.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE SERVEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le serveur MCP : trois outils, une liste blanche</h2>
+
+                <p>Le fichier <code>odoo_mcp.py</code>, dans le dossier du projet où l'on lance l'assistant. Il est complet,
+                    et c'est celui qui a tourné pour cet article. À lire dans l'ordre : <code>odoo()</code> (l'appel JSON-2 et la
+                    liste blanche), <code>TOOLS</code> (ce que voit l'assistant), <code>call_tool()</code>, puis
+                    <code>handle()</code> et la boucle de lecture (le protocole).</p>
+<pre class="language-python"><code class="language-python">"""Serveur MCP minimal pour Odoo 20 Community : 3 outils au-dessus de l'API JSON-2.
+
+Transport stdio : une requête JSON-RPC par ligne sur stdin, une réponse par ligne sur stdout.
+Rien d'autre ne doit sortir sur stdout : les traces vont sur stderr.
+Configuration par variables d'environnement : ODOO_URL, ODOO_DB, ODOO_API_KEY, ODOO_MODELS.
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+URL = os.environ["ODOO_URL"].rstrip("/")
+DB = os.environ["ODOO_DB"]
+KEY = os.environ["ODOO_API_KEY"]
+MODELS = set(os.environ.get("ODOO_MODELS", "res.partner,sale.order").split(","))
+
+
+def odoo(model, method, **params):
+    """POST /json/2/&lt;model&gt;/&lt;method&gt; ; les paramètres sont les clés du corps JSON."""
+    if model not in MODELS:
+        raise ValueError(f"modèle non autorisé : {model} (autorisés : {', '.join(sorted(MODELS))})")
+    params.setdefault("context", {"lang": "fr_FR"})
+    req = urllib.request.Request(
+        f"{URL}/json/2/{model}/{method}",
+        data=json.dumps(params).encode(),
+        headers={"Authorization": f"bearer {KEY}", "X-Odoo-Database": DB,
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        err = json.load(e)  # {name, message, arguments, context, debug}
+        raise ValueError(f"HTTP {e.code} {err.get('name')} : {err.get('message')}") from None
+
+
+TOOLS = [
+    {"name": "search_read",
+     "description": "Cherche des enregistrements Odoo et renvoie les champs demandés.",
+     "inputSchema": {"type": "object", "required": ["model"], "properties": {
+         "model": {"type": "string", "description": "ex. sale.order"},
+         "domain": {"type": "array", "description": "domaine Odoo, ex. [[\"state\", \"=\", \"sale\"]]"},
+         "fields": {"type": "array", "items": {"type": "string"}},
+         "limit": {"type": "integer", "default": 20},
+         "order": {"type": "string", "description": "ex. amount_total desc"}}}},
+    {"name": "fields",
+     "description": "Liste les champs d'un modèle Odoo (nom, libellé, type, modèle lié).",
+     "inputSchema": {"type": "object", "required": ["model"],
+                     "properties": {"model": {"type": "string"}}}},
+    {"name": "post_note",
+     "description": "Écrit une note interne dans le fil (chatter) d'un enregistrement.",
+     "inputSchema": {"type": "object", "required": ["model", "id", "body"], "properties": {
+         "model": {"type": "string"}, "id": {"type": "integer"}, "body": {"type": "string"}}}},
+]
+
+
+def call_tool(name, args):
+    model = args["model"]
+    if name == "search_read":
+        return odoo(model, "search_read", domain=args.get("domain", []),
+                    fields=args.get("fields", ["display_name"]),
+                    limit=min(int(args.get("limit", 20)), 200), order=args.get("order"))
+    if name == "fields":
+        return odoo(model, "fields_get", attributes=["string", "type", "relation"])
+    if name == "post_note":
+        ids = odoo(model, "message_post", ids=[args["id"]], body=args["body"],
+                   message_type="comment", subtype_xmlid="mail.mt_note")
+        return {"message_id": ids}
+    raise ValueError(f"outil inconnu : {name}")
+
+
+def handle(msg):
+    method, params = msg.get("method"), msg.get("params") or {}
+    if method == "initialize":
+        return {"protocolVersion": params.get("protocolVersion", "2025-06-18"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "odoo-json2", "version": "0.1.0"}}
+    if method == "ping":
+        return {}
+    if method == "tools/list":
+        return {"tools": TOOLS}
+    if method == "tools/call":
+        try:
+            data = call_tool(params["name"], params.get("arguments") or {})
+            return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}]}
+        except Exception as e:  # l'erreur est rendue au modèle, le serveur continue
+            return {"content": [{"type": "text", "text": str(e)}], "isError": True}
+    raise LookupError(method)
+
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    msg = json.loads(line)
+    if "id" not in msg:  # notification (notifications/initialized…) : pas de réponse
+        continue
+    try:
+        reply = {"jsonrpc": "2.0", "id": msg["id"], "result": handle(msg)}
+    except LookupError as e:
+        reply = {"jsonrpc": "2.0", "id": msg["id"],
+                 "error": {"code": -32601, "message": f"Method not found: {e}"}}
+    print(json.dumps(reply, ensure_ascii=False), flush=True)
+    print(f"[odoo-mcp] {msg['method']}", file=sys.stderr, flush=True)</code></pre>
+                <ul>
+                    <li><strong>stdout est réservé au protocole.</strong> Un <code>print()</code> de mise au point sur la sortie
+                        standard casse l'échange : les traces partent sur <code>stderr</code>.</li>
+                    <li><strong>La configuration vient de l'environnement</strong> (<code>ODOO_URL</code>, <code>ODOO_DB</code>,
+                        <code>ODOO_API_KEY</code>, <code>ODOO_MODELS</code>) : rien de secret dans le fichier.</li>
+                    <li><strong>La liste blanche est vérifiée avant tout appel.</strong> Un modèle absent de
+                        <code>ODOO_MODELS</code> ne quitte jamais la machine.</li>
+                    <li><strong>Aucun outil générique.</strong> Pas de <code>write</code>, pas d'<code>unlink</code>, pas
+                        d'outil « appeler n'importe quelle méthode ». La seule écriture est une note interne :
+                        <code>message_post</code> avec le sous-type <code>mail.mt_note</code>, comme le bouton <strong>Note</strong> du fil.
+                        Le texte passé en <code>body</code> est échappé par Odoo : un <code>&lt;b&gt;</code> ou un lien envoyé
+                        ainsi est enregistré comme du texte (essayé).</li>
+                    <li><strong>Une erreur est rendue à l'assistant</strong> (<code>isError</code>), au lieu d'arrêter le serveur :
+                        il peut lire le message, corriger son appel ou l'expliquer.</li>
+                </ul>
+
+                <h3>L'essayer sans assistant</h3>
+                <p>Le protocole se teste à la main, en envoyant les messages ligne par ligne sur l'entrée standard (la demande <code>tools/list</code>, qui renvoie les trois outils, est omise ici pour la longueur).</p>
+<pre class="language-bash"><code class="language-bash">export ODOO_URL=http://localhost:8069 ODOO_DB=ma_base ODOO_API_KEY=&lt;la clé&gt; ODOO_MODELS=res.partner,sale.order
+printf '%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"essai","version":"0"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_read","arguments":{"model":"sale.order","domain":[["state","=","draft"]],"fields":["name","amount_total"],"order":"amount_total desc","limit":2}}}' \
+ '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_read","arguments":{"model":"res.users","fields":["login"]}}}' \
+ | python3 odoo_mcp.py</code></pre>
+<div class="out">{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "odoo-json2", "version": "0.1.0"}}}
+[odoo-mcp] initialize
+{"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "[{\"id\": 2, \"name\": \"S00002\", \"amount_total\": 3389.63}, {\"id\": 1, \"name\": \"S00001\", \"amount_total\": 2001.0}]"}]}}
+[odoo-mcp] tools/call
+{"jsonrpc": "2.0", "id": 4, "result": {"content": [{"type": "text", "text": "modèle non autorisé : res.users (autorisés : res.partner, sale.order)"}], "isError": true}}
+[odoo-mcp] tools/call</div>
+                <p>La notification <code>notifications/initialized</code> n'a pas d'<code>id</code> : elle ne reçoit pas de
+                    réponse. Les lignes <code>[odoo-mcp]</code> sont les traces de <code>stderr</code>, mêlées à la sortie dans le terminal.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. DÉCLARER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le déclarer dans Claude Code, sans écrire la clé</h2>
+
+                <p>Dans le dossier du projet, la portée <code>project</code> écrit la déclaration dans un fichier
+                    <code>.mcp.json</code> partageable. La clé y est notée <code>${ODOO_API_KEY}</code> entre apostrophes,
+                    pour que le shell ne la remplace pas : Claude Code la lira dans l'environnement au lancement.</p>
+<pre class="language-bash"><code class="language-bash">claude mcp add odoo -s project \
+  -e ODOO_URL=http://localhost:8069 -e ODOO_DB=ma_base \
+  -e 'ODOO_API_KEY=${ODOO_API_KEY}' -e ODOO_MODELS=res.partner,sale.order \
+  -- python3 odoo_mcp.py</code></pre>
+<pre class="language-json"><code class="language-json">{
+  "mcpServers": {
+    "odoo": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "odoo_mcp.py"
+      ],
+      "env": {
+        "ODOO_URL": "http://localhost:8069",
+        "ODOO_DB": "ma_base",
+        "ODOO_API_KEY": "${ODOO_API_KEY}",
+        "ODOO_MODELS": "res.partner,sale.order"
+      }
+    }
+  }
+}</code></pre>
+                <p>Avant toute approbation, et sans la variable dans l'environnement, <code>claude mcp list</code> le dit
+                    clairement :</p>
+<div class="out">odoo: python3 odoo_mcp.py - ⏸ Pending approval (run `claude` to approve)
+…
+ └ [Warning] [odoo] mcpServers.odoo: Missing environment variables: ODOO_API_KEY</div>
+                <p>On exporte la clé dans le shell (<code>export ODOO_API_KEY=…</code>, ou un gestionnaire de secrets),
+                    puis on lance <code>claude</code>. Un serveur venu d'un <code>.mcp.json</code> n'est jamais démarré sans
+                    accord : au premier lancement, Claude Code demande s'il faut l'utiliser.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Terminal Claude Code : New MCP server found in this project: odoo. MCP servers may execute code or access system resources. All tool calls require approval. Trois choix : Use this MCP server, Use this and all future MCP servers in this project, Continue without using this MCP server (sélectionné par défaut). Enter to confirm, Esc to cancel. Sous un trait, le panneau Tools for odoo, 3 tools : search_read, fields, post_note"/>
+                    <figcaption>Le dialogue d'approbation (le choix par défaut est de ne pas l'utiliser), puis, après « Use this MCP server », les trois outils vus par <code>/mcp</code>.</figcaption>
+                </figure>
+                <p>L'accord est enregistré dans <code>settings.local.json</code>, le fichier de réglages local du projet
+                    (<code>"enabledMcpjsonServers": ["odoo"]</code>), propre au poste. Ensuite,
+                    <code>claude mcp list</code> affiche <code>odoo: python3 odoo_mcp.py - ✔ Connected</code>. Le
+                    <code>.mcp.json</code> peut aller dans le dépôt du projet ; la clé, jamais.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. UNE VRAIE DEMANDE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Une vraie demande, deux autorisations</h2>
+
+                <p>Session lancée avec <code>claude --permission-mode manual</code>, pour que chaque appel d'outil soit
+                    soumis. La demande, en français :</p>
+<div class="out">Dans Odoo, quels sont les trois devis en brouillon les plus élevés ? Ensuite, écris une note interne
+sur le premier : « Devis le plus élevé du moment : à relancer cette semaine. »</div>
+                <p>L'assistant a d'abord demandé l'outil <code>search_read</code> avec des arguments qu'il a construits seul
+                    à partir des descriptions du serveur : modèle <code>sale.order</code>, domaine
+                    <code>[["state", "=", "draft"]]</code>, champs <code>name</code>, <code>partner_id</code>,
+                    <code>amount_total</code>, <code>currency_id</code>, <code>date_order</code>, ordre
+                    <code>amount_total desc</code>, limite <code>3</code>. Accepté par <strong>1. Yes</strong>, puis la
+                    seconde demande :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Terminal Claude Code : la demande en français, Calling odoo 2 times, puis le bloc Tool use odoo — Post Note Tool (MCP) avec model sale.order, id 2, body Devis le plus élevé du moment : à relancer cette semaine. About the odoo — Post Note Tool : Écrit une note interne dans le fil (chatter) d'un enregistrement. Do you want to proceed? 1. Yes (sélectionné), 2. Yes, and don't ask again for odoo — Post Note commands dans le dossier du projet, 3. No"/>
+                    <figcaption>La demande d'autorisation de l'écriture : on voit l'enregistrement visé (<code>id: 2</code>) et le texte exact avant d'accepter.</figcaption>
+                </figure>
+                <p>Le choix 2 (« don't ask again ») vaut pour cet outil dans ce dossier. Pour une écriture, mieux vaut garder
+                    <strong>1. Yes</strong> à chaque fois. La réponse, après les deux appels :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Terminal Claude Code : Called odoo 2 times. Réponse : J'ai trouvé les trois devis en brouillon les plus élevés et ajouté la note interne sur le premier. Tableau : 1 S00002 Ready Mat 3 389,63 USD 07/09/2026 ; 2 S00001 Acme Corporation 2 001,00 USD 07/09/2026 ; 3 S00005 Acme Corporation 465,75 USD 07/09/2026. J'ai écrit la note dans le fil de discussion de S00002 (Ready Mat). Elle est enregistrée sous le n° 1171"/>
+                    <figcaption>Montants, clients et dates de commande (<code>date_order</code>) de la base de démonstration ; 1171 est l'id du message renvoyé par <code>message_post</code>.</figcaption>
+                </figure>
+                <p>Côté Odoo, la note est dans le fil du devis S00002, signée par l'utilisateur de la clé :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Devis S00002 dans Odoo 20, client Ready Mat, total 3 389,63 dollars, statut Devis ; dans le fil à droite, sous Aujourd'hui, un message de Assistant IA à 15:23 : Devis le plus élevé du moment : à relancer cette semaine ; en dessous, les messages de démonstration du 7 oct. 2026"/>
+                    <figcaption>La note interne écrite par l'assistant, au nom de « Assistant IA ».</figcaption>
+                </figure>
+
+                <h3>Sans terminal interactif : <code>claude -p</code></h3>
+                <p>En mode non interactif, personne ne peut répondre à une demande d'autorisation. L'outil est donc refusé,
+                    sauf s'il est autorisé d'avance par son nom complet, <code>mcp__&lt;serveur&gt;__&lt;outil&gt;</code> :</p>
+<pre class="language-bash"><code class="language-bash">claude -p "Combien de devis en brouillon y a-t-il dans Odoo ? Réponds en une phrase."
+# Je n'ai pas pu compter les devis : l'accès à l'outil Odoo `mcp__odoo__search_read` a été refusé, …
+
+claude -p "Combien de devis en brouillon y a-t-il dans Odoo ? Réponds en une phrase." \
+  --allowedTools mcp__odoo__search_read
+# Il y a 4 devis en brouillon dans Odoo : S00001, S00002, S00003 et S00005.</code></pre>
+                <p>N'autorisez ainsi que les outils de lecture. Une écriture lancée sans personne pour la relire est
+                    exactement ce que le dialogue d'autorisation sert à éviter.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. LIMITES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce que l'assistant ne peut pas faire</h2>
+
+                <p>Deuxième demande, volontairement hors du cadre : lister les utilisateurs et supprimer un devis.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Terminal Claude Code : demande Liste les utilisateurs Odoo et leur identifiant de connexion, puis supprime le devis S00005. Called odoo. Réponse : Je n'ai pu faire ni l'une ni l'autre de ces actions. 1. Liste des utilisateurs : refusée par le serveur, il a répondu modèle non autorisé : res.users, il n'autorise que res.partner et sale.order. 2. Suppression de S00005 : pas faite, le serveur ne propose aucune action de suppression ; je ne suis pas passé par un autre moyen, comme un script qui se connecterait directement à Odoo, pour contourner ces limites"/>
+                    <figcaption>La liste blanche refuse <code>res.users</code> ; aucun outil ne sait supprimer.</figcaption>
+                </figure>
+                <p>L'assistant a bien appelé <code>search_read</code> sur <code>res.users</code>, après la même demande
+                    d'autorisation. Le serveur a refusé avant d'appeler Odoo. Pour la suppression, il n'a trouvé aucun outil. Les erreurs
+                    d'Odoo lui reviennent de la même façon. Un champ inconnu dans un domaine, par exemple, donne un
+                    <code>500</code>, et non le <code>422</code> d'une erreur métier ; il est relayé tel quel :</p>
+<div class="out">HTTP 500 builtins.ValueError : Invalid field res.partner.bogus in condition ('bogus', '=', 1)</div>
+
+                <div class="pitfall-box">
+                    <h4>La clé est aussi à la portée de l'outil Bash</h4>
+                    <p>La variable <code>ODOO_API_KEY</code> est exportée dans le shell qui lance <code>claude</code>. Toute
+                        commande que l'assistant exécute en hérite. Un <code>curl</code> vers <code>/json/2</code> lancé par l'outil Bash
+                        contournerait la liste blanche et les trois outils : une telle commande, si elle est proposée, est à refuser. Dans cet essai,
+                        l'assistant n'a pas tenté cette voie, et l'a dit (figure précédente). Mais la seule barrière qui tient dans tous les cas, ce sont
+                        les droits de l'utilisateur de la clé dans Odoo. Donnez-lui le minimum, et jamais
+                        de groupe d'administration.</p>
+                </div>
+
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Le serveur ne dépend que de JSON-2, qui existait déjà en 19. L'écart est du côté de la clé : en 20, la
+                        route <code>/json/2</code> exige une clé de portée <code>rpc</code>. Une clé créée en 19 sans portée
+                        reçoit un <code>401</code> (voir <a href="/blog/developpement-odoo-2/xmlrpc-vers-json-2-odoo-20-281">Réécrire
+                        un script XML-RPC en JSON-2</a>). Il faut alors créer une nouvelle clé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Community, pas de serveur MCP fourni : une centaine de lignes de Python au-dessus de
+                        <code>/json/2</code> suffisent, en <code>stdio</code>, sans dépendance.</li>
+                    <li>Peu d'outils, précis : lire (<code>search_read</code>, <code>fields</code>) et une seule écriture
+                        limitée (<code>post_note</code>). Une liste blanche de modèles, vérifiée avant tout appel.</li>
+                    <li><code>claude mcp add -s project</code> écrit un <code>.mcp.json</code> partageable ; la clé y reste
+                        <code>${ODOO_API_KEY}</code> et vient de l'environnement. Le serveur doit être approuvé une fois.</li>
+                    <li>Chaque appel d'outil demande l'autorisation en mode <code>manual</code> ; en <code>claude -p</code>,
+                        seuls les outils passés dans <code>--allowedTools</code> sont utilisables.</li>
+                    <li>La barrière qui tient toujours : un utilisateur technique aux droits minimaux, avec une clé de portée
+                        <code>rpc</code> et une date d'expiration à surveiller.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Serveur, déclaration et demandes exécutés le 10/11/2026 avec Claude Code 2.1.322 et un serveur
+                    Odoo 20.0 Community (PostgreSQL 16), base de démonstration avec Ventes. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 : <a href="https://github.com/odoo/odoo/blob/20.0/addons/rpc/controllers/json2.py" target="_blank" rel="noopener"><code>addons/rpc/controllers/json2.py</code></a> (route <code>/json/2</code>, <code>auth='bearer'</code>, portée <code>rpc</code>) ; <code>odoo/addons/base/models/res_users.py</code> (<code>_check_expiration_date</code> : date d'expiration obligatoire hors administrateur).</li>
+                    <li>Recherche de « mcp » et des modules <code>ai_*</code> dans le code Community 20.0 : aucun résultat ; module <code>ai_mcp</code> présent dans la liste des modules d'une base Enterprise 20.</li>
+                    <li>Protocole MCP : transport <code>stdio</code>, méthodes <code>initialize</code>, <code>tools/list</code>, <code>tools/call</code> ; le serveur de l'article renvoie la version de protocole demandée par le client.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347">L'API de la Bibliothèque en JSON-2</a></h5>
+                            <p class="small text-muted mb-0">Exposer ses propres méthodes : un outil MCP métier peut ensuite les appeler.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Régler au plus juste ce que peut faire l'utilisateur de la clé.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/webhooks-odoo-20-389">Webhooks en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'autre sens : Odoo qui prévient un outil externe.</p>
+                        </div></div>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-3">
+                    <a href="/blog/developpement-odoo-2/n8n-odoo-20-391" class="btn btn-outline-secondary">← n8n et Odoo 20</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
