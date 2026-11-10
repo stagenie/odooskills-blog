@@ -1,0 +1,819 @@
+<!--
+Article — Déployer la Bibliothèque en production : service, conf, mises à jour
+Série « Développer avec Odoo 20 : le module Bibliothèque » (24), étape 26 ; lot T4 (T4.1 du plan vague 3 technique).
+Les étapes 23 à 25 n'existent pas encore : l'article déploie le module dans l'état de l'étape 22 (20.0.1.20.0), en partant
+de la version de l'étape 21 (20.0.1.19.0) pour montrer une vraie mise à jour. Aucun lien vers les étapes absentes.
+Date : 2026-11-10
+Slug : deployer-bibliotheque-production-odoo-20
+Mot-clé cible : déployer odoo 20 en production ; odoo deployment guide, odoo production config, odoo update module, odoo systemd
+Meta : Déployer un module Odoo 20 : odoo.conf de production (proxy_mode, list_db, dbfilter), service systemd, mise à jour -u, git pull d'Odoo, retour arrière.
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~16 minutes
+Preuves (installation jetable sous un compte sans droits root, arborescence /opt/odoo, /etc/odoo, /var/log/odoo,
+/var/backups/odoo recréée dans un dossier de travail ; Odoo 20.0 Community cloné en --depth 1 à 3538ed82, venv Python
+3.12.3 + requirements.txt ; PostgreSQL 16 ; copie jetable de la base technique ; module biblio dans un dépôt Git à part,
+commits 20.0.1.19.0 puis 20.0.1.20.0) :
+- config.parse_config([]) : http_interface '127.0.0.1', proxy_mode False, list_db True, admin_passwd 'admin' ;
+  verify_admin_password(bon) True / ('admin') False avec un hachage pbkdf2-sha512 600000 tours.
+- -i biblio --stop-after-init --no-http : 10,9 s, rc 0 ; module list : biblio 20.0.1.19.0 20.0.1.19.0 'installed'.
+- Service systemd utilisateur (systemctl --user) : systemd-analyze --user verify silencieux ; démarré : 5 processus (principal,
+  2 WorkerHTTP, GeventServer, WorkerCron) ; ss : 127.0.0.1:8069 et 127.0.0.1:8072 ; /web/health 200, db_server_status pass ;
+  curl par l'adresse réseau de la machine → code 7 (connexion refusée).
+- proxy_mode True : X-Forwarded-For repris dans le journal (203.0.113.9) seulement avec X-Forwarded-Host ; connexion admin
+  par les en-têtes → web.base.url https://erp.exemple.com ; proxy_mode False → http://127.0.0.1:8069.
+- list_db False : /web/database/manager 200 « The database manager has been disabled by the administrator » ;
+  /web/database/backup avec le bon mot de passe maître → 403 ; /web/database/list → AccessDenied « Database management
+  functions blocked, admin disabled database listing. »
+- -d <base inexistante> → base créée et base installée (16 modules, 11 s) : cli/server.py:101-108 (identique 19).
+- UMask=0027 : dossier upload du filestore recréé drwxr-x--- (drwxr-x--x avant) ; fichiers -r--r--r-- (ir_attachment.py:196-201,
+  DIRECTORY_MODE 0o751 :46 ; 19.0 locale et publique : aucun chmod) ; nouveau odoo.log -rw-r-----.
+- logrotate -s <état> -f : odoo.log → odoo.log.1, nouvelle requête écrite dans un nouveau odoo.log (WatchedFileHandler).
+- markdown2 absent de requirements.txt : WARNING à chaque chargement de mail ; pip install markdown2 (2.5.5) → 0 WARNING.
+- Unité système : systemd-analyze verify silencieux (chemins de l'installation d'essai) ; « Command … is not executable » si
+  le venv manque ; systemd-analyze security --offline=yes : 9.0 UNSAFE sans les 5 lignes de durcissement, 8.4 EXPOSED avec.
+  Non installée (pas de root) ; ProtectSystem/PrivateTmp non appliqués à un service utilisateur sur ce poste (constaté).
+- Mise à jour module : dump 1,3 s ; fetch ; git log/diff ; stop ; merge --ff-only ; module upgrade -n --outdated all →
+  'to upgrade' ; -u biblio → pre-migrate 20.0.1.19.0 → 20.0.1.20.0 ; start ; fenêtre 5,9 s ; 0 ERROR ; health pass ;
+  get_import_templates → modèle livres ; 5 genres.
+- -u avec le service en marche puis sans redémarrage : genres 5 mais get_import_templates → [] (ancien code) ; après
+  redémarrage → modèle. Les workers rechargent le registre (« Modules loaded. ») sans recharger le Python.
+- Ancien code (reset 20.0.1.19.0) + -u biblio : 5 « Deleting n@library.genre (biblio.genre_…) », version en base 20.0.1.19.0.
+- Retour arrière : reset --hard + db load -f --move de la sauvegarde → 20.0.1.19.0, 0 genre.
+- Code d'Odoo : git fetch origin 20.0 (2 108 commits, 3538ed82 → e77213ec 2026-11-10), requirements.txt inchangé ; un seul
+  module installé change de version (account 20.0.1.5 → 20.0.1.6), 21 modules installés ont des fichiers de données modifiés
+  (hors static, i18n, tests), 46 un fr.po ; stop, merge --ff-only, pip, -u all 37,3 s (70 modules, 243 Mo), start : fenêtre
+  43,8 s, 0 ERROR ; merge : « 12931 files changed, 1573151 insertions(+), 584978 deletions(-) » ; module list juste après le
+  merge : account 20.0.1.5 20.0.1.6 seul écart ; retour : reset --hard 3538ed82 (révision encore présente, cat-file commit),
+  module list account 20.0.1.6 20.0.1.5, db load -f --move, puis account 20.0.1.5 20.0.1.5 : 13,7 s.
+- -u biblio --stop-after-init SANS --no-http, service en marche (workers 2) → OSError [Errno 98] (PreforkServer.start avant preload).
+- Après relecture : [Unit] de l'unité système aligné sur l'article d'installation (After=network.target postgresql.service,
+  Wants=postgresql.service), verify silencieux, scores 8.4 / 9.0 inchangés ; logrotate prouvé avec -s <état> sous le compte
+  de l'installation (pas en root) ; service utilisateur prouvé sous un compte ordinaire (pas sous un compte système sans session).
+Source 20.0 : odoo/tools/config.py:23-25, 230, 289, 297, 404, 1135-1149 ; odoo/modules/db.py:240-249 ;
+odoo/http/server.py:185-188 ; odoo/http/router.py:28-29, 256, 100-122 ; odoo/cli/server.py:95-118 ;
+odoo/service/server.py:112-114 ; odoo/addons/base/models/ir_attachment.py:46, 155-215 ; addons/web/controllers/database.py:90-104.
+Captures : content/blog/screenshots/deployer-bibliotheque-production-odoo-20/ (01 schéma, 02 fiche du module en mode
+développeur après git pull et avant -u, barre de navigation retirée).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Déployer la Bibliothèque en production : service, conf, mises à jour</h1>
+                <p class="lead mt-3 text-white">Le module est prêt, le serveur aussi. Reste à poser l'un sur l'autre proprement : un dépôt
+                    Git pour le module, un fichier de configuration qui ne laisse rien traîner, un service systemd qu'on peut essayer
+                    sans être root, et une procédure de mise à jour, du module comme d'Odoo, avec son retour arrière.</p>
+                <p class="small text-light mt-2">~16 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Une conf de production</h4>
+                        <p><code>http_interface</code>, <code>proxy_mode</code>, <code>list_db</code>, <code>dbfilter</code>,
+                            <code>db_name</code>, mot de passe maître haché : ce que chaque ligne change, vérifié.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Un service éprouvé</h4>
+                        <p>L'unité systemd essayée sans droits <code>root</code>, puis sa version système durcie,
+                            contrôlée avant installation.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Des mises à jour sans surprise</h4>
+                        <p>Le module, puis Odoo lui-même : l'ordre des gestes, le temps d'arrêt mesuré, et le seul vrai retour
+                            arrière.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un serveur Odoo 20 Community installé comme dans
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur
+                            Ubuntu</a> : compte système <code>odoo</code> (dossier personnel <code>/opt/odoo</code>), sources dans
+                            <code>/opt/odoo/odoo</code>, environnement Python dans <code>/opt/odoo/venv</code>, PostgreSQL 16.</li>
+                        <li>Le module <code>biblio</code> de la série dans un dépôt Git que le serveur peut lire.</li>
+                        <li>Une base de test pour répéter chaque geste avant de le faire sur la vraie.</li>
+                    </ul>
+                </div>
+                <p>Cette étape 26 de la série arrive avant les étapes 23 à 25, qui ne sont pas encore parues. On déploie donc le
+                    module tel qu'il est à la fin de l'étape 22, en version <code>20.0.1.20.0</code>. Pour montrer une vraie mise à
+                    jour, le serveur reçoit d'abord la version de l'étape 21 (<code>20.0.1.19.0</code>), puis passe à la suivante. La
+                    démarche ne dépend pas du contenu du module : elle servira telle quelle pour les étapes à venir.</p>
+                <p>Toutes les commandes se lancent sous le compte <code>odoo</code>, depuis <code>/opt/odoo</code>, sauf les
+                    gestes réservés à <code>root</code>, signalés au passage : installer l'unité systemd et la rotation du journal,
+                    arrêter et démarrer le service système. Les essais ont tourné sur une copie d'une base de
+                    démonstration ; les noms (<code>ma_base</code>) et les chemins sont ceux d'un serveur type.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" style="max-width:100%; height:auto;" alt="Schéma du déploiement : à gauche, l'arborescence du serveur (sources d'Odoo, environnement Python, dépôt Git du module, data_dir, fichier de configuration, journal, sauvegardes, unité systemd) et le retour arrière (git reset, db load, redémarrage, jamais l'ancien code suivi d'un -u) ; à droite, les sept étapes d'une mise à jour : sauvegarder, git fetch, lire ce qui arrive, arrêter et appliquer le code, module upgrade -n puis -u, redémarrer, contrôler."/>
+                    <figcaption>Où vivent les morceaux, et l'ordre d'une mise à jour. Le même ordre sert pour le module et pour Odoo.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE DÉPÔT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module dans son propre dépôt Git</h2>
+                <p>Ne copie pas le module à la main dans <code>custom-addons</code>. Donne-lui un dépôt Git, cloné sur le serveur dans
+                    un dossier à lui : la version en place se lit alors en une commande, une mise à jour devient un
+                    <code>git fetch</code>, et le retour arrière un <code>git reset</code> sur une révision notée. Le dépôt contient
+                    un dossier par module (ici <code>biblio/</code>) ; c'est son dossier racine qui entre dans
+                    <code>addons_path</code>.</p>
+<pre class="language-bash"><code class="language-bash">$ git clone https://forge.exemple.com/equipe/addons-bibliotheque.git /opt/odoo/addons-bibliotheque
+$ git -C /opt/odoo/addons-bibliotheque log --oneline
+2627855 biblio 20.0.1.19.0</code></pre>
+                <p>Le compte <code>odoo</code> doit pouvoir lire ce dépôt, et rien de plus : une clé de déploiement en lecture seule
+                    suffit. Un dépôt par client ou par jeu de modules, une ligne par dépôt dans <code>addons_path</code>.</p>
+                <p>Première installation, une fois la configuration de la section suivante en place. Le service n'est pas encore
+                    démarré ; <code>--no-http</code> reste un réflexe pour toute commande ponctuelle : avec des workers, Odoo ouvre le
+                    port 8069 avant même de traiter <code>-i</code> ou <code>-u</code>, <code>--stop-after-init</code> compris, et la
+                    commande lancée à côté du service s'arrête sur <code>OSError: [Errno 98]</code> (essayé) :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python odoo/odoo-bin -c /etc/odoo/odoo.conf -i biblio --stop-after-init --no-http
+$ venv/bin/python odoo/odoo-bin module list -c /etc/odoo/odoo.conf | grep -E "^(base|biblio) "
+biblio 20.0.1.19.0 20.0.1.19.0 'installed' Bibliothèque
+base 20.0.1.3 20.0.1.3 'installed' Base</code></pre>
+                <p>Onze secondes, rien à l'écran : avec <code>logfile</code>, tout part dans le journal. Pas de <code>-d</code> non
+                    plus : la configuration fixe la base (<code>db_name</code>, plus bas). <code>odoo-bin module list</code>, nouveau
+                    en Odoo 20, donne pour chaque module installé la version <strong>en base</strong> puis la version <strong>sur le
+                    disque</strong>. On s'en servira à chaque mise à jour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LA CONF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le fichier de configuration de production</h2>
+                <p>Celui de l'article d'installation, complété pour une instance qui sert une seule base derrière un reverse proxy ;
+                    le dépôt du module remplace <code>custom-addons</code> dans <code>addons_path</code>, et <code>workers</code> est
+                    ramené à 2 pour la petite machine d'essai :</p>
+<pre class="language-ini"><code class="language-ini">[options]
+; base et accès
+db_user = odoo
+db_name = ma_base
+dbfilter = ^ma_base$
+list_db = False
+admin_passwd = $pbkdf2-sha512$600000$ZKz1XgvBeG.t9f7/X4vxHg$gV.eOXlgeqIJr9xleK.R0yhr…
+; chemins
+addons_path = /opt/odoo/odoo/addons,/opt/odoo/addons-bibliotheque
+data_dir = /opt/odoo/data
+logfile = /var/log/odoo/odoo.log
+; réseau
+http_interface = 127.0.0.1
+http_port = 8069
+gevent_port = 8072
+proxy_mode = True
+; processus
+workers = 2
+max_cron_threads = 1
+limit_memory_soft = 671088640
+limit_memory_hard = 805306368
+limit_time_cpu = 60
+limit_time_real = 120</code></pre>
+                <p>Le fichier reste <code>root:odoo</code> en <code>640</code>, comme à l'installation. Le nombre de workers et les
+                    limites de mémoire se calculent d'après la machine, comme expliqué dans l'article d'installation. Ligne par
+                    ligne, le reste.</p>
+
+                <h3>2.1 <code>http_interface = 127.0.0.1</code> : personne n'entre en direct</h3>
+                <p>Valeur par défaut d'Odoo 20, à vérifier plutôt qu'à croire : dans la configuration vide, puis sur le service
+                    démarré.</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python -c "import sys; sys.path.insert(0, 'odoo')
+from odoo.tools import config; config.parse_config([])
+print(config['http_interface'], config['proxy_mode'], config['list_db'], config['admin_passwd'])"
+127.0.0.1 False True admin
+$ ss -ltn | grep -E ":(8069|8072) "
+LISTEN 0      16              127.0.0.1:8069       0.0.0.0:*
+LISTEN 0      128             127.0.0.1:8072       0.0.0.0:*
+$ curl -s -m 3 -o /dev/null -w "%{http_code} (curl rc %{exitcode})\n" http://ADRESSE_DU_SERVEUR:8069/web/login
+000 (curl rc 7)</code></pre>
+                <p>Depuis l'adresse réseau de la machine, la connexion est refusée (code 7 de curl). Seul le reverse proxy, posé sur
+                    la même machine, parlera à Odoo. La quatrième valeur de la première commande mérite un arrêt : sans ligne
+                    <code>admin_passwd</code>, le mot de passe maître vaut <code>admin</code>.</p>
+
+                <h3>2.2 <code>proxy_mode = True</code> : croire le reverse proxy, et lui seul</h3>
+                <p>Derrière Nginx, Odoo reçoit toutes les requêtes depuis <code>127.0.0.1</code>, en HTTP. Avec
+                    <code>proxy_mode</code>, il lit les en-têtes <code>X-Forwarded-*</code> posés par le proxy : vraie adresse du
+                    visiteur, nom d'hôte public, schéma <code>https</code>. Deux effets se voient. Le journal, d'abord :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-For: 203.0.113.9' \
+    "http://127.0.0.1:8069/web/login?sanshost=1"
+$ curl -s -o /dev/null -H 'X-Forwarded-Host: erp.exemple.com' -H 'X-Forwarded-Proto: https' \
+    -H 'X-Forwarded-For: 203.0.113.9' "http://127.0.0.1:8069/web/login?avechost=1"
+$ grep -E "sanshost|avechost" /var/log/odoo/odoo.log
+… INFO ma_base odoo.http.server: 127.0.0.1 JuRUMpS1 - [10/Nov/2026 21:41:00] "GET /web/login?sanshost=1 HTTP/1.1" 200 …
+… INFO ma_base odoo.http.server: 203.0.113.9 N75CQAyC - [10/Nov/2026 21:41:00] "GET /web/login?avechost=1 HTTP/1.1" 200 …</code></pre>
+                <p>Odoo n'applique la réécriture que si <code>X-Forwarded-Host</code> est présent
+                    (<code>odoo/http/server.py:185</code>) : un proxy qui n'envoie que <code>X-Forwarded-For</code> et
+                    <code>X-Forwarded-Proto</code> est ignoré en entier. Le second effet compte plus : à chaque connexion d'un
+                    administrateur, Odoo réécrit le paramètre <code>web.base.url</code>, l'adresse qu'il met dans les courriels, les
+                    liens de portail et les PDF. Même connexion, avec les en-têtes d'un proxy, <code>proxy_mode</code> coupé puis actif :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d ma_base -Atc "select value from ir_config_parameter where key='web.base.url'"
+http://127.0.0.1:8069          # proxy_mode = False
+https://erp.exemple.com        # proxy_mode = True</code></pre>
+                <p>Sans <code>proxy_mode</code>, tous les liens envoyés aux clients pointeraient vers <code>http://127.0.0.1:8069</code>.
+                    Côté Nginx, l'en-tête <code>X-Forwarded-Host</code> est donc à poser ; ses autres réglages (délais, websockets,
+                    fichiers volumineux) feront l'objet d'un article à venir de la série « Exploiter Odoo 20 en production ».</p>
+
+                <div class="pitfall-box">
+                    <h4>proxy_mode sur un port ouvert : n'importe qui choisit son adresse</h4>
+                    <p>Les requêtes ci-dessus venaient toutes du serveur lui-même, et le journal a pourtant inscrit
+                        <code>203.0.113.9</code> : Odoo croit les en-têtes, il ne vérifie pas qui les envoie. Si le port 8069 était
+                        joignable de l'extérieur, un visiteur pourrait écrire l'adresse de son choix dans le journal et dans les
+                        traces de connexion ; et si un administrateur se connectait par cette voie, <code>web.base.url</code> serait
+                        réécrit. Le paramètre système <code>web.base.url.freeze</code> à <code>True</code> verrouille cette URL. <code>proxy_mode = True</code>
+                        ne va qu'avec <code>http_interface = 127.0.0.1</code> (ou un pare-feu qui ne laisse passer que le proxy).</p>
+                </div>
+
+                <h3>2.3 <code>list_db = False</code> et le mot de passe maître haché</h3>
+                <p><code>list_db = False</code> ferme tout le gestionnaire de bases, pas seulement la liste. Avec le bon mot de
+                    passe maître, une sauvegarde par le navigateur est refusée quand même :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -w "%{http_code}\n" --data-urlencode 'master_pwd=le-vrai-mot-de-passe' \
+    -d name=ma_base -d backup_format=zip http://127.0.0.1:8069/web/database/backup
+403
+$ curl -s -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","params":{}}' \
+    http://127.0.0.1:8069/web/database/list | python3 -c "import sys,json; print(json.load(sys.stdin)['error']['data']['message'])"
+Database management functions blocked, admin disabled database listing.</code></pre>
+                <p>Le mot de passe maître ne sert donc plus à rien ? Il redevient la seule protection du gestionnaire le jour où
+                    quelqu'un repasse <code>list_db</code> à <code>True</code> pour une manipulation ponctuelle. Ne le laisse ni
+                    absent (il vaudrait <code>admin</code>), ni en clair : Odoo accepte directement un hachage
+                    <code>pbkdf2-sha512</code>, le même format que celui qu'il écrit quand on change ce mot de passe depuis le
+                    gestionnaire (<code>odoo/tools/config.py:1135-1149</code>). On le fabrique avec la bibliothèque passlib, déjà
+                    présente dans l'environnement d'Odoo :</p>
+<pre class="language-bash"><code class="language-bash">$ read -rsp 'Mot de passe maître : ' MP; echo
+$ printf %s "$MP" | venv/bin/python -c 'import sys; from passlib.hash import pbkdf2_sha512
+print(pbkdf2_sha512.using(rounds=600000).hash(sys.stdin.read()))'; unset MP
+$pbkdf2-sha512$600000$ZKz1XgvBeG.t9f7/X4vxHg$gV.eOXlgeqIJr9xleK.R0yhr…</code></pre>
+                <p>La ligne produite va telle quelle après <code>admin_passwd = </code>. Contrôle par Odoo lui-même, avec ce
+                    fichier de configuration : le bon mot de passe passe, <code>admin</code> non.</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python -c "import sys; sys.path.insert(0, 'odoo')
+from odoo.tools import config; config.parse_config(['-c', '/etc/odoo/odoo.conf'])
+print(config.verify_admin_password('le-vrai-mot-de-passe'), config.verify_admin_password('admin'))"
+True False</code></pre>
+                <p>Pour un mot de passe maître perdu ou une erreur « Access Denied » dans le gestionnaire, voir
+                    <a href="/blog/developpement-odoo-2/gestionnaire-bases-access-denied-odoo-382">Gestionnaire de bases Odoo 20 :
+                    Access Denied et mot de passe maître</a>.</p>
+
+                <h3>2.4 <code>db_name</code> et <code>dbfilter</code> : une base, et pas une de plus</h3>
+                <p><code>dbfilter = ^ma_base$</code> décide quelle base le navigateur peut ouvrir. <code>db_name</code> fait trois
+                    autres choses : c'est la base par défaut des commandes <code>odoo-bin</code> lancées avec ce fichier (d'où
+                    l'absence de <code>-d</code> plus haut), la base préchargée par les workers au démarrage, et la seule où tournent
+                    les actions planifiées (<code>odoo/service/server.py:112-114</code>). Sans elle, le worker des tâches planifiées
+                    passe sur <strong>toutes</strong> les bases du rôle PostgreSQL, filtre ou pas : une copie de test restaurée sur
+                    le serveur enverrait ses courriels.</p>
+                <p>Revers de la médaille : au démarrage, Odoo crée la base nommée par <code>db_name</code> si elle n'existe pas
+                    (<code>odoo/cli/server.py:101-108</code>, déjà le cas en 19). Une faute de frappe ne donne pas d'erreur :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python odoo/odoo-bin -c /etc/odoo/odoo.conf -d ma_bsae --stop-after-init --no-http
+$ psql -d ma_bsae -Atc "select count(*) from ir_module_module where state='installed'"
+16</code></pre>
+                <p>Onze secondes plus tard, une base vide de 16 modules existe à côté de la vraie, invisible depuis le navigateur
+                    grâce au filtre. Après toute modification de <code>db_name</code>, un <code>psql -l</code> s'impose.</p>
+
+                <h3>2.5 <code>data_dir</code> et <code>logfile</code></h3>
+                <p><code>data_dir</code> fixe l'emplacement du filestore et des sessions. Sans lui, Odoo écrit dans le dossier
+                    personnel du compte qui le lance, et la première commande lancée depuis un autre compte écrit ailleurs.
+                    <code>logfile</code> envoie le journal dans un fichier, que la section 4 fait tourner. Un dernier détail
+                    d'installation se voit dès le premier démarrage : <code>requirements.txt</code> ne contient pas
+                    <code>markdown2</code>, et le module <code>mail</code> le signale à chaque chargement.</p>
+<pre class="language-bash"><code class="language-bash">$ grep -m1 markdown2 /var/log/odoo/odoo.log
+… WARNING ma_base odoo.addons.mail.controllers.attachment: markdown2 is not installed, markdown will not be rendered
+$ venv/bin/pip install markdown2</code></pre>
+                <p>Après ce <code>pip install</code> et un redémarrage, le journal ne contient plus aucun WARNING : un journal propre
+                    au démarrage, c'est ce qui rend visible le premier vrai avertissement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LE SERVICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le service systemd : l'essayer sans root, puis l'installer</h2>
+                <p>Une unité système se pose en <code>root</code>, et une erreur de chemin ne se découvre qu'au redémarrage du
+                    serveur. systemd offre aussi à chaque compte ordinaire son propre gestionnaire de services
+                    (<code>systemctl --user</code>) : on y lance exactement la même commande, sans aucun droit
+                    <code>root</code>, pour valider configuration et démarrage. Le compte système <code>odoo</code>, lui, n'a pas
+                    de session ouverte : la répétition se fait sur une installation d'essai sous un compte ordinaire, comme pour
+                    les relevés de cet article.</p>
+                <h3>3.1 La répétition, en service utilisateur</h3>
+<pre class="language-ini"><code class="language-ini"># ~/.config/systemd/user/odoo.service
+[Unit]
+Description=Odoo 20 (service utilisateur)
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/odoo
+ExecStart=/opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+UMask=0027
+
+[Install]
+WantedBy=default.target</code></pre>
+<pre class="language-bash"><code class="language-bash">$ systemd-analyze --user verify ~/.config/systemd/user/odoo.service
+$ systemctl --user daemon-reload
+$ systemctl --user start odoo
+$ systemctl --user status odoo --no-pager | head -3
+* odoo.service - Odoo 20 (service utilisateur)
+     Loaded: loaded (…/.config/systemd/user/odoo.service; disabled; preset: enabled)
+     Active: active (running) since Tue 2026-11-10 22:24:39 CET; 6s ago
+$ grep -E "running on|Alive" /var/log/odoo/odoo.log | tail -5
+… INFO ? odoo.service.server: HTTP service running on 127.0.0.1:8069
+… INFO ma_base odoo.service.server.WorkerHTTP: Alive
+… INFO ma_base odoo.service.server.WorkerHTTP: Alive
+… INFO ma_base odoo.service.server.WorkerCron: Alive
+… INFO ma_base odoo.service.server.GeventServer: Evented/WebSocket service running on 127.0.0.1:8072
+$ curl -s "http://127.0.0.1:8069/web/health?db_server_status=1"
+{"status": "pass", "db_server_status": true}</code></pre>
+                <p><code>systemd-analyze verify</code> ne dit rien : la syntaxe est bonne et les chemins existent. Deux workers web,
+                    un worker de tâches planifiées, le serveur temps réel, tous sur <code>127.0.0.1</code> ; et grâce à
+                    <code>db_name</code>, le nom de la base apparaît sur chaque ligne des workers. La route <code>/web/health</code>
+                    est faite pour la supervision : avec <code>db_server_status=1</code>, elle teste aussi PostgreSQL.
+                    <code>systemctl --user stop odoo</code> arrête le tout. Cette répétition sert à valider la configuration et le
+                    démarrage ; en production, c'est l'unité système qui tourne, et on n'en garde qu'une : les deux en même temps se
+                    disputeraient le port 8069.</p>
+
+                <h3>3.2 <code>UMask=0027</code> : le filestore n'est pas public sur la machine</h3>
+                <p>Odoo 20 écrit chaque fichier du filestore en lecture seule pour <strong>tout le monde</strong> : il le copie d'abord
+                    dans un dossier <code>upload/</code>, le passe en <code>0444</code>, puis le déplace à sa place
+                    (<code>odoo/addons/base/models/ir_attachment.py:155-215</code>). Odoo 19 ne faisait rien de tel. Ce qui protège
+                    alors les pièces jointes des autres comptes de la machine, ce sont les dossiers, créés en <code>0751</code>
+                    moins le masque du processus. Avec le masque <code>0002</code> d'un compte ordinaire, n'importe quel compte peut
+                    traverser les dossiers (sans les lister : il lui faut le nom exact du fichier, son empreinte SHA-1) ; avec
+                    <code>UMask=0027</code> dans l'unité, plus personne :</p>
+<pre class="language-bash"><code class="language-bash">$ ls -ld /opt/odoo/data/filestore/ma_base/upload          # créé avant UMask=0027
+drwxr-x--x … /opt/odoo/data/filestore/ma_base/upload
+$ ls -ld /opt/odoo/data/filestore/ma_base/upload          # recréé par le service avec UMask=0027
+drwxr-x--- … /opt/odoo/data/filestore/ma_base/upload
+$ ls -l /opt/odoo/data/filestore/ma_base/4a/4abcf56337adc6b19ddac40cd132bbb7c5654004
+-r--r--r-- … 4abcf56337adc6b19ddac40cd132bbb7c5654004
+$ ls -l /var/log/odoo/odoo.log                              # journal recréé par le service
+-rw-r----- … /var/log/odoo/odoo.log</code></pre>
+                <p>Le masque ne change rien aux dossiers déjà là : sur un serveur existant, un
+                    <code>chmod -R o-rwx /opt/odoo/data</code> une fois pour toutes, sous le compte <code>odoo</code>.</p>
+
+                <h3>3.3 L'unité système, durcie</h3>
+                <p>Celle de l'article d'installation, avec cinq lignes de plus :</p>
+<pre class="language-ini"><code class="language-ini"># /etc/systemd/system/odoo.service
+[Unit]
+Description=Odoo 20
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=odoo
+Group=odoo
+WorkingDirectory=/opt/odoo
+ExecStart=/opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin --config /etc/odoo/odoo.conf
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+LimitNOFILE=65536
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+                <ul>
+                    <li><code>NoNewPrivileges</code> : ni Odoo ni ses sous-processus (<code>wkhtmltopdf</code>) ne peuvent gagner de
+                        droits par un programme setuid.</li>
+                    <li><code>PrivateTmp</code> : un <code>/tmp</code> propre au service, invisible des autres comptes.</li>
+                    <li><code>ProtectSystem=full</code> : <code>/usr</code>, <code>/boot</code> et <code>/etc</code> en lecture
+                        seule pour le service. Conséquence voulue : Odoo ne peut plus réécrire <code>/etc/odoo/odoo.conf</code>,
+                        ce que fait le bouton de changement du mot de passe maître (inutile ici, le gestionnaire est fermé).</li>
+                    <li><code>ProtectHome</code> : <code>/home</code> et <code>/root</code> invisibles ; le dossier personnel du
+                        compte <code>odoo</code> est <code>/opt/odoo</code>, il n'est pas concerné.</li>
+                </ul>
+                <p>Avant de l'installer, deux contrôles qui ne demandent pas de droits : la syntaxe et les chemins, puis l'exposition
+                    mesurée par systemd, avec ces lignes et sans elles (<code>odoo-sans-durcissement.service</code> : la même unité
+                    sans les cinq lignes) :</p>
+<pre class="language-bash"><code class="language-bash">$ systemd-analyze verify odoo.service
+$ systemd-analyze security --offline=yes odoo.service | tail -1
+-> Overall exposure level for odoo.service: 8.4 EXPOSED :-(
+$ systemd-analyze security --offline=yes odoo-sans-durcissement.service | tail -1
+-> Overall exposure level for odoo-sans-durcissement.service: 9.0 UNSAFE :-{</code></pre>
+                <p>Le score descend de 9.0 à 8.4. Il resterait des options à ajouter (systemd en propose une trentaine), mais chacune
+                    doit être essayée sur ton serveur ; celles-ci sont les moins susceptibles de gêner Odoo. Si le venv n'est pas
+                    là où l'unité le cherche, <code>verify</code> le dit tout de suite :
+                    <code>Command /opt/odoo/venv/bin/python is not executable: No such file or directory</code>.</p>
+                <p>L'installation elle-même (copie dans <code>/etc/systemd/system/</code>, <code>systemctl daemon-reload</code>,
+                    <code>systemctl enable --now odoo</code>) revient à <code>root</code> ; elle est décrite pas à pas dans
+                    l'article d'installation. Le service système démarré, regarde son journal : un dossier
+                    oublié par <code>ProtectSystem</code> s'y verrait comme une erreur d'écriture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LE JOURNAL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le journal et sa rotation</h2>
+                <p>Sans rotation, <code>odoo.log</code> grossit indéfiniment. Odoo 20 écrit son journal avec un gestionnaire qui
+                    rouvre le fichier quand il a été déplacé : pas besoin de <code>copytruncate</code> ni de redémarrage. Geste
+                    <code>root</code> : ce fichier dans <code>/etc/logrotate.d/odoo</code> :</p>
+<pre class="language-ini"><code class="language-ini">/var/log/odoo/odoo.log {
+    su odoo odoo
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+}</code></pre>
+                <p><code>su odoo odoo</code> fait travailler logrotate sous le compte propriétaire du dossier plutôt qu'en
+                    <code>root</code>. Pour voir sans attendre une semaine, le compte <code>odoo</code> peut forcer une rotation avec
+                    son propre fichier d'état, puis envoyer une requête :</p>
+<pre class="language-bash"><code class="language-bash">$ logrotate -s /opt/odoo/logrotate.state -f /etc/logrotate.d/odoo
+$ ls /var/log/odoo/
+odoo.log.1
+$ curl -s -o /dev/null http://127.0.0.1:8069/web/login; ls /var/log/odoo/; wc -l &lt; /var/log/odoo/odoo.log
+odoo.log  odoo.log.1
+1</code></pre>
+                <p>Le service a recréé <code>odoo.log</code> de lui-même et y écrit la nouvelle ligne. Pour régler la verbosité ou
+                    isoler un module dans le journal, voir
+                    <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler,
+                    --log-sql, --log-config</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. MAJ DU MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Mettre à jour la Bibliothèque</h2>
+                <p>Côté développement, la version de l'étape 22 est poussée sur la branche <code>20.0</code> du dépôt, avec son
+                    manifeste en <code>20.0.1.20.0</code> et ses tests passés sur une base neuve (voir
+                    <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20</a>). Côté
+                    serveur, sept gestes, toujours dans cet ordre.</p>
+                <p><strong>1. Sauvegarder, et noter la révision en place.</strong> La sauvegarde complète (base et filestore) et sa
+                    vérification ont leur propre article dans cette même série technique, sur la sauvegarde et la restauration
+                    d'Odoo 20 ; avant une mise à jour, une commande suffit :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python odoo/odoo-bin db -c /etc/odoo/odoo.conf dump ma_base /var/backups/odoo/ma_base-$(date +%Y%m%d-%H%M).zip
+$ git -C addons-bibliotheque rev-parse HEAD > /var/backups/odoo/bibliotheque.rev
+$ ls /var/backups/odoo/
+bibliotheque.rev  ma_base-20261110-2240.zip</code></pre>
+                <p><strong>2. Récupérer sans appliquer</strong>, pendant que le service tourne : <code>git fetch</code> ne touche pas
+                    aux fichiers du module.</p>
+<pre class="language-bash"><code class="language-bash">$ git -C addons-bibliotheque fetch origin</code></pre>
+                <p><strong>3. Lire ce qui arrive.</strong> Une nouvelle version dans le manifeste, et surtout un script de
+                    migration :</p>
+<pre class="language-bash"><code class="language-bash">$ git -C addons-bibliotheque log --oneline HEAD..origin/20.0
+2fa2d56 biblio 20.0.1.20.0 : genres, rayons, modèles d'import
+$ git -C addons-bibliotheque diff --stat HEAD origin/20.0 -- '*/__manifest__.py' '*/migrations/*'
+ biblio/__manifest__.py                       |  4 +++-
+ biblio/migrations/20.0.1.20.0/pre-migrate.py | 24 ++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)</code></pre>
+                <p><strong>4. Arrêter le service, puis appliquer le code.</strong> En production, l'arrêt et le démarrage du
+                    service système passent par <code>root</code> (ou par une règle sudo limitée à ce service) ; les commandes
+                    ci-dessous sont celles de la répétition, en service utilisateur :</p>
+<pre class="language-bash"><code class="language-bash">$ systemctl --user stop odoo
+$ git -C addons-bibliotheque merge --ff-only origin/20.0
+Mise à jour 2627855..2fa2d56
+Fast-forward</code></pre>
+                <p>L'écran Applications le montre déjà, et c'est trompeur. En mode développeur, la fiche du module affiche la
+                    version <strong>du disque</strong>, alors que la base est encore en <code>20.0.1.19.0</code> :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" style="max-width:100%; height:auto;" alt="Fiche du module Bibliothèque dans Applications, en mode développeur, onglet Informations : Dernière version 20.0.1.20.0, alors que la mise à jour de la base n'a pas encore été faite."/>
+                    <figcaption>« Dernière version » = le manifeste sur le disque. La version en base, c'est
+                        <code>odoo-bin module list</code> qui la donne.</figcaption>
+                </figure>
+                <p><strong>5. Mettre à jour la base.</strong> Un essai à blanc d'abord (<code>-n</code>, nouveau en Odoo 20), qui
+                    liste les modules dont la version a monté, puis la vraie commande :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python odoo/odoo-bin module upgrade -c /etc/odoo/odoo.conf -n --outdated all
+biblio 20.0.1.19.0 20.0.1.20.0 'to upgrade' Bibliothèque
+$ venv/bin/python odoo/odoo-bin -c /etc/odoo/odoo.conf -u biblio --stop-after-init --no-http
+$ grep migration /var/log/odoo/odoo.log | tail -2
+… INFO ma_base odoo.modules.migration: module biblio: Running upgrade [&gt;20.0.1.20.0] pre-migrate
+… INFO ma_base odoo.modules.migration.biblio.pre: biblio.pre from 20.0.1.19.0 to 20.0.1.20.0 in 0.002 seconds</code></pre>
+                <p><strong>6. Redémarrer</strong>, et <strong>7. contrôler</strong> : aucune erreur dans le journal depuis la mise à
+                    jour, la route de santé, et les deux versions identiques.</p>
+<pre class="language-bash"><code class="language-bash">$ systemctl --user start odoo
+$ curl -s http://127.0.0.1:8069/web/health
+{"status": "pass"}
+$ venv/bin/python odoo/odoo-bin module list -c /etc/odoo/odoo.conf | grep ^biblio
+biblio 20.0.1.20.0 20.0.1.20.0 'installed' Bibliothèque</code></pre>
+                <p>De l'arrêt au redémarrage : six secondes sur la base d'essai. Les cinq genres livrés par l'étape 22 sont en base,
+                    et le lien « Modèle d'import des livres » apparaît dans l'écran d'import.</p>
+
+                <div class="pitfall-box">
+                    <h4>Un -u sans redémarrage laisse un Odoo à moitié à jour</h4>
+                    <p>Essai fait, service en marche : <code>git pull</code>, puis <code>-u biblio --stop-after-init --no-http</code>
+                        à côté. Le journal du service montre ses workers recharger le registre (<code>Modules loaded.</code>) et les
+                        cinq genres arrivent en base. Mais les workers gardent en mémoire le <strong>Python</strong> d'avant :
+                        <code>library.book.get_import_templates()</code> répond encore <code>[]</code> au lieu du modèle d'import.
+                        Données neuves, code ancien, jusqu'au redémarrage. D'où l'ordre arrêt, mise à jour, démarrage, et la règle
+                        détaillée dans
+                        <a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module
+                        Odoo 20 qui ne prend pas tes modifications</a> : du Python modifié demande un redémarrage, des données
+                        ou des vues un <code>-u</code>, souvent les deux.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. MAJ D'ODOO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Mettre à jour Odoo lui-même</h2>
+                <p>Odoo publie des correctifs en continu sur la branche <code>20.0</code>. Même procédure, appliquée aux sources.
+                    Le clone de l'installation est superficiel (<code>--depth 1</code>) ; un <code>fetch</code> sans
+                    <code>--depth</code> ne télécharge que ce qui manque depuis la révision en place, et la mise à jour reste une
+                    avance rapide :</p>
+<pre class="language-bash"><code class="language-bash">$ venv/bin/python odoo/odoo-bin db -c /etc/odoo/odoo.conf dump ma_base /var/backups/odoo/ma_base-avant-maj-odoo.zip
+$ git -C odoo rev-parse HEAD > /var/backups/odoo/odoo.rev
+$ git -C odoo fetch origin 20.0
+Depuis https://github.com/odoo/odoo
+   3538ed824..e77213ec9  20.0       -> origin/20.0
+$ git -C odoo log --oneline HEAD..origin/20.0 | wc -l
+2108
+$ git -C odoo diff --stat HEAD origin/20.0 -- requirements.txt
+$ systemctl --user stop odoo
+$ git -C odoo merge --ff-only origin/20.0
+Mise à jour 3538ed824..e77213ec9
+Fast-forward
+ 12931 files changed, 1573151 insertions(+), 584978 deletions(-)
+$ venv/bin/python odoo/odoo-bin module list -c /etc/odoo/odoo.conf | awk '$2 != $3'
+account 20.0.1.5 20.0.1.6 'installed' Invoicing
+$ venv/bin/pip install -r odoo/requirements.txt
+$ venv/bin/python odoo/odoo-bin -c /etc/odoo/odoo.conf -u all --stop-after-init --no-http
+$ systemctl --user start odoo</code></pre>
+                <p>Sept semaines de correctifs, 2 108 commits. <code>requirements.txt</code> n'a pas bougé (le <code>diff</code> est
+                    vide) ; le <code>pip install</code> reste dans la procédure parce que, le jour où il bouge, l'oublier fait
+                    tomber le service au démarrage. Le <code>-u all</code> a pris 37 secondes pour 70 modules, et l'arrêt complet
+                    44 secondes, sans une erreur au journal.</p>
+                <p>Pourquoi <code>-u all</code> et pas <code>module upgrade --outdated</code>, comme pour la Bibliothèque ? Parce que
+                    les correctifs d'Odoo ne changent presque jamais la version des modules. Le <code>module list</code> lancé juste
+                    après le <code>merge</code>, filtré sur les lignes où version en base et version sur disque diffèrent, le montre :
+                    un seul module installé a changé de version, alors que 21 modules installés ont des vues ou des données modifiées
+                    par ces commits, et 46 leur traduction française. <code>--outdated</code> n'aurait mis à jour que
+                    <code>account</code> ; les vues corrigées des 20 autres ne seraient jamais arrivées en base. Pour le code
+                    d'Odoo, c'est donc <code>-u all</code>, et un essai préalable sur une copie de la base (voir
+                    <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 :
+                    db dump, load, neutralize</a>) mesure le temps d'arrêt réel, qui croît avec la taille de la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. RETOUR ARRIÈRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Revenir en arrière</h2>
+                <p>Une mise à jour a réussi techniquement, mais un écran métier est cassé : on revient à l'état d'avant. Le code
+                    revient avec la révision notée ; la base, avec la sauvegarde. Les deux, toujours ensemble. Pour Odoo :</p>
+<pre class="language-bash"><code class="language-bash">$ systemctl --user stop odoo
+$ git -C odoo cat-file -t $(cat /var/backups/odoo/odoo.rev)
+commit
+$ git -C odoo reset --hard $(cat /var/backups/odoo/odoo.rev)
+$ venv/bin/python odoo/odoo-bin module list -c /etc/odoo/odoo.conf | grep ^account
+account 20.0.1.6 20.0.1.5 'installed' Invoicing
+$ venv/bin/python odoo/odoo-bin db -c /etc/odoo/odoo.conf load -f --move ma_base /var/backups/odoo/ma_base-avant-maj-odoo.zip
+Restoring /var/backups/odoo/ma_base-avant-maj-odoo.zip...
+$ systemctl --user start odoo
+$ venv/bin/python odoo/odoo-bin module list -c /etc/odoo/odoo.conf | grep ^account
+account 20.0.1.5 20.0.1.5 'installed' Invoicing</code></pre>
+                <p>La révision d'avant est restée dans le clone superficiel (<code>cat-file</code> répond <code>commit</code>) :
+                    pas besoin du réseau pour revenir. Entre le <code>reset</code> et le <code>load</code>,
+                    <code>module list</code> montre l'état bancal à ne jamais démarrer : une base en <code>20.0.1.6</code> sous un
+                    code en <code>20.0.1.5</code>. <code>-f</code> supprime la base et son filestore avant de recharger la
+                    sauvegarde, <code>--move</code> lui rend son identité d'origine (identifiant, secret) au lieu d'en faire une
+                    copie. Quatorze secondes d'arrêt sur la base d'essai. Pour le module, même chose avec
+                    <code>addons-bibliotheque</code> et <code>bibliotheque.rev</code> : retour vérifié en
+                    <code>20.0.1.19.0</code>, sans les genres de l'étape 22.</p>
+                <p>Tout ce qui a été saisi entre la sauvegarde et le retour arrière est perdu : c'est pour cela que la sauvegarde se
+                    fait juste avant la mise à jour, service arrêté si l'activité le permet, et que le contrôle de l'étape 7 se fait
+                    tout de suite.</p>
+
+                <div class="pitfall-box">
+                    <h4>L'ancien code suivi d'un -u : Odoo efface la nouvelle version</h4>
+                    <p>Tentation : revenir au code d'avant et relancer <code>-u biblio</code> pour « redescendre » la base. Essai fait
+                        sur la version de l'étape 22 déjà installée :</p>
+<pre class="language-bash"><code class="language-bash">$ git -C addons-bibliotheque reset --hard 2627855
+$ venv/bin/python odoo/odoo-bin -c /etc/odoo/odoo.conf -u biblio --stop-after-init --no-http
+$ grep Deleting /var/log/odoo/odoo.log
+… INFO ma_base odoo.addons.base.models.ir_model: Deleting 5@library.genre (biblio.genre_jeunesse)
+… INFO ma_base odoo.addons.base.models.ir_model: Deleting 4@library.genre (biblio.genre_policier)
+… INFO ma_base odoo.addons.base.models.ir_model: Deleting 3@library.genre (biblio.genre_science_fiction)
+… INFO ma_base odoo.addons.base.models.ir_model: Deleting 2@library.genre (biblio.genre_aventure)
+… INFO ma_base odoo.addons.base.models.ir_model: Deleting 1@library.genre (biblio.genre_roman)</code></pre>
+                    <p>Aucune erreur, code de sortie 0, version en base revenue à <code>20.0.1.19.0</code>. Mais Odoo a supprimé
+                        tout ce que la nouvelle version avait livré et que l'ancienne ne connaît pas (ici, aucun livre n'utilisait
+                        encore ces genres). Odoo ne sait pas « descendre » une version : le retour arrière, c'est la
+                        sauvegarde.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI CHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change par rapport à Odoo 19</h2>
+                <table class="tmc">
+                    <thead><tr><th>Point</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>http_interface</code> par défaut</td><td><code>0.0.0.0</code></td><td><code>127.0.0.1</code></td></tr>
+                        <tr><td>Fichiers du filestore</td><td>écrits directement, droits selon le masque</td><td>copiés dans
+                            <code>upload/</code>, passés en <code>0444</code>, puis déplacés ; dossiers en <code>0751</code> moins le masque</td></tr>
+                        <tr><td>Versions en base et sur disque</td><td>par l'écran Applications ou en SQL</td><td><code>odoo-bin module list</code></td></tr>
+                        <tr><td>Essai à blanc d'une mise à jour</td><td>—</td><td><code>odoo-bin module upgrade -n</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Le reste est identique en 19 : <code>proxy_mode</code> et sa condition sur <code>X-Forwarded-Host</code>,
+                    <code>list_db</code>, le mot de passe maître haché, la création automatique de la base de <code>db_name</code>,
+                    les tâches planifiées limitées par <code>db_name</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un dépôt Git par jeu de modules, cloné dans son dossier : la version se lit, la mise à jour est un
+                        <code>fetch</code>, le retour un <code>reset</code>.</li>
+                    <li><code>proxy_mode = True</code> seulement derrière un proxy, et avec <code>http_interface = 127.0.0.1</code> ;
+                        sans <code>X-Forwarded-Host</code>, Odoo ignore le proxy.</li>
+                    <li><code>list_db = False</code> ferme tout le gestionnaire ; le mot de passe maître reste à poser, haché.
+                        <code>db_name</code> borne les tâches planifiées, mais crée la base si elle n'existe pas.</li>
+                    <li>Mise à jour : sauvegarde et révision notée, <code>fetch</code>, lecture, arrêt, code, <code>-u</code>,
+                        redémarrage, contrôle. <code>-u biblio</code> pour le module, <code>-u all</code> pour Odoo.</li>
+                    <li>Retour arrière = code <strong>et</strong> sauvegarde. Jamais l'ancien code suivi d'un <code>-u</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Sécurisation du serveur, plusieurs instances et plusieurs versions d'Odoo sur la même machine,
+                        supervision, sauvegardes hors site et mises à jour avec retour arrière, sur un serveur réel de bout en bout :
+                        c'est le programme de l'ebook
+                        <a href="/shop/ebook-e3-20-deployer-odoo-20-en-production-ebook-21">Déployer Odoo 20 en production</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Commandes exécutées le 10/11/2026 sur une installation Odoo 20.0 Community (révisions 3538ed82
+                    puis e77213ec, Python 3.12, PostgreSQL 16) sous un compte sans droits <code>root</code>, service systemd
+                    utilisateur ; base d'essai copiée d'une base de démonstration. L'unité système a été contrôlée par
+                    <code>systemd-analyze</code>, pas installée. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 :
+                        <a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/config.py" target="_blank" rel="noopener"><code>odoo/tools/config.py</code></a>
+                        (<code>http_interface</code>, <code>proxy_mode</code>, <code>admin_passwd</code>, <code>verify_admin_password</code>) ;
+                        <code>odoo/http/server.py</code>, <code>odoo/http/router.py</code> (ProxyFix, <code>db_filter</code>) ;
+                        <code>odoo/modules/db.py</code> (<code>verify_db_management_enabled</code>) ; <code>odoo/cli/server.py</code> ;
+                        <code>odoo/service/server.py</code> ; <code>odoo/addons/base/models/ir_attachment.py</code> (<code>_file_write</code>).</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>ir_attachment.py</code> (<code>_file_write</code> sans
+                        changement de droits), <code>odoo/tools/config.py</code>, <code>odoo/http.py</code>.</li>
+                    <li>systemd : <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html" target="_blank" rel="noopener">systemd.exec</a>
+                        (<code>UMask</code>, <code>ProtectSystem</code>, <code>PrivateTmp</code>),
+                        <a href="https://www.freedesktop.org/software/systemd/man/latest/systemd-analyze.html" target="_blank" rel="noopener">systemd-analyze</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Le serveur que cet article suppose : compte <code>odoo</code>, venv, première unité systemd.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20 : db dump, load, neutralize</a></h5>
+                            <p class="small text-muted mb-0">Répéter une mise à jour sur une copie sûre avant de la faire en production.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a></h5>
+                            <p class="small text-muted mb-0"><code>module</code>, <code>db</code>, <code>shell</code> : les commandes de cette procédure, et les autres.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
