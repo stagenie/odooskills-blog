@@ -49,3 +49,10 @@ class LibraryBook(models.Model):
     def _compute_copy_count(self):
         for book in self:
             book.copy_count = len(book.copy_ids)
+
+    @api.model
+    def get_import_templates(self):
+        return [{
+            'label': self.env._("Modèle d'import des livres"),
+            'template': '/biblio/static/import/livres.csv',
+        }]

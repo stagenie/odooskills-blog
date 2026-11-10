@@ -6,3 +6,4 @@ from . import test_loan_report
 from . import test_portal
 from . import test_shelf
 from . import test_api
+from . import test_import
