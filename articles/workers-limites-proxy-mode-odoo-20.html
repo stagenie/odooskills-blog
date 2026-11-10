@@ -1,0 +1,766 @@
+<!--
+Article — workers, limites et proxy_mode : dimensionner Odoo 20
+Série « Exploiter Odoo 20 en production » (61), étape 1 ; lot T4 (T4.2 du plan vague 3 technique), dernier du lot (T4.3 et T4.4 écartés).
+Date : 2026-11-10
+Slug : workers-limites-proxy-mode-odoo-20
+Mot-clé cible : odoo workers calculator, odoo workers config, odoo limit_memory_soft, odoo proxy_mode
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~15 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16.15 (max_connections 100), fichier de
+configuration jetable, ports de travail locaux, module d'essai oski_limites 20.0.1.0.0 (contrôleur seul, non publié)) :
+- Prefork workers 2 + cron 1 : journal Alive ×3 + GeventServer ; ps : worker 270 Mo virtuels / 125 Mo résidents ; ss : HTTP et
+  gevent sur 127.0.0.1 seulement ; répartition par accept() (11 requêtes / 2). Après client web + PDF + search_read complets :
+  356/253 Mo et 287/163 Mo.
+- --gevent-workers=2 : deux GeventServer à l'écoute du même port (ss). --gevent-port inchangé (19.0 publique config.py:266).
+- workers=1 : rapport PDF → 422, INFO « You need to start Odoo with at least two workers… », WARNING « Not enough workers to
+  generate the PDF » (base_report_wkhtmltox/models/ir_actions_report.py:89-91). workers=2 : PDF 200 (36 655 octets).
+- limit_time_real=10 : requête pg_sleep(30) → « WorkerHTTP (…) timeout after 10s » à 12 s, curl code 52 (réponse vide) ;
+  pg_sleep(60) encore « active » à 30 s dans pg_stat_activity après la mort du worker (pg_cancel_backend → t).
+- limit_time_cpu=5 : « CPU time limit (5) reached. » puis CRITICAL « uncaught error in main loop, exiting », réponse vide à 5,4 s,
+  worker remplacé.
+- limit_time_real=10 sans limit_time_real_cron : « WorkerCron (…) timeout after 10s » toutes les 12 s, au repos
+  (server.py:780-782, sommeil SLEEP_INTERVAL + pid % 10 = 60-69 s :1324 ; idem 19.0 publique :901, :1425) ;
+  limit_time_real_cron=0 puis =90 : aucun arrêt du cron en 80-100 s.
+- limit_memory_soft 400 Mio : 200 Mo gardés (fuite simulée) → 200 puis « Virtual memory limit (493580288) reached. », Exiting
+  cleanly, nouveau pid ; 200 Mo alloués puis libérés dans la requête → pas de recyclage (VMS revenue à 270). Comparaison sur
+  la mémoire virtuelle (tools/osutil.py:79-87).
+- limit_memory_hard 700 Mio : allocation de 600 Mo → MemoryError, 500, même worker ensuite.
+- limit_request=5 : « Max request (5) reached. », nouveau worker en 0,24 s.
+- workers=0 (threaded), limit_time_real=10 : requête de 100 s → 200 en 100,09 s, aucune ligne de limite, aucun rechargement.
+  Source 20 : pool ThreadPoolExecutor de config.max_http_threads = ODOO_MAX_HTTP_THREADS ou 2 × CPU + 1 (config.py:1159-1165,
+  server.py:455-496), threads sans start_time → process_limit les ignore (server.py:310-330). 19.0 publique : t.type='http',
+  t.start_time (server.py:299-300), « virtual real time limit » (:528).
+- Connexions (pg_stat_activity + ss, port client → pid) : conf « point de départ » (workers 4, cron 1, db_maxconn 10,
+  db_maxconn_gevent 20) sous 8 requêtes de 4 s + 40 websockets : 4 workers × 1, cron 1 (base postgres), gevent 4 puis 8 ;
+  total 9 puis 13 (plafond théorique 70). 8 requêtes de 4 s sur 4 workers : 4 en 4,0 s, 4 en 8,0 s. Connexions des workers
+  étiquetées odoo-<pid du processus principal> (héritées du fork).
+- proxy_mode : sans X-Forwarded-Host aucun effet ; avec For+Proto+Host → remote_addr 203.0.113.7, https, url_root
+  https://erp.example.com/ ; chaîne « 192.0.2.99, 203.0.113.7 » → 203.0.113.7 (http/server.py:185-188, ProxyFix x_for=1).
+- Bloc de configuration « point de départ » (limit_memory_hard 1677721600 après relecture) lu par odoo-bin shell (valeurs relues)
+  et démarré (4 WorkerHTTP + 1 WorkerCron + gevent).
+- /websocket sur le port HTTP avec Origin → 500, RuntimeError « Couldn't bind the websocket. Is the connection opened on the evented
+  port » (addons/bus/websocket.py:861-862).
+- proxy_mode rejoué avec erp.example.com (mêmes résultats).
+- Règle de la documentation Odoo 20 (deploy.html, relue le 10/11/2026) : (#CPU × 2) + 1, ~6 utilisateurs simultanés par worker,
+  20 % de requêtes lourdes ~1 Go, 80 % légères ~150 Mo.
+Captures : content/blog/screenshots/workers-limites-proxy-mode-odoo-20/ (01 schéma, 02 journal réel des limites, base renommée
+ma_base, horodatage réduit à l'heure).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">workers, limites et proxy_mode : dimensionner Odoo 20</h1>
+                <p class="lead mt-3 text-white">Combien de workers pour ton serveur, ce que fait réellement chaque limite quand elle
+                    est atteinte, combien de connexions PostgreSQL Odoo ouvre, et ce qu'Odoo voit d'un visiteur derrière un proxy.
+                    Chaque limite a été provoquée, journaux à l'appui.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Dimensionner</h4>
+                        <p>Le nombre de workers et de processus cron selon les processeurs, la mémoire et les utilisateurs, et ce
+                            qu'il faut mesurer pour l'ajuster.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire les limites</h4>
+                        <p><code>limit_memory_soft/hard</code>, <code>limit_time_cpu/real</code>, <code>limit_request</code> : ce que
+                            voit l'utilisateur et ce qu'écrit le journal quand chacune est atteinte.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Connexions et proxy</h4>
+                        <p><code>db_maxconn</code> face à <code>max_connections</code>, et ce que <code>proxy_mode</code> change à
+                            l'adresse du visiteur et à l'URL que voit Odoo.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 Community sous Linux avec son fichier <code>odoo.conf</code>, installé par exemple comme dans
+                            <a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur
+                            Ubuntu</a>, qui pose déjà un premier jeu de workers et de limites.</li>
+                        <li>Un accès <code>psql</code> à PostgreSQL 16, <code>curl</code>, <code>ps</code> et <code>ss</code>.</li>
+                        <li>Une base de test pour provoquer les limites : jamais sur la production.</li>
+                    </ul>
+                </div>
+                <p>Toutes les valeurs ci-dessous ont été relevées sur une base de démonstration Odoo 20, en abaissant volontairement
+                    les limites pour les atteindre en quelques secondes. Les ports affichés sont ceux par défaut
+                    (<code>8069</code> pour le web, <code>8072</code> pour le temps réel).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma d'Odoo 20 en mode multi-processus. À gauche, un proxy Nginx en HTTPS qui ajoute les en-têtes X-Forwarded-For, Proto et Host, pris en compte seulement avec proxy_mode et X-Forwarded-Host. Au centre, odoo-bin en prefork, à l'écoute sur http_interface, 127.0.0.1 par défaut : le processus principal qui surveille, des WorkerHTTP au nombre de workers sur le port 8069, des WorkerCron au nombre de max_cron_threads, des GeventServer au nombre de gevent_workers sur le port 8072. Un worker au repos occupe 270 Mo de mémoire virtuelle et 125 Mo résidents. À droite, PostgreSQL et max_connections, chaque processus ayant jusqu'à db_maxconn connexions. En bas, cinq cases décrivent l'effet de chaque limite : soft, la requête se termine puis le worker est remplacé ; hard, MemoryError et réponse 500 ; cpu, le worker s'arrête et le client reçoit une réponse vide ; real, le worker est tué mais la requête SQL continue ; request, le worker est remplacé après N requêtes."/>
+                    <figcaption>Les processus d'Odoo 20 en prefork, leurs connexions à PostgreSQL et l'effet de chaque limite. En vert,
+                        les limites qui recyclent proprement ; en orange, celles qui coupent une requête.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. MULTI-PROCESSUS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Passer en mode multi-processus</h2>
+                <p>Avec <code>workers = 0</code> (la valeur par défaut), Odoo sert tout depuis un seul processus à plusieurs fils
+                    d'exécution. Dès que <code>workers</code> vaut 1 ou plus, il passe en <strong>prefork</strong> : un processus
+                    principal ouvre le port, puis lance des processus enfants qu'il surveille et remplace. La configuration minimale :</p>
+<pre class="language-ini"><code class="language-ini">[options]
+workers = 2
+max_cron_threads = 1
+; ports par défaut, à écrire pour les voir
+http_port = 8069
+gevent_port = 8072</code></pre>
+                <p>Au démarrage, le journal annonce chaque processus :</p>
+<pre class="language-bash"><code class="language-bash">INFO ? odoo.service.server: HTTP service running on 127.0.0.1:8069
+INFO ma_base odoo.service.server.WorkerHTTP: Alive
+INFO ma_base odoo.service.server.WorkerHTTP: Alive
+INFO ma_base odoo.service.server.WorkerCron: Alive
+INFO ma_base odoo.service.server.GeventServer: Evented/WebSocket service running on 127.0.0.1:8072</code></pre>
+                <p>Cinq processus en tout, que <code>ps</code> montre en arbre (taille virtuelle <code>VSZ</code> et résidente
+                    <code>RSS</code> en kilo-octets), et deux ports à l'écoute :</p>
+<pre class="language-bash"><code class="language-bash">$ ps -o pid,ppid,vsz,rss,args --forest -g &lt;session&gt;
+    PID    PPID    VSZ    RSS COMMAND
+ 153387    …   201408 146264 …/python …/odoo-bin -c …/odoo.conf
+ 153404 153387 277204 128796  \_ …/python …/odoo-bin -c …/odoo.conf
+ 153405 153387 275156 121480  \_ …/python …/odoo-bin -c …/odoo.conf
+ 153407 153387 209076 152060  \_ …/python …/odoo-bin gevent -c …/odoo.conf
+ 153409 153387 275156 125868  \_ …/python …/odoo-bin -c …/odoo.conf
+$ ss -ltnp | grep -E ':(8069|8072)'
+LISTEN 0  16   127.0.0.1:8069  0.0.0.0:*  users:(("python",pid=153405,fd=5),("python",pid=153404,fd=5),("python",pid=153387,fd=5))
+LISTEN 0  128  127.0.0.1:8072  0.0.0.0:*  users:(("python",pid=153407,fd=6))</code></pre>
+                <p>Ce qu'il faut en retenir pour la suite :</p>
+                <ul>
+                    <li><strong>Les workers HTTP</strong> (153404, 153405) partagent le port 8069 ouvert par le processus principal.
+                        Chacun traite <strong>une requête à la fois</strong> ; c'est le premier libre qui prend la suivante, sans
+                        tourniquet : sur une courte série d'appels, l'un en a traité 11 et l'autre 2.</li>
+                    <li><strong>Le worker cron</strong> (153409) exécute les tâches planifiées ; il y en a autant que
+                        <code>max_cron_threads</code> (2 par défaut).</li>
+                    <li><strong>Le serveur gevent</strong> (153407) porte les websockets du temps réel (notifications, discussion) sur
+                        <code>gevent_port</code>. L'option garde son nom de la 19 (<code>--gevent-port</code>). Nouveauté de la 20,
+                        <code>--gevent-workers</code> (1 par défaut) en lance plusieurs sur le même port : avec 2, <code>ss</code> montre
+                        deux processus à l'écoute de 8072. Un websocket demandé sur le port 8069 échoue (erreur 500, journal
+                        <code>Couldn't bind the websocket. Is the connection opened on the evented port (8072)?</code>,
+                        <code>addons/bus/websocket.py:861-862</code>) : c'est pourquoi
+                        le proxy doit envoyer <code>/websocket</code> vers 8072.</li>
+                    <li><strong>Tout écoute sur <code>127.0.0.1</code></strong> : c'est la valeur par défaut de
+                        <code>http_interface</code> en Odoo 20 (elle était <code>0.0.0.0</code> en 19). Le serveur n'est joignable
+                        que par un proxy installé sur la même machine.</li>
+                </ul>
+                <p>Un cas à éviter : <code>workers = 1</code>. Pour le rendu PDF par wkhtmltopdf, Odoo exige au moins deux workers et refuse
+                    d'imprimer avec un seul
+                    (<code>addons/base_report_wkhtmltox/models/ir_actions_report.py:89-91</code>) :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -b cookies.txt -o /dev/null -w '%{http_code}\n' http://localhost:8069/report/pdf/sale.report_saleorder/1
+422
+INFO ma_base odoo.addons.base_report_wkhtmltox.models.ir_actions_report: You need to start Odoo with at least two workers to print a pdf version of the reports.
+WARNING ma_base odoo.http: Not enough workers to generate the PDF. Please try another engine or upgrade your setup.</code></pre>
+                <p>Avec <code>workers = 2</code>, le même devis sort en PDF (200, 36 Ko). Le minimum utile en production est donc
+                    deux workers.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. COMBIEN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Combien de workers : une règle d'usage, puis une mesure</h2>
+                <p>Odoo ne calcule pas le nombre de workers à ta place en prefork : <code>workers</code> vaut 0 tant que tu ne l'écris
+                    pas. La
+                    <a href="https://www.odoo.com/documentation/20.0/administration/on_premise/deploy.html" target="_blank" rel="noopener">documentation
+                    de déploiement d'Odoo 20</a> propose une <strong>règle d'usage</strong>, à prendre comme un point de départ et non
+                    comme une mesure :</p>
+                <ul>
+                    <li>côté processeur, au plus <strong>(nombre de CPU × 2) + 1</strong> processus de calcul, cron compris ;</li>
+                    <li>côté utilisateurs, environ <strong>6 utilisateurs simultanés par worker</strong> ;</li>
+                    <li>côté mémoire, une hypothèse de 20 % de requêtes lourdes (environ 1 Go par worker) et 80 % de légères (environ
+                        150 Mo), soit environ 325 Mo par processus en moyenne.</li>
+                </ul>
+                <p>On prend le plus petit des deux premiers résultats, puis on vérifie que la mémoire suit. Appliqué à trois serveurs
+                    courants :</p>
+                <table class="tmc">
+                    <thead><tr><th>Serveur</th><th>Plafond CPU conseillé (2 × CPU + 1)</th><th>Utilisateurs simultanés visés</th><th>Réglage</th><th>Mémoire estimée pour Odoo</th></tr></thead>
+                    <tbody>
+                        <tr><td>2 vCPU, 4 Go</td><td>5</td><td>une vingtaine (≈ 4 workers)</td><td>4 workers + 1 cron</td><td>5 × 325 Mo ≈ 1,6 Go</td></tr>
+                        <tr><td>4 vCPU, 8 Go</td><td>9</td><td>une soixantaine (≈ 10 workers)</td><td>8 workers + 1 cron</td><td>9 × 325 Mo ≈ 2,9 Go</td></tr>
+                        <tr><td>8 vCPU, 16 Go</td><td>17</td><td>une centaine (≈ 17 workers)</td><td>15 workers + 2 cron</td><td>17 × 325 Mo ≈ 5,5 Go</td></tr>
+                    </tbody>
+                </table>
+                <p>La deuxième ligne est l'exemple de la documentation. Le reste de la mémoire va à PostgreSQL et au système, qui en ont
+                    besoin eux aussi quand la base est sur la même machine.</p>
+                <p>Ensuite, on mesure. Sur la base de démonstration, un worker au repos occupe <strong>270 Mo virtuels pour 125 Mo
+                    résidents</strong>. Après avoir chargé le client web, imprimé un devis en PDF et lu en une fois tous les
+                    contacts, articles et écritures comptables, les deux workers étaient à 356/253 Mo et 287/163 Mo. Une vraie base,
+                    avec ses gros rapports et ses imports, monte plus haut : surveille ces deux colonnes avec <code>ps</code> sur
+                    quelques jours avant de fixer les limites de mémoire de la section 3.</p>
+                <p>Et le nombre de workers se vérifie en charge. Avec 4 workers, huit requêtes de 4 secondes lancées en même temps :</p>
+<pre class="language-bash"><code class="language-bash">$ for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null -w "req$i %{http_code} %{time_total}\n" \
+      "http://localhost:8069/essai/attente?s=4" &amp; done; wait
+req2 200 4.017100
+req3 200 4.019136
+req5 200 4.056426
+req1 200 4.056614
+req6 200 8.030472
+req8 200 8.032540
+req4 200 8.068093
+req7 200 8.068962</code></pre>
+                <p>Quatre réponses en 4 secondes, quatre en 8 : les requêtes en trop ne sont pas refusées, elles attendent un worker
+                    libre. Si les temps de réponse montent aux heures de pointe alors que le processeur reste calme, il manque des
+                    workers ; si le processeur sature, il en a trop.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. MÉMOIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les limites de mémoire : <code>limit_memory_soft</code> et <code>limit_memory_hard</code></h2>
+                <p>Pour provoquer les limites sans attendre une vraie panne, un module d'essai de quelques lignes suffit (manifeste
+                    <code>20.0.1.0.0</code>, dépendance <code>web</code>, un seul contrôleur). Ne l'installe que sur une base de test :</p>
+<pre class="language-python"><code class="language-python">import os
+import time
+
+import psutil
+
+from odoo import http
+from odoo.http import request
+
+MO = 1024 * 1024
+FUITE = []
+
+
+def etat():
+    mem = psutil.Process().memory_info()
+    return {'pid': os.getpid(), 'vms_mo': mem.vms // MO, 'rss_mo': mem.rss // MO}
+
+
+class Limites(http.Controller):
+
+    @http.route('/essai/qui', type='http', auth='none')
+    def qui(self):
+        req = request.httprequest
+        return request.make_json_response({
+            'remote_addr': req.remote_addr, 'scheme': req.scheme, 'host': req.host,
+            'url_root': req.url_root, 'X-Forwarded-For': req.headers.get('X-Forwarded-For'), **etat(),
+        })
+
+    @http.route('/essai/attente', type='http', auth='public')
+    def attente(self, s='30'):
+        debut = time.time()
+        request.env.cr.execute("SELECT pg_sleep(%s)", [int(s)])
+        return request.make_json_response({'attendu_s': round(time.time() - debut, 1), **etat()})
+
+    @http.route('/essai/calcul', type='http', auth='none')
+    def calcul(self, s='30'):
+        debut = time.process_time()
+        while time.process_time() - debut &lt; int(s):
+            pass
+        return request.make_json_response({'cpu_s': round(time.process_time() - debut, 1), **etat()})
+
+    @http.route('/essai/memoire', type='http', auth='none')
+    def memoire(self, mo='300'):
+        bloc = bytearray(int(mo) * MO)  # alloué, puis libéré à la fin de la requête
+        return request.make_json_response({'alloue_mo': len(bloc) // MO, **etat()})
+
+    @http.route('/essai/fuite', type='http', auth='none')
+    def fuite(self, mo='100'):
+        FUITE.append(bytearray(int(mo) * MO))  # gardé d'une requête à l'autre, comme une fuite
+        return request.make_json_response({'garde_mo': sum(map(len, FUITE)) // MO, **etat()})</code></pre>
+                <p>Premier point, souvent mal compris : les deux limites comparent la <strong>mémoire virtuelle</strong> du
+                    processus (<code>vms</code>, la colonne <code>VSZ</code> de <code>ps</code>), pas la mémoire physique
+                    (<code>odoo/tools/osutil.py:79-87</code>). Elles se règlent en octets ; par défaut 2 048 Mio et 2 560 Mio.
+                    Pour l'essai, un seul worker, <code>--limit-memory-soft=419430400</code> (400 Mio) et
+                    <code>--limit-memory-hard=734003200</code> (700 Mio).</p>
+                <h3>La limite douce recycle, après la requête</h3>
+<pre class="language-bash"><code class="language-bash">$ curl -s http://localhost:8069/essai/fuite?mo=100
+{"garde_mo": 100, "pid": 157145, "vms_mo": 370, "rss_mo": 225}
+$ curl -s http://localhost:8069/essai/fuite?mo=100
+{"garde_mo": 200, "pid": 157145, "vms_mo": 470, "rss_mo": 325}
+$ curl -s http://localhost:8069/essai/qui
+{"remote_addr": "127.0.0.1", …, "pid": 157168, "vms_mo": 270, "rss_mo": 125}</code></pre>
+                <p>La deuxième requête dépasse 400 Mio et répond <strong>normalement</strong> (200). Juste après, le worker écrit
+                    <code>Virtual memory limit (493580288) reached.</code> (le nombre est la taille atteinte, environ 471 Mio, pas
+                    la limite), s'arrête proprement, et un nouveau (157168) repart à
+                    270 Mo. L'utilisateur ne voit rien. En revanche, 200 Mo alloués <em>puis libérés</em> dans la même requête
+                    (<code>/essai/memoire?mo=200</code>) ne déclenchent rien : le contrôle a lieu entre deux requêtes, sur la
+                    mémoire encore occupée. La limite douce sert donc à purger les workers qui grossissent avec le temps (caches,
+                    fuites), à condition d'être au-dessus de ce qu'un worker sain occupe : réglée sous les 270 Mo d'un worker au
+                    repos, elle recyclerait le worker après chaque requête.</p>
+                <h3>La limite dure fait échouer la requête</h3>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8069/essai/memoire?mo=600
+500
+$ curl -s http://localhost:8069/essai/qui
+{"remote_addr": "127.0.0.1", …, "pid": 156908, "vms_mo": 270, "rss_mo": 126}</code></pre>
+                <p>La limite dure est posée par le système sur le processus (<code>RLIMIT_AS</code>,
+                    <code>odoo/service/server.py:72-82</code>) : l'allocation qui la franchit échoue, Odoo journalise
+                    <code>MemoryError</code> et répond 500. Le worker, lui, <strong>reste en place</strong> (même pid ensuite). Une
+                    limite dure trop basse se traduit donc par des erreurs sur les plus grosses opérations (gros rapport, import,
+                    export) ; laisse une vraie marge au-dessus de la limite douce.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. TEMPS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Les limites de temps : <code>limit_time_cpu</code> et <code>limit_time_real</code></h2>
+                <p>Par défaut, une requête a droit à 60 secondes de calcul (<code>limit_time_cpu</code>) et à 120 secondes au total
+                    (<code>limit_time_real</code>), attente de la base comprise. Essai avec <code>--limit-time-real=10</code> et
+                    <code>--limit-time-cpu=5</code>.</p>
+                <h3>Temps réel dépassé : le worker est tué, pas la requête SQL</h3>
+                <p>Une requête de 60 secondes (la figure plus bas montre le journal d'un premier essai identique, de 30 secondes) :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -w 'http=%{http_code} temps=%{time_total}s\n' 'http://localhost:8069/essai/attente?s=60'
+http=000 temps=12.019763s
+$ echo $?
+52
+$ psql -d ma_base -Atc "select state, round(extract(epoch from now()-query_start)), query
+      from pg_stat_activity where query like 'SELECT pg_sleep%'"
+active|30|SELECT pg_sleep(60)</code></pre>
+                <p>C'est le processus principal qui surveille la durée : un peu après 10 secondes (12 ici, il vérifie toutes les
+                    quelques secondes), il écrit <code>WorkerHTTP (…) timeout after 10s</code> en ERROR et tue le worker
+                    (<code>SIGKILL</code>), puis en lance un neuf. Le client reçoit une réponse vide (code 52 de <code>curl</code>) ;
+                    un proxy placé devant la transforme en général en erreur 502. Mais la requête SQL, elle, <strong>continue</strong> dans PostgreSQL :
+                    30 secondes après son départ, elle est toujours active. Une requête lourde tuée par <code>limit_time_real</code>
+                    peut donc garder ses verrous et sa charge jusqu'à son terme ; si elle se répète, arrête-la
+                    (<code>select pg_cancel_backend(pid)</code>) et cherche sa cause plutôt que d'augmenter la limite.</p>
+                <h3>Temps de calcul dépassé : le worker s'arrête</h3>
+<pre class="language-bash"><code class="language-bash">$ curl -s -o /dev/null -w 'http=%{http_code} temps=%{time_total}s\n' 'http://localhost:8069/essai/calcul?s=30'
+http=000 temps=5.357850s</code></pre>
+                <p>Après 5 secondes de calcul, le système envoie un signal au worker, qui journalise
+                    <code>CPU time limit (5) reached.</code> puis s'arrête (CRITICAL <code>uncaught error in main loop, exiting</code>) ;
+                    un neuf le remplace. Là encore, réponse vide pour l'utilisateur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Extraits réels du journal d'Odoo 20 pendant six essais, base ma_base. limit_time_real à 10 : ERROR PreforkServer WorkerHTTP timeout after 10s, puis un nouveau WorkerHTTP Alive. limit_time_cpu à 5 : CPU time limit (5) reached, CRITICAL uncaught error in main loop exiting, Exception CPU time limit exceeded, nouveau worker Alive. limit_memory_hard à 700 Mio : ERROR Exception during request handling, MemoryError, requête GET /essai/memoire?mo=600 en 500. limit_memory_soft à 400 Mio : une requête GET /essai/fuite répond 200, puis Virtual memory limit (493580288) reached, Exiting cleanly, nouveau worker Alive. limit_request à 5 : Max request (5) reached, Exiting cleanly, nouveau worker Alive. limit_time_real à 10 sans limit_time_real_cron : ERROR WorkerCron timeout after 10s, deux fois à 12 secondes d'écart, le worker cron étant au repos."/>
+                    <figcaption>Ce qu'écrit le journal pour chaque limite atteinte. En rouge, les arrêts brutaux ; les autres lignes
+                        sont des recyclages propres.</figcaption>
+                </figure>
+                <div class="pitfall-box">
+                    <h4>Sous 70 secondes, <code>limit_time_real</code> tue aussi le worker cron… au repos</h4>
+                    <p>Le dernier bloc du journal ci-dessus n'a rien exécuté : le worker cron dormait. Tant que
+                        <code>limit_time_real_cron</code> vaut -1 (sa valeur par défaut), le délai de surveillance du cron est
+                        <code>limit_time_real</code> (<code>odoo/service/server.py:780-782</code>). Or le worker cron dort 60 à
+                        69 secondes entre deux tours (<code>:1324</code>) sans donner signe de vie : avec
+                        <code>limit_time_real = 10</code>, il a été tué toutes les 12 secondes. Même mécanique en 19. Si tu descends
+                        <code>limit_time_real</code> sous 70 secondes, règle <code>limit_time_real_cron</code> explicitement : à 90
+                        comme à 0 (aucune limite), plus aucun arrêt pendant le même essai. La valeur choisie est aussi la durée
+                        maximale d'une tâche planifiée.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. LIMIT_REQUEST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. <code>limit_request</code> : recycler les workers régulièrement</h2>
+                <p><code>limit_request</code> (65 536 par défaut) fixe le nombre de requêtes qu'un worker traite avant de laisser sa
+                    place. Avec un seul worker et <code>--limit-request=5</code>, la sixième requête arrive sur un nouveau
+                    processus :</p>
+<pre class="language-bash"><code class="language-bash">$ for i in 1 2 3 4 5 6 7; do curl -s http://localhost:8069/essai/qui | python3 -c "import json,sys; print(json.load(sys.stdin)['pid'])"; done
+158637
+158637
+158637
+158637
+158666
+158666
+158666</code></pre>
+                <p>(la première requête du worker 158637 était un test de démarrage.) Le journal dit
+                    <code>Max request (5) reached.</code> puis <code>Exiting cleanly</code>, et le remplaçant est prêt 0,24 seconde
+                    plus tard ; pendant ce temps, les requêtes attendent, rien n'est refusé. C'est une hygiène : avec une valeur de
+                    quelques milliers (la documentation prend 8 192), chaque worker repart régulièrement d'un état propre, en complément
+                    de la limite douce de mémoire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. SANS WORKERS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Et sans workers ? Ce qui change en Odoo 20</h2>
+                <p>Avec <code>workers = 0</code>, Odoo sert les requêtes depuis un réservoir de fils d'exécution de taille fixe :
+                    la variable d'environnement <code>ODOO_MAX_HTTP_THREADS</code>, ou à défaut <strong>2 × nombre de CPU + 1</strong>
+                    (<code>odoo/tools/config.py:1159-1165</code>, <code>odoo/service/server.py:455-460</code>). La même formule que la
+                    règle d'usage, appliquée cette fois par Odoo lui-même. En 19, le serveur créait un fil par requête, sans plafond
+                    sauf variable d'environnement.</p>
+                <div class="pitfall-box">
+                    <h4>En Odoo 20 sans workers, <code>limit_time_real</code> n'arrête plus les requêtes</h4>
+                    <p>Même essai qu'en section 4, mais avec <code>--workers=0</code> et <code>--limit-time-real=10</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -m 150 -w '\nhttp=%{http_code} temps=%{time_total}\n' 'http://localhost:8069/essai/attente?s=100'
+{"attendu_s": 100.1, "pid": 159411, "vms_mo": 278, "rss_mo": 144}
+http=200 temps=100.087339</code></pre>
+                    <p>La requête va au bout de ses 100 secondes ; le journal ne contient que sa ligne d'accès, aucun avertissement.
+                        La surveillance ne retient que les fils marqués d'une heure de début (<code>odoo/service/server.py:310-330</code>) ;
+                        le serveur à fils de la 19 marquait chaque requête (<code>t.start_time</code>) et relançait tout le serveur au
+                        dépassement (branche 19.0, <code>odoo/service/server.py:299-300</code> et <code>:740-753</code>) ; les fils du
+                        réservoir de la 20 ne portent plus cette marque. Le mode sans workers reste fait pour le
+                        développement ; en production, les limites de temps supposent <code>workers</code> ≥ 2.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. CONNEXIONS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les connexions PostgreSQL : <code>db_maxconn</code> face à <code>max_connections</code></h2>
+                <p>Chaque processus Odoo a sa propre réserve de connexions, plafonnée par <code>db_maxconn</code> (64 par défaut ;
+                    <code>db_maxconn_gevent</code> pour le serveur temps réel, qui reprend <code>db_maxconn</code> s'il est vide).
+                    Réserve pleine, Odoo ferme la plus ancienne connexion libre ; si toutes sont occupées, la requête échoue
+                    (<code>The Connection Pool Is Full</code>, <code>odoo/sql_db.py:695-701</code>). Le plafond théorique d'une
+                    instance est donc :</p>
+                <p class="text-center"><strong>(workers + max_cron_threads) × db_maxconn + gevent_workers × db_maxconn_gevent</strong></p>
+                <p>(<code>db_maxconn_gevent</code> vide : c'est <code>db_maxconn</code> qui compte, <code>odoo/sql_db.py:850</code>.)
+                    Avec 4 workers, 1 cron, 1 gevent et les valeurs par défaut : 6 × 64 = 384 connexions possibles, pour un
+                    PostgreSQL qui en accepte 100 par défaut (<code>SHOW max_connections;</code>). En pratique, on est très loin du
+                    plafond. Mesuré pendant huit requêtes simultanées et 40 websockets ouverts :</p>
+                <table class="tmc">
+                    <thead><tr><th>Processus</th><th>Connexions relevées</th></tr></thead>
+                    <tbody>
+                        <tr><td>chaque worker HTTP (×4)</td><td>1, active pendant sa requête puis gardée au repos</td></tr>
+                        <tr><td>worker cron</td><td>1 sur la base système <code>postgres</code>, et 1 sur ta base dès qu'il y a traité ses tâches</td></tr>
+                        <tr><td>serveur gevent</td><td>4 pendant l'ouverture des websockets, 8 ensuite (gardées au repos)</td></tr>
+                        <tr><td><strong>total</strong></td><td>9, puis 13</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour compter toi-même, interroge <code>pg_stat_activity</code>. Attention au nom d'application : les connexions
+                    des workers portent souvent celui du processus principal (<code>odoo-&lt;pid&gt;</code>), car elles ont été
+                    ouvertes avant la création des workers et héritées. Pour savoir qui tient quoi, rapproche le port client de
+                    <code>ss</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ psql -d postgres -Atc "select application_name, datname, client_port, state from pg_stat_activity
+      where application_name like 'odoo-%' order by 1"
+odoo-153387|ma_base|43596|idle
+odoo-153387|ma_base|51430|idle
+odoo-153407|ma_base|43616|idle
+odoo-153409|postgres|43590|idle
+$ ss -tnp | grep ':5432 '
+ESTAB 0 0 127.0.0.1:51430 127.0.0.1:5432 users:(("python",pid=153405,fd=15))
+ESTAB 0 0 127.0.0.1:43596 127.0.0.1:5432 users:(("python",pid=153404,fd=11))
+ESTAB 0 0 127.0.0.1:43616 127.0.0.1:5432 users:(("python",pid=153407,fd=5))
+ESTAB 0 0 127.0.0.1:43590 127.0.0.1:5432 users:(("python",pid=153409,fd=5))</code></pre>
+                <p>Les deux lignes « odoo-153387 » appartiennent en réalité aux workers 153404 et 153405. Pour régler
+                    <code>db_maxconn</code>, la démarche est la suivante : garde le plafond théorique sous <code>max_connections</code>,
+                    moins une marge pour tes sauvegardes, <code>psql</code> et la supervision, et donne plus au serveur gevent, qui sert
+                    tous les websockets à lui seul. Par exemple 5 processus × 10 + 1 × 20 = 70 sur 100, la valeur retenue dans la
+                    configuration de la section 9, qui a tenu l'essai ci-dessus. Plusieurs instances Odoo sur le même PostgreSQL ?
+                    Additionne leurs plafonds.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. PROXY_MODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. <code>proxy_mode</code> : ce qu'Odoo voit du visiteur</h2>
+                <p>Derrière un proxy, chaque requête arrive de <code>127.0.0.1</code>, en HTTP, adressée en général à
+                    <code>localhost:8069</code>. Le proxy transmet le vrai visiteur dans des en-têtes : <code>X-Forwarded-For</code>
+                    (son adresse), <code>X-Forwarded-Proto</code> (<code>https</code>), <code>X-Forwarded-Host</code> (le nom de
+                    domaine). La route <code>/essai/qui</code> du module d'essai renvoie ce qu'Odoo en retient
+                    (<code>request.httprequest</code>) ; les adresses sont celles réservées à la documentation :</p>
+<pre class="language-bash"><code class="language-bash">$ curl -s -H 'X-Forwarded-For: 203.0.113.7' -H 'X-Forwarded-Proto: https' \
+       -H 'X-Forwarded-Host: erp.example.com' http://localhost:8069/essai/qui</code></pre>
+                <table class="tmc">
+                    <thead><tr><th><code>proxy_mode</code></th><th>En-têtes envoyés</th><th><code>remote_addr</code></th><th><code>scheme</code></th><th><code>url_root</code></th></tr></thead>
+                    <tbody>
+                        <tr><td>False</td><td>aucun</td><td>127.0.0.1</td><td>http</td><td>http://localhost:8069/</td></tr>
+                        <tr><td>False</td><td>For + Proto + Host</td><td>127.0.0.1</td><td>http</td><td>http://localhost:8069/</td></tr>
+                        <tr><td>True</td><td>aucun</td><td>127.0.0.1</td><td>http</td><td>http://localhost:8069/</td></tr>
+                        <tr><td>True</td><td>For + Proto</td><td>127.0.0.1</td><td>http</td><td>http://localhost:8069/</td></tr>
+                        <tr><td>True</td><td>For + Proto + Host</td><td><strong>203.0.113.7</strong></td><td><strong>https</strong></td><td><strong>https://erp.example.com/</strong></td></tr>
+                        <tr><td>True</td><td>For = « 192.0.2.99, 203.0.113.7 » + Proto + Host</td><td>203.0.113.7</td><td>https</td><td>https://erp.example.com/</td></tr>
+                    </tbody>
+                </table>
+                <p>Trois enseignements. Sans <code>proxy_mode</code>, les en-têtes sont ignorés : le journal affiche 127.0.0.1 pour
+                    tout le monde et Odoo se croit en HTTP sur <code>localhost</code>, ce qui fausse les liens qu'il fabrique. Avec
+                    <code>proxy_mode</code>, Odoo ne réécrit la requête <strong>que si <code>X-Forwarded-Host</code> est
+                    présent</strong> (<code>odoo/http/server.py:185-188</code>) : un proxy qui n'envoie que
+                    <code>X-Forwarded-For</code> laisse tout comme avant. Enfin, quand la chaîne <code>X-Forwarded-For</code> contient
+                    plusieurs adresses, Odoo retient la <strong>dernière</strong>, celle qu'a ajoutée le proxy le plus proche ; une
+                    adresse inventée par le client en tête de chaîne n'est pas prise.</p>
+                <div class="pitfall-box">
+                    <h4><code>proxy_mode</code> fait confiance à quiconque joint le port</h4>
+                    <p>Odoo ne vérifie pas d'où viennent ces en-têtes. Si le port 8069 est joignable depuis le réseau, n'importe qui
+                        peut se présenter comme <code>203.0.113.7</code> en HTTPS sur ton domaine : l'adresse du journal et les
+                        URL générées deviennent celles qu'il choisit. <code>proxy_mode = True</code> ne va donc qu'avec un port
+                        réservé au proxy : <code>http_interface = 127.0.0.1</code> (le défaut en 20) quand le proxy est sur la même
+                        machine, ou un pare-feu qui n'ouvre 8069 et 8072 qu'à lui.</p>
+                </div>
+                <p>La configuration Nginx qui envoie ces trois en-têtes, avec le site HTTPS, le certificat et la route
+                    <code>/websocket</code> vers le port 8072, est détaillée dans
+                    <a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a>. Elle règle aussi
+                    les délais du proxy ; un conseil : garde-les au-dessus de <code>limit_time_real</code>, pour que ce soit Odoo,
+                    et non le proxy, qui décide de couper une requête trop longue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Un point de départ pour un serveur à 2 vCPU</h2>
+                <p>Toutes les règles précédentes réunies, pour la première ligne du tableau de la section 2 (2 vCPU, 4 Go, base et
+                    Odoo sur la même machine, Nginx devant). Les commentaires vont sur leur propre ligne : <code>odoo.conf</code>
+                    n'accepte pas de commentaire en fin de valeur.</p>
+<pre class="language-ini"><code class="language-ini">[options]
+; écoute locale, derrière Nginx
+http_interface = 127.0.0.1
+http_port = 8069
+gevent_port = 8072
+proxy_mode = True
+; 2 vCPU : (2 x 2) + 1 = 5 processus (règle de la documentation) -> 4 workers web + 1 cron
+workers = 4
+max_cron_threads = 1
+; mémoire VIRTUELLE par worker : recyclage à 640 Mio (pic mesuré 356 Mo + marge),
+; plafond à 1 600 Mio (valeur de l'exemple de la documentation)
+limit_memory_soft = 671088640
+limit_memory_hard = 1677721600
+; temps par requête : 60 s de calcul, 120 s au total ; tâches planifiées : 300 s
+limit_time_cpu = 60
+limit_time_real = 120
+limit_time_real_cron = 300
+limit_request = 8192
+; connexions PostgreSQL : 5 x 10 + 1 x 20 = 70, sous max_connections = 100
+db_maxconn = 10
+db_maxconn_gevent = 20</code></pre>
+                <p>Avant de redémarrer le service, fais relire le fichier par Odoo : une faute de frappe dans un nom d'option ne
+                    provoque aucune erreur, la valeur par défaut s'applique en silence.</p>
+<pre class="language-bash"><code class="language-bash">$ cat &gt; lire_conf.py &lt;&lt;'EOF'
+from odoo.tools import config
+for k in ('http_interface', 'proxy_mode', 'workers', 'max_cron_threads', 'gevent_workers', 'limit_memory_soft',
+          'limit_memory_hard', 'limit_time_cpu', 'limit_time_real', 'limit_time_real_cron', 'limit_request',
+          'db_maxconn', 'db_maxconn_gevent'):
+    print(f"{k} = {config[k]!r}")
+EOF
+$ odoo-bin shell -c /etc/odoo/odoo.conf --no-http &lt; lire_conf.py 2&gt;/dev/null
+http_interface = '127.0.0.1'
+proxy_mode = True
+workers = 4
+max_cron_threads = 1
+gevent_workers = 1
+limit_memory_soft = 671088640
+limit_memory_hard = 1677721600
+limit_time_cpu = 60
+limit_time_real = 120
+limit_time_real_cron = 300
+limit_request = 8192
+db_maxconn = 10
+db_maxconn_gevent = 20</code></pre>
+                <p>Les deux limites de mémoire portent sur la mémoire <strong>virtuelle</strong> : elles ne se comparent pas
+                    directement aux 150 Mo et 1 Go de la règle de la section 2, qui estiment la mémoire réellement occupée. La
+                    limite douce est posée au-dessus du pic mesuré (356 Mo), la dure reprend la valeur de l'exemple de la
+                    documentation, loin au-dessus, pour que les grosses opérations ne finissent pas en <code>MemoryError</code>. Le
+                    serveur gevent hérite de ces deux limites, sauf si tu règles <code>limit_memory_soft_gevent</code> et
+                    <code>limit_memory_hard_gevent</code>.</p>
+                <p>Démarré avec ce fichier, Odoo lance quatre <code>WorkerHTTP</code>, un <code>WorkerCron</code> et le serveur
+                    gevent. Ces valeurs se corrigent ensuite d'après tes mesures : la colonne <code>VSZ</code> des workers pour les
+                    limites de mémoire, les lignes <code>timeout</code> et <code>CPU time limit</code> du journal pour les limites de
+                    temps, <code>pg_stat_activity</code> pour les connexions. Pour isoler ces lignes et la durée de chaque requête
+                    dans le journal, l'article
+                    <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler,
+                    --log-sql, --log-config</a> donne les réglages utiles.</p>
+                <table class="tmc">
+                    <thead><tr><th>Limite</th><th>Défaut Odoo 20</th><th>Quand elle est atteinte</th><th>Ce que voit l'utilisateur</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>limit_memory_soft</code></td><td>2 048 Mio</td><td>worker remplacé après sa requête</td><td>rien</td></tr>
+                        <tr><td><code>limit_memory_hard</code></td><td>2 560 Mio</td><td><code>MemoryError</code>, worker conservé</td><td>erreur 500</td></tr>
+                        <tr><td><code>limit_time_cpu</code></td><td>60 s</td><td>worker arrêté puis remplacé</td><td>réponse vide (en général 502 derrière un proxy)</td></tr>
+                        <tr><td><code>limit_time_real</code></td><td>120 s</td><td>worker tué, la requête SQL continue</td><td>réponse vide (en général 502 derrière un proxy)</td></tr>
+                        <tr><td><code>limit_time_real_cron</code></td><td>-1 (= <code>limit_time_real</code>)</td><td>worker cron tué</td><td>tâche planifiée interrompue</td></tr>
+                        <tr><td><code>limit_request</code></td><td>65 536</td><td>worker remplacé</td><td>rien</td></tr>
+                        <tr><td><code>db_maxconn</code></td><td>64 par processus</td><td>plus vieille connexion libre fermée, sinon erreur</td><td>erreur si toutes sont occupées</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En production, au moins deux workers : avec un seul, Odoo refuse d'imprimer en PDF ; sans workers, Odoo 20
+                        n'applique plus <code>limit_time_real</code> aux requêtes.</li>
+                    <li>(2 × CPU) + 1 et 6 utilisateurs par worker sont une règle d'usage ; le réglage final vient de
+                        <code>ps</code>, du journal et des temps de réponse.</li>
+                    <li>Les limites de mémoire comparent la mémoire virtuelle : la douce recycle sans gêner, la dure fait échouer la
+                        requête.</li>
+                    <li>Une requête tuée par <code>limit_time_real</code> laisse sa requête SQL tourner ; sous 70 s, règle aussi
+                        <code>limit_time_real_cron</code>.</li>
+                    <li>Plafond de connexions = processus × <code>db_maxconn</code>, à garder sous <code>max_connections</code>.</li>
+                    <li><code>proxy_mode</code> n'agit qu'avec <code>X-Forwarded-Host</code>, et seulement si le port n'est joignable
+                        que par le proxy.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Sécurisation du serveur, plusieurs instances et plusieurs versions d'Odoo sur la même machine,
+                        supervision, sauvegardes hors site et mises à jour avec retour arrière, sur un serveur réel de bout en bout :
+                        c'est le programme de l'ebook
+                        <a href="/shop/ebook-e3-20-deployer-odoo-20-en-production-ebook-21">Déployer Odoo 20 en production</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Essais exécutés le 10/11/2026 sur Odoo 20.0 Community et PostgreSQL 16, base de démonstration,
+                    limites abaissées pour être atteintes en quelques secondes. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 :
+                        <a href="https://github.com/odoo/odoo/blob/20.0/odoo/service/server.py" target="_blank" rel="noopener"><code>odoo/service/server.py</code></a>
+                        (<code>PreforkServer</code>, <code>WorkerHTTP</code>, <code>WorkerCron</code>, <code>ThreadedServer</code>) ;
+                        <code>odoo/tools/config.py</code> (options et valeurs par défaut, <code>max_http_threads</code>) ;
+                        <code>odoo/tools/osutil.py</code> ; <code>odoo/sql_db.py</code> (<code>ConnectionPool</code>) ;
+                        <code>odoo/http/server.py</code> (<code>proxy_mode</code>) ;
+                        <code>addons/base_report_wkhtmltox/models/ir_actions_report.py</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>odoo/service/server.py</code> (serveur à fils, surveillance
+                        des requêtes), <code>odoo/tools/config.py</code>.</li>
+                    <li>Documentation Odoo 20 :
+                        <a href="https://www.odoo.com/documentation/20.0/administration/on_premise/deploy.html" target="_blank" rel="noopener">déploiement
+                        (calcul des workers et de la mémoire, proxy)</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a></h5>
+                            <p class="small text-muted mb-0">Le proxy qui envoie les en-têtes <code>X-Forwarded-*</code> et route les websockets vers le port 8072.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a></h5>
+                            <p class="small text-muted mb-0">Le serveur, le fichier de configuration et le service où appliquer ces réglages.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/cron-ne-s-execute-pas-odoo-20-289">L'action planifiée ne s'exécute pas en Odoo 20 : les vérifications</a></h5>
+                            <p class="small text-muted mb-0">Quand le worker cron tourne mais que la tâche ne part pas : les autres causes à contrôler.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
