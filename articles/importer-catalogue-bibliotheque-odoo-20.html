@@ -1,0 +1,711 @@
+<!--
+Article — Importer le catalogue de la Bibliothèque en Odoo 20 : CSV, XML, load()
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — étape 22 « import du catalogue » ; lot T3 « Fondations et données en Odoo 20 » (T3.3 du plan vague 3 technique)
+Date : 2026-11-10
+Slug : importer-catalogue-bibliotheque-odoo-20
+Mot-clé cible : odoo import script
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16 ; module biblio 20.0.1.19.0 installé puis mis à jour
+en 20.0.1.20.0 ; serveur HTTP de travail en boucle locale, dbfilter limité à la copie) :
+- -u avec un genre « Roman » saisi à la main → UniqueViolation library_genre_name_uniq_index, « Ce genre existe déjà. », base restée en 19.0 ;
+  pre-migrate → genre 1 rattaché à biblio.genre_roman, couleur 1.
+- -u après modifications : rayon « Romans adultes » conservé (noupdate), couleur Aventure 3 → 2, nom {"en_US": "Aventure", "fr_FR": "Aventures"}.
+- Ligne genre_jeunesse retirée du CSV → « Deleting 11@library.genre (biblio.genre_jeunesse) » ; load par code sous biblio. → « Deleting 38@library.book ».
+- Assistant (Playwright, fr-FR) : lien « Modèle d'import des livres », Tester → auteurs introuvables, imports auteurs/livres/exemplaires ;
+  fichier sans BOM : chardet ISO-8859-9 (0,74), liste affichée utf-8, titre « Les MisÃ©rables » en base après réimport (5 livres, mise à jour).
+- load() en shell : messages relevés (auteur absent, nom introuvable, ISBN, date, préfixe sous import_file) ; name_create_enabled_fields ;
+  colonne name des exemplaires acceptée (MON-CODE). Script charger_catalogue.py → [34, 32]. JSON-2 load → {"ids": [35]} ; erreur → HTTP 200, ids false.
+- Tests : --test-tags=/biblio, 33/33 sur base neuve sans langue et avec fr_FR (db-filter strict).
+Captures : content/blog/screenshots/importer-catalogue-bibliotheque-odoo-20/ (01 schéma, 02 Tester, 03 livres, 04 exemplaires, 05 accents).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Importer le catalogue de la Bibliothèque en Odoo 20 : CSV, XML, load()</h1>
+                <p class="lead mt-3 text-white">Des genres livrés par le module, des rayons créés une seule fois, puis cinq livres et six
+                    exemplaires importés depuis des fichiers CSV : par l'assistant d'import, par un script, par l'API. Le fil
+                    conducteur est l'identifiant externe, qui décide si une ligne crée un enregistrement ou met à jour celui qui
+                    existe déjà.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Livrer des données</h4>
+                        <p>Un CSV et un XML dans le module, <code>noupdate</code>, et ce que fait <code>-u</code> des
+                            enregistrements qu'un utilisateur a modifiés ou que le fichier ne contient plus.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Importer</h4>
+                        <p>Des fichiers prêts pour l'assistant d'import, des relations par identifiant externe, la mise à jour
+                            par réimport, et les erreurs que l'on rencontre vraiment.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Automatiser</h4>
+                        <p><code>load()</code> depuis <code>odoo-bin shell</code> et depuis l'API JSON-2, le contexte
+                            <code>import_file</code>, et un test Python de l'import.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> des articles précédents, jusqu'à
+                            <a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347">l'API JSON-2 de la Bibliothèque</a>
+                            (version 20.0.1.19.0). On le fait passer en 20.0.1.20.0.</li>
+                        <li>Les genres (<a href="/blog/developpement-odoo-2/genres-many2many-odoo-20-185">Many2many</a>, nom
+                            unique) et les rayons (<a href="/blog/developpement-odoo-2/rayons-hierarchie-odoo-20-244">hiérarchie
+                            <code>_parent_store</code></a>) sont les cibles des relations importées.</li>
+                        <li>Un utilisateur du groupe Bibliothécaire, qui peut aussi créer des contacts : l'import crée auteurs,
+                            livres et exemplaires, et les droits <code>ir.access</code> s'appliquent comme pour une saisie.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Un catalogue ne se saisit pas livre par livre. Odoo offre trois chemins pour faire entrer des données en
+                    masse : les fichiers de données du module, chargés à l'installation et à chaque mise à jour ; l'assistant
+                    d'import de l'interface ; le code, depuis un shell ou l'API. Le CSV de module, l'assistant et le code finissent dans la même
+                    méthode de l'ORM, <code>load(fields, data)</code> ; le XML de module passe par la méthode qu'elle appelle
+                    elle-même, <code>_load_records</code>. Tous enregistrent leurs identifiants externes dans
+                    <code>ir.model.data</code>. Ce qui les distingue tient au préfixe de ces identifiants et à quelques
+                    garde-fous du contexte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : CSV de module, assistant d import et code passent par Model.load, le XML par _load_records, tous écrivent dans ir.model.data" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois chemins, un même registre : le préfixe de l'identifiant externe décide du sort de
+                        l'enregistrement à la mise à jour suivante du module.</figcaption>
+                </figure>
+                <p>Le mécanisme n'a pas bougé depuis Odoo 19 : <code>load()</code>, le chargement des CSV de module et
+                    l'assistant ont le même comportement. Ce qui change autour, en Odoo 20, c'est par exemple le champ binaire de
+                    l'assistant, que le test de la section 8 rencontre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. DONNÉES DU MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les données livrées par le module : un CSV, un XML</h2>
+                <p>Deux familles de données n'ont pas leur place dans un import d'utilisateur : la liste des genres de
+                    référence, que le module veut maintenir, et les rayons de départ, que la bibliothèque va renommer à sa
+                    guise. On les livre dans <code>data/</code>, chacune dans le format qui lui convient. Les genres, en CSV :</p>
+<pre class="language-markup"><code class="language-markup">id,name,color
+genre_roman,Roman,1
+genre_aventure,Aventure,2
+genre_science_fiction,Science-fiction,4
+genre_policier,Policier,9
+genre_jeunesse,Jeunesse,10</code></pre>
+                <p>Le nom du fichier, <code>library.genre.csv</code>, donne le modèle : Odoo prend ce qui précède le premier
+                    tiret (<code>library.genre-reference.csv</code> marcherait aussi). La colonne <code>id</code> porte
+                    l'identifiant externe, préfixé automatiquement par le nom du module : <code>biblio.genre_roman</code>.
+                    Les rayons, eux, passent par un fichier XML, parce qu'on veut l'attribut <code>noupdate</code> :</p>
+<pre class="language-markup"><code class="language-markup">&lt;odoo noupdate="1"&gt;
+
+    &lt;record id="shelf_general" model="library.shelf"&gt;
+        &lt;field name="name"&gt;Fonds général&lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;record id="shelf_romans" model="library.shelf"&gt;
+        &lt;field name="name"&gt;Romans&lt;/field&gt;
+        &lt;field name="parent_id" ref="shelf_general"/&gt;
+    &lt;/record&gt;
+
+    &lt;record id="shelf_jeunesse" model="library.shelf"&gt;
+        &lt;field name="name"&gt;Jeunesse&lt;/field&gt;
+        &lt;field name="parent_id" ref="shelf_general"/&gt;
+    &lt;/record&gt;
+
+    &lt;record id="shelf_reserve" model="library.shelf"&gt;
+        &lt;field name="name"&gt;Réserve&lt;/field&gt;
+    &lt;/record&gt;
+
+&lt;/odoo&gt;</code></pre>
+                <p>Les deux fichiers s'ajoutent au manifeste, après la sécurité, et la version passe en 20.0.1.20.0 :</p>
+<pre class="language-python"><code class="language-python">    'version': '20.0.1.20.0',
+    ...
+        'data/library_portal_data.xml',
+        'data/library.genre.csv',
+        'data/library_shelf_data.xml',</code></pre>
+                <p>Un CSV de module n'a pas d'équivalent de <code>noupdate="1"</code> : le chargeur passe
+                    <code>noupdate</code> à vrai pour les fichiers de démonstration seulement. Chaque <code>-u biblio</code>
+                    réécrit donc les genres avec les valeurs du fichier, alors que les rayons ne sont plus touchés après leur
+                    création. Essai (fait une fois le catalogue de la section 4 importé, puis
+                    remis en état) : la couleur du genre Aventure passée de 2 à 3 et son nom changé en « Aventures »,
+                    le rayon Romans renommé « Romans adultes », puis <code>-u biblio</code> :</p>
+<pre class="out">avant -u : Fonds général / Romans adultes | Aventures 3
+après -u : Fonds général / Romans adultes | Aventures 2</pre>
+                <p>Le rayon a gardé son nom (<code>noupdate</code>), la couleur est revenue à 2. Le nom, lui, a l'air
+                    d'avoir résisté : c'est un champ traduisible, et le chargeur de CSV écrit sans langue, donc dans la valeur
+                    de référence <code>en_US</code>. La modification faite dans l'interface en français vit dans
+                    l'autre clé :</p>
+<pre class="out">SELECT name FROM library_genre WHERE id = 8;
+{"en_US": "Aventure", "fr_FR": "Aventures"}</pre>
+                <div class="pitfall-box">
+                    <h4>Une ligne retirée du CSV, c'est un enregistrement supprimé</h4>
+                    <p>En fin de mise à jour, Odoo compare les identifiants <code>biblio.*</code> de la base à ceux que les
+                        fichiers viennent de charger, et supprime ceux qui manquent (sauf <code>noupdate</code>). Essai, catalogue
+                        importé : la ligne <code>genre_jeunesse</code> retirée du fichier, puis <code>-u biblio</code>. Le genre disparaît,
+                        et avec lui son lien vers « Le Tour du monde en quatre-vingts jours », qui ne garde que « Aventure » :</p>
+<pre class="out">INFO ma_base odoo.addons.base.models.ir_model: Deleting 11@library.genre (biblio.genre_jeunesse)</pre>
+                    <p>Une valeur de référence que des livres utilisent reste donc dans le fichier : la retirer, c'est la
+                        détruire dans toutes les bases au <code>-u</code> suivant.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. MISE À JOUR ET DONNÉES EXISTANTES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La mise à jour qui bute sur un genre saisi à la main</h2>
+                <p>Le module a vécu avant ce fichier : une base qui a suivi la série peut déjà contenir un genre « Roman »
+                    créé dans l'interface. Sans identifiant externe, rien ne le relie à la ligne <code>genre_roman</code> du
+                    CSV ; Odoo tente donc de créer un second « Roman », et l'index unique sur le nom l'en empêche. La mise à
+                    jour s'arrête, la base reste en 20.0.1.19.0 :</p>
+<pre class="out">ERROR: duplicate key value violates unique constraint "library_genre_name_uniq_index"
+CRITICAL ma_base odoo.service.server: Failed to initialize database `ma_base`.
+Exception: Module loading biblio failed: file biblio/data/library.genre.csv could not be processed:
+Ce genre existe déjà.</pre>
+                <p>Le remède consiste à donner l'identifiant externe au genre existant avant le chargement du fichier. Un
+                    script <code>pre-migrate</code>, placé dans <code>migrations/20.0.1.20.0/</code>, s'exécute justement à
+                    ce moment-là, et seulement sur une base où le module était déjà installé :</p>
+<pre class="language-python"><code class="language-python">import csv
+
+from odoo.tools.misc import file_open
+
+
+def migrate(cr, version):
+    with file_open('biblio/data/library.genre.csv') as f:
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        cr.execute("""
+            INSERT INTO ir_model_data (module, name, model, res_id, noupdate)
+            SELECT 'biblio', %(xid)s, 'library.genre', g.id, false
+              FROM library_genre g
+             WHERE g.name->>'en_US' = %(name)s
+               AND NOT EXISTS (
+                   SELECT 1 FROM ir_model_data d WHERE d.module = 'biblio' AND d.name = %(xid)s
+               )
+        """, {'xid': row['id'], 'name': row['name']})</code></pre>
+                <p>On relance <code>-u biblio</code> : le script tourne, puis le CSV trouve <code>biblio.genre_roman</code>
+                    et <strong>met à jour</strong> le genre existant (sa couleur passe à 1) au lieu d'en créer un autre. Les
+                    quatre genres manquants sont créés :</p>
+<pre class="out">INFO ma_base odoo.modules.migration: module biblio: Running upgrade [&gt;20.0.1.20.0] pre-migrate
+INFO ma_base odoo.modules.loading: loading biblio/data/library.genre.csv
+INFO ma_base odoo.modules.loading: loading biblio/data/library_shelf_data.xml
+
+ id | genre            | couleur | identifiant externe
+  1 | Roman            |       1 | biblio.genre_roman
+  8 | Aventure         |       2 | biblio.genre_aventure
+  9 | Science-fiction  |       4 | biblio.genre_science_fiction
+ 10 | Policier         |       9 | biblio.genre_policier
+ 11 | Jeunesse         |      10 | biblio.genre_jeunesse</pre>
+                <p>C'est toute la règle de l'import en une phrase : une ligne dont l'identifiant externe existe met à jour,
+                    une ligne dont l'identifiant est inconnu crée. Le reste de l'article l'applique au catalogue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. FICHIERS D'IMPORT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Des fichiers prêts à importer, proposés par l'écran d'import</h2>
+                <p>Le catalogue lui-même appartient à la bibliothèque, pas au module : il ne va pas dans <code>data/</code>.
+                    Le module fournit en revanche des modèles de fichiers, dans <code>static/import/</code>, qu'Odoo sert
+                    tels quels. Trois fichiers, dans l'ordre de leurs dépendances : les auteurs (des contacts), les livres,
+                    les exemplaires.</p>
+<pre class="language-markup"><code class="language-markup">id,name
+auteur_hugo,Victor Hugo
+auteur_verne,Jules Verne
+auteur_zola,Émile Zola
+auteur_dumas,Alexandre Dumas</code></pre>
+<pre class="language-markup"><code class="language-markup">id,title,author_id/id,isbn,publication_date,page_count,genre_ids/id
+livre_miserables,Les Misérables,auteur_hugo,9780000000011,2019-05-15,1664,biblio.genre_roman
+livre_vingt_mille,Vingt mille lieues sous les mers,auteur_verne,9780000000028,2021-03-04,512,"biblio.genre_roman,biblio.genre_aventure,biblio.genre_science_fiction"
+livre_tour_du_monde,Le Tour du monde en quatre-vingts jours,auteur_verne,9780000000035,2020-06-11,320,"biblio.genre_aventure,biblio.genre_jeunesse"
+livre_germinal,Germinal,auteur_zola,9780000000042,2018-09-20,592,biblio.genre_roman
+livre_monte_cristo,Le Comte de Monte-Cristo,auteur_dumas,9780000000059,2022-01-13,1248,"biblio.genre_roman,biblio.genre_aventure"</code></pre>
+<pre class="language-markup"><code class="language-markup">id,book_id/id,shelf_id/id,acquisition_date
+ex_miserables_1,livre_miserables,biblio.shelf_romans,2026-09-01
+ex_miserables_2,livre_miserables,biblio.shelf_reserve,2026-09-01
+ex_vingt_mille_1,livre_vingt_mille,biblio.shelf_romans,2026-09-01
+ex_tour_du_monde_1,livre_tour_du_monde,biblio.shelf_jeunesse,2026-09-15
+ex_germinal_1,livre_germinal,biblio.shelf_romans,2026-09-15
+ex_monte_cristo_1,livre_monte_cristo,biblio.shelf_romans,2026-10-01</code></pre>
+                <p>Les en-têtes sont les noms techniques des champs. Le suffixe <code>/id</code> dit « cette cellule est un
+                    identifiant externe » : <code>author_id/id</code> pour le Many2one vers l'auteur,
+                    <code>genre_ids/id</code> pour le Many2many, avec plusieurs identifiants séparés par des virgules
+                    (la cellule est entre guillemets). Un identifiant sans point est complété par le préfixe de l'import,
+                    <code>__import__</code> : <code>auteur_hugo</code> désigne <code>__import__.auteur_hugo</code>, créé
+                    par le premier fichier. Les genres et les rayons, eux, appartiennent au module : il faut écrire leur
+                    préfixe, <code>biblio.genre_roman</code>. Le code d'inventaire des exemplaires n'est pas fourni :
+                    la méthode <code>create</code> du modèle le tire de la séquence, comme pour une saisie.</p>
+                <p>Pour que l'écran d'import propose les fichiers des livres et des exemplaires, leurs deux modèles déclarent
+                    <code>get_import_templates</code> (le fichier des auteurs, importé dans Contacts, n'y est pas proposé),
+                    la méthode que l'assistant appelle à son ouverture :</p>
+<pre class="language-python"><code class="language-python">    @api.model
+    def get_import_templates(self):
+        return [{
+            'label': self.env._("Modèle d'import des livres"),
+            'template': '/biblio/static/import/livres.csv',
+        }]</code></pre>
+                <p>Même chose sur <code>library.copy</code> avec <code>exemplaires.csv</code>. Le lien « Modèle d'import
+                    des livres » apparaît dans l'écran d'import, puis dans le panneau Aide (figure suivante). Les trois
+                    fichiers sont enregistrés en UTF-8 <strong>avec</strong> BOM, pour une raison que la section 6
+                    montre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. L'ASSISTANT D'IMPORT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'assistant d'import : tester, puis importer dans l'ordre</h2>
+                <p>Dans la liste des livres, le menu ⋮ propose Importer. On charge <code>livres.csv</code> : Odoo lit
+                    l'en-tête et associe chaque colonne à un champ (<code>author_id/id</code> devient « Auteur / ID
+                    externe »). Le bouton Tester fait tout le travail de l'import, puis annule la transaction. Sur une
+                    base où les auteurs n'existent pas encore, il le dit, colonne par colonne :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Écran d'import des livres : correspondance des colonnes, et erreur Aucun enregistrement correspondant sur la colonne Auteur / ID externe" style="max-width:100%; height:auto;"/>
+                    <figcaption>« Tester » avant d'avoir importé les auteurs : les identifiants <code>auteur_hugo</code>,
+                        <code>auteur_verne</code>… sont introuvables. Le lien vers le modèle de fichier est dans le panneau Aide.</figcaption>
+                </figure>
+                <p>L'ordre compte donc : <code>auteurs.csv</code> dans Contacts › Importer, puis <code>livres.csv</code>, puis
+                    <code>exemplaires.csv</code> depuis la liste des exemplaires. Chaque import se termine sur la liste des
+                    enregistrements créés :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des livres après import : cinq livres avec leur auteur, leurs genres en étiquettes, ISBN, date et nombre de pages" style="max-width:100%; height:auto;"/>
+                    <figcaption>Cinq livres importés, auteurs reliés par identifiant externe, genres du module posés en
+                        étiquettes.</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des exemplaires après import : codes BIB tirés de la séquence, livre, rayon hiérarchique, état Disponible" style="max-width:100%; height:auto;"/>
+                    <figcaption>Six exemplaires : codes d'inventaire tirés de la séquence, rayons du module retrouvés par
+                        leur identifiant <code>biblio.shelf_…</code>.</figcaption>
+                </figure>
+                <p>Une option de l'assistant mérite d'être connue : quand une colonne relationnelle contient des
+                    <strong>noms</strong> et non des identifiants, et qu'elle est en erreur après « Tester », une liste
+                    d'options apparaît à côté du message, dont la création des valeurs manquantes (« Créer de nouvelles valeurs »). Côté code, c'est le contexte <code>name_create_enabled_fields</code> : essai,
+                    <code>{'author_id': True}</code> crée l'auteur « V. Hugo » au lieu d'échouer. Sans lui, un nom
+                    introuvable est une erreur (section 6).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RÉIMPORTER = METTRE À JOUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Réimporter pour mettre à jour</h2>
+                <p>Les identifiants donnés par le fichier sont maintenant dans <code>ir.model.data</code>, sous le module
+                    <code>__import__</code> :</p>
+<pre class="out">__import__.auteur_hugo        res.partner   52
+__import__.livre_miserables   library.book  29
+__import__.livre_germinal     library.book  32
+__import__.ex_miserables_1    library.copy   8
+…</pre>
+                <p>Réimporter le même fichier, corrigé, ne crée donc rien : chaque ligne retrouve son livre et le met à jour.
+                    Essai par l'assistant avec <code>livres.csv</code> : « 5 enregistrements importés avec succès », et
+                    toujours cinq livres en base. Sans colonne <code>id</code>, au contraire, chaque import crée de nouveaux
+                    enregistrements ; ici, l'ISBN unique bloque le doublon, mais un modèle sans contrainte se remplirait de
+                    copies.</p>
+                <p>Pour corriger des données qui n'ont pas été importées par fichier, on part d'un export : l'option
+                    « Je veux mettre à jour des données (export compatible avec l'import) » ajoute la colonne
+                    <code>id</code>, et Odoo crée à la volée un identifiant <code>__export__.…</code> pour les
+                    enregistrements qui n'en ont pas. Depuis le code, la même lecture :</p>
+<pre class="language-python"><code class="language-python">env['library.book'].search([], limit=3).export_data(['id', 'title', 'genre_ids/id'])</code></pre>
+<pre class="out">{'datas': [['__import__.livre_germinal', 'Germinal', 'biblio.genre_roman'],
+           ['__import__.livre_monte_cristo', 'Le Comte de Monte-Cristo', 'biblio.genre_aventure,biblio.genre_roman'],
+           ['__import__.livre_tour_du_monde', 'Le Tour du monde en quatre-vingts jours', 'biblio.genre_aventure,biblio.genre_jeunesse']]}</pre>
+                <p>Le format exporté est exactement celui que <code>load()</code> relit : on modifie le fichier, on le
+                    réimporte, les livres sont mis à jour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. ERREURS TYPIQUES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les erreurs que l'on rencontre vraiment</h2>
+                <p><code>load()</code> travaille en tout ou rien : à la moindre erreur, il annule toutes les lignes du fichier
+                    et rend <code>ids = False</code> avec un message par ligne fautive (numéro de ligne, champ, texte).
+                    Relevés sur la base d'essai, messages de l'ORM en anglais :</p>
+                <table class="tmc">
+                    <thead><tr><th>Cause</th><th>Message</th></tr></thead>
+                    <tbody>
+                        <tr><td>Livres importés avant les auteurs</td><td><code>No matching record found for external id 'auteur_hugo' in field 'Auteur'</code></td></tr>
+                        <tr><td>Auteur donné par son nom, mal orthographié</td><td><code>No matching record found for name 'V. Hugo' in field 'Auteur'</code></td></tr>
+                        <tr><td>Deux livres avec le même ISBN</td><td><code>Un ISBN ne peut désigner qu'un seul livre.</code> (le message de la contrainte du modèle, sur la ligne en double)</td></tr>
+                        <tr><td>Date au format jour/mois/année sans réglage</td><td><code>'15/05/2019' does not seem to be a valid date for field 'Date de parution'</code>, avec l'indication <code>Use the format '2012-12-31'</code></td></tr>
+                        <tr><td>Identifiant <code>biblio.livre_x</code> dans l'assistant</td><td><code>The record biblio.livre_x has the module prefix biblio. […] the record would be deleted when the module is upgraded.</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Les noms de colonne en relation par nom (<code>author_id</code>, <code>genre_ids</code> sans
+                    <code>/id</code>) marchent aussi : <code>"Roman,Aventure"</code> pose bien les deux genres. Mais un nom
+                    cherche une correspondance exacte, et pour un homonyme le code prévoit un simple avertissement
+                    (« Found multiple matches ») avant de prendre le premier ;
+                    l'identifiant externe ne laisse pas cette marge. Autre constat, côté code : <code>load()</code> écrit aussi
+                    les champs déclarés <code>readonly=True</code>, que l'assistant, lui, ne propose pas. Une colonne
+                    <code>name</code> passée à <code>load()</code> pour les exemplaires remplace le code tiré de la séquence
+                    (essai : <code>MON-CODE</code> accepté).</p>
+                <div class="pitfall-box">
+                    <h4>Les accents cassés par la détection d'encodage</h4>
+                    <p>Sans indication, l'assistant devine l'encodage du fichier avec la bibliothèque chardet. Sur notre
+                        <code>livres.csv</code> enregistré en UTF-8 <em>sans</em> BOM, peu accentué, elle répond
+                        <code>ISO-8859-9</code> (turc, confiance 0,74). La liste déroulante affiche pourtant « utf-8 » : la
+                        valeur devinée n'est pas dans sa liste, le navigateur montre la première option. L'import se déroule
+                        sans aucune erreur, et met à jour le titre :</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_05" alt="Liste des livres après un réimport sans BOM : le titre Les Misérables est devenu Les MisÃ©rables" style="max-width:100%; height:auto;"/>
+                        <figcaption>« 5 enregistrements importés avec succès », et « Les MisÃ©rables » en base.</figcaption>
+                    </figure>
+                    <p>Changer l'encodage dans la liste ne rafraîchit pas l'aperçu : cette option n'est pas de celles qui
+                        relancent l'analyse du fichier (essai : windows-1252 puis utf-8, l'aperçu garde « MisÃ©rables »).
+                        L'import, lui, utilise bien la valeur choisie : même fichier, encodage <code>utf-8</code> passé
+                        explicitement à <code>execute_import</code>, le titre est correct. Il faut donc choisir l'encodage
+                        avant d'importer, sans compter sur l'aperçu. Le plus sûr reste le BOM : avec lui, chardet répond
+                        <code>UTF-8-SIG</code> à coup sûr et l'aperçu affiche « Les Misérables ». C'est pour cela que les
+                        modèles du module en portent un.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. PAR LE CODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Importer par le code : shell, JSON-2, et le contexte import_file</h2>
+                <p>Il n'existe pas de commande <code>odoo-bin import</code> : <code>odoo-bin help</code> liste
+                    <code>db</code>, <code>module</code>, <code>i18n</code>, <code>shell</code>, <code>populate</code>…, aucune
+                    pour importer un fichier. On écrit un petit script et
+                    on le donne à <code>odoo-bin shell</code>. Ici, deux livres : un nouveau, et Germinal dont on corrige
+                    le nombre de pages. Le fichier <code>nouveautes.csv</code>, en UTF-8 avec BOM :</p>
+<pre class="language-markup"><code class="language-markup">id,title,author_id/id,isbn,page_count,genre_ids/id
+livre_notre_dame,Notre-Dame de Paris,auteur_hugo,9780000000066,940,biblio.genre_roman
+livre_germinal,Germinal,auteur_zola,9780000000042,600,biblio.genre_roman</code></pre>
+                <p>Le script :</p>
+<pre class="language-python"><code class="language-python">import csv
+
+with open('nouveautes.csv', encoding='utf-8-sig', newline='') as f:
+    rows = list(csv.reader(f))
+fields, data = rows[0], rows[1:]
+
+result = env['library.book'].load(fields, data)
+for message in result['messages']:
+    print(message['type'], message.get('rows'), message['message'])
+if result['ids']:
+    env.cr.commit()
+print("livres créés ou mis à jour :", result['ids'])</code></pre>
+<pre class="language-bash"><code class="language-bash">odoo-bin shell -c odoo.conf -d ma_base --no-http &lt; charger_catalogue.py</code></pre>
+<pre class="out">livres créés ou mis à jour : [34, 32]</pre>
+                <p>Le livre 34 est Notre-Dame de Paris, créé sous <code>__import__.livre_notre_dame</code> ; le 32 est
+                    Germinal, mis à jour (600 pages) parce que <code>livre_germinal</code> existait. Le
+                    <code>commit()</code> est indispensable : sans lui, le shell annule tout en sortant.
+                    <code>load()</code> étant une méthode publique, l'API JSON-2 la sert aussi, avec la clé d'un
+                    utilisateur qui a les droits de création :</p>
+<pre class="language-bash"><code class="language-bash">curl -s -X POST http://localhost:8069/json/2/library.book/load \
+  -H "Authorization: bearer $ODOO_KEY" -H "X-Odoo-Database: ma_base" \
+  -H "Content-Type: application/json" \
+  -d '{"fields": ["id", "title", "author_id/id", "isbn", "genre_ids/id"],
+       "data": [["livre_travailleurs_mer", "Les Travailleurs de la mer", "auteur_hugo", "9780000000073",
+                 "biblio.genre_roman,biblio.genre_aventure"]]}'</code></pre>
+<pre class="out">{"ids": [35], "messages": [], "nextrow": 0}</pre>
+                <p>Une erreur ne change pas le code HTTP : la réponse reste 200 (relevé avec <code>curl -w</code>), avec <code>"ids": false</code> et les
+                    messages. Le client doit donc lire <code>ids</code>, pas seulement le statut :</p>
+<pre class="out">{"ids": false, "messages": [{"rows": {"from": 0, "to": 0}, "record": 0, "type": "error",
+  "message": "Un ISBN ne peut désigner qu'un seul livre.", "field": "isbn"}], "nextrow": 0}</pre>
+                <p>Ce que l'assistant ajoute à ce <code>load()</code> nu, c'est un contexte : <code>import_file=True</code>,
+                    plus les options de l'écran (<code>name_create_enabled_fields</code>, valeurs vides à ignorer…). Ce
+                    drapeau active le contrôle du préfixe vu plus haut, qui refuse, pour un enregistrement à créer, un
+                    identifiant préfixé par le nom d'un module connu de la base. Sans lui, rien ne l'arrête.</p>
+                <div class="pitfall-box">
+                    <h4>Un import par code sous le préfixe du module disparaît au -u suivant</h4>
+                    <p>Essai : <code>load(['id', 'title', 'isbn'], [['biblio.livre_essai', "Livre d'essai", …]])</code>
+                        depuis le shell. Accepté, livre 38 créé. Au <code>-u biblio</code> suivant, Odoo cherche
+                        <code>livre_essai</code> dans les fichiers du module, ne le trouve pas, et le supprime :</p>
+<pre class="out">INFO ma_base odoo.addons.base.models.ir_model: Deleting 38@library.book (biblio.livre_essai)</pre>
+                    <p>Pour des données d'utilisateur, utiliser un identifiant sans point (préfixe <code>__import__</code>) ou un
+                        préfixe à soi qui n'est pas un nom de module, ou passer <code>import_file=True</code> dans le
+                        contexte pour bénéficier du contrôle.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. TEST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Tester l'import</h2>
+                <p>Les modèles de fichiers font partie du module : un test les relit et vérifie qu'ils s'importent, qu'un
+                    réimport met à jour, et que les erreurs annulent tout. Extrait de <code>tests/test_import.py</code>
+                    (sept tests au total) :</p>
+<pre class="language-python"><code class="language-python">import csv
+
+from odoo.tests import TransactionCase
+from odoo.tools import BinaryBytes, mute_logger
+from odoo.tools.misc import file_open
+
+
+class TestImport(TransactionCase):
+
+    @staticmethod
+    def _read(name):
+        with file_open(f'biblio/static/import/{name}', 'rb') as f:
+            return f.read()
+
+    def _rows(self, name):
+        rows = list(csv.reader(self._read(name).decode('utf-8-sig').splitlines()))
+        return rows[0], rows[1:]
+
+    def _load(self, model, name):
+        fields, data = self._rows(name)
+        result = self.env[model].load(fields, data)
+        self.assertEqual(result['messages'], [])
+        return self.env[model].browse(result['ids'])
+
+    def test_update_by_external_id(self):
+        self._load('res.partner', 'auteurs.csv')
+        self._load('library.book', 'livres.csv')
+        germinal = self.env.ref('__import__.livre_germinal')
+        result = self.env['library.book'].load(['id', 'page_count'], [['livre_germinal', '600']])
+        self.assertEqual(result['ids'], germinal.ids)
+        self.assertEqual(germinal.page_count, 600)
+
+    @mute_logger('odoo.sql_db')
+    def test_duplicate_isbn_rolls_back_the_file(self):
+        self._load('res.partner', 'auteurs.csv')
+        fields, data = self._rows('livres.csv')
+        data[1][fields.index('isbn')] = data[0][fields.index('isbn')]
+        result = self.env['library.book'].load(fields, data)
+        self.assertFalse(result['ids'])
+        self.assertIn("ISBN", result['messages'][0]['message'])
+        self.assertFalse(self.env.ref('__import__.livre_miserables', raise_if_not_found=False))
+
+    def test_import_wizard(self):
+        if 'base_import.import' not in self.env:
+            self.skipTest("base_import non installé")
+        self._load('res.partner', 'auteurs.csv')
+        wizard = self.env['base_import.import'].create({
+            'res_model': 'library.book',
+            'file': BinaryBytes(self._read('livres.csv')),
+            'file_name': 'livres.csv',
+            'file_type': 'text/csv',
+        })
+        preview = wizard.parse_preview({'has_headers': True, 'quoting': '"', 'separator': ',', 'encoding': ''})
+        self.assertEqual(preview['options']['encoding'], 'utf-8-sig')
+        self.assertEqual(preview['preview'][1][0], "Les Misérables")
+        fields = ['/'.join(preview['matches'][index]) for index in range(len(preview['headers']))]
+        result = wizard.execute_import(fields, preview['headers'], preview['options'])
+        self.assertEqual(len(result['ids']), 5)
+        # … (le fichier complet vérifie aussi les correspondances et le titre importé)</code></pre>
+                <p>Un détail propre à Odoo 20 et deux précautions. Le champ <code>file</code> de l'assistant est un Binary : lui passer
+                    des octets nus lève <code>TypeError: base_import.import.file: use BinaryValue instead of bytes</code>,
+                    d'où <code>BinaryBytes</code>. Le test du doublon fait volontairement échouer une requête : le journal
+                    <code>odoo.sql_db</code> écrirait un <code>ERROR</code> « bad query », que <code>mute_logger</code>
+                    fait taire. Enfin, les messages comparés sont soit ceux du module (en français dans le code), soit des
+                    identifiants : le test passe quelle que soit la langue de la base.</p>
+<pre class="language-bash"><code class="language-bash"># une base neuve sans langue, puis une autre base neuve en français
+odoo-bin -c odoo.conf -d ma_base -i biblio --test-enable --test-tags=/biblio --stop-after-init
+odoo-bin -c odoo.conf -d ma_base -i biblio --load-language=fr_FR --test-enable --test-tags=/biblio --stop-after-init</code></pre>
+<pre class="out">INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 33 tests when loading database 'ma_base'   (sans langue)
+INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 33 tests when loading database 'ma_base'   (fr_FR)</pre>
+                <p>Deux bases neuves, l'une sans langue, l'autre en français : 33 tests au compte d'Odoo, les 26 des
+                    étapes précédentes et les 7 d'import, passent. Les nouveaux libellés (noms de genres, intitulés des modèles d'import) sont
+                    ajoutés au fichier <code>i18n/biblio.pot</code> par <code>odoo-bin i18n export</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Données de référence tenues par le module</td><td><code>data/&lt;modèle&gt;.csv</code>, colonne <code>id</code> ; réécrites à chaque <code>-u</code></td></tr>
+                        <tr><td>Données créées une fois, modifiables ensuite</td><td>XML <code>&lt;odoo noupdate="1"&gt;</code></td></tr>
+                        <tr><td>Relation par identifiant externe</td><td>colonne <code>champ/id</code> ; Many2many : identifiants séparés par des virgules</td></tr>
+                        <tr><td>Créer ou mettre à jour</td><td>identifiant connu → mise à jour ; inconnu → création ; sans <code>id</code> → création</td></tr>
+                        <tr><td>Proposer un fichier modèle</td><td><code>get_import_templates()</code> → <code>/module/static/…</code></td></tr>
+                        <tr><td>Importer par le code</td><td><code>env[modèle].load(fields, data)</code> puis <code>env.cr.commit()</code> en shell ; <code>POST /json/2/&lt;modèle&gt;/load</code></td></tr>
+                        <tr><td>Savoir si c'est passé</td><td><code>result['ids']</code> (liste ou <code>False</code>) et <code>result['messages']</code></td></tr>
+                        <tr><td>Rattacher l'existant avant un CSV de module</td><td>script <code>migrations/&lt;version&gt;/pre-migrate.py</code> qui crée les lignes <code>ir_model_data</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>CSV du module, assistant, shell ou API : tout passe par <code>load()</code> (le XML par
+                        <code>_load_records</code>), et c'est l'identifiant externe qui décide entre création et mise à jour.</li>
+                    <li>Un CSV de module est rechargé à chaque <code>-u</code> et ce qui en sort est supprimé ; un XML en
+                        <code>noupdate="1"</code> n'est écrit qu'une fois.</li>
+                    <li>Ajouter des données de référence à un module déjà installé, c'est d'abord rattacher l'existant
+                        (<code>pre-migrate</code>), sinon la mise à jour bute sur les contraintes d'unicité.</li>
+                    <li>Les données d'utilisateur vivent sous <code>__import__</code>, jamais sous le préfixe d'un module.</li>
+                    <li>Un fichier d'import en UTF-8 avec BOM évite les accents cassés en silence.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module <code>biblio</code> mis à jour de 20.0.1.19.0 en 20.0.1.20.0 le 10/11/2026 sur
+                    Odoo 20.0 Community (PostgreSQL 16), sur une copie jetable de base supprimée ensuite ; imports faits
+                    dans le navigateur, par <code>odoo-bin shell</code> et par <code>curl</code> ; tests sur deux bases
+                    neuves. Comparaison avec la branche 19.0 : mêmes <code>load()</code>, chargeur de CSV et contrôle du
+                    préfixe. Code 20.0 relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/models.py" target="_blank" rel="noopener"><code>odoo/orm/models.py</code></a> : <code>load</code>, <code>_load_records</code> (contrôle du préfixe sous <code>import_file</code>), <code>export_data</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/convert.py" target="_blank" rel="noopener"><code>odoo/tools/convert.py</code></a> : <code>convert_csv_import</code> (modèle tiré du nom de fichier, écriture sans langue)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/modules/loading.py" target="_blank" rel="noopener"><code>odoo/modules/loading.py</code></a> : <code>noupdate</code> réservé aux données de démonstration ; <a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_model.py" target="_blank" rel="noopener"><code>ir_model.py</code></a> : <code>_process_end</code> (suppression en fin de mise à jour)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/base_import/models/base_import.py" target="_blank" rel="noopener"><code>addons/base_import/models/base_import.py</code></a> : <code>parse_preview</code>, <code>_read_csv</code> (chardet), <code>execute_import</code> ; <code>static/src/import_model.js</code> : options d'encodage sans rechargement de l'aperçu</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_fields.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_fields.py</code></a> : relations par nom, par identifiant externe, <code>name_create_enabled_fields</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/sequences-numerotation-odoo-20-184">Numéroter automatiquement en Odoo 20 : ir.sequence</a></h5>
+                            <p class="small text-muted mb-0"><code>noupdate</code> vu depuis les séquences : le compteur qu'un <code>-u</code> remet à zéro.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le même assistant, côté utilisateur : préparer le fichier, faire correspondre les colonnes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/duplicate-populate-odoo-20-287">Données de test en masse en Odoo 20 : duplicate et populate</a></h5>
+                            <p class="small text-muted mb-0">Quand il faut du volume pour tester plutôt qu'un vrai catalogue.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

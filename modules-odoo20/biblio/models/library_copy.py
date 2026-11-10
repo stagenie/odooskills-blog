@@ -56,3 +56,10 @@ class LibraryCopy(models.Model):
     def _compute_display_name(self):
         for copy in self:
             copy.display_name = f"{copy.name} ({copy.book_id.title})"
+
+    @api.model
+    def get_import_templates(self):
+        return [{
+            'label': self.env._("Modèle d'import des exemplaires"),
+            'template': '/biblio/static/import/exemplaires.csv',
+        }]
