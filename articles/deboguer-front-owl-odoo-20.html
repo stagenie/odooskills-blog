@@ -1,0 +1,659 @@
+<!--
+Article — Déboguer le front Odoo 20 : mode debug, console et points d'arrêt
+Série « Le front OWL 3 en Odoo 20 » (59), étape 3 ; lot T2 (T2.4 du plan vague 3 technique)
+Précédents dans la série : posts 396 et 397 (brouillons au dépôt de celui-ci : liens non posés dans le corps ;
+cartes « À lire aussi » à ajouter à leur mise en ligne).
+Date : 2026-11-10
+Slug : deboguer-front-owl-odoo-20
+Mot-clé cible : odoo debug mode, odoo debug=assets, debug odoo javascript, owl devtools
+Catégorie : Développement Odoo
+Tags : intermediaire, web-ui, guide, community
+Temps de lecture : ~13 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, module oski_owl_debogage 20.0.1.0.0
+installé sans WARNING ; serveur de travail en boucle locale, dbfilter limité à la copie, crons coupés ; Chromium piloté par Playwright,
+points d'arrêt posés par le protocole CDP) :
+- Modes : sans debug odoo.debug "" + web.assets_web.min.js 7 378 587 o (max-age=31536000, immutable) + pas d'icône ; ?debug=1 → "1",
+  même fichier min, icône ; ?debug=assets → "assets", /web/assets/debug/web.assets_web.js 11 634 456 o, no-cache, fin
+  « //# sourceMappingURL=/web/assets/<hash>/web.assets_web.js.map » (1574 sources dont /oski_owl_debogage/static/src/devis_par_commercial.js),
+  en-tête « Filepath: … Lines: 47 » ; ?debug=assets,tests → + web.assets_tests.js ; ?debug=0 → retour.
+- Session : après ?debug=1 puis /odoo, HTML rendu avec debug "1" mais odoo.debug "" (module_loader.js:250-253, identique 19) ;
+  après ?debug=assets puis /odoo : bundle debug toujours servi, load_menus 216 entrées (dont « Technique ») contre 105, icône absente.
+- Bogue (S00003 sans commercial, ligne fautive `const [, name] = order.user_id;`) : « Oups ! » dans les trois modes ; trace minifiée
+  (groupBySalesperson … web.assets_web.min.js:26406:602) sans debug et en ?debug=1 ; en ?debug=assets trace annotée
+  (/oski_owl_debogage/static/src/devis_par_commercial.js:10, owl.js:767…) ; fichier modifié non repris sans debug ni en debug=1
+  (bundle 1d99dff, « Sans commercial » affiché), repris en debug=assets, puis « Régénérer les actifs » → nouveau bundle min.
+- Import mort (@web/webclient/actions/action_service) : console.error « needed by other modules… » et « unmet dependencies » dans les
+  deux modes ; bandeau rouge (style.o_module_error_banner) seulement en debug ; ouverture de l'action → « Oups ! » KeyNotFoundError.
+- Console : odoo.__WOWL_DEBUG__.root = WebClient (tous modes) ; __OWL_DEVTOOLS__ = {apps, Fiber, RootFiber, toRaw, proxy}, apps.size 1 ;
+  chemin WebClient > ActionContainer > ControllerComponent > DevisParCommercial ; state.orders 5, groups() relu ; push d'un devis →
+  ligne « Joel Willis » affichée ; env.services : 84 clés, orm.searchCount sur user_id = false → 1 ; env.debug → Error « "env.debug" was
+  removed… » ; body.o_debug en debug.
+- Points d'arrêt : setBreakpointByUrl (bundle debug, ligne 268188, condition !order.user_id) → 1 pause dans groupBySalesperson,
+  order.name "S00003", user_id false, orders.length 5 ; setPauseOnExceptions uncaught → pauses dans loadState et fullAnnotatedTraceback
+  (promiseRejection), pas au lancer ; caught → pause dans groupBySalesperson sur S00003 ; `debugger;` : pause si débogueur attaché
+  (debug=assets et bundle minifié après régénération), aucune pause sans débogueur.
+- Menu de débogage sur un devis (?debug=1) : Enregistrement / Métadonnées / Données / Messages / Pièces jointes / Définir des valeurs
+  par défaut / Interface utilisateur / Modèle : sale.order / Action / Vue de recherche / Afficher : Form / Champs / Filtres / Arc calculé /
+  Sécurité / Droits d'accès / … ; sur une liste, mêmes entrées sans le bloc Enregistrement.
+- Lignes « Prop requise oubliée » et « t-out sans this » du tableau des erreurs : prouvées sur cette même instance (T2.2 du 10/11, module
+  oski_owl_annuaire : props validées seulement en dev, env.js:104 ; t-out sans this. → rendu vide sans erreur, sonde Hoot du 21/10).
+- Hoot : /web/tests?debug=assets&filter="@oski_owl_debogage" → Passed 2 tests (5 assertions) ; sans defineMailModels → « Cannot find a
+  definition for model "discuss.channel" » ; test.debug → seul ce test, fixture affichée, « status: passed - assertions: 4 passed ».
+- Source 20.0 : web/models/ir_http.py 34-60 ; module_loader.js 36-37, 165-205, 250-253 ; env.js 16-25, 104, 116 ; lib/owl/owl.js 4459 ;
+  core/errors/error_service.js 122-139 ; core/debug/debug_menu_items.js ; core/debug_mode_plugin.js ; base/models/assetsbundle.py 352, 383-416 ;
+  odoo/http/router.py 335-340 ; lib/hoot/core/runner.js 1022, 1122, 1206, 1343-1346. 19.0 : env.js:39 (debug: odoo.debug), owl.js:5915 (reactive).
+Captures : content/blog/screenshots/deboguer-front-owl-odoo-20/ (01 schéma, 02 menu — nom de base remplacé, 03 Oups — hôte remplacé
+par localhost:8069, 04 état modifié depuis la console, 05 Hoot test.debug).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Déboguer le front Odoo 20 : mode debug, console et points d'arrêt</h1>
+                <p class="lead mt-3 text-white">Un devis sans commercial suffit à faire tomber un écran OWL. On le traque avec ce que
+                    le navigateur et Odoo 20 offrent vraiment : les trois modes debug, le menu de débogage, une trace qui pointe
+                    le bon fichier, la console, des points d'arrêt et un test Hoot qu'on garde à l'écran.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Web et interface</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Choisir le mode</h4>
+                        <p><code>?debug=1</code>, <code>?debug=assets</code>, <code>?debug=0</code> : ce que chacun change
+                            réellement, fichier servi, menu, trace d'erreur.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Lire et fouiller</h4>
+                        <p>Une trace qui nomme ton fichier et ta ligne, puis le composant fautif retrouvé et modifié depuis la
+                            console.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Arrêter le code</h4>
+                        <p><code>debugger;</code>, point d'arrêt conditionnel, pause sur exception, et <code>test.debug</code>
+                            dans Hoot.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec l'application Ventes et ses données de démonstration.</li>
+                        <li>Chrome ou Chromium, outils de développement ouverts par <kbd>F12</kbd>.</li>
+                        <li>Savoir lire un composant OWL 3 : <code>useProps</code>, <code>proxy</code>, <code>computed</code>,
+                            <code>usePlugin</code> (voir <a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">le
+                            badge de retard, un widget OWL 3</a>).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Déboguer le client web d'Odoo, c'est d'abord lui demander d'être bavard. Par défaut, il sert un seul gros fichier
+                    JavaScript minifié, gardé un an en cache, et ne vérifie pas les props des composants. Le paramètre
+                    <code>debug</code> de l'adresse change cela, mais pas de la même façon selon sa valeur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Tableau des trois modes du client web Odoo 20. Sans debug, odoo.debug vide : web.assets_web.min.js minifié en cache un an, pas de menu de débogage, props non validées, trace en lignes du bundle minifié avec nom de fonction lisible, JS modifié ignoré jusqu'à Régénérer les actifs. ?debug=1, odoo.debug 1 : le même fichier minifié, icône bug_report avec outils, vue et tests, mode dev d'OWL avec props validées, trace en lignes du bundle minifié, JS modifié ignoré. ?debug=assets : /web/assets/debug/web.assets_web.js lisible avec carte des sources, icône, mode dev, trace avec fichier et ligne d'origine, JS modifié repris au rechargement. ?debug=assets,tests ajoute le bundle de tests ; sortie par ?debug=0 ou Quitter le mode débogage ; tests Hoot par /web/tests?debug=assets"/>
+                    <figcaption>Ce que chaque mode change, relevé dans le navigateur sur la même base.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LE MODULE D'EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module d'exercice : des devis par commercial</h2>
+                <p>Pour déboguer, il faut un bogue. Le module <code>oski_owl_debogage</code> ajoute au menu Ventes une action
+                    client « Devis par commercial » : les devis en brouillon ou envoyés, regroupés par commercial, avec leur total
+                    HT. Il dépend de <code>sale</code> et tient en quatre fichiers utiles : le manifeste, une action client en XML, le
+                    composant et son gabarit (plus un <code>__init__.py</code> vide et un fichier de test, section 8).</p>
+<pre class="language-javascript"><code class="language-javascript">import { Component, computed, onWillStart, proxy, usePlugin, useProps } from "@odoo/owl";
+import { ORM } from "@web/core/orm_plugin";
+import { registry } from "@web/core/registry";
+import { standardActionServiceProps } from "@web/webclient/actions/action_plugin";
+
+/** Regroupe des devis lus par searchRead ; user_id vaut [id, nom] ou false. */
+export function groupBySalesperson(orders) {
+    const groups = new Map();
+    for (const order of orders) {
+        const name = order.user_id ? order.user_id[1] : "Sans commercial";
+        const group = groups.get(name) || { name, count: 0, total: 0 };
+        group.count += 1;
+        group.total += order.amount_untaxed;
+        groups.set(name, group);
+    }
+    return [...groups.values()].sort((a, b) =&gt; b.total - a.total);
+}
+
+export class DevisParCommercial extends Component {
+    static template = "oski_owl_debogage.DevisParCommercial";
+
+    props = useProps({ ...standardActionServiceProps });
+    orm = usePlugin(ORM);
+
+    setup() {
+        this.state = proxy({ orders: [] });
+        this.groups = computed(() =&gt; groupBySalesperson(this.state.orders));
+        onWillStart(() =&gt; this.load());
+    }
+
+    async load() {
+        this.state.orders = await this.orm.searchRead(
+            "sale.order",
+            [["state", "in", ["draft", "sent"]]],
+            ["name", "user_id", "amount_untaxed"],
+            { order: "name" }
+        );
+    }
+}
+
+registry.category("actions").add("oski_owl_debogage.devis_par_commercial", DevisParCommercial);</code></pre>
+                <p>Le gabarit affiche un tableau (<code>t-foreach="this.groups()"</code>) et un bouton « Actualiser » branché sur
+                    <code>this.load</code>. Voici la version correcte. La version fautive, celle qu'on va déboguer, remplace la
+                    ligne du nom par une déstructuration qui oublie qu'un devis peut ne pas avoir de commercial :</p>
+<pre class="language-javascript"><code class="language-javascript">        const [, name] = order.user_id;   // false si le devis n'a pas de commercial</code></pre>
+                <p>Sur la base de démonstration, tous les devis ont un commercial : l'écran fonctionne. Retire le commercial du devis
+                    S00003, et l'action ne s'affiche plus.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LES MODES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les trois modes, et comment en sortir</h2>
+                <p>Le serveur accepte quatre valeurs pour <code>debug</code> : vide, <code>1</code>, <code>assets</code> et
+                    <code>tests</code>, combinables par une virgule (<code>?debug=assets,tests</code>). Toute autre valeur
+                    « vraie » (<code>on</code>, <code>true</code>…) devient <code>1</code>. Dans la console, <code>odoo.debug</code>
+                    donne le mode actif. Relevé sur la même page, connecté en administrateur :</p>
+                <table class="tmc">
+                    <thead><tr><th>Adresse</th><th><code>odoo.debug</code></th><th>JavaScript chargé</th><th>Icône de débogage</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>/odoo</code></td><td><code>""</code></td><td><code>/web/assets/&lt;hash&gt;/web.assets_web.min.js</code>,
+                            7,4 Mo, en cache un an</td><td>non</td></tr>
+                        <tr><td><code>/odoo?debug=1</code></td><td><code>"1"</code></td><td>le même fichier</td><td>oui</td></tr>
+                        <tr><td><code>/odoo?debug=assets</code></td><td><code>"assets"</code></td><td><code>/web/assets/debug/web.assets_web.js</code>,
+                            11,6 Mo, jamais mis en cache</td><td>oui</td></tr>
+                        <tr><td><code>/odoo?debug=assets,tests</code></td><td><code>"assets,tests"</code></td><td>le même, plus
+                            <code>web.assets_tests.js</code></td><td>oui</td></tr>
+                    </tbody>
+                </table>
+                <p><code>?debug=1</code> ne touche pas au JavaScript : il ajoute l'icône du menu de débogage, la classe
+                    <code>o_debug</code> sur la page et passe OWL en mode « dev ». La console l'annonce par
+                    <code>Owl is running in 'dev' mode.</code>, et c'est ce mode qui valide les props des composants.
+                    <code>?debug=assets</code> fait tout cela et sert en plus le JavaScript lisible : chaque fichier y est précédé
+                    d'un en-tête qui donne son chemin, et la dernière ligne pointe vers une carte des sources.</p>
+<pre class="language-none"><code class="language-none">/********************************************************************
+*  Filepath: /oski_owl_debogage/static/src/devis_par_commercial.js  *
+*  Lines: 47                                                        *
+********************************************************************/
+odoo.define('@oski_owl_debogage/devis_par_commercial', ['@odoo/owl', …], function (require) {
+…
+//# sourceMappingURL=/web/assets/ffe2657/web.assets_web.js.map</code></pre>
+                <p>Cette carte liste les 1 574 fichiers sources du bundle, dont le tien. C'est grâce à elle que l'onglet
+                    <em>Sources</em> des outils de développement montre <code>devis_par_commercial.js</code> sous son vrai nom, et
+                    que les traces d'erreur, plus bas, citent la bonne ligne.</p>
+                <h3>Le mode vit dans l'adresse, pas seulement dans la session</h3>
+                <p>Le serveur garde le mode dans la session. Mais le client web le relit dans l'adresse : si l'URL ne contient pas
+                    <code>debug</code>, il remet <code>odoo.debug</code> à vide, même si le serveur l'a rendu à <code>1</code>.
+                    Comme le client recopie <code>debug</code> d'une page à l'autre, tu ne le perds pas en naviguant. Tu le perds en
+                    tapant une adresse sans lui, ou en suivant un lien qui l'omet.</p>
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : sortir du mode debug</h4>
+                    <p>Retirer <code>?debug=assets</code> de l'adresse ne suffit pas. Le client se croit en mode normal : pas d'icône,
+                        <code>odoo.debug</code> vide. Le serveur, lui, continue de servir le JavaScript non minifié, sans cache, et
+                        la liste des menus chargée passe de 105 à 216 entrées, menus techniques compris. Sors par
+                        <code>?debug=0</code> ou par l'entrée « Quitter le mode débogage » du menu.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LE MENU DE DÉBOGAGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le menu de débogage</h2>
+                <p>En mode debug, une icône d'insecte apparaît dans la barre du haut. Son contenu dépend de l'écran. Sur un devis
+                    ouvert, il commence par l'enregistrement (métadonnées, données, valeurs par défaut), puis le modèle
+                    <code>sale.order</code> (vue, champs, filtres, arc calculé) et ses droits d'accès. Sur l'action client du module, il ne reste
+                    que les outils généraux.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Action Devis en cours par commercial en mode ?debug=1, menu de débogage ouvert depuis l'icône d'insecte de la barre du haut : Interface utilisateur, Action ; Visites guidées et tests, Exécuter les tests unitaires, Run ClickBot, Parcours d'intégration ; Outils, Ouvrir la vue, Count LoC, Régénérer les actifs, Activer le protocole BUS, Devenez un superutilisateur, Disable RPC Cache, Activer le profilage, Activer le mode test ; Quitter le mode débogage"/>
+                    <figcaption>Le menu de débogage sur l'action client. Trois entrées servent tous les jours au développeur
+                        front.</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>Régénérer les actifs</strong> reconstruit les bundles et recharge la page : c'est le moyen de faire
+                        prendre en compte un fichier JavaScript modifié sans redémarrer le serveur (section 7).</li>
+                    <li><strong>Exécuter les tests unitaires</strong> ouvre le lanceur Hoot (section 8).</li>
+                    <li><strong>Activer le mode test</strong> recharge la page en <code>?debug=assets,tests</code>.</li>
+                </ul>
+                <p>« Disable RPC Cache » mérite d'être connu : le client garde en cache certaines réponses du serveur, et cette
+                    entrée recharge la page sans ce cache quand une donnée semble ne pas se mettre à jour.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. LIRE UNE ERREUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lire une erreur : « Oups ! » et ce qui ne s'affiche pas</h2>
+                <p>Avec la version fautive et le devis S00003 sans commercial, l'action ne s'affiche pas. Une fenêtre « Oups ! »
+                    s'ouvre, <strong>dans les trois modes</strong> : une erreur levée pendant le rendu d'un composant est toujours
+                    remontée à l'utilisateur. Ce qui change, c'est la trace, sous « Voir les détails techniques ». Sans debug, elle
+                    pointe le fichier minifié :</p>
+<pre class="language-none"><code class="language-none">TypeError: boolean false is not iterable (cannot read property Symbol(Symbol.iterator))
+    at groupBySalesperson (http://localhost:8069/web/assets/ce54883/web.assets_web.min.js:26406:602)
+    at http://localhost:8069/web/assets/ce54883/web.assets_web.min.js:26408:283
+    at Object.compute (http://localhost:8069/web/assets/ce54883/web.assets_web.min.js:617:155)
+    at updateComputation (http://localhost:8069/web/assets/ce54883/web.assets_web.min.js:536:138)
+    at DevisParCommercial.readComputed [as groups] (http://localhost:8069/web/assets/ce54883/web.assets_web.min.js:619:89)</code></pre>
+                <p>La minification d'Odoo garde les noms de fonctions : <code>groupBySalesperson</code> et
+                    <code>DevisParCommercial</code> sont lisibles. Mais la ligne 26 406 d'un fichier de 7 Mo ne te dit pas où
+                    corriger, et <code>?debug=1</code> n'y change rien. En <code>?debug=assets</code>, Odoo relit la carte des
+                    sources et ajoute à chaque ligne venue d'un fichier JavaScript le fichier et la ligne d'origine :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Oups ! en mode ?debug=assets, détails techniques ouverts : Erreur client Odoo, UncaughtPromiseError > TypeError, boolean false is not iterable ; at groupBySalesperson (web/assets/debug/web.assets_web.js:268188:26) suivi de (/oski_owl_debogage/static/src/devis_par_commercial.js:10), puis devis_par_commercial.js:27, puis owl.js:767, 228, 779, la fonction de gabarit template_oski_owl_debogage_DevisParCommercial, Fiber.render owl.js:3531 et ComponentNode.initiateRender owl.js:3757"/>
+                    <figcaption>En <code>?debug=assets</code>, la trace nomme <code>devis_par_commercial.js:10</code> : la ligne de la
+                        déstructuration.</figcaption>
+                </figure>
+                <p>La pile se lit de haut en bas : la ligne 10 de ton fichier a levé l'erreur ; elle était appelée par la ligne 27,
+                    le <code>computed</code> du <code>setup()</code> ; lui-même lu par le gabarit pendant le rendu. Le bouton en
+                    haut à droite du cadre copie la trace complète, à joindre telle quelle à une demande d'aide.</p>
+                <h3>Les erreurs que tu ne verras pas à l'écran</h3>
+                <p>La fenêtre « Oups ! » n'est pas une garantie. D'autres fautes ne produisent rien à l'écran, ou seulement en
+                    debug. La console, elle, parle souvent dans tous les modes :</p>
+                <table class="tmc">
+                    <thead><tr><th>Faute</th><th>Sans debug</th><th>En debug</th></tr></thead>
+                    <tbody>
+                        <tr><td>Erreur levée pendant le rendu (ici, <code>user_id</code> à <code>false</code>)</td>
+                            <td>« Oups ! », trace minifiée</td><td>« Oups ! » ; trace annotée en <code>assets</code></td></tr>
+                        <tr><td>Import d'un fichier qui n'existe plus en 20 (par exemple
+                            <code>@web/webclient/actions/action_service</code>)</td>
+                            <td>Ton fichier n'est pas chargé, sans rien à l'écran. Deux <code>console.error</code> : « needed by other
+                            modules but have not been defined » et « unmet dependencies ». À l'ouverture de l'action, « Oups ! »
+                            <code>Cannot find key … in the "actions" registry</code></td>
+                            <td>Pareil, plus un bandeau rouge en bas de page : « An error occurred while loading javascript modules »</td></tr>
+                        <tr><td>Prop requise oubliée par le parent</td><td>Aucune validation : l'erreur, s'il y en a une, apparaît plus loin</td>
+                            <td>« Oups ! » <code>Invalid component props</code></td></tr>
+                        <tr><td><code>t-out="total"</code> au lieu de <code>t-out="this.total"</code></td><td colspan="2">Rien du tout :
+                            le gabarit rend vide, sans erreur ni message</td></tr>
+                    </tbody>
+                </table>
+                <p>D'où la règle de travail : <code>?debug=assets</code> dans l'adresse et la console ouverte en permanence,
+                    filtrée sur les erreurs.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. LA CONSOLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. La console : retrouver le composant et le faire parler</h2>
+                <p>La trace dit où l'erreur est levée, pas avec quelles données. Pour voir l'état d'un composant, Odoo laisse deux
+                    portes ouvertes dans la console, <strong>dans tous les modes</strong>, debug ou non :</p>
+                <ul>
+                    <li><code>odoo.__WOWL_DEBUG__.root</code> : le composant racine du client web, <code>WebClient</code>, posé par
+                        <code>mountComponent</code> au démarrage ;</li>
+                    <li><code>window.__OWL_DEVTOOLS__</code> : un objet exposé par OWL lui-même (<code>apps</code>,
+                        <code>Fiber</code>, <code>RootFiber</code>, <code>toRaw</code>, <code>proxy</code>). Son nom dit sa
+                        destination : une extension d'outils de développement pour OWL. Elle n'est pas traitée ici ; tout ce qui
+                        suit se fait depuis la console, sans rien installer.</li>
+                </ul>
+                <p>Chaque composant OWL 3 porte son nœud interne dans <code>__owl__</code>, et ce nœud ses enfants dans
+                    <code>children</code>. Une fonction de quelques lignes, collée dans la console, parcourt l'arbre et rend le
+                    premier composant dont la classe porte le nom cherché :</p>
+<pre class="language-javascript"><code class="language-javascript">function findComponent(name, node = odoo.__WOWL_DEBUG__.root.__owl__) {
+    if (node.component.constructor.name === name) {
+        return node.component;
+    }
+    for (const child of Object.values(node.children)) {
+        const found = findComponent(name, child);
+        if (found) {
+            return found;
+        }
+    }
+}
+
+const c = findComponent("DevisParCommercial");
+c.state.orders.length;   // 5
+c.groups();              // [{ name: "Mitchell Admin", count: 2, total: 4687.5 },
+                         //  { name: "Marc Demo", count: 2, total: 2145 },
+                         //  { name: "Sans commercial", count: 1, total: 377.5 }]</code></pre>
+                <p>Remets la version correcte et recharge l'action. Le chemin trouvé est <code>WebClient</code> →
+                    <code>ActionContainer</code> → <code>ControllerComponent</code> → <code>DevisParCommercial</code>. Les noms de
+                    classes restent lisibles même sans debug. Ce que tu lis là, ce sont les vraies données du composant, pas une
+                    copie : une écriture dans <code>c.state</code> passe par le <code>proxy</code> et redessine l'écran, comme si le
+                    composant l'avait faite.</p>
+<pre class="language-javascript"><code class="language-javascript">c.state.orders.push({ id: 99, name: "S99999", user_id: [7, "Joel Willis"], amount_untaxed: 120 });
+// le tableau gagne une ligne « Joel Willis », 1 devis, 120.00
+
+await c.load();          // relit les devis depuis le serveur : la ligne de test disparaît</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Action Devis en cours par commercial, mode normal, après l'écriture dans c.state.orders depuis la console : quatre lignes, Mitchell Admin 2 devis 4687.50, Marc Demo 2 devis 2145.00, Sans commercial 1 devis 377.50, Joel Willis 1 devis 120.00"/>
+                    <figcaption>Une ligne ajoutée depuis la console : le <code>computed</code> s'est recalculé et le tableau s'est
+                        redessiné, sans recharger la page.</figcaption>
+                </figure>
+                <p>C'est utile pour tester une hypothèse sans toucher au code : injecter un devis sans commercial
+                    (<code>user_id: false</code>) reproduit le bogue en une ligne. Les services sont aussi à portée de main, par
+                    <code>env.services</code> (84 clés sur cette base) :</p>
+<pre class="language-javascript"><code class="language-javascript">const env = odoo.__WOWL_DEBUG__.root.env;
+await env.services.orm.searchCount("sale.order", [["user_id", "=", false]]);   // 1</code></pre>
+                <p>Ces appels passent par les droits de l'utilisateur connecté, comme ceux de l'interface. N'utilise ce raccourci
+                    que pour inspecter : un composant, lui, obtient l'ORM par <code>usePlugin(ORM)</code>.</p>
+                <div class="v19-box">
+                    <h4>Venant de la 19 : <code>env.debug</code> lève une erreur</h4>
+                    <p>En 19, un composant testait le mode par <code>this.env.debug</code>. En 20, la propriété est retirée et sa
+                        lecture <strong>lève une erreur</strong> au lieu de rendre <code>undefined</code> : <code>"env.debug" was
+                        removed when the debug mode became DebugModePlugin. Use usePlugin(DebugModePlugin) in a component or a
+                        plugin, and odoo.debug outside of one.</code> Dans un composant, écris
+                        <code>debugMode = usePlugin(DebugModePlugin)</code> (import depuis <code>@web/core/debug_mode_plugin</code>)
+                        puis <code>this.debugMode.isActive()</code>, ou <code>isActive("assets")</code> pour un mode précis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. POINTS D'ARRÊT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Points d'arrêt : arrêter le code sur le devis fautif</h2>
+                <p>La console montre l'état à un instant donné. Un point d'arrêt fige l'exécution au milieu de
+                    <code>groupBySalesperson</code>, avec ses variables locales. Les pauses relevées ci-dessous sont celles du
+                    moteur de débogage de Chromium ; l'interface des outils de développement n'est pas montrée en capture.</p>
+                <h3>Méthode 1 : <code>debugger;</code> dans le code</h3>
+<pre class="language-javascript"><code class="language-javascript">    for (const order of orders) {
+        if (!order.user_id) {
+            debugger; // temporaire : arrêt sur le devis fautif
+        }
+        const [, name] = order.user_id;</code></pre>
+                <p>Recharge la page en <code>?debug=assets</code>, outils de développement ouverts : l'exécution s'arrête dans
+                    <code>groupBySalesperson</code>, et la portée locale donne <code>order.name = "S00003"</code>,
+                    <code>order.user_id = false</code>. Outils fermés, l'instruction est ignorée : même page, aucune pause, la
+                    fenêtre « Oups ! » s'affiche comme avant.</p>
+                <div class="pitfall-box">
+                    <h4>Point de vigilance : un <code>debugger;</code> oublié part en production</h4>
+                    <p>La minification d'Odoo ne retire pas l'instruction. Après « Régénérer les actifs », le bundle minifié la
+                        contient, et un navigateur dont les outils de développement sont ouverts s'arrête dessus, sans
+                        <code>debug</code> dans l'adresse. Cherche <code>debugger</code> dans ton module avant chaque commit.</p>
+                </div>
+                <h3>Méthode 2 : un point d'arrêt conditionnel, sans toucher au code</h3>
+                <p>Dans l'onglet <em>Sources</em>, ouvre <code>devis_par_commercial.js</code> par <kbd>Ctrl</kbd>+<kbd>P</kbd> (le
+                    fichier y figure sous son nom grâce à la carte des sources), fais un clic droit sur le numéro de la ligne 10
+                    et ajoute un point d'arrêt conditionnel : <code>!order.user_id</code>. La liste compte cinq devis ; l'exécution
+                    ne s'arrête que sur le fautif :</p>
+<pre class="language-none"><code class="language-none">pause : groupBySalesperson, ligne 10 de devis_par_commercial.js
+  order.name         → "S00003"
+  order.user_id      → false
+  orders.length      → 5</code></pre>
+                <p>Sans condition, il s'arrêterait à chaque tour de boucle jusqu'au devis fautif. La condition est une expression
+                    JavaScript évaluée dans la portée de la ligne : tout ce que la fonction voit, elle le voit.</p>
+                <h3>Méthode 3 : la pause sur exception… sur la bonne case</h3>
+                <p>Les outils de développement savent s'arrêter au moment où une exception est levée. Ils proposent deux cases :
+                    exceptions non interceptées, exceptions interceptées. Avec Odoo, le résultat surprend :</p>
+                <table class="tmc">
+                    <thead><tr><th>Réglage</th><th>Où l'exécution s'arrête</th></tr></thead>
+                    <tbody>
+                        <tr><td>Exceptions non interceptées</td><td>Deux fois, dans le code d'Odoo (<code>loadState</code>, puis
+                            <code>fullAnnotatedTraceback</code>), sur le rejet de la promesse. Jamais dans ton fichier.</td></tr>
+                        <tr><td>Exceptions interceptées</td><td>Une fois, dans <code>groupBySalesperson</code>, sur la ligne
+                            fautive, avec <code>order.name = "S00003"</code></td></tr>
+                    </tbody>
+                </table>
+                <p>L'erreur de rendu est attrapée par OWL, qui la transmet au gestionnaire d'erreurs d'Odoo : pour le navigateur,
+                    elle est « interceptée ». Pour s'arrêter là où elle naît, coche donc les exceptions interceptées. Sur cette page,
+                    il ne s'est arrêté qu'une fois ; ailleurs, toute exception rattrapée l'arrêtera aussi : décoche la case une
+                    fois le bogue trouvé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. JS NON REPRIS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. « J'ai corrigé, rien ne change » : le JavaScript en cache</h2>
+                <p>Avant de chercher un bogue qui n'existe plus, vérifie que le navigateur exécute bien ton code. Relevé avec la
+                    version fautive enregistrée sur le disque, serveur en marche :</p>
+                <table class="tmc">
+                    <thead><tr><th>Page</th><th>Bundle</th><th>Résultat</th></tr></thead>
+                    <tbody>
+                        <tr><td>Sans debug</td><td>l'ancien bundle minifié</td><td>ancienne version : « Sans commercial », pas
+                            d'erreur</td></tr>
+                        <tr><td><code>?debug=1</code></td><td>le même</td><td>ancienne version</td></tr>
+                        <tr><td><code>?debug=assets</code></td><td>reconstruit au chargement</td><td>nouvelle version : « Oups ! »</td></tr>
+                        <tr><td>Sans debug, après « Régénérer les actifs »</td><td>nouveau bundle minifié</td><td>nouvelle version</td></tr>
+                    </tbody>
+                </table>
+                <p>Le mode <code>assets</code> reconstruit le bundle quand un fichier qui le compose a changé ; le bundle minifié,
+                    lui, garde l'ancienne version jusqu'à une régénération ou un redémarrage. Le cas des vues XML et du code Python
+                    est traité dans <a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour
+                    un module Odoo 20 qui ne prend pas tes modifications</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. HOOT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Déboguer un test Hoot</h2>
+                <p>Le module livre deux tests : la fonction de regroupement avec un devis sans commercial, et l'action montée avec
+                    un faux serveur. Le lanceur s'ouvre par l'entrée « Exécuter les tests unitaires » du menu, ou à cette adresse,
+                    connecté :</p>
+<pre class="language-none"><code class="language-none">http://localhost:8069/web/tests?debug=assets&amp;filter="@oski_owl_debogage"</code></pre>
+                <p>Résultat : <code>Passed 2 tests (5 assertions)</code>. Un premier essai avait échoué sur
+                    <code>Cannot find a definition for model "discuss.channel"</code> : le module dépend de <code>sale</code>, donc
+                    de <code>mail</code>, et le fichier de test doit appeler <code>defineMailModels()</code> (importé de
+                    <code>@mail/../tests/mail_test_helpers</code>). Un module qui ne dépend que de <code>web</code> n'en a pas
+                    besoin.</p>
+                <p>Quand un test échoue sans que tu comprennes pourquoi, remplace <code>test(</code> par <code>test.debug(</code> :</p>
+<pre class="language-javascript"><code class="language-javascript">test.debug("l'action lit les devis en cours et se met à jour", async () =&gt; {
+    // … le test, inchangé
+});</code></pre>
+                <p>Hoot ne lance alors que ce test, sans délai d'expiration, et ne nettoie pas l'écran à la fin : le composant
+                    reste affiché, tel que le test l'a laissé, et tu peux l'inspecter avec la console comme en section 5.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Lanceur Hoot en test.debug : le composant Devis en cours par commercial reste affiché après le test, avec trois lignes Mitchell Admin 1 devis 2947.50, Marc Demo 2 devis 2145.00, Sans commercial 1 devis 377.50 ; barre d'état en bas : status passed, assertions 4 passed, time 189 ms"/>
+                    <figcaption>En <code>test.debug</code>, le composant monté par le test reste à l'écran : ici après le clic sur
+                        « Actualiser », avec la ligne « Sans commercial ».</figcaption>
+                </figure>
+                <p>Dans ce mode, le lanceur reste bloqué sur ce test : retire <code>.debug</code> avant de commiter, comme le
+                    <code>debugger;</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Menu de débogage, props validées</td><td><code>?debug=1</code></td></tr>
+                        <tr><td>JavaScript lisible, trace avec fichier et ligne, JS modifié repris</td><td><code>?debug=assets</code></td></tr>
+                        <tr><td>Bundle de tests en plus</td><td><code>?debug=assets,tests</code> ou « Activer le mode test »</td></tr>
+                        <tr><td>Sortir du mode debug</td><td><code>?debug=0</code> ou « Quitter le mode débogage »</td></tr>
+                        <tr><td>Mode actif</td><td><code>odoo.debug</code> ; dans un composant <code>usePlugin(DebugModePlugin).isActive()</code></td></tr>
+                        <tr><td>Composant racine, services</td><td><code>odoo.__WOWL_DEBUG__.root</code>, <code>.env.services</code></td></tr>
+                        <tr><td>Un composant et son état</td><td>parcourir <code>__owl__.children</code> depuis la racine</td></tr>
+                        <tr><td>Arrêter sur une condition</td><td>point d'arrêt conditionnel, ou <code>if (…) { debugger; }</code></td></tr>
+                        <tr><td>Arrêter là où l'erreur naît</td><td>pause sur les exceptions <strong>interceptées</strong></td></tr>
+                        <tr><td>Prendre un JS modifié en mode normal</td><td>« Régénérer les actifs » ou redémarrage</td></tr>
+                        <tr><td>Garder un test Hoot à l'écran</td><td><code>test.debug(…)</code>, lanceur
+                            <code>/web/tests?debug=assets&amp;filter="@module"</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Pour déboguer le front, travaille en <code>?debug=assets</code>, console ouverte : la trace cite ton fichier
+                        et ta ligne, et ton code modifié est repris.</li>
+                    <li>« Oups ! » n'est pas le seul signal : un import mort ou un <code>this.</code> oublié ne s'affichent pas, la
+                        console si.</li>
+                    <li><code>odoo.__WOWL_DEBUG__.root</code> ouvre l'arbre des composants et les services, dans tous les modes.</li>
+                    <li>Pour s'arrêter sur une erreur de rendu, coche les exceptions <strong>interceptées</strong> : OWL rattrape
+                        l'erreur avant le navigateur.</li>
+                    <li><code>debugger;</code> et <code>test.debug</code> sont des outils de poste : ni l'un ni l'autre ne doit
+                        partir dans un commit.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module, captures, points d'arrêt et tests exécutés le 10/11/2026 sur un serveur Odoo 20.0 Community
+                    (PostgreSQL 16), module <code>oski_owl_debogage</code> en 20.0.1.0.0, navigateur Chromium. Code relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 : <code>web/models/ir_http.py</code> (valeurs de <code>debug</code>) ;
+                        <a href="https://github.com/odoo/odoo/blob/20.0/addons/web/static/src/module_loader.js" target="_blank" rel="noopener"><code>web/static/src/module_loader.js</code></a>
+                        (mode relu dans l'adresse, messages de chargement, bandeau) ; <code>env.js</code>
+                        (<code>__WOWL_DEBUG__</code>, mode dev d'OWL, clés retirées) ; <code>lib/owl/owl.js</code>
+                        (<code>__OWL_DEVTOOLS__</code>) ; <code>core/errors/error_service.js</code> (trace annotée en
+                        <code>assets</code>) ; <code>core/debug/debug_menu_items.js</code> ; <code>core/debug_mode_plugin.js</code> ;
+                        <code>base/models/assetsbundle.py</code> (bundle non minifié et carte des sources) ;
+                        <code>lib/hoot/core/runner.js</code> (<code>test.debug</code>).</li>
+                    <li>Comparaison avec la branche 19.0 : <code>env.debug</code> posé par <code>makeEnv</code> ;
+                        <code>__OWL_DEVTOOLS__</code> exposait <code>reactive</code> au lieu de <code>proxy</code> ; même lecture du
+                        mode dans l'adresse par le chargeur de modules.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/widget-owl-3-bibliotheque-odoo-20-394">Un widget OWL 3 en Odoo 20 : le badge de retard des emprunts</a></h5>
+                            <p class="small text-muted mb-0">Un composant de champ et son test Hoot, de bout en bout.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module Odoo 20 qui ne prend pas tes modifications</a></h5>
+                            <p class="small text-muted mb-0">Python, XML, CSS, JS : qui demande un redémarrage, qui demande un <code>-u</code>.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20 : _logger, --log-handler, --log-sql</a></h5>
+                            <p class="small text-muted mb-0">L'autre moitié du débogage : ce que le serveur écrit quand le client échoue.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
