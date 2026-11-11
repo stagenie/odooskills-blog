@@ -1,0 +1,490 @@
+<!--
+Article — De l'embauche à la note de frais dans Odoo 20
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), vague 3 F2.4 (fin de série)
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : embauche-note-de-frais-odoo
+Tags : intermediaire, rh, guide, community
+Sources vérifiées le 2026-11-11 : Odoo 20.0 Community, base vs20_func_f24 (copie neutralisée de vs20_func), société My Company (San Francisco), USD, taxe 15 %.
+  Modules installés : hr, hr_recruitment, hr_skills, hr_holidays, hr_expense (+ account). Absents du dépôt Community : hr_contract, hr_payroll, sign, hr_contract_salary, hr_recruitment_sign.
+  Joué à l'écran : Recrutement, poste Développeur expérimenté, pipeline Regrouper par Étape ; Cécile Donth (candidature 8) Second entretien → onglet Détails, Proposé 6 000 $ / Mois →
+  Proposition de contrat → Contrat signé (ruban ENGAGÉ, Date d'embauche, bouton Créer un employé) → Créer un employé : fiche 28, Salaire 0,00 $, Contrat « Non employé »,
+  boutons Congé, Équipement, Applicant, Historique, en-tête Invite / Plan de lancement / Not Invited / date de version ; message « Congratulations! … onboarding plan? ».
+  Onglet Paie : Type d'employé Employé, Contrat 1 déc. → Indéfini, Salaire 6 000 → historique « Date de début du contrat », « Date d'effet » 1 déc. 2026, Historique = 1 version.
+  Plan de lancement sans manager : Onboarding présélectionné, date 11 déc., Setup IT Materials / Plan Training « To Assign », Training Mitchell Admin, encadré « n'a pas de manager / n'a pas d'utilisateur ».
+  Manager = Mitchell Admin (onglet Travail) → plan : 3 activités pour Mitchell Admin ; date ramenée au 1 déc. → Planifier → « Dû dans 20 jours » ×3, message « Le plan "Onboarding" a été lancé ».
+  Dépenses › Nouveau : Déjeuner d'accueil, Repas, 45 $, taxe 15 % (5,87), employé Cécile Donth → Soumettre (Manager Mitchell Admin, activité Validation de dépenses) → Approuver
+  → bouton Pièce comptable : Ticket brouillon (Fournisseur Cécile Donth, Achats) → Confirmer → FACTURE/2026/11/0001 → Payer (Journal Banque, Recipient Account vide) → Créer un paiement
+  → PAYÉ ; dépense Payé, « Amount reimbursed: $ 45,00 ». Candidature : bouton Employé Cécile Donth.
+  Exercice vérifié au shell (rollback) : Shane Williams (29) → étape Contrat signé → employé Développeur expérimenté, R&D, sans manager, salaire 0 ; manager Mitchell Admin → plan Onboarding → 3 activités Mitchell Admin.
+  Code : hr_recruitment/models/hr_applicant.py:1011-1063 (create_employee_from_applicant, aucun salaire recopié ; coordonnées → private_*, :1049-1062 ; work_phone = téléphone de la société :1036) ;
+  hr/models/hr_version.py:37-38 (_name hr.version), :78 date_version « Effective Date », :165-166 contract_date_start/end ; hr/models/hr_employee.py:267,271 (related version_id) ;
+  hr/views/hr_employee_views.xml:176-203 (onglet Paie, Contract Overview) ; hr/wizard/mail_activity_schedule.py:42-54 (date du plan = début si ≥ 30 j, sinon aujourd'hui + 30 j) ;
+  hr/models/hr_employee.py:1837-1844 (message onboarding) ; hr_expense/models/hr_employee.py:54-59 (approbateurs : expense_manager_id, manager, chef de département) ;
+  hr_expense/models/hr_expense.py:1707-1716 (_do_approve → _create_move).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">De l'embauche à la note de frais dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une candidature retenue devient une fiche employé, la fiche reçoit son
+                    contrat et son plan d'intégration, puis la première note de frais part en remboursement. Cet article
+                    rejoue ce cycle en entier dans Odoo 20 Community, du Recrutement à la Comptabilité, et montre ce que
+                    chaque application transmet, ou non, à la suivante.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %), avec Recrutement, Employés, Congés, Dépenses et Facturation installés. Ces
+                        applications existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le cycle employé : quatre applications sur un même fil</h2>
+                <p>Recruter, intégrer puis rembourser les frais d'un salarié mobilise quatre applications :
+                    <strong>Recrutement</strong> (la candidature et ses étapes), <strong>Employés</strong> (la fiche, le
+                    contrat, le plan d'intégration), <strong>Dépenses</strong> (la note de frais) et la
+                    <strong>Facturation</strong>, où la note devient une pièce comptable puis un paiement. Comme <a
+                    href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement dans Odoo
+                    20</a> pour les ventes, cet article suit un seul dossier d'un bout à l'autre.</p>
+                <p>Le fil conducteur est une candidate de la démonstration, Cécile Donth, au poste de « Développeur
+                    expérimenté ». Les numéros de documents cités sont ceux obtenus sur cette base ; ils varient d'une base à
+                    l'autre.</p>
+                <p>Un point d'édition : <strong>Odoo 20 Community n'a pas de paie</strong>.
+                    Aucun module de paie n'est inclus ; la paie est présentée dans <a
+                    href="/blog/fonctionnel-odoo-1/bulletin-de-paie-odoo-307">Paie dans Odoo 20 : du lot de paie au
+                    bulletin</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>faire avancer une candidature jusqu'à l'embauche et créer l'employé en un clic ;</li>
+                    <li>compléter ce que la candidature ne transmet pas : salaire, début du contrat, manager ;</li>
+                    <li>lancer le plan d'intégration et vérifier à qui vont ses activités ;</li>
+                    <li>faire passer une note de frais de la soumission au remboursement ;</li>
+                    <li>remonter la chaîne, du paiement jusqu'à la candidature.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du cycle employé dans Odoo 20 : Recrutement, candidature de Cécile Donth, faire avancer les étapes ; Recrutement, contrat signé, ruban ENGAGÉ, Créer un employé ; Employés, fiche employé avec début du contrat, salaire et manager, Plan de lancement ; Employés, intégration, plan Onboarding de 3 activités, Planifier ; Dépenses, note de frais Déjeuner d'accueil 45 $, Soumettre puis Approuver ; Facturation, ticket FACTURE/2026/11/0001, Confirmer puis Payer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Six étapes, quatre applications : de la candidature au remboursement de la première note de frais.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Faire avancer la candidature</h2>
+                <p>Ouvrez <strong>Recrutement</strong>, puis la carte du poste « Développeur expérimenté ». Les
+                    candidatures s'affichent par étape : Nouveau, Qualification, Premier entretien, Second entretien,
+                    Proposition de contrat ; la colonne « Contrat signé », repliée, se trouve à droite. Si la vue
+                    s'ouvre sans colonnes, choisissez <strong>Regrouper par › Étape</strong> dans la barre de recherche.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Pipeline de recrutement du poste Développeur expérimenté dans Odoo 20, regroupé par étape : Nouveau (Cameron Ellis), Qualification (Johan Duck), Premier entretien (Kelly Wallant), Second entretien (Cécile Donth), Proposition de contrat (Shane Williams), colonne Contrat signé repliée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le pipeline du poste : Cécile Donth est au second entretien.</figcaption>
+                </figure>
+                <p>Ouvrez la candidature de Cécile Donth, onglet <strong>Détails</strong>. Le bloc <strong>Package
+                    salarial</strong> distingue le salaire <strong>Prévu</strong> (demandé par la candidate) et le salaire
+                    <strong>Proposé</strong> ; saisissez 6 000 $ par mois dans « Proposé », puis cliquez sur l'étape
+                    <strong>Proposition de contrat</strong> dans la barre d'état.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Candidature de Cécile Donth dans Odoo 20 à l'étape Proposition de contrat, onglet Détails : poste Développeur expérimenté, recruteur Mitchell Admin, département Gestion / Recherche &amp; Développement, package salarial Prévu 0,00 $ / Mois, Proposé 6 000,00 $ / Mois ; e-mail et téléphone masqués" style="max-width:100%; height:auto;"/>
+                    <figcaption>La proposition : 6 000 $ par mois, inscrits sur la candidature (coordonnées masquées).</figcaption>
+                </figure>
+                <p>Dans Odoo 20 Community, « Proposition de contrat » est une étape du pipeline : elle ne produit ni
+                    document d'offre ni demande de signature. La signature électronique relève de l'édition Enterprise :
+                    le module Signature n'est pas inclus dans la Community.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Embaucher et créer l'employé</h2>
+                <p>L'offre acceptée, cliquez sur l'étape <strong>Contrat signé</strong>. La candidature reçoit le ruban
+                    <strong>ENGAGÉ</strong>, une <strong>Date d'embauche</strong>, et le bouton <strong>Créer un
+                    employé</strong> apparaît à gauche, devant Refuser.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Candidature de Cécile Donth dans Odoo 20 à l'étape Contrat signé : ruban ENGAGÉ, bouton Créer un employé, Date d'embauche 11 nov. 08:59, poste Développeur expérimenté ; e-mail et téléphone masqués" style="max-width:100%; height:auto;"/>
+                    <figcaption>Contrat signé : la candidature est marquée ENGAGÉ et peut devenir une fiche employé.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un employé</strong>. Odoo ouvre la fiche, déjà remplie avec le nom, le poste
+                    et le département de la candidature ; les coordonnées de la candidate passent dans l'onglet
+                    <strong>Personnel</strong> et les pièces jointes de la candidature, CV compris,
+                    sont recopiées sur la fiche. Les boutons intelligents
+                    <strong>Congé</strong>, <strong>Équipement</strong>, « Applicant » (la candidature d'origine) et
+                    <strong>Historique</strong> la relient au reste de la base.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fiche employé de Cécile Donth dans Odoo 20 juste après sa création : boutons intelligents Congé, Équipement, 0 h in nov., Applicant Cécile Donth, Historique 1 ; boutons Invite et Plan de lancement ; badge Not Invited ; onglet Paie, aperçu du contrat : Type d'employé vide, Contrat Non employé, Salaire 0,00 $, Catégorie de rémunération Employee" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche créée depuis la candidature : le salaire est à zéro et le contrat n'a pas de date.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Compléter le contrat sur la fiche</h2>
+                <p>Odoo 20 n'a plus d'objet « contrat » séparé : le type d'employé, les dates du contrat et le salaire sont
+                    portés par la fiche employé elle-même, dans l'onglet <strong>Paie</strong>, bloc <strong>Aperçu du
+                    contrat</strong>. Choisissez le <strong>Type d'employé</strong> « Employé », saisissez le début du
+                    <strong>Contrat</strong> (ici le 1<sup>er</sup> décembre, sans date de fin), le
+                    <strong>Salaire</strong> de 6 000 $, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fiche employé de Cécile Donth dans Odoo 20 après saisie : bouton de date 1 déc. 2026 et bouton plus en haut à droite ; onglet Paie, aperçu du contrat : Type d'employé Employé, Contrat 1 déc. au Indéfini, lien Nouveau contrat, Salaire 6 000,00 $, Catégorie de rémunération Employee ; heures de travail 40 hours/week" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le contrat complété : début au 1<sup>er</sup> décembre, durée indéfinie, 6 000 $.</figcaption>
+                </figure>
+                <p>Ces informations sont datées. Le bouton de date en haut à droite (« 1 déc. 2026 ») indique la date
+                    d'effet de la fiche ; l'historique de la fiche trace le
+                    passage de la « Date d'effet » au 1<sup>er</sup> décembre, et le bouton <strong>Historique</strong>
+                    liste les versions.</p>
+                <p>Ouvrez enfin l'onglet <strong>Travail</strong> et renseignez le <strong>Manager</strong>, ici Mitchell
+                    Admin. La création depuis la candidature ne le remplit pas, et c'est lui qui recevra les activités
+                    d'intégration et validera les notes de frais. Les congés se gèrent ensuite depuis le bouton
+                    <strong>Congé</strong> de la fiche et l'application Congés, décrite dans <a
+                    href="/blog/fonctionnel-odoo-1/conges-absences-odoo-229">Congés et absences dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Lancer le plan d'intégration</h2>
+                <p>À la création, un message de la fiche invite à lancer un plan d'intégration. Cliquez sur
+                    <strong>Plan de lancement</strong> : la base de démonstration propose deux plans, « Offboarding » et
+                    « Onboarding », ce dernier présélectionné, avec trois activités : « Setup IT Materials » et « Plan
+                    Training » pour le manager, « Training » pour l'employé.</p>
+                <p>La date proposée est le 11 décembre : quand le contrat commence dans moins de 30 jours, Odoo place le
+                    plan 30 jours après aujourd'hui. Ramenez-la au 1<sup>er</sup> décembre, jour d'arrivée : les
+                    échéances des trois activités suivent.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Plan de lancement dans Odoo 20, plan Onboarding sélectionné, date 1 déc. ; résumé du plan : Setup IT Materials, Plan Training et Training, toutes assignées à Mitchell Admin pour le 1 déc. ; boutons Planifier et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le plan Onboarding, avec un manager renseigné et la date ramenée au jour d'arrivée.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Planifier</strong>. Les trois activités apparaissent sous la fiche, et
+                    l'historique note « Le plan "Onboarding" a été lancé ». Les intitulés des activités sont ceux de la
+                    démonstration, en anglais ; les plans se modifient dans <strong>Employés › Configuration ›
+                    Onboarding / Offboarding</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Activités planifiées sur la fiche de Cécile Donth dans Odoo 20 : Setup IT Materials, Plan Training et Training, chacune pour Mitchell Admin, dues dans 20 jours, avec les actions Terminé et Modifier" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le plan lancé : trois activités, toutes attribuées à Mitchell Admin.</figcaption>
+                </figure>
+                <p>L'activité « Training », prévue pour l'employée, est elle aussi attribuée à Mitchell Admin : la fiche n'a
+                    pas encore d'utilisateur (badge « Not Invited »), et Odoo attribue alors l'activité à la personne qui
+                    lance le plan.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Saisir et soumettre la note de frais</h2>
+                <p>Premier jour, premier déjeuner à rembourser. Ouvrez <strong>Dépenses</strong> et cliquez sur
+                    <strong>Nouveau</strong>. Saisissez la description « Déjeuner d'accueil », le produit « Repas »,
+                    le total de 45 $ (taxe de 15 % comprise, soit 5,87 $) et l'employée Cécile Donth ; laissez le
+                    remboursement à l'employé. Sans utilisateur, la nouvelle employée ne peut pas saisir elle-même sa
+                    dépense : c'est ici l'administrateur qui la saisit pour elle. Enregistrez, puis cliquez sur
+                    <strong>Soumettre</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Note de frais Déjeuner d'accueil dans Odoo 20, statut Soumis : boutons Joindre le reçu, Approuver, Refuser, Réinitialiser, Diviser ; produit [FOOD] Repas, total 45,00 $, taxe 15 % 5,87 $, employé Cécile Donth, remboursement à l'employé ; manager Mitchell Admin, mode de paiement Manual Payment (Banque) ; activité Validation de dépenses pour Mitchell Admin aujourd'hui" style="max-width:100%; height:auto;"/>
+                    <figcaption>La dépense soumise : le manager de la fiche reçoit l'activité « Validation de dépenses ».</figcaption>
+                </figure>
+                <p>Le champ <strong>Manager</strong> de la dépense reprend celui de la fiche employé, et une activité
+                    « Validation de dépenses » lui est attribuée. Le circuit des notes de frais (plafonds par poste,
+                    scission d'une dépense) est détaillé dans <a
+                    href="/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">Notes de frais dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Approuver, comptabiliser, rembourser</h2>
+                <p>C'est ici que la note quitte les RH pour la comptabilité. Le manager clique sur
+                    <strong>Approuver</strong> : Odoo crée aussitôt la pièce comptable de la dépense, un ticket en brouillon
+                    au journal Achats, dont le fournisseur est l'employée. Un bouton <strong>Pièce comptable</strong>
+                    apparaît en haut de la dépense.</p>
+                <p>Ouvrez-le et cliquez sur <strong>Confirmer</strong> : le ticket reçoit son numéro, ici
+                    FACTURE/2026/11/0001, et la dépense passe à <strong>Comptabilisé</strong>. Cliquez ensuite sur
+                    <strong>Payer</strong> : la fenêtre propose le journal Banque et le montant de 45 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Payer dans Odoo 20 sur le ticket FACTURE/2026/11/0001 : journal Banque, Recipient Account vide, montant 45,00 $ USD, date de règlement 11 nov., mémo Déjeuner d'accueil ; boutons Créer un paiement et Ignorer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le remboursement : 45 $ par le journal Banque.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un paiement</strong>. Le ticket reçoit le ruban <strong>PAYÉ</strong>, avec
+                    un montant dû de 0 $ et les boutons <strong>Paiements</strong>, <strong>Écritures comptables</strong>
+                    et <strong>Dépenses</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Ticket FACTURE/2026/11/0001 payé dans Odoo 20 : ruban PAYÉ, boutons intelligents Paiements 1, Écritures comptables, Dépenses 1 ; fournisseur Cécile Donth, référence Déjeuner d'accueil, journal Achats en USD ; ligne [FOOD] Meals, Cécile Donth : Déjeuner d'accueil, 45,00, taxe 15 %, 39,13 $ ; total 45,00 $, payé le 11/11/2026, montant dû 0,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le ticket de dépense, comptabilisé et payé.</figcaption>
+                </figure>
+                <p>Sur la dépense, le statut est passé à <strong>Payé</strong>, et l'historique retrace tout le
+                    circuit : soumise, approuvée, comptabilisée, payée, avec la mention « Amount reimbursed: $ 45,00 ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Note de frais Déjeuner d'accueil dans Odoo 20 au statut Payé : bouton Pièce comptable ; historique Dépense payée, Amount reimbursed 45,00 $, Comptabilisé vers Payé, Approuvé vers Comptabilisé, Dépense approuvée, Soumis vers Approuvé, Validation de dépenses, Brouillon vers Soumis" style="max-width:100%; height:auto;"/>
+                    <figcaption>La dépense remboursée, et son historique complet.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Remonter la chaîne</h2>
+                <p>Chaque document mène au précédent. Depuis le ticket, <strong>Dépenses</strong> rouvre la note de frais ;
+                    depuis la note, le nom de l'employée ouvre sa fiche ; depuis la fiche, « Applicant » rouvre la
+                    candidature, qui affiche à son tour un bouton <strong>Employé</strong> vers la fiche.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Candidature de Cécile Donth dans Odoo 20 ouverte depuis la fiche employé : bouton intelligent Employé Cécile Donth, étape Contrat signé, ruban ENGAGÉ, date d'embauche 11 nov. ; le bouton Créer un employé a disparu ; e-mail et téléphone masqués" style="max-width:100%; height:auto;"/>
+                    <figcaption>La candidature d'origine, désormais reliée à la fiche employé.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Application</th><th>Bouton</th><th>Document obtenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>Recruter</td><td>Recrutement</td><td>Étapes du pipeline, puis Contrat signé</td><td>Candidature ENGAGÉ</td></tr>
+                        <tr><td>Embaucher</td><td>Recrutement → Employés</td><td>Créer un employé</td><td>Fiche employé</td></tr>
+                        <tr><td>Compléter</td><td>Employés</td><td>Onglets Paie et Travail</td><td>Contrat daté, salaire, manager</td></tr>
+                        <tr><td>Intégrer</td><td>Employés</td><td>Plan de lancement, Planifier</td><td>Activités du plan Onboarding</td></tr>
+                        <tr><td>Déclarer</td><td>Dépenses</td><td>Soumettre, Approuver</td><td>Note de frais et ticket en brouillon</td></tr>
+                        <tr><td>Rembourser</td><td>Dépenses → Facturation</td><td>Confirmer, Payer</td><td>Ticket FACTURE/2026/11/0001 payé</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Recrutement, Employés, Congés, Dépenses et Facturation font partie d'Odoo 20 Community : tout le
+                    parcours montré ici est disponible sans abonnement. Restent hors de la Community la paie et la
+                    signature électronique de l'offre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le salaire proposé ne suit pas la candidate</h4>
+                    <p>La candidature portait 6 000 $ par mois en salaire proposé (figure 3) ; la fiche créée affichait un
+                        salaire de 0 $ et un contrat sans date (figure 5). La création de l'employé ne recopie ni le
+                        salaire ni le début du contrat : à ressaisir dans l'onglet Paie.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Sans manager, le plan d'intégration revient à celui qui le lance</h4>
+                    <p>Lancé avant de renseigner le manager, le plan Onboarding affichait deux activités « To Assign » et
+                        l'avertissement « Certaines activités ne sont pas attribuées et vous seront attribuées ».
+                        Renseignez le manager de la fiche avant de cliquer sur Plan de lancement ; il servira aussi à
+                        l'approbation des notes de frais.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_14" alt="Fenêtre Plan de lancement dans Odoo 20 sans manager sur la fiche : plan Onboarding, date 11 déc. ; Setup IT Materials et Plan Training To Assign, Training pour Mitchell Admin ; encadré jaune Certaines activités ne sont pas attribuées et vous seront attribuées : Cécile Donth n'a pas de manager, Cécile Donth n'a pas d'utilisateur" style="max-width:100%; height:auto;"/>
+                        <figcaption>Le même plan, lancé avant de renseigner le manager.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La date proposée du plan n'est pas le jour d'arrivée</h4>
+                    <p>Avec un contrat commençant le 1<sup>er</sup> décembre, la fenêtre proposait le 11 décembre
+                        (aujourd'hui plus 30 jours, figure 14) : la préparation du matériel serait tombée dix jours après
+                        l'arrivée. Vérifiez la date avant de planifier.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> embaucher un second candidat et lui lancer un plan d'intégration
+                        entièrement attribué.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration avec Recrutement et
+                        Employés, passez Shane Williams (poste « Développeur expérimenté ») à l'étape Contrat signé, créez
+                        l'employé, renseignez Mitchell Admin comme manager, puis lancez le plan Onboarding.</p>
+                    <p><strong>Critère de réussite :</strong> la fiche porte le poste « Développeur expérimenté » et le
+                        département Recherche &amp; Développement ; la fenêtre du plan n'affiche aucun avertissement et les
+                        trois activités sont attribuées à Mitchell Admin.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>L'étape « Contrat signé » marque la candidature ENGAGÉ et donne accès au bouton Créer un employé ; en Community, la proposition de contrat n'est qu'une étape.</li>
+                    <li>En Odoo 20, le contrat vit sur la fiche employé (onglet Paie), daté par version ; salaire et début du contrat sont à saisir après la création.</li>
+                    <li>Le manager de la fiche reçoit les activités du plan d'intégration et valide les notes de frais : à renseigner en premier.</li>
+                    <li>L'approbation d'une note de frais crée sa pièce comptable ; la confirmer puis la payer rembourse l'employé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article clôt la série <strong>Odoo 20 de bout en bout</strong>. Pour approfondir chaque
+                    application RH séparément, le point de départ est <a
+                    href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme dans Odoo
+                    20</a>, puis <a href="/blog/fonctionnel-odoo-1/recrutement-candidatures-odoo-232">Recrutement dans
+                    Odoo 20</a> pour le pipeline, les postes et les refus.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement</a></h5>
+                            <p class="small text-muted mb-0">Le même principe, côté ventes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/notes-de-frais-odoo-231">Notes de frais</a></h5>
+                            <p class="small text-muted mb-0">Plafonds par poste, scission et circuit d'approbation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/presences-pointage-odoo-230">Présences</a></h5>
+                            <p class="small text-muted mb-0">Le pointage de l'employé une fois intégré.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
