@@ -1,0 +1,630 @@
+<!--
+Article — Sécuriser son module Odoo 20 : ir.access, groupes, sudo, contrôleurs
+Série « Sécuriser et automatiser Odoo 20 » (id 67), étape 2 ; lot T7 (T7.2 du plan vague 3 technique)
+Date : 2026-11-11
+Slug : securiser-module-odoo-20
+Mot-clé cible : odoo droits d'accès, security
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~15 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, module oski_demandes_droits 20.0.1.0.0) :
+- Domaines d'accès mesurés par utilisateur (_access_domain), restrictions sur l'écriture, ligne sans groupe, has_access / check_access / _filtered_access, sudo / with_user, garde d'approbation.
+- Contrôleurs appelés en HTTP : version sudo (fuite, 500 sur id absent), version corrigée (404), convertisseur model() (403), route publique, route bearer (200, 401 x3), bearer_scope obligatoire (AssertionError).
+- Tests : 11 tests verts sur base neuve, sans langue et avec fr_FR ; contre-épreuve contrôleur sudo : 200 != 404.
+- 19 → 20 : même module en 19.0 (ir.model.access.csv + ir.rule) installé sur une base 19 (cœur de novembre 2025, code de combinaison des règles identique à la 19.0 publique 40e9be2 du 11/11/2026) : demandeur 2 demandes ; brut en 20 : KeyError 'ir.model.access' ; converti par upgrade_code : WARNING, demandeur 5 demandes ; ligne retirée : 2.
+Captures : content/blog/screenshots/securiser-module-odoo-20/ (01 schéma, 02 droits d'accès, 03 rôle et privilège, 04 erreur d'accès).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Sécuriser son module Odoo 20 : ir.access, groupes, sudo, contrôleurs</h1>
+                <p class="lead mt-3 text-white">Un module peut laisser fuir ses données par trois portes : une ligne d'accès mal comprise, un <code>sudo()</code> de trop, une route HTTP qui lit à la place de l'utilisateur. Cet article les ferme une à une sur un petit module de demandes internes, mesures à l'appui : qui voit quoi, comment se combinent les lignes <code>ir.access</code>, ce que fait vraiment <code>sudo()</code>, comment écrire une route <code>user</code>, <code>public</code> ou <code>bearer</code>, et les tests qui le prouvent.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Cloisonner</h4>
+                        <p>Écrire des lignes <code>ir.access</code> à domaine (par utilisateur, par société) et prévoir leur combinaison au lieu de la découvrir.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Contrôler</h4>
+                        <p>Vérifier un droit dans le code, placer <code>sudo()</code> là où il ne fuit pas, et fermer les routes HTTP qui contournent les droits.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Prouver</h4>
+                        <p>Des tests qui attendent une <code>AccessError</code> ou un 404, et le portage sans surprise d'une sécurité écrite pour la 19.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Connaître le modèle <code>ir.access</code>, ses colonnes et la différence entre permission et restriction : c'est l'objet de <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>. Ici, on part de là.</li>
+                        <li>Une base Odoo 20 Community de test, <code>ma_base</code>, avec les données de démonstration (elles fournissent trois sociétés), et la console <code>odoo-bin shell -d ma_base</code>.</li>
+                        <li>Le module d'exemple <code>oski_demandes_droits</code> (version <code>20.0.1.0.0</code>), et trois utilisateurs internes créés pour l'essai : Demandeur A (<code>dem_a</code>, société San Francisco), Demandeur B (<code>dem_b</code>, San Francisco et My US Company), Valideur (<code>valideur</code>, San Francisco). Cinq demandes : deux de A, une de B dans chaque société, une de l'administrateur dans My US Company, déjà approuvée.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module et sa matrice</h2>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma : la route fixe l'utilisateur (session, utilisateur public ou clé d'API), l'environnement porte ses groupes et ses sociétés, puis l'ORM calcule le OU des permissions et le ET des restrictions ; résultats mesurés : 2, 3 et 5 demandes vues, aucune écriture sur une demande approuvée ; sudo saute la dernière étape." style="max-width:100%; height:auto;"/><figcaption>Trois étapes entre une requête et les enregistrements : qui est l'utilisateur, avec quel environnement, puis le domaine calculé par l'ORM. Les nombres sont ceux mesurés plus bas.</figcaption></figure>
+                <p>Le module gère des demandes internes (<code>oski.demande</code> : objet, type, demandeur, société, montant, état) et leurs types (<code>oski.demande.type</code>). Deux groupes, rangés sous un privilège « Demandes internes » : <strong>Demandeur</strong> (crée ses demandes, ne voit que les siennes) et <strong>Valideur</strong> (voit et approuve toutes les demandes de ses sociétés ; il implique le groupe Demandeur). Toute la sécurité tient dans <code>security/ir.access.csv</code> :</p>
+<pre class="language-python"><code class="language-python">id,name,model_id,group_id/id,operation,domain
+demande_type_tous,Types de demande : lecture pour tous,oski.demande.type,base.group_everyone,r,
+demande_type_valideur,Types de demande : gestion,oski.demande.type,group_demande_valideur,crud,
+demande_siennes,Demandes : les siennes,oski.demande,group_demande_user,cru,"[('user_id', '=', user.id)]"
+demande_toutes,Demandes : toutes,oski.demande,group_demande_valideur,crud,
+demande_societes,Demandes : sociétés autorisées,oski.demande,,crud,"[('company_id', 'in', company_ids)]"
+demande_figee,Demandes : une demande approuvée est figée,oski.demande,,ud,"[('state', '!=', 'approved')]"</code></pre>
+                <p>Rappel en une phrase : une ligne <strong>avec groupe</strong> est une permission, une ligne <strong>sans groupe</strong> est une restriction qui s'applique à tout le monde. Les deux dernières lignes sont des restrictions : le cloisonnement par société, et le gel des demandes approuvées (opérations <code>ud</code> : modifier et supprimer).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Qui voit quoi : mesurer au lieu de deviner</h2>
+                <p>Le domaine qu'Odoo ajoute à chaque recherche d'un utilisateur se lit directement : <code>_access_domain(opération)</code> renvoie le domaine final, une fois toutes les lignes combinées. C'est l'outil de diagnostic le plus utile de la sécurité Odoo 20. Dans la console :</p>
+<pre class="language-python"><code class="language-python">Demande = env['oski.demande']
+for login in ('dem_a', 'dem_b', 'valideur', 'admin'):
+    user = env['res.users'].search([('login', '=', login)])
+    print(login, Demande.with_user(user).search_count([]), Demande.with_user(user)._access_domain('read'))</code></pre>
+<div class="out">dem_a 2 ['&amp;', ('user_id', '=', 8), ('company_id', 'in', [1])]
+dem_b 2 ['&amp;', ('user_id', '=', 9), ('company_id', 'in', [1, 2])]
+valideur 3 [('company_id', 'in', [1])]
+admin 5 [('company_id', 'in', [1, 3, 2])]</div>
+                <ul>
+                    <li><strong>Demandeur A</strong> : sa permission (<code>user_id = user.id</code>) ET la restriction de société. Deux demandes.</li>
+                    <li><strong>Demandeur B</strong> : même forme, mais deux sociétés autorisées. Il voit sa demande de San Francisco et celle de My US Company.</li>
+                    <li><strong>Valideur</strong> : il est aussi Demandeur (le groupe est impliqué), donc deux permissions s'appliquent : « les siennes » OU « toutes ». Le OU avec une ligne sans domaine vaut « tout » : il ne reste que la restriction de société. Trois demandes, toutes de San Francisco.</li>
+                    <li><strong>Administrateur</strong> : il est Valideur (le module l'y place à l'installation) et a les trois sociétés. Les cinq demandes.</li>
+                </ul>
+                <p>Dans le domaine, <code>user</code> et <code>company_ids</code> sont évalués pour l'utilisateur et le contexte de la requête. <code>company_ids</code> vaut les sociétés <strong>cochées</strong> dans le sélecteur de sociétés, pas toutes celles de la fiche utilisateur :</p>
+<pre class="language-python"><code class="language-python">dem_b = env['res.users'].search([('login', '=', 'dem_b')])
+Demande = env['oski.demande'].with_user(dem_b)
+for societes in ([1, 2], [1]):
+    D = Demande.with_context(allowed_company_ids=societes)
+    print(societes, D.search([]).mapped('name'))</code></pre>
+<div class="out">[1, 2] ['Salon professionnel', 'Casque audio']
+[1] ['Casque audio']</div>
+                <p>Hors contexte (console, action planifiée), ce sont toutes les sociétés de l'utilisateur.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Combiner les lignes : OU des permissions, ET des restrictions</h2>
+                <p>Chaque opération a son propre domaine. Pour l'écriture, la restriction « figée » s'ajoute aux deux autres :</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import AccessError
+Demande = env['oski.demande']
+valideur = env['res.users'].search([('login', '=', 'valideur')])
+admin = env.ref('base.user_admin')
+print(Demande.with_user(valideur)._access_domain('write'))
+formation = Demande.search([('name', '=', 'Formation Odoo')])
+formation.with_user(valideur).action_approve()
+for user in (valideur, admin):
+    try:
+        formation.with_user(user).write({'montant': 950})
+    except AccessError as e:
+        print(user.name, '-&gt;', str(e).splitlines()[2])
+formation.sudo().write({'montant': 950})
+print('console (superutilisateur) :', formation.montant)
+env.cr.rollback()</code></pre>
+<div class="out">['&amp;', ('company_id', 'in', [1]), ('state', 'not in', ['approved'])]
+Valideur -&gt; Désolé, Valideur (id=10) n'a pas d'accès 'écrire' à :
+Mitchell Admin -&gt; Désolé, Mitchell Admin (id=2) n'a pas d'accès 'écrire' à :
+console (superutilisateur) : 950.0</div>
+                <p>Deux choses à retenir. Les restrictions se cumulent (ET) et ne s'additionnent jamais : chacune réduit encore ce que les permissions ont ouvert. Et une restriction s'applique <strong>aussi à l'administrateur</strong> : seul le superutilisateur (celui de la console, des actions planifiées système et de <code>sudo()</code>) passe outre. Une demande approuvée ne se modifie plus, par personne ; si l'administrateur doit pouvoir la corriger, la restriction doit le prévoir dans son domaine.</p>
+                <p>Côté permissions, c'est l'inverse : elles s'additionnent (OU). Une permission sans domaine, posée sur un groupe large, rend inutile toute permission à domaine posée sur un groupe plus étroit pour les mêmes opérations. La section 10 montre ce que cela donne quand on porte un module 19.</p>
+                <p>Pour relire les lignes d'un modèle, le menu <strong>Paramètres › Technique › Sécurité › Droits d'accès</strong> (mode développeur) liste tout, avec une colonne Type qui distingue permission et restriction :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Liste Droits d'accès filtrée sur le modèle oski.demande : six lignes, quatre permissions en vert (les siennes, toutes, gestion des types, lecture des types pour Rôle / Tout le monde) et deux restrictions en rouge (sociétés autorisées, demande approuvée)." style="max-width:100%; height:auto;"/><figcaption>Les six lignes du module, filtrées par « Modèle : oski.demande » (le filtre retient aussi <code>oski.demande.type</code>) : colonnes Créer, Lire, Modifier, Supprimer, le domaine, et le type (Permission en vert, Restriction en rouge).</figcaption></figure>
+                <p>Le menu « Règles d'enregistrement » de la 19 a disparu avec le modèle <code>ir.rule</code> : droits et domaines sont dans cette seule liste.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. « Pour tout le monde » : base.group_everyone, jamais un groupe vide</h2>
+                <p>La première ligne du fichier donne la lecture des types à <code>base.group_everyone</code> (« Rôle / Tout le monde », qui contient les utilisateurs internes, portail et public). Recopier l'habitude de la 19, groupe vide pour « tout le monde », produit l'inverse. Essai dans une transaction annulée :</p>
+<pre class="language-python"><code class="language-python">Type = env['oski.demande.type']
+dem_a = env['res.users'].search([('login', '=', 'dem_a')])
+admin = env.ref('base.user_admin')
+ligne = env.ref('oski_demandes_droits.demande_type_tous')
+ligne.group_id = False                      # ce qu'on écrit en recopiant un « tout le monde » de la 19
+print(ligne.kind, Type.with_user(dem_a).has_access('read'), Type.with_user(admin).has_access('read'))
+print(Type.with_user(dem_a)._access_domain('read'), Type.with_user(admin)._access_domain('read'))
+env.cr.rollback()
+env['ir.access']._clear_caches()
+print(ligne.group_id.display_name, Type.with_user(dem_a).has_access('read'))</code></pre>
+<div class="out">restriction False True
+[(0, '=', 1)] [(1, '=', 1)]
+Rôle / Tout le monde True</div>
+                <p>La ligne devient une restriction, qui n'ouvre rien. Le demandeur n'a plus aucune permission sur les types : domaine toujours faux, il ne lit plus rien. L'administrateur lit encore, mais seulement grâce à sa permission « gestion » de Valideur : le défaut passe inaperçu si l'on teste en administrateur. Après le <code>rollback()</code>, <code>env['ir.access']._clear_caches()</code> est nécessaire : les droits sont gardés dans un cache que <code>invalidate_ormcache()</code>, sans argument, ne vide pas (l'écriture sur la ligne, elle, le vide d'elle-même).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Groupes, privilège et rôle</h2>
+                <p>Les groupes se déclarent comme en 19 : un enregistrement <code>res.groups.privilege</code> (rangé dans une catégorie de modules) et des groupes qui le référencent par <code>privilege_id</code>, chaînés par <code>implied_ids</code>. La fiche utilisateur affiche alors un seul champ par privilège :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Onglet Droits d'accès de la fiche utilisateur Valideur : Rôle à trois choix Light, User, Administrateur (User coché), sociétés, puis les privilèges par catégorie ; sous Productivité, Demandes internes vaut Valideur." style="max-width:100%; height:auto;"/><figcaption>Fiche de l'utilisateur Valideur : le rôle en haut, puis un champ par privilège ; « Demandes internes » se règle dans la catégorie Productivité.</figcaption></figure>
+                <p>Au-dessus, le champ <strong>Rôle</strong> propose trois valeurs en 20 : Light, User, Administrateur. Il est calculé à partir des groupes donnés <em>directement</em> à l'utilisateur. Un utilisateur créé avec le seul groupe Demandeur (qui implique pourtant « utilisateur interne ») a un rôle vide : c'est ce qu'ont donné nos trois comptes à leur création. En ajoutant <code>base.group_user</code> à leurs groupes, le rôle devient « User ». Même réflexe dans les tests, plus bas : <code>new_test_user</code> reçoit <code>base.group_user</code> en plus du groupe métier.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Vérifier un droit dans le code : has_access, check_access, _filtered_access</h2>
+                <p>Trois méthodes, publiques sur tout recordset :</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import AccessError
+dem_a = env['res.users'].search([('login', '=', 'dem_a')])
+toutes = env['oski.demande'].search([]).with_user(dem_a)
+print(toutes.browse().has_access('read'), toutes.has_access('read'), toutes[-1].has_access('read'), toutes.browse().has_access('unlink'))
+print(toutes._filtered_access('read').mapped('name'))
+try:
+    toutes.check_access('read')
+except AccessError as e:
+    print(str(e).splitlines()[2:4])
+for nom in ('check_access_rights', 'check_access_rule'):
+    print(nom, hasattr(toutes, nom))
+for modele in ('ir.model.access', 'ir.rule'):
+    try:
+        env[modele]
+    except KeyError as e:
+        print('KeyError', e)</code></pre>
+<div class="out">True False True False
+['Formation Odoo', 'Écran 27 pouces']
+["Désolé, Demandeur A (id=8) n'a pas d'accès 'lire' à :", '- Demande interne (oski.demande)']
+check_access_rights False
+check_access_rule False
+KeyError 'ir.model.access'
+KeyError 'ir.rule'</div>
+                <ul>
+                    <li><code>has_access(op)</code> renvoie un booléen. Sur un recordset <strong>vide</strong>, il répond pour le modèle (« a-t-il au moins une permission ? ») ; sur des enregistrements, pour <strong>l'ensemble</strong> : vrai seulement si tous sont accessibles. Le demandeur peut lire le modèle, pas les cinq demandes ensemble, mais bien la sienne. Il ne peut pas supprimer.</li>
+                    <li><code>_filtered_access(op)</code> garde les enregistrements accessibles, sans erreur.</li>
+                    <li><code>check_access(op)</code> lève l'<code>AccessError</code>, la même que l'utilisateur voit à l'écran.</li>
+                    <li><code>check_access_rights</code> et <code>check_access_rule</code> n'existent plus, pas plus que les modèles <code>ir.model.access</code> et <code>ir.rule</code> : un module qui les appelle casse au premier appel.</li>
+                </ul>
+                <p>À l'écran, le demandeur qui ouvre par son URL la demande d'un collègue reçoit cette erreur :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_04" alt="Dialogue Erreur d'accès au-dessus de la liste des deux demandes du Demandeur A : Oups ! On dirait que vous êtes tombé sur des enregistrements top secrets. Désolé, Demandeur A (id=8) n'a pas d'accès 'lire' à : Demande interne (oski.demande)." style="max-width:100%; height:auto;"/><figcaption>Le Demandeur A ouvre la demande n° 3 (celle du Demandeur B) : « Erreur d'accès ». Le message ne dit pas quelle ligne a refusé.</figcaption></figure>
+
+                <h3>Un bouton masqué n'est pas une sécurité</h3>
+                <p>Le bouton « Approuver » porte <code>groups="oski_demandes_droits.group_demande_valideur"</code> dans la vue. Mais le demandeur a le droit de modifier ses demandes (<code>cru</code>), et n'importe quel appel RPC peut écrire <code>state</code> ou appeler <code>action_approve</code> sans passer par la vue. Le contrôle est donc dans le modèle, sur l'écriture elle-même :</p>
+<pre class="language-python"><code class="language-python">    def write(self, vals):
+        if vals.get('state') == 'approved' and not self.env.su \
+                and not self.env.user.has_group('oski_demandes_droits.group_demande_valideur'):
+            raise AccessError("Seul un valideur peut approuver une demande.")
+        return super().write(vals)
+
+    def action_approve(self):
+        self.write({'state': 'approved'})</code></pre>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import AccessError
+dem_a = env['res.users'].search([('login', '=', 'dem_a')])
+ecran = env['oski.demande'].search([('name', '=', 'Écran 27 pouces')]).with_user(dem_a)
+print(ecran.has_access('write'))
+for appel in (lambda: ecran.action_approve(), lambda: ecran.write({'state': 'approved'})):
+    try:
+        appel()
+    except AccessError as e:
+        print('AccessError :', e)
+env.cr.rollback()</code></pre>
+<div class="out">True
+AccessError : Seul un valideur peut approuver une demande.
+AccessError : Seul un valideur peut approuver une demande.</div>
+                <p>Le demandeur a bien le droit d'écrire sur sa demande ; c'est la règle métier qui l'arrête, par les deux chemins.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. sudo() et with_user() : ce qui change vraiment</h2>
+<pre class="language-python"><code class="language-python">Demande = env['oski.demande']
+dem_a = env['res.users'].search([('login', '=', 'dem_a')])
+valideur = env['res.users'].search([('login', '=', 'valideur')])
+d = Demande.with_user(dem_a)
+print(d.search_count([]), d.sudo().search_count([]), d.sudo().env.user.login)
+cree = d.sudo().create({'name': "Créée en sudo"})
+print(cree.create_uid.login, cree.user_id.login, cree.env.su, cree.user_id.env.su)
+v = d.sudo().with_user(valideur)
+print(v.env.user.login, v.env.su, v.search_count([]))
+env.cr.rollback()</code></pre>
+<div class="out">2 5 dem_a
+dem_a dem_a True True
+valideur False 4</div>
+                <ul>
+                    <li><code>sudo()</code> ne change pas d'utilisateur : <code>env.user</code> reste le demandeur, la demande créée porte son nom en <code>create_uid</code> et en demandeur par défaut. Il supprime <strong>tous</strong> les contrôles : le demandeur voit alors les cinq demandes, toutes sociétés confondues.</li>
+                    <li>Le drapeau suit les enregistrements : <code>cree.user_id</code>, lu à travers un recordset en <code>sudo</code>, est lui aussi en <code>sudo</code>. Tout ce qu'on atteint par lui échappe aux droits.</li>
+                    <li><code>with_user(u)</code> change d'utilisateur et <strong>remet <code>su</code> à faux</strong> : le valideur, même atteint depuis un recordset en <code>sudo</code>, retrouve ses droits (4 : les trois demandes de sa société et celle qu'on vient de créer).</li>
+                </ul>
+                <p>Le bon usage de <code>sudo()</code> tient en une règle : sur le plus petit recordset, le plus tard possible, et pour un résultat qui ne contient aucun enregistrement que l'appelant n'a pas le droit de voir. Le module en a un exemple : un comptage par état, sans aucun champ des demandes.</p>
+<pre class="language-python"><code class="language-python">    @api.model
+    def _stats_publiques(self):
+        """Nombre de demandes par état, sans rien d'autre : seul usage public."""
+        groupes = self.sudo()._read_group([], ['state'], ['__count'])
+        return {state: count for state, count in groupes}</code></pre>
+                <p>Le reste de l'environnement (<code>with_context</code>, <code>with_company</code>, les clés de contexte) est détaillé dans <a href="/blog/developpement-odoo-2/env-context-sudo-odoo-20-275">env, with_context, sudo, with_company : l'environnement en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Contrôleurs : user, public, bearer</h2>
+                <p>Une route HTTP choisit d'abord <strong>qui</strong> est l'utilisateur, par son paramètre <code>auth</code> : <code>'user'</code> exige une session, <code>'public'</code> prend l'utilisateur public si personne n'est connecté, <code>'bearer'</code> accepte une clé d'API dans l'en-tête <code>Authorization</code>. Ensuite, tout ce que fait la méthode se fait avec les droits de cet utilisateur… sauf si elle passe par <code>sudo()</code>.</p>
+
+                <h3>La fuite</h3>
+                <p>Une route qui renvoie une demande en JSON, écrite vite :</p>
+<pre class="language-python"><code class="language-python">    @http.route('/oski/demandes/&lt;int:demande_id&gt;/json', type='http', auth='user', methods=['GET'])
+    def demande_json(self, demande_id):
+        demande = request.env['oski.demande'].sudo().browse(demande_id)
+        return request.make_json_response(demande.read(CHAMPS, load=None)[0])</code></pre>
+                <p>Connecté en Demandeur A (cookie de session obtenu par <code>/web/session/authenticate</code>), il suffit de changer le numéro dans l'URL. Dans les sorties ci-dessous, le corps HTML des pages d'erreur est remplacé par <code>…</code> :</p>
+<pre class="language-bash"><code class="language-bash">for id in 1 3 4 5 99; do curl -s -b cookies_dem_a -w "  [%{http_code}]\n" http://localhost:8069/oski/demandes/$id/json; done</code></pre>
+<div class="out">{"id": 1, "name": "Écran 27 pouces", "user_id": 8, "company_id": 1, "montant": 320.0, "state": "draft"}  [200]
+{"id": 3, "name": "Casque audio", "user_id": 9, "company_id": 1, "montant": 85.0, "state": "submitted"}  [200]
+{"id": 4, "name": "Salon professionnel", "user_id": 9, "company_id": 2, "montant": 1450.0, "state": "draft"}  [200]
+{"id": 5, "name": "Licence logicielle", "user_id": 2, "company_id": 2, "montant": 600.0, "state": "approved"}  [200]
+… [500]</div>
+                <p>Les demandes d'un collègue, celles d'une société où il n'a pas accès, celle de l'administrateur : tout sort. Le numéro inexistant donne une erreur 500 (<code>IndexError</code> dans le journal), ce qui renseigne aussi sur les numéros qui existent. <code>auth='user'</code> a seulement vérifié qu'il y avait une session.</p>
+
+                <h3>La correction</h3>
+<pre class="language-python"><code class="language-python">    @http.route('/oski/demandes/&lt;int:demande_id&gt;/json', type='http', auth='user', methods=['GET'])
+    def demande_json(self, demande_id):
+        # Pas de sudo() : browse() dans l'environnement de l'utilisateur connecté,
+        # puis has_access() avant de lire. Une demande d'un autre = 404, comme une demande absente.
+        demande = request.env['oski.demande'].browse(demande_id).exists()
+        if not demande or not demande.has_access('read'):
+            raise NotFound()
+        return request.make_json_response(demande.read(CHAMPS, load=None)[0])</code></pre>
+<div class="out">{"id": 1, "name": "Écran 27 pouces", "user_id": 8, "company_id": 1, "montant": 320.0, "state": "draft"}  [200]
+… [404]
+… [404]
+… [404]
+… [404]</div>
+                <p>La demande d'un autre et une demande absente répondent pareil : rien ne permet de deviner ce qui existe. Autre écriture possible, le convertisseur <code>&lt;model("oski.demande"):demande&gt;</code> dans l'URL : Odoo vérifie lui-même la lecture avant d'appeler la méthode. Mesuré : 200 pour sa demande, 404 pour un numéro absent, mais <strong>403</strong> avec le message « Oups ! … n'a pas d'accès 'lire' » pour la demande d'un collègue, qui confirme donc son existence.</p>
+
+                <div class="pitfall-box">
+                    <h4>Le piège : sudo() pour « faire marcher » une route</h4>
+                    <p>Une route qui renvoie une <code>AccessError</code> en développement se « répare » en une ligne avec <code>sudo()</code>. Elle ne renvoie plus d'erreur à personne, y compris à ceux qui ne devaient rien voir, et rien dans le journal ne le signale. Dans un contrôleur, n'appliquer <code>sudo()</code> qu'à un calcul dont le résultat ne contient aucun enregistrement (un comptage, un jeton, un paramètre), jamais à ce qu'on renvoie.</p>
+                </div>
+
+                <h3>auth='public' : le sudo borné</h3>
+<pre class="language-python"><code class="language-python">    @http.route('/oski/demandes/stats', type='http', auth='public', methods=['GET'])
+    def demandes_stats(self):
+        # sudo() utile et borné : des comptages, aucun enregistrement ne sort.
+        return request.make_json_response(request.env['oski.demande']._stats_publiques())</code></pre>
+<div class="out">$ curl -s http://localhost:8069/oski/demandes/stats
+{"draft": 2, "submitted": 2, "approved": 1}</div>
+                <p>Sans session, la requête tourne sous l'utilisateur public, qui n'a aucun droit sur les demandes : sans le <code>sudo()</code> de <code>_stats_publiques</code>, le comptage échouerait. Avec, seuls des nombres sortent. À comparer avec la route JSON en <code>auth='user'</code>, qui redirige un visiteur anonyme vers la page de connexion (303).</p>
+
+                <h3>auth='bearer' : une clé d'API, les droits de son propriétaire</h3>
+<pre class="language-python"><code class="language-python">    @http.route('/oski/api/demandes', type='http', auth='bearer', bearer_scope='rpc', methods=['GET'], csrf=False)
+    def api_demandes(self):
+        # Clé d'API : la requête s'exécute sous l'utilisateur de la clé, avec ses droits.
+        demandes = request.env['oski.demande'].search([])
+        return request.make_json_response(demandes.read(CHAMPS, load=None))</code></pre>
+                <p>La clé se crée depuis les préférences de l'utilisateur (onglet Sécurité), ou dans la console pour un essai :</p>
+<pre class="language-python"><code class="language-python">import datetime
+a = env['res.users'].search([('login', '=', 'dem_a')])
+k = env['res.users.apikeys'].with_user(a)._generate('rpc', 'Script de test', datetime.datetime.now() + datetime.timedelta(days=1))
+env.cr.commit()
+print("KEY", k)</code></pre>
+<pre class="language-bash"><code class="language-bash">curl -s -H "Authorization: Bearer $CLE" http://localhost:8069/oski/api/demandes
+curl -s http://localhost:8069/oski/api/demandes
+curl -s -H "Authorization: Bearer 0000" http://localhost:8069/oski/api/demandes
+curl -s -b cookies_dem_a http://localhost:8069/oski/api/demandes</code></pre>
+                <p>Chaque commande reçoit en plus <code>-w " [%{http_code}]"</code> ; pour les refus, seul le message de la page d'erreur est recopié, et les champs des demandes renvoyées sont abrégés.</p>
+<div class="out">[{"id": 2, "name": "Formation Odoo", …}, {"id": 1, "name": "Écran 27 pouces", …}]   [200]
+User not authenticated, use an API Key with a Bearer Authorization header.     [401]
+Invalid apikey                                                                 [401]
+Missing "Authorization" or Sec-headers for interactive usage.                  [401]</div>
+                <p>Avec la clé du Demandeur A, la route renvoie ses deux demandes et rien d'autre : le <code>search([])</code> est filtré par ses lignes <code>ir.access</code>, sans une ligne de contrôle dans la méthode. Sans clé, une session ne suffit pas depuis un script : il faut les en-têtes <code>Sec-Fetch-*</code> qu'envoie un navigateur qui ouvre la page (avec eux, la même session obtient 200). Le décorateur pose <code>save_session=False</code> sur une route <code>bearer</code> : l'appel par clé n'enregistre pas de session.</p>
+                <p><code>bearer_scope</code> est <strong>obligatoire</strong> en 20 : sans lui, le décorateur échoue dès l'import du contrôleur, donc au chargement du module.</p>
+<div class="out">AssertionError: bearer_scope must be set for auth='bearer'</div>
+                <p>La clé de l'essai a été créée avec la portée <code>rpc</code>, celle que déclare la route.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Des tests qui prouvent la sécurité</h2>
+                <p>Une sécurité non testée se dégrade au premier « correctif ». Les tests du module créent leurs utilisateurs avec <code>new_test_user</code> (groupes en liste d'identifiants externes) et vérifient les refus autant que les accès :</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import AccessError
+from odoo.tests import TransactionCase, new_test_user, tagged
+
+
+@tagged('post_install', '-at_install')
+class TestDroitsDemandes(TransactionCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        groupes = 'base.group_user,oski_demandes_droits.group_demande_user'
+        cls.societe = cls.env.company
+        cls.autre_societe = cls.env['res.company'].create({'name': "Société B"})
+        cls.dem_a = new_test_user(cls.env, 'test_dem_a', groupes)
+        cls.dem_b = new_test_user(cls.env, 'test_dem_b', groupes)
+        cls.valideur = new_test_user(
+            cls.env, 'test_valideur', 'base.group_user,oski_demandes_droits.group_demande_valideur')
+        Demande = cls.env['oski.demande']
+        cls.demande_a = Demande.create({'name': "Écran", 'user_id': cls.dem_a.id})
+        cls.demande_b = Demande.create({'name': "Casque", 'user_id': cls.dem_b.id})
+        cls.demande_ailleurs = Demande.create({
+            'name': "Salon", 'user_id': cls.dem_b.id, 'company_id': cls.autre_societe.id})
+
+    def test_demandeur_ne_voit_que_les_siennes(self):
+        Demande = self.env['oski.demande'].with_user(self.dem_a)
+        self.assertEqual(Demande.search([]), self.demande_a)
+        with self.assertRaises(AccessError):
+            self.demande_b.with_user(self.dem_a).read(['name'])
+        self.assertFalse(self.demande_b.with_user(self.dem_a).has_access('read'))
+
+    def test_demande_approuvee_figee_pour_tous(self):
+        self.demande_a.with_user(self.valideur).action_approve()
+        for user in (self.valideur, self.env.ref('base.user_admin')):
+            with self.assertRaises(AccessError):
+                self.demande_a.with_user(user).write({'montant': 10})</code></pre>
+                <p>Pour les routes, un <code>HttpCase</code> (fichier qui importe aussi <code>datetime</code>) crée ses utilisateurs de la même façon, avec un mot de passe : <code>new_test_user(cls.env, 'ctl_dem_a', groupes, password='ctl_dem_a-pass')</code>. Il se connecte (<code>authenticate</code>) et appelle l'URL :</p>
+<pre class="language-python"><code class="language-python">    def test_json_sa_demande_200_celle_d_un_autre_404(self):
+        self.authenticate('ctl_dem_a', 'ctl_dem_a-pass')
+        ok = self.url_open(f'/oski/demandes/{self.demande_a.id}/json')
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json()['name'], "Écran")
+        refus = self.url_open(f'/oski/demandes/{self.demande_b.id}/json')
+        self.assertEqual(refus.status_code, 404)
+
+    def test_api_bearer(self):
+        cle = self.env['res.users.apikeys'].with_user(self.dem_a)._generate(
+            'rpc', "test", datetime.datetime.now() + datetime.timedelta(days=1))
+        r = self.url_open('/oski/api/demandes', headers={'Authorization': f'Bearer {cle}'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([d['id'] for d in r.json()], [self.demande_a.id])
+        self.assertEqual(self.url_open('/oski/api/demandes').status_code, 401)</code></pre>
+<pre class="language-bash"><code class="language-bash">odoo-bin -d ma_base --db-filter='^ma_base$' -i oski_demandes_droits \
+    --test-enable --test-tags=/oski_demandes_droits --stop-after-init</code></pre>
+                <p>Sur une base neuve, les 11 tests du module (7 sur le modèle, 4 sur les routes) passent, avec ou sans le français chargé. Contre-épreuve : la route remise en <code>sudo()</code>, un seul test tombe, celui qui devait l'attraper :</p>
+<div class="out">FAIL: TestControleursDemandes.test_json_sa_demande_200_celle_d_un_autre_404
+AssertionError: 200 != 404</div>
+                <p>Le <code>--db-filter</code> strict compte : avec un filtre qui laisse passer plusieurs bases, une requête de test sans session ne sait pas quelle base viser, et le 303 attendu devient un 404. Le détail des tests Odoo 20 est dans <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>10. Porter la sécurité d'un module 19</h2>
+                <p>Le même module, écrit pour la 19, répartissait sa sécurité en deux fichiers : <code>ir.model.access.csv</code> (droits par modèle) et des <code>ir.rule</code> en XML (domaines). Avec une ligne de plus, banale : la lecture des demandes pour tous les employés.</p>
+<pre class="language-python"><code class="language-python">id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_demande_type_all,demande.type tous,model_oski_demande_type,,1,0,0,0
+access_demande_type_valideur,demande.type valideur,model_oski_demande_type,group_demande_valideur,1,1,1,1
+access_demande_employe,demande employé,model_oski_demande,base.group_user,1,0,0,0
+access_demande_user,demande demandeur,model_oski_demande,group_demande_user,1,1,1,0
+access_demande_valideur,demande valideur,model_oski_demande,group_demande_valideur,1,1,1,1</code></pre>
+                <p>Plus quatre <code>ir.rule</code> : « les siennes » sur le groupe Demandeur, <code>[(1, '=', 1)]</code> sur Valideur, et deux règles globales (sociétés, demande approuvée figée). Sur une base 19 d'essai à une seule société (trois demandes : deux du Demandeur A, une du Demandeur B), le Demandeur A voit ses <strong>2</strong> demandes : la règle de son groupe filtre, la lecture « employés » ne l'élargit pas. À l'installation, la 19 prévient pour la ligne sans groupe : <code>Rule demande.type tous has no group, this is a deprecated feature.</code></p>
+                <p>Recopié tel quel en 20 (version du manifeste passée en <code>20.0</code>), le module ne s'installe pas :</p>
+<div class="out">ERROR ma_base odoo.registry: Failed to load registry
+…
+    return self.models[model_name]
+           ~~~~~~~~~~~^^^^^^^^^^^^
+KeyError: 'ir.model.access'</div>
+                <p>Le cœur fournit un script de conversion, qui réécrit les deux fichiers en un <code>ir.access.csv</code> :</p>
+<pre class="language-bash"><code class="language-bash">odoo-bin upgrade_code --script 19.4-00-ir-access --addons-path=…/mes_modules --glob 'oski_demandes_droits/**/*'</code></pre>
+<div class="out">WARNING with model=oski.demande, operation=r
+    acl group without rules, giving access to ALL records:
+     - base.group_user: acl oski_demandes_droits.access_demande_employe
+    may interact with rules in groups, giving access to LESS records:
+     - oski_demandes_droits.group_demande_user: rule oski_demandes_droits.rule_demande_siennes (with acl)
+
+updated: …/oski_demandes_droits/__manifest__.py
+updated: …/oski_demandes_droits/security/ir.access.csv
+deleted: …/oski_demandes_droits/security/ir.model.access.csv
+deleted: …/oski_demandes_droits/security/oski_demandes_rules.xml</div>
+<pre class="language-python"><code class="language-python">id,name,model_id,group_id/id,operation,domain
+access_demande_type_all,demande.type tous,oski.demande.type,base.group_everyone,r,
+access_demande_type_valideur,demande.type valideur,oski.demande.type,oski_demandes_droits.group_demande_valideur,crud,
+access_demande_employe,demande employé,oski.demande,base.group_user,r,
+rule_demande_siennes,Demandes : les siennes,oski.demande,oski_demandes_droits.group_demande_user,cru,"[('user_id', '=', user.id)]"
+rule_demande_toutes,Demandes : toutes,oski.demande,oski_demandes_droits.group_demande_valideur,crud,
+rule_demande_societes,Demandes : sociétés autorisées,oski.demande,,crud,"[('company_id', 'in', company_ids)]"
+rule_demande_figee,Demandes : une demande approuvée est figée,oski.demande,,ud,"[('state', '!=', 'approved')]"</code></pre>
+                <p>La conversion est juste ligne à ligne : le « tout le monde » devient <code>base.group_everyone</code>, chaque règle de groupe fusionne avec son droit, les règles globales deviennent des restrictions. Le module s'installe sans erreur ni avertissement. Mais la lecture des employés est devenue une permission sans domaine, combinée en OU avec « les siennes ». Mesure sur une base 20 d'essai où les cinq demandes de la section 2 sont toutes dans la société San Francisco (boucle de la section 2, pour le Demandeur A) :</p>
+<div class="out">dem_a 5 [('company_id', 'in', [1])]</div>
+                <p>Le Demandeur A lit désormais toutes les demandes de sa société, les cinq. C'est exactement ce qu'annonce l'avertissement du script, et c'est le seul endroit où il apparaît. Ici, la ligne n'a plus de raison d'être : on la retire du CSV, et la mise à jour du module supprime l'enregistrement correspondant :</p>
+<div class="out">INFO … Deleting 729@ir.access (oski_demandes_droits.access_demande_employe)
+dem_a 2 ['&amp;', ('user_id', '=', 8), ('company_id', 'in', [1])]</div>
+
+                <div class="pitfall-box">
+                    <h4>Le piège : une conversion qui élargit sans erreur</h4>
+                    <p>Après conversion, cherchez dans <code>ir.access.csv</code> les permissions <strong>sans domaine</strong> posées sur un groupe large (<code>base.group_user</code>, <code>base.group_everyone</code>) sur un modèle qui a aussi des permissions à domaine : en 19 le droit ouvrait le modèle et la règle du groupe filtrait quand même ; en 20 droit et domaine forment une seule ligne, et une permission sans domaine ouvre tout, en OU. Gardez la sortie du script (le WARNING ne réapparaît nulle part) et testez chaque profil avec <code>_access_domain</code> avant et après le portage.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>11. Ce qui a changé depuis la 19</h2>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>Point</th><th>19.0</th><th>20.0</th></tr></thead><tbody>
+<tr><td>Fichiers de sécurité</td><td><code>ir.model.access.csv</code> + <code>ir.rule</code> en XML</td><td><code>ir.access.csv</code> seul ; l'ancien fichier : <code>KeyError: 'ir.model.access'</code></td></tr>
+<tr><td>« Tout le monde »</td><td>droit sans groupe (avertissement « deprecated feature » à l'installation)</td><td><code>base.group_everyone</code> ; sans groupe = restriction pour tous, sans avertissement</td></tr>
+<tr><td>Droit large + règle de groupe étroite</td><td>la règle du groupe filtre quand même (Demandeur A : ses 2 demandes)</td><td>OU des permissions : la permission sans domaine ouvre tout (toutes les demandes de sa société)</td></tr>
+<tr><td><code>check_access_rights</code>, <code>check_access_rule</code></td><td>présentes, dépréciées</td><td>supprimées ; <code>check_access</code>, <code>has_access</code>, <code>_filtered_access</code></td></tr>
+<tr><td>Menu Technique › Sécurité</td><td>Droits d'accès + Règles d'enregistrement</td><td>Droits d'accès, avec le type Permission / Restriction ; plus de Règles d'enregistrement</td></tr>
+<tr><td>Rôle de l'utilisateur</td><td>User, Administrateur</td><td>Light, User, Administrateur</td></tr>
+<tr><td><code>auth='bearer'</code></td><td><code>bearer_scope</code> accepté mais ignoré, portée <code>rpc</code> imposée</td><td><code>bearer_scope</code> obligatoire (<code>AssertionError</code> à l'import)</td></tr>
+</tbody></table></div>
+                <p>Le comportement 19 a été exécuté sur une base 19 avec le même module ; les rôles et les deux méthodes supprimées ont été lus dans le code de la 19.0. Inchangés et vérifiés en 20 : <code>new_test_user</code>, les privilèges de groupes, <code>auth='user'</code> et <code>'public'</code>, la vérification de lecture du convertisseur <code>model()</code>.</p>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Dans l'ordre : passer le module au script <code>upgrade_code --script 19.4-00-ir-access</code> et garder sa sortie ; relire chaque permission sans domaine d'un modèle qui en a aussi à domaine ; remplacer <code>check_access_rights</code> / <code>check_access_rule</code> par <code>has_access</code> / <code>check_access</code> ; ajouter <code>bearer_scope='rpc'</code> aux routes <code>auth='bearer'</code> (le paramètre est accepté par la 19, la même ligne sert aux deux versions) ; puis relancer des tests qui attendent les refus, pas seulement les accès.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les permissions (avec groupe) s'additionnent, les restrictions (sans groupe) se cumulent et touchent aussi l'administrateur. <code>_access_domain('read')</code> montre le résultat pour un utilisateur donné.</li>
+                    <li>« Tout le monde » s'écrit <code>base.group_everyone</code>. Une ligne sans groupe ferme au lieu d'ouvrir, et l'administrateur peut ne rien remarquer.</li>
+                    <li>Une règle métier (qui approuve) se vérifie dans le modèle, sur l'écriture : la vue n'arrête pas un appel RPC.</li>
+                    <li><code>sudo()</code> garde l'utilisateur et enlève tous les contrôles, jusque sur les enregistrements liés. Dans un contrôleur, jamais sur ce qui est renvoyé ; <code>has_access()</code> puis 404.</li>
+                    <li>Après un portage 19 → 20, testez chaque profil : une permission large sans domaine élargit en silence ce qu'une règle de groupe restreignait.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Le modèle unique, ses colonnes, groupes et privilèges, sur un module complet.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/exceptions-odoo-validation-access-error-356">UserError, ValidationError, AccessError en Odoo 20 : lire et corriger</a></h5>
+                            <p class="small text-muted mb-0">Ce que voit l'utilisateur, ce que garde le journal, et comment remonter à la cause.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié : passer à l'API JSON-2 d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Appeler Odoo avec une clé d'API : les mêmes droits que son propriétaire.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
