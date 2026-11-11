@@ -1,0 +1,838 @@
+<!--
+Article — Première approche du développement Odoo 20 : écrans, debug, module
+Série « Rapports et documents en Odoo 20 » (63), étape 3 ; lot T5 (T5.4 du plan vague 3 technique), jumelle Odoo 20
+du pilier v19 n°55 (premiere-approche-developpement-odoo-55, lien posé dans l'introduction, pilier non modifié).
+Date : 2026-11-11
+Slug : premiere-approche-developpement-odoo-20
+Mot-clé cible : odoo développement, développement odoo 20, mode développeur odoo, premier module odoo 20
+Catégorie : Développement Odoo
+Tags : debutant, fondamentaux, guide, community
+Temps de lecture : ~15 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, Python 3.12.3, base neutralisée,
+Ventes installé, interface en français ; serveur threaded en boucle locale lancé avec --dev=all, dbfilter limité à la copie,
+crons coupés ; Chromium piloté par Playwright) :
+- Mode développeur : serveur en --dev=all, page Ventes sans ?debug → odoo.debug « », 0 .o_debug_manager ; ?debug=1 → « 1 »,
+  insecte présent ; ?debug= → « ». Paramètres › « Outils développeur » : 3 boutons (simple, assets, assets test)
+  (web/static/src/webclient/settings_form_view/widgets/res_config_dev_tool.xml:8-10). Modes acceptés {'', '1', 'assets',
+  'tests'} (addons/web/models/ir_http.py:34-61, identiques en 19.0) ; --dev = access,qweb,reload,xml (odoo/tools/config.py:31, 457).
+- Infobulle Client (sale.order, S00003) : Champ partner_id, Modèle sale.order, Type many2one, Widget Many2one
+  (res_partner_many2one), Contexte, Domaine, Obligatoire True, Lecture seule state in ['cancel', 'sale'], Relation res.partner.
+- Menu de l'insecte (formulaire) : Enregistrement (Métadonnées, Données, Messages, Pièces jointes, Définir des valeurs par
+  défaut), Interface utilisateur (Modèle : sale.order, Action, Vue de recherche, Afficher : Form, Champs, Filtres, Arc calculé),
+  Sécurité (Droits d'accès seul → ir.access, web/static/src/webclient/actions/debug_items.js:124-135 ; 19.0 : Droits d'accès
+  ir.model.access + Règles d'enregistrement ir.rule, debug_items.js:110-154), Visites guidées & tests, Outils.
+- Menu Technique : Rubriques → ir.ui.menu, Vues → ir.ui.view, Actions de fenêtre, Identifiants externes → ir.model.data,
+  Modèles → ir.model, Champs → ir.model.fields, Sécurité › Droits d'accès → ir.access (pas de menu ir.rule ; 19.0 :
+  ir_rule_views.xml:106 menu_action_rule), Actions planifiées → ir.cron.
+- URL : /odoo/sales, /odoo/sales/3 (formulaire), action sans path → /odoo/action-28 et /odoo/action-28/254,
+  /odoo/action-mon_module.note_action → /odoo/notes.
+- Shell : menu sale.menu_sale_quotations « Ventes/Commandes/Devis » → act_window sale.action_quotations_with_onboarding,
+  res_model sale.order, view_mode list,kanban,form,calendar,pivot,graph,activity, domain False, context
+  {'search_default_my_quotation': 1}, path sales ; vues par défaut sale.view_order_tree / view_order_form /
+  view_sale_order_kanban ; 124 champs sur sale.order ; 451 modèles ; 'ir.access' in env True, 'ir.model.access' False,
+  'ir.rule' False ; QWeb t-esc → '<p></p>' + WARNING Unknown directives, t-out → '<p>Ready Mat</p>' (19.0 :
+  _compile_directive_esc, ir_qweb.py:2487-2492, avertissement de dépréciation et rendu).
+- Module mon_module (scaffold 20 : security/ir.model.access.csv, version '0.1', 'security/ir.model.access.csv' commenté ;
+  gabarit odoo/cli/templates/default/security/ir.model.access.csv.template) : CSV 19 → -i exit 255 KeyError: 'ir.model.access'
+  (registry.py:222 → loading.py:449/211/56 → convert.py:714/771 → environments.py:107 → registry.py:385) ;
+  security/ir.access.csv → exit 0, Loading module mon_module (70/70), Registry loaded ; manifeste 19.0.1.0.0 (copie
+  mon_module19) → WARNING incompatible version, exit 0, uninstallable (odoo/modules/module.py:500-502) ; champ to_call ajouté,
+  version 20.0.1.1.0, -u → exit 0, Loading module mon_module (3/70), colonne to_call boolean, latest_version 20.0.1.1.0.
+- OWL dans le navigateur : owl.__info__.version 3.0.0-alpha.49, useState/useRef undefined, signal function.
+- 19.0 publique (GitHub, 11/11/2026) : release.py MIN_PY (3,10) MIN_PG 13 ; ir_http.py modes de debug identiques ;
+  webclient.py /web/tests et /web/tests/legacy (20 : /web/tests seul, webclient.py:100) ; sale_order_views.xml:1275-1282
+  action des devis sans domaine (context search_default_my_quotation).
+Captures : content/blog/screenshots/premiere-approche-developpement-odoo-20/ (01 schéma ; 02-08 captures réelles, bandeau de
+neutralisation retiré et nom de base remplacé par ma_base dans le DOM avant capture).
+-->
+<!-- ===== PRISM.JS ===== -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  details.answers { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 0.6rem 1rem; margin: 1rem 0; }
+  details.answers summary { cursor: pointer; font-weight: 600; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Première approche du développement Odoo 20 : écrans, debug, module</h1>
+                <p class="lead mt-3 text-white">Avant d'écrire du code, on apprend à lire un écran : mode développeur, infobulle
+                    des champs, menu de l'insecte, menu Technique. Puis on refait soi-même ce qu'on vient de lire : un menu, une
+                    action, un modèle, deux vues et leurs droits, installés et mis à jour sur Odoo 20.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau débutant · parcours <strong>Fondamentaux</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Lire un écran</h4>
+                        <p>Activer le mode développeur, retrouver le nom technique d'un champ, la vue et l'action d'un écran,
+                            explorer le menu Technique.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le chaînage</h4>
+                        <p>Menu, action, modèle, vues : les quatre enregistrements qui font un écran, vérifiés dans le shell.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Ton premier module 20</h4>
+                        <p>Les mêmes quatre éléments écrits à la main, avec les droits <code>ir.access</code>, installés,
+                            mis à jour et relus dans le journal.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un Odoo 20 Community qui démarre (voir <a href="/blog/developpement-odoo-2/installer-odoo-20-ubuntu-pycharm-178">Installer
+                            Odoo 20 sur Ubuntu et le lancer dans PyCharm</a>), une base avec l'application Ventes et un compte
+                            administrateur.</li>
+                        <li>Un terminal pour lancer <code>odoo-bin</code> et <code>odoo-bin shell</code>, un éditeur pour écrire
+                            quatre petits fichiers.</li>
+                        <li>Aucune connaissance de l'ORM : on reste au premier pas.</li>
+                    </ul>
+                </div>
+                <p>Tu travailles encore sur Odoo 19 ? <a href="/blog/developpement-odoo-2/premiere-approche-developpement-odoo-55">Première
+                    approche du développement Odoo 19</a> reste valable pour ta version. Celui-ci reprend la même démarche pour
+                    Odoo 20, chaque écran et chaque sortie relevés sur un serveur 20.0, et va un pas plus loin : le premier module.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Odoo a une particularité qui déroute au début : presque tout ce que tu vois à l'écran est une
+                    <strong>donnée</strong>, pas du code compilé. Le menu, l'action qu'il déclenche, la vue qui s'affiche, les
+                    droits qui la filtrent sont des enregistrements en base. Le code Python ne décrit que le modèle et sa logique.
+                    Comprendre ce chaînage, c'est savoir où regarder avant d'écrire une ligne, et savoir quoi écrire ensuite.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en deux parties. En haut, du clic à l'écran, exemple relevé sur le menu Ventes, Commandes, Devis : 1 Menu, modèle ir.ui.menu, dans ton module une balise menuitem avec action ; 2 Action, ir.actions.act_window, res_model sale.order, view_mode, context et path sales qui donne l'URL /odoo/sales, dans ton module un record ir.actions.act_window ; 3 Modèle, classe Python et table PostgreSQL, sale.order devient sale_order, dans ton module models/models.py ; 4 Vues, ir.ui.view list, form, search, XML rendu par le client web OWL 3, dans ton module views/views.xml. En dessous, encadré : et toujours les droits ; en Odoo 20 un seul modèle ir.access, fichier security/ir.access.csv, le fichier ir.model.access.csv généré par scaffold fait échouer l'installation. En bas, la boucle de travail du développeur : écrire (modèle, vues, droits, manifeste en 20.0.x.y.z), installer puis mettre à jour (-i mon_module une fois, puis -u mon_module), lire le journal, regarder l'écran avec ?debug=1, vérifier dans odoo-bin shell. En brun, ce qui diffère d'Odoo 19."/>
+                    <figcaption>Les quatre enregistrements d'un écran, et la boucle de travail. En brun, ce qui diffère d'Odoo 19.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. MODE DÉVELOPPEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer le mode développeur</h2>
+                <p>Le mode développeur (on dit aussi « mode debug ») ajoute à l'interface ce qu'un utilisateur n'a pas besoin de
+                    voir : noms techniques, menu Technique, éditeur de vues, outils de test. Il se règle par session de navigateur,
+                    pas par base ni par utilisateur. Deux façons de l'activer :</p>
+                <ul>
+                    <li><strong>Par les Paramètres</strong> : en bas de la page Paramètres généraux, bloc « Outils développeur ».</li>
+                    <li><strong>Par l'adresse</strong> : ajoute <code>?debug=1</code> à l'URL, par exemple
+                        <code>http://localhost:8069/odoo/sales?debug=1</code>. C'est le plus rapide.</li>
+                </ul>
+                <p>Pour en sortir : dernière entrée du menu de l'insecte, « Quitter le mode débogage », ou <code>?debug=</code>
+                    sans valeur dans l'adresse.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bloc Outils développeur de la page Paramètres d'Odoo 20, avec trois liens : Activer le mode développeur, Activer le mode développeur (avec les assets), Activer le mode développeur (avec les assets test)."/>
+                    <figcaption>Paramètres › Paramètres généraux, tout en bas : les trois variantes.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Valeur</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>?debug=1</code></td><td>mode développeur simple : c'est celui dont tu auras besoin au quotidien</td></tr>
+                        <tr><td><code>?debug=assets</code></td><td>en plus, JavaScript et CSS servis non minifiés : lisibles dans les
+                            outils du navigateur, mais chaque page charge plus lentement</td></tr>
+                        <tr><td><code>?debug=tests</code></td><td>charge en plus les fichiers de test du client (visites guidées)</td></tr>
+                        <tr><td><code>?debug=</code></td><td>désactive le mode</td></tr>
+                    </tbody>
+                </table>
+                <p>Ces quatre valeurs sont les seules qu'Odoo 20 reconnaît (<code>addons/web/models/ir_http.py:34-61</code>, liste
+                    identique en 19) ; toute autre valeur « vraie » équivaut à <code>1</code>, et plusieurs se combinent avec une
+                    virgule (<code>?debug=assets,tests</code>).</p>
+                <p>Ne confonds pas ce mode avec l'option <code>--dev</code> de <code>odoo-bin</code>. Sur un serveur lancé avec
+                    <code>--dev=all</code>, la page Ventes ouverte sans <code>?debug</code> n'a ni insecte ni menu Technique
+                    (<code>odoo.debug</code> vaut <code>""</code> dans la console). <code>--dev</code> agit côté serveur :
+                    <code>all</code> regroupe <code>access</code>, <code>qweb</code>, <code>reload</code> et <code>xml</code>
+                    (<code>odoo/tools/config.py:31</code>), c'est-à-dire traces des erreurs de droits, débogage des gabarits,
+                    redémarrage à chaque fichier Python modifié et vues relues depuis le disque. Le détail de ces options est dans
+                    <a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module Odoo 20
+                    qui ne prend pas tes modifications</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ANATOMIE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. L'anatomie d'un écran</h2>
+                <p>Ouvre Ventes en mode développeur. Chaque zone de l'écran vient d'un enregistrement ou d'un champ précis :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des devis de l'application Ventes d'Odoo 20 en mode développeur, avec huit zones numérotées : 1 le nom de l'application Ventes dans la barre du haut ; 2 les menus Commandes, Produits, Analyse, Configuration ; 3 le titre Devis ; 4 la barre de recherche avec le filtre Mes devis ; 5 le pager 1-7 / 7 ; 6 les boutons de choix de vue liste, kanban, calendrier, pivot, graphique, activité ; 7 la liste des devis ; 8 l'icône insecte du mode développeur dans la barre du haut."/>
+                    <figcaption>La liste des devis, découpée en zones (numéros ajoutés pour l'article).</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Zone</th><th>Ce que c'est</th><th>D'où ça vient</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>l'application</td><td>menu racine, <code>ir.ui.menu</code> sans parent</td></tr>
+                        <tr><td>2</td><td>les sous-menus</td><td><code>ir.ui.menu</code> enfants ; un menu feuille porte une action</td></tr>
+                        <tr><td>3</td><td>le titre (fil d'Ariane)</td><td>le nom de l'action, <code>ir.actions.act_window</code></td></tr>
+                        <tr><td>4</td><td>la recherche et le filtre actif</td><td>la vue <code>search</code> du modèle ; le filtre
+                            « Mes devis » est posé par le <code>context</code> de l'action</td></tr>
+                        <tr><td>5</td><td>le pager</td><td>calculé par le client web, rien à écrire</td></tr>
+                        <tr><td>6</td><td>les types de vue proposés</td><td>le champ <code>view_mode</code> de l'action</td></tr>
+                        <tr><td>7</td><td>la liste</td><td>une vue <code>list</code>, <code>ir.ui.view</code>, sur le modèle
+                            <code>sale.order</code></td></tr>
+                        <tr><td>8</td><td>l'insecte</td><td>présent seulement en mode développeur</td></tr>
+                    </tbody>
+                </table>
+                <p>Dans Odoo 20, le pager n'est pas en bas de page : il vit dans le panneau de contrôle, à côté des boutons de
+                    vue. Les libellés anglais du tableau de bord (« To Confirm », « Sales Revenue ») viennent de la traduction
+                    incomplète de la base de démonstration, pas d'une erreur de configuration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. INFOBULLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le nom technique d'un champ : l'infobulle</h2>
+                <p>En mode développeur, chaque libellé de formulaire porte un petit <code>?</code>. Survole celui du champ Client
+                    d'un devis :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Formulaire du devis S00003 en mode développeur, infobulle ouverte sur le champ Client : Libellé Client ; Champ partner_id ; Modèle sale.order ; Type many2one ; Widget Many2one (res_partner_many2one) ; Contexte avec res_partner_search_mode customer, show_address et show_vat ; Domaine sur company_id ; Obligatoire True ; Lecture seule state in cancel, sale ; Déclencheur de valeur par défaut Oui ; Relation res.partner."/>
+                    <figcaption>L'infobulle du champ Client : nom, modèle, type, widget, domaine, conditions.</figcaption>
+                </figure>
+                <p>Tout ce dont tu as besoin pour intervenir sur ce champ est là : son nom (<code>partner_id</code>), le modèle qui
+                    le porte (<code>sale.order</code>), son type, le modèle visé (<code>res.partner</code>), le widget qui
+                    l'affiche, et les conditions qui le rendent obligatoire ou en lecture seule (ici, en lecture seule quand le devis
+                    est annulé ou devenu commande). C'est le réflexe numéro un : avant de toucher à un champ, on lit son infobulle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. INSECTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le menu de l'insecte</h2>
+                <p>L'icône insecte de la barre du haut ouvre un menu qui dépend de l'écran. Sur un formulaire, il est complet :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Menu de l'insecte ouvert sur le formulaire d'un devis, en Odoo 20. Section Enregistrement : Métadonnées, Données, Messages, Pièces jointes, Définir des valeurs par défaut. Section Interface utilisateur : Modèle : sale.order, Action, Vue de recherche, Afficher : Form, Champs, Filtres, Arc calculé. Section Sécurité : Droits d'accès. Section Visites guidées et tests : Exécuter les tests unitaires, Run ClickBot, Parcours d'intégration. Section Outils : Ouvrir la vue, Count LoC, Régénérer les actifs, Activer le protocole BUS, Devenez un superutilisateur, Disable RPC Cache, Activer le profilage, Activer le mode test, puis Quitter le mode débogage."/>
+                    <figcaption>Le menu de l'insecte sur un formulaire de devis (Odoo 20, interface en français).</figcaption>
+                </figure>
+                <p>Les entrées que tu utiliseras dès le premier jour :</p>
+                <ul>
+                    <li><strong>Modèle : sale.order</strong> ouvre la fiche du modèle, avec la liste de ses champs.</li>
+                    <li><strong>Action</strong> ouvre l'action courante : <code>res_model</code>, <code>view_mode</code>,
+                        <code>domain</code>, <code>context</code>, <code>path</code>.</li>
+                    <li><strong>Afficher : Form</strong> (« List » sur une liste) ouvre la vue affichée, avec son identifiant XML et
+                        son XML ; <strong>Arc calculé</strong> montre la vue après application de tous les héritages, ce que le
+                        navigateur reçoit vraiment.</li>
+                    <li><strong>Métadonnées</strong> donne l'identifiant de l'enregistrement et son identifiant XML s'il en a un.</li>
+                    <li><strong>Droits d'accès</strong> liste les droits du modèle. En Odoo 20 c'est une seule entrée, vers le modèle
+                        <code>ir.access</code> (<code>web/static/src/webclient/actions/debug_items.js:124-135</code>) ; en 19 il y en
+                        avait deux, droits d'accès (<code>ir.model.access</code>) et règles d'enregistrement (<code>ir.rule</code>).</li>
+                </ul>
+                <p>Le pas-à-pas complet de ces entrées, avec la vérification dans le shell, est dans
+                    <a href="/blog/developpement-odoo-2/nom-technique-champ-vue-action-odoo-357">Mode debug Odoo 20 : nom technique d'un
+                    champ, d'une vue, d'une action</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. MENU TECHNIQUE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le menu Technique</h2>
+                <p>En mode développeur, Paramètres gagne un menu <strong>Technique</strong> : la base vue de l'intérieur. Il est long
+                    (chaque module installé y ajoute ses entrées) ; voici sa partie centrale, sur une base avec Ventes (Sécurité et Automatisation, plus bas dans le menu, ne
+                    figurent pas sur la capture) :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Menu Technique des Paramètres d'Odoo 20, partie centrale. Actions : Actions, Report Actions, Actions de fenêtre, Actions client, Actions de serveur, Actions intégrées, Assistants de configuration, Valeurs par défaut de l'utilisateur. IAP : Comptes d'achat intégré. Interface utilisateur : Rubriques, Parcours d'intégration, Étapes du parcours d'intégration, Vues, Vues personnalisées, Filtres définis par l'utilisateur, Visites ; sous-section Séquences et identifiants : Identifiants externes, Séquences. Structure de la base de données : Précision décimale, Assets, Modèles, Champs, Sélection des champs, Contraintes du Modèle, Relations ManyToMany, Pièces jointes."/>
+                    <figcaption>Paramètres › Technique, des Actions à la Structure de la base de données.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Entrée</th><th>Modèle affiché</th><th>Pour quoi faire</th></tr></thead>
+                    <tbody>
+                        <tr><td>Structure de la base de données › Modèles</td><td><code>ir.model</code></td><td>tous les modèles de la
+                            base (451 sur cette base de démonstration), leurs champs et leurs droits</td></tr>
+                        <tr><td>Structure de la base de données › Champs</td><td><code>ir.model.fields</code></td><td>chercher un champ
+                            par nom ou par libellé, sur tous les modèles</td></tr>
+                        <tr><td>Interface utilisateur › Vues</td><td><code>ir.ui.view</code></td><td>toutes les vues, leur priorité, leur
+                            héritage</td></tr>
+                        <tr><td>Interface utilisateur › Rubriques</td><td><code>ir.ui.menu</code></td><td>l'arbre des menus et l'action de
+                            chacun</td></tr>
+                        <tr><td>Actions › Actions de fenêtre</td><td><code>ir.actions.act_window</code></td><td>les actions qui ouvrent
+                            un écran</td></tr>
+                        <tr><td>Interface utilisateur › Séquences &amp; identifiants › Identifiants externes</td><td><code>ir.model.data</code></td><td>le lien
+                            entre un identifiant XML (<code>sale.action_quotations_with_onboarding</code>) et l'enregistrement en base</td></tr>
+                        <tr><td>Sécurité › Droits d'accès</td><td><code>ir.access</code></td><td>les droits, tous modèles confondus ; plus
+                            de menu « Règles d'enregistrement » en 20</td></tr>
+                        <tr><td>Automatisation › Actions planifiées</td><td><code>ir.cron</code></td><td>les tâches lancées à
+                            intervalle</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. URL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lire l'adresse</h2>
+                <p>L'URL du client web dit où tu es. Relevés sur la même base :</p>
+                <table class="tmc">
+                    <thead><tr><th>Adresse</th><th>Ce qu'elle désigne</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>/odoo/sales</code></td><td>l'action dont le champ <code>path</code> vaut <code>sales</code>
+                            (la liste des devis)</td></tr>
+                        <tr><td><code>/odoo/sales/3</code></td><td>l'enregistrement d'identifiant 3 de cette action, en formulaire</td></tr>
+                        <tr><td><code>/odoo/action-28</code>, <code>/odoo/action-28/254</code></td><td>une action sans
+                            <code>path</code> (ici Technique › Vues) : son identifiant numérique, puis l'enregistrement</td></tr>
+                        <tr><td><code>/odoo/action-mon_module.note_action</code></td><td>une action par son identifiant XML ; si elle a un
+                            <code>path</code>, l'adresse est réécrite (ici en <code>/odoo/notes</code>)</td></tr>
+                        <tr><td><code>…?debug=1</code></td><td>le mode développeur, conservé de page en page</td></tr>
+                    </tbody>
+                </table>
+                <p>Le champ <code>path</code> d'une action est donc ce qui donne une adresse lisible à ton écran : on s'en sert
+                    plus bas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. CHAÎNAGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Le chaînage, vérifié dans le shell</h2>
+                <p>L'interface montre le chaînage morceau par morceau ; le shell le montre d'un coup. Lance
+                    <code>odoo-bin shell</code> sur ta base (voir <a href="/blog/developpement-odoo-2/shell-odoo-20-272">Le shell
+                    Odoo 20</a>) et suis le menu Devis :</p>
+<pre class="language-python"><code class="language-python">$ odoo-bin shell -c odoo.conf -d ma_base --no-http
+>>> menu = env.ref('sale.menu_sale_quotations')
+>>> menu.complete_name, menu.action
+('Ventes/Commandes/Devis', ir.actions.act_window(461,))
+>>> a = menu.action
+>>> a.res_model, a.view_mode, a.domain, a.context, a.path
+('sale.order', 'list,kanban,form,calendar,pivot,graph,activity', False, "{'search_default_my_quotation': 1}", 'sales')
+>>> len(env['sale.order']._fields)
+124</code></pre>
+                <p>Le menu porte l'action ; l'action désigne le modèle <code>sale.order</code>, les types de vue proposés, et un
+                    contexte qui active le filtre « Mes devis » (zone 4 de la capture), c'est-à-dire
+                    <code>[('user_id', '=', uid)]</code>. Pas de domaine sur l'état : la liste « Devis » montre aussi les commandes
+                    confirmées (colonne Statut de la capture). Les vues elles-mêmes sont celles du modèle,
+                    choisies par priorité quand l'action n'en impose pas.</p>
+                <p>À toi, sur ta base, avec l'infobulle, le menu de l'insecte et le menu Technique :</p>
+                <table class="tmc">
+                    <thead><tr><th>#</th><th>Question</th><th>Où regarder</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>Quel modèle affiche la liste des devis ?</td><td>insecte › Modèle</td></tr>
+                        <tr><td>2</td><td>Quel est le nom technique du champ Client ?</td><td>infobulle du libellé</td></tr>
+                        <tr><td>3</td><td>Quelle adresse ouvre l'action des devis ?</td><td>insecte › Action, champ <code>path</code></td></tr>
+                        <tr><td>4</td><td>Pourquoi la liste n'affiche-t-elle que tes devis ?</td><td>insecte › Action, champ <code>context</code></td></tr>
+                        <tr><td>5</td><td>Combien de champs a <code>sale.order</code> ?</td><td>Technique › Champs, filtrer sur le modèle</td></tr>
+                    </tbody>
+                </table>
+                <details class="answers">
+                    <summary>Réponses (base de démonstration avec Ventes)</summary>
+                    <ol class="mb-0">
+                        <li><code>sale.order</code>.</li>
+                        <li><code>partner_id</code>, un Many2one vers <code>res.partner</code>.</li>
+                        <li><code>/odoo/sales</code> (<code>path</code> = <code>sales</code>).</li>
+                        <li>Le contexte <code>{'search_default_my_quotation': 1}</code> active le filtre « Mes devis »
+                            (vendeur = utilisateur connecté) ; retire-le de la barre de recherche et les devis de tous les vendeurs
+                            s'affichent.</li>
+                        <li>124 sur cette base ; le nombre change avec les modules installés, qui ajoutent des champs au modèle.</li>
+                    </ol>
+                </details>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. PREMIER MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. À ton tour : les quatre éléments dans un module</h2>
+                <p>Tu sais lire un écran ; en écrire un demande exactement les mêmes pièces. On construit le plus petit module utile :
+                    des notes de suivi rattachées à un contact, avec un menu, une action, un modèle, deux vues et une ligne de
+                    droits.</p>
+
+                <h3>8.1 Le squelette</h3>
+                <p><code>scaffold</code> crée l'arborescence dans un dossier de ton <code>addons_path</code> :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin scaffold mon_module …/mes_modules
+$ find mon_module -type f | sort
+mon_module/controllers/controllers.py
+mon_module/controllers/__init__.py
+mon_module/demo/demo.xml
+mon_module/__init__.py
+mon_module/__manifest__.py
+mon_module/models/__init__.py
+mon_module/models/models.py
+mon_module/security/ir.model.access.csv
+mon_module/views/templates.xml
+mon_module/views/views.xml</code></pre>
+                <p>Pour un premier module, retire <code>controllers/</code>, <code>demo/</code> et <code>views/templates.xml</code>
+                    (une page web et des données de démonstration, inutiles ici), et le <code>__init__.py</code> racine n'importe
+                    plus que <code>models</code>. Le fichier <code>security/ir.model.access.csv</code>, lui, est un piège : on y
+                    revient en 8.4.</p>
+
+                <h3>8.2 Le manifeste</h3>
+<pre class="language-python"><code class="language-python"># mon_module/__manifest__.py
+{
+    'name': "Mon module",
+    'summary': "Notes de suivi des contacts",
+    'version': '20.0.1.0.0',
+    'category': 'Tools',
+    'author': "Moi",
+    'license': 'LGPL-3',
+    'depends': ['base'],
+    'data': [
+        'security/ir.access.csv',
+        'views/views.xml',
+    ],
+    'application': True,
+}</code></pre>
+                <p>Trois lignes comptent. <code>version</code> commence par <code>20.0</code> : Odoo 20 n'installe que les modules de
+                    sa série (<code>odoo/modules/module.py:500-502</code>). <code>data</code> liste les fichiers à charger, dans
+                    l'ordre : les droits d'abord, les vues ensuite. <code>application</code> fait apparaître le module dans le filtre
+                    « Applications » de la liste des modules. Sans <code>author</code>, le journal le signale par un
+                    <code>WARNING Missing `author` key</code>.</p>
+
+                <h3>8.3 Le modèle, puis les vues, l'action et le menu</h3>
+<pre class="language-python"><code class="language-python"># mon_module/models/models.py
+from odoo import fields, models
+
+
+class MonModuleNote(models.Model):
+    _name = 'mon_module.note'
+    _description = "Note de suivi"
+    _order = 'date desc, id desc'
+
+    name = fields.Char("Objet", required=True)
+    partner_id = fields.Many2one('res.partner', string="Contact")
+    date = fields.Date("Date", default=fields.Date.context_today)
+    description = fields.Text("Détail")</code></pre>
+                <p><code>_name</code> est le nom du modèle (la table sera <code>mon_module_note</code>) ; chaque champ devient une
+                    colonne. Les quatre éléments de l'écran tiennent dans un seul fichier XML :</p>
+<pre class="language-markup"><code class="language-markup">&lt;!-- mon_module/views/views.xml --&gt;
+&lt;odoo&gt;
+    &lt;record id="note_view_list" model="ir.ui.view"&gt;
+        &lt;field name="name"&gt;mon_module.note.list&lt;/field&gt;
+        &lt;field name="model"&gt;mon_module.note&lt;/field&gt;
+        &lt;field name="arch" type="xml"&gt;
+            &lt;list&gt;
+                &lt;field name="date"/&gt;
+                &lt;field name="name"/&gt;
+                &lt;field name="partner_id"/&gt;
+            &lt;/list&gt;
+        &lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;record id="note_view_form" model="ir.ui.view"&gt;
+        &lt;field name="name"&gt;mon_module.note.form&lt;/field&gt;
+        &lt;field name="model"&gt;mon_module.note&lt;/field&gt;
+        &lt;field name="arch" type="xml"&gt;
+            &lt;form&gt;
+                &lt;sheet&gt;
+                    &lt;group&gt;
+                        &lt;field name="name"/&gt;
+                        &lt;field name="partner_id"/&gt;
+                        &lt;field name="date"/&gt;
+                    &lt;/group&gt;
+                    &lt;field name="description" placeholder="Ce qui a été dit, ce qui reste à faire…"/&gt;
+                &lt;/sheet&gt;
+            &lt;/form&gt;
+        &lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;record id="note_action" model="ir.actions.act_window"&gt;
+        &lt;field name="name"&gt;Notes de suivi&lt;/field&gt;
+        &lt;field name="res_model"&gt;mon_module.note&lt;/field&gt;
+        &lt;field name="view_mode"&gt;list,form&lt;/field&gt;
+        &lt;field name="path"&gt;notes&lt;/field&gt;
+    &lt;/record&gt;
+
+    &lt;menuitem id="menu_root" name="Mes notes" sequence="90"/&gt;
+    &lt;menuitem id="menu_notes" name="Notes" parent="menu_root" action="note_action"/&gt;
+&lt;/odoo&gt;</code></pre>
+                <p>Mets ce fichier en regard du schéma : deux <code>ir.ui.view</code>, une <code>ir.actions.act_window</code> qui
+                    désigne le modèle et ses types de vue, deux <code>ir.ui.menu</code> (l'application, puis le menu qui porte
+                    l'action). La liste s'écrit <code>&lt;list&gt;</code>, jamais <code>&lt;tree&gt;</code> (déjà le cas en 19).</p>
+
+                <h3>8.4 Les droits : le fichier que scaffold génère ne marche pas</h3>
+                <p><code>scaffold</code> livre la ligne <code>'security/ir.model.access.csv'</code> du manifeste en commentaire,
+                    avec un fichier de droits au format des versions précédentes. Le réflexe est de décommenter la ligne et
+                    d'adapter ce fichier à son modèle. Sur Odoo 20, l'installation s'arrête :</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base -i mon_module --stop-after-init --no-http
+INFO ma_base odoo.modules.loading: Loading module mon_module (70/70)
+INFO ma_base odoo.registry: module mon_module: creating or updating database tables
+INFO ma_base odoo.modules.loading: loading mon_module/security/ir.model.access.csv
+ERROR ma_base odoo.registry: Failed to load registry
+CRITICAL ma_base odoo.service.server: Failed to initialize database `ma_base`.
+Traceback (most recent call last):
+  …
+  File "…/odoo/modules/loading.py", line 56, in load_data
+  …
+  File "…/odoo/tools/convert.py", line 771, in convert_csv_import
+    result = env[model].with_context(**context).load(fields, datas)
+  …
+  File "…/odoo/orm/registry.py", line 385, in __getitem__
+    return self.models[model_name]
+KeyError: 'ir.model.access'
+$ echo $?
+255</code></pre>
+                <p>La trace se lit de bas en haut : en chargeant un fichier de données, Odoo demande au registre le modèle nommé par
+                    le CSV, <code>ir.model.access</code>, et ce modèle n'existe plus en Odoo 20.</p>
+                <div class="pitfall-box">
+                    <h4>En Odoo 20, les droits s'écrivent dans <code>security/ir.access.csv</code></h4>
+                    <p>Le gabarit de <code>scaffold</code> écrit toujours l'ancien fichier
+                        (<code>odoo/cli/templates/default/security/ir.model.access.csv.template</code>). Odoo 20 réunit droits
+                        d'accès et règles d'enregistrement dans un seul modèle, <code>ir.access</code>. Supprime le fichier généré,
+                        écris celui-ci et cite-le dans le manifeste :</p>
+<pre class="language-bash"><code class="language-bash">id,name,model_id,group_id/id,operation
+access_mon_module_note_user,mon_module.note user,mon_module.note,base.group_user,crud</code></pre>
+                    <p>Une ligne = un groupe (ici les utilisateurs internes) et les opérations permises (<code>c</code>réer,
+                        <code>r</code>ead, <code>u</code>pdate, <code>d</code>elete). Sans aucune ligne, le modèle existe mais aucun
+                        utilisateur n'y a accès. Les groupes, le domaine et le piège de la ligne sans groupe sont dans
+                        <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>.</p>
+                </div>
+
+                <h3>8.5 Installer et regarder</h3>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base -i mon_module --stop-after-init --no-http
+INFO ma_base odoo.modules.loading: Loading module mon_module (70/70)
+INFO ma_base odoo.registry: module mon_module: creating or updating database tables
+INFO ma_base odoo.modules.loading: loading mon_module/security/ir.access.csv
+INFO ma_base odoo.modules.loading: loading mon_module/views/views.xml
+INFO ma_base odoo.addons.base.models.ir_module: module mon_module: no translation for language fr_FR
+INFO ma_base odoo.modules.loading: Module mon_module loaded in 0.73s, 786 queries (+786 other)
+INFO ma_base odoo.modules.loading: Modules loaded.
+INFO ma_base odoo.registry: Registry loaded in 1.845s
+$ echo $?
+0</code></pre>
+                <p>Le journal raconte l'installation dans l'ordre du schéma : la table est créée (<code>creating or updating database
+                    tables</code>), puis chaque fichier de <code>data</code> est chargé, droits puis vues. <code>no translation for
+                    language fr_FR</code> est normal : le module n'a pas encore de fichier de traduction. Démarre le serveur, recharge
+                    le navigateur : l'application « Mes notes » est dans le menu principal.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Application Mes notes d'Odoo 20, menu Notes, action Notes de suivi en liste : colonnes Date, Objet, Contact, À rappeler ; trois notes : 11 nov. Question sur la livraison pour Gemini Furniture, 10 nov. Démonstration planifiée pour Wood Corner, 9 nov. Relance du devis pour Azure Interior, chacune avec un interrupteur À rappeler."/>
+                    <figcaption>La liste de « Mes notes », triée par <code>_order</code> (date décroissante), après la mise à jour de 8.6.</figcaption>
+                </figure>
+                <p>L'adresse est <code>/odoo/notes</code>, grâce au <code>path</code> de l'action ; un clic sur une ligne ouvre
+                    <code>/odoo/notes/1</code>. Active <code>?debug=1</code> et refais sur ton propre écran le parcours des sections
+                    3 et 4 : l'infobulle de « Contact » annonce <code>partner_id</code> sur <code>mon_module.note</code>, et
+                    l'insecte retrouve ton action, tes vues et ta ligne de droits.</p>
+
+                <h3>8.6 Modifier, puis mettre à jour</h3>
+                <p>Ajoute un champ au modèle et aux deux vues, et monte la version :</p>
+<pre class="language-python"><code class="language-python">    to_call = fields.Boolean("À rappeler")          # models.py
+    # views.xml : &lt;field name="to_call" widget="boolean_toggle"/&gt; dans la liste, &lt;field name="to_call"/&gt; dans le formulaire
+    # __manifest__.py : 'version': '20.0.1.1.0'</code></pre>
+                <p>Un nouveau champ stocké exige une colonne, donc une mise à jour du module : <code>-u</code>, pas <code>-i</code>.</p>
+<pre class="language-bash"><code class="language-bash">$ odoo-bin -c odoo.conf -d ma_base -u mon_module --stop-after-init --no-http
+INFO ma_base odoo.modules.loading: Loading module mon_module (3/70)
+INFO ma_base odoo.registry: module mon_module: creating or updating database tables
+INFO ma_base odoo.modules.loading: loading mon_module/security/ir.access.csv
+INFO ma_base odoo.modules.loading: loading mon_module/views/views.xml
+INFO ma_base odoo.modules.loading: Modules loaded.
+$ psql -d ma_base -Atc "select column_name, data_type from information_schema.columns where table_name = 'mon_module_note' and column_name = 'to_call'"
+to_call|boolean</code></pre>
+                <p>La colonne existe, la version installée est <code>20.0.1.1.0</code>, et la liste montre l'interrupteur
+                    (capture ci-dessus). Le formulaire, lui, affiche la case :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Formulaire d'une note de suivi dans Odoo 20 : fil d'Ariane Notes de suivi, Relance du devis ; champs Objet Relance du devis, Contact Azure Interior, Date 9 nov., À rappeler coché ; en dessous le détail Rappeler mardi pour la remise."/>
+                    <figcaption>Le formulaire, avec le champ ajouté par la mise à jour.</figcaption>
+                </figure>
+                <p>Ce qui se passe quand on oublie le <code>-u</code> (erreur 500 sur une colonne manquante), et quand une vue ne
+                    bouge pas malgré la mise à jour, est traité dans
+                    <a href="/blog/developpement-odoo-2/module-ne-prend-pas-modifications-odoo-358">Mettre à jour un module Odoo 20
+                    qui ne prend pas tes modifications</a> ; toutes les commandes d'installation et de désinstallation dans
+                    <a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller
+                    un module Odoo 20 en CLI</a>.</p>
+
+                <h3>8.7 Vérifier dans le shell</h3>
+<pre class="language-python"><code class="language-python">>>> menu = env.ref('mon_module.menu_notes')
+>>> act = menu.action
+>>> menu.complete_name, act.res_model, act.path
+('Mes notes/Notes', 'mon_module.note', 'notes')
+>>> env['ir.ui.view'].search([('model', '=', 'mon_module.note')]).mapped(lambda v: (v.type, v.xml_id))
+[('form', 'mon_module.note_view_form'), ('list', 'mon_module.note_view_list')]
+>>> env['ir.access'].search([('model_id.model', '=', 'mon_module.note')]).mapped(lambda a: (a.group_id.display_name, a.operation))
+[('Role / User', 'crud')]
+>>> env['mon_module.note'].search_read([], ['name', 'partner_id', 'date'], limit=1)
+[{'id': 3, 'name': 'Question sur la livraison', 'partner_id': (11, 'Gemini Furniture'), 'date': datetime.date(2026, 11, 11)}]</code></pre>
+                <p>Le même chaînage que pour le menu Devis, sur ton module : menu, action, modèle, vues, droits. Le groupe
+                    <code>base.group_user</code> s'affiche « Role / User » : c'est son nom dans Odoo 20.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. CE QUI CHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Ce qui change pour un débutant entre Odoo 19 et Odoo 20</h2>
+                <p>Seulement ce qu'on croise dans les premières semaines ; chaque ligne est vérifiée dans le source 20.0 et comparée
+                    à la branche 19.0.</p>
+                <table class="tmc">
+                    <thead><tr><th>Sujet</th><th>Odoo 19</th><th>Odoo 20</th><th>Preuve</th></tr></thead>
+                    <tbody>
+                        <tr><td>Python</td><td>3.10 minimum</td><td>3.12 minimum</td><td><code>odoo/release.py</code>,
+                            <code>MIN_PY_VERSION</code> = <code>(3, 12)</code></td></tr>
+                        <tr><td>PostgreSQL</td><td>13 minimum</td><td>16 minimum</td><td><code>MIN_PG_VERSION</code> = <code>16</code></td></tr>
+                        <tr><td>Version du manifeste</td><td><code>19.0.x.y.z</code></td><td><code>20.0.x.y.z</code> ; un module resté en
+                            <code>19.0</code> est marqué non installable, avec un simple <code>WARNING</code> et un code retour 0</td>
+                            <td>essai : <code>The module mon_module19 has an incompatible version, setting installable=False</code></td></tr>
+                        <tr><td>Fichier de droits</td><td><code>ir.model.access.csv</code> + règles <code>ir.rule</code></td>
+                            <td><code>ir.access.csv</code> (modèle <code>ir.access</code>)</td><td>essai :
+                            <code>KeyError: 'ir.model.access'</code> ; <code>'ir.rule' in env</code> → <code>False</code></td></tr>
+                        <tr><td>Insecte › Sécurité</td><td>Droits d'accès + Règles d'enregistrement</td><td>Droits d'accès
+                            (<code>ir.access</code>)</td><td><code>debug_items.js:124-135</code></td></tr>
+                        <tr><td>Gabarits QWeb</td><td><code>t-esc</code> déprécié mais rendu</td><td><code>t-esc</code> ne rend
+                            <strong>rien</strong> ; seul <code>t-out</code> affiche</td><td>essai ci-dessous</td></tr>
+                        <tr><td>Client web</td><td>OWL 2 (2.8.4 dans la 19.0 publique)</td><td>OWL 3.0.0-alpha.49 : <code>useState</code> et <code>useRef</code>
+                            n'existent plus</td><td>console : <code>typeof owl.useState</code> → <code>'undefined'</code></td></tr>
+                        <tr><td>Tests JavaScript</td><td><code>/web/tests</code> et <code>/web/tests/legacy</code> (QUnit)</td>
+                            <td><code>/web/tests</code> seul</td><td><code>addons/web/controllers/webclient.py:100</code></td></tr>
+                    </tbody>
+                </table>
+                <div class="pitfall-box">
+                    <h4><code>t-esc</code> ne plante pas : il n'affiche plus rien</h4>
+                    <p>Les tutoriels écrits pour les versions précédentes affichent une valeur dans un gabarit QWeb avec
+                        <code>t-esc</code>. En Odoo 20, la directive n'existe plus : pas d'erreur, un avertissement au journal et une
+                        balise vide. Rendu du même gabarit dans le shell, avec <code>nom = 'Ready Mat'</code> :</p>
+<pre class="language-python"><code class="language-python">&lt;p&gt;&lt;t t-esc="nom"/&gt;&lt;/p&gt;   →  '&lt;p&gt;&lt;/p&gt;'
+WARNING ma_base odoo.addons.base.models.ir_qweb: Unknown directives or unused attributes: {'t-esc'} from &lt;t t-esc="nom"/&gt;
+&lt;p&gt;&lt;t t-out="nom"/&gt;&lt;/p&gt;   →  '&lt;p&gt;Ready Mat&lt;/p&gt;'</code></pre>
+                    <p>Écris toujours <code>t-out</code>. Les autres pannes silencieuses d'un code venu de la 19 sont dans
+                        <a href="/blog/developpement-odoo-2/pannes-silencieuses-module-odoo-354">Pannes silencieuses d'un module 19 sous
+                        Odoo 20 : t-esc, datas, t-set</a>.</p>
+                </div>
+                <p>La liste complète des écarts techniques est dans
+                    <a href="/blog/developpement-odoo-2/nouveautes-techniques-odoo-240">Ce qui change techniquement en Odoo 20</a>, et les
+                    messages d'erreur d'un module 19 installé sur une 20 dans
+                    <a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages
+                    d'erreur et leur correctif</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 10. OÙ CHERCHER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>10. Où chercher, et la suite</h2>
+                <table class="tmc">
+                    <thead><tr><th>Question</th><th>Où regarder</th></tr></thead>
+                    <tbody>
+                        <tr><td>Quel champ, quel modèle ?</td><td>infobulle en <code>?debug=1</code></td></tr>
+                        <tr><td>Quelle vue, quelle action ?</td><td>menu de l'insecte ; « Arc calculé » pour la vue finale</td></tr>
+                        <tr><td>Comment Odoo fait-il déjà ceci ?</td><td>le source du module concerné, <code>…/odoo/addons/&lt;module&gt;/models/</code>
+                            et <code>views/</code> : chercher le nom technique relevé dans l'infobulle</td></tr>
+                        <tr><td>Pourquoi l'installation échoue ?</td><td>le journal, de la première ligne <code>ERROR</code> à la dernière
+                            ligne de la trace (voir <a href="/blog/developpement-odoo-2/traceback-erreur-odoo-355">Traceback Odoo 20 : lire une
+                            erreur et trouver la ligne fautive</a>)</td></tr>
+                        <tr><td>Que contient vraiment la base ?</td><td><code>odoo-bin shell</code>, ou <code>psql</code> en lecture</td></tr>
+                        <tr><td>Que fait le serveur ?</td><td>le journal et ses options (voir <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux
+                            Odoo 20 : _logger, --log-handler, --log-sql</a>)</td></tr>
+                    </tbody>
+                </table>
+                <p>La suite logique est un module complet, construit étape par étape : la série « Développer avec Odoo 20 : le module
+                    Bibliothèque ». Elle commence par l'installation et reprend chaque notion vue ici en profondeur :</p>
+                <ul>
+                    <li><a href="/blog/developpement-odoo-2/creer-premier-module-odoo-20-179">Créer son premier module Odoo 20 : le modèle Livre</a>
+                        (manifeste, modèle, droits, vues, contrainte d'unicité) ;</li>
+                    <li><a href="/blog/developpement-odoo-2/relations-modeles-odoo-20-180">Relier deux modèles Odoo 20 : les exemplaires</a> et
+                        <a href="/blog/developpement-odoo-2/heritage-modeles-odoo-20-181">Hériter d'un modèle Odoo 20</a> ;</li>
+                    <li><a href="/blog/developpement-odoo-2/methodes-boutons-odoo-20-182">Agir en Odoo 20 : méthodes, boutons et contraintes</a> ;</li>
+                    <li><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a> ;</li>
+                    <li><a href="/blog/developpement-odoo-2/heritage-vues-odoo-20-192">Héritage de vues en Odoo 20</a> et
+                        <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Mode développeur</td><td><code>?debug=1</code> ; non minifié <code>?debug=assets</code> ; sortir
+                            <code>?debug=</code></td></tr>
+                        <tr><td>Nom technique d'un champ</td><td>survol du <code>?</code> du libellé, en mode développeur</td></tr>
+                        <tr><td>Vue, action, droits d'un écran</td><td>menu de l'insecte</td></tr>
+                        <tr><td>Squelette de module</td><td><code>odoo-bin scaffold mon_module …/mes_modules</code>, puis remplacer le
+                            fichier de droits</td></tr>
+                        <tr><td>Droits d'un nouveau modèle</td><td><code>security/ir.access.csv</code> :
+                            <code>id,name,model_id,group_id/id,operation</code></td></tr>
+                        <tr><td>Version du manifeste</td><td><code>20.0.x.y.z</code></td></tr>
+                        <tr><td>Installer / mettre à jour</td><td><code>-i mon_module</code> / <code>-u mon_module</code>, avec
+                            <code>--stop-after-init --no-http</code> pour une commande ponctuelle</td></tr>
+                        <tr><td>Adresse lisible d'un écran</td><td>champ <code>path</code> de l'action → <code>/odoo/&lt;path&gt;</code></td></tr>
+                        <tr><td>Afficher une valeur en QWeb</td><td><code>t-out</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un écran Odoo = un menu, une action, un modèle, des vues, et des droits : tout sauf le modèle est une donnée
+                        en base, et ton module écrit exactement ces enregistrements.</li>
+                    <li>Le mode développeur (<code>?debug=1</code>) est un réglage de session du navigateur ; l'option
+                        <code>--dev</code> du serveur ne l'active pas.</li>
+                    <li>Infobulle, menu de l'insecte et menu Technique répondent à « quel champ, quelle vue, quelle action » avant
+                        d'écrire une ligne.</li>
+                    <li>En Odoo 20 : manifeste en <code>20.0.x.y.z</code>, droits dans <code>security/ir.access.csv</code>,
+                        <code>t-out</code> dans les gabarits. Le fichier de droits du <code>scaffold</code> fait échouer
+                        l'installation.</li>
+                    <li>La boucle de travail : écrire, <code>-u</code>, lire le journal, regarder l'écran, vérifier dans le shell.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Écrans, commandes, journaux et sorties relevés le 11/11/2026 sur un serveur Odoo 20.0 Community
+                    (PostgreSQL 16, Python 3.12), base de démonstration avec Ventes, interface en français, navigateur Chromium. Code
+                    relu :</p>
+                <ul class="small">
+                    <li>Odoo 20.0 : <code>addons/web/models/ir_http.py</code> (modes de debug) ;
+                        <code>addons/web/static/src/webclient/settings_form_view/widgets/res_config_dev_tool.xml</code> ;
+                        <code>addons/web/static/src/webclient/actions/debug_items.js</code> ; <code>odoo/tools/config.py</code>
+                        (<code>--dev</code>) ; <code>odoo/release.py</code> ; <code>odoo/modules/module.py</code> ;
+                        <code>odoo/cli/templates/default/</code> ; <code>odoo/addons/base/models/ir_access.py</code>,
+                        <code>ir_qweb.py</code> ; <code>addons/sale/views/sale_order_views.xml</code> ;
+                        <code>addons/web/controllers/webclient.py</code>.</li>
+                    <li>Comparaison avec la branche 19.0 publique : <code>odoo/release.py</code> (Python 3.10, PostgreSQL 13),
+                        <code>addons/web/static/src/webclient/actions/debug_items.js</code> (droits d'accès et règles
+                        d'enregistrement), <code>odoo/addons/base/views/ir_rule_views.xml</code>, <code>ir_qweb.py</code>
+                        (<code>t-esc</code> déprécié), <code>addons/web/controllers/webclient.py</code> (<code>/web/tests/legacy</code>).</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/creer-premier-module-odoo-20-179">Créer son premier module Odoo 20 : le modèle Livre</a></h5>
+                            <p class="small text-muted mb-0">La suite : un vrai module, du manifeste à la contrainte d'unicité.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nom-technique-champ-vue-action-odoo-357">Mode debug Odoo 20 : nom technique d'un champ, d'une vue, d'une action</a></h5>
+                            <p class="small text-muted mb-0">Le menu de l'insecte entrée par entrée.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a></h5>
+                            <p class="small text-muted mb-0">scaffold, shell, -i, -u, --dev : le programme qu'on a utilisé ici.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
