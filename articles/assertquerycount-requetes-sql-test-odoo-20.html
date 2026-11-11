@@ -1,0 +1,457 @@
+<!--
+Article — assertQueryCount en Odoo 20 : compter les requêtes SQL d'un test
+Série « Migrer et tester en Odoo 20 » (id 64), étape 1 ; lot T6 (T6.a du plan vague 3 technique, retenu à la place de T6.1 OpenUpgrade)
+Date : 2026-11-11
+Slug : assertquerycount-requetes-sql-test-odoo-20
+Mot-clé cible : odoo assertquerycount
+Catégorie : Développement Odoo
+Tags : intermediaire, qualite-tests, guide, community
+Temps de lecture : ~11 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, module oski_requetes_comptees 20.0.1.0.0) :
+- Source : odoo/tests/common.py:829-927 (assertQueries, assertQueryCount), :1176-1184 (is_query_count), :3059-3118 (users, warmup).
+- Suite finale : 5 tests verts (exit 0) ; calcul naïf remis : 4 échecs (exit 1). Version naïve : 1 / 10 requêtes ; _read_group : 1 / 1.
+- Froid / chaud (admin, demo) : 7 et 4 / 1 et 1 ; requêtes listées par assertQueries([]).
+- Contre-épreuves : prefetch (clients[:1] = 10), moins que prévu (INFO, vert), attendu 1 et 0 requête (échec), deux blocs (3 échecs, 1 test), assertQueriesContain (AttributeError), is_query_count (4 tests).
+- 19.0 : même module en 19.0.1.0.0 sur une base 19 neuve (sale_management + démo) : mêmes comptes 1/1/1/4, '...' refusé, 0 requête toléré (INFO), assertQueriesContain présent, 13 requêtes à froid (ir_model_access, ir_rule) ; helpers identiques à la 19.0 publique (40e9be2, 10/11/2026).
+Captures : content/blog/screenshots/assertquerycount-requetes-sql-test-odoo-20/ (01 schéma, 02 N+1, 03 vert puis régression, 04 froid/chaud).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">assertQueryCount en Odoo 20 : compter les requêtes SQL d'un test</h1>
+                <p class="lead mt-3 text-white">Un champ calculé qui lance une requête par enregistrement passe tous les tests fonctionnels, puis ralentit chaque liste en production. <code>assertQueryCount</code> fige le nombre de requêtes SQL d'un bout de code dans un test : la régression devient un échec, avec le nombre réel et la ligne. Voici comment l'écrire, le stabiliser avec <code>@warmup</code> et <code>@users</code>, lire les requêtes en cause, et ce que le compteur laisse passer.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · parcours <strong>Qualité &amp; tests</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Mesurer</h4>
+                        <p>Lire le nombre réel de requêtes d'un bloc de code, et repérer une requête par enregistrement avant la production.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Stabiliser</h4>
+                        <p>Obtenir un nombre qui ne bouge plus d'un lancement à l'autre : <code>@warmup</code>, <code>@users</code> et le flush des écritures.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Expliquer</h4>
+                        <p>Afficher les requêtes elles-mêmes avec <code>assertQueries</code>, et connaître les cas où le compteur ne dit rien.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Savoir écrire et lancer un test <code>TransactionCase</code> : voir <a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a>.</li>
+                        <li>Une instance Odoo 20 Community, base <code>ma_base</code> avec les Ventes et les données de démonstration (le test utilise un article de démo). Les nombres de requêtes ci-dessous viennent d'une base où sont aussi installés la Comptabilité et l'Inventaire : sur une autre base, certains changent.</li>
+                        <li>Les tests se lancent en ligne de commande, serveur arrêté, avec <code>--test-tags</code> et <code>--stop-after-init</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que compte assertQueryCount</h2>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma : passage de chauffe facultatif, flush puis relevé du compteur, bloc with, flush puis comparaison ; en dessous, plus que prévu = échec, moins que prévu = ligne INFO, attendu supérieur à zéro sans requête = échec." style="max-width:100%; height:auto;"/><figcaption>Le compteur est celui du curseur du test : chaque requête envoyée dans le bloc compte, lectures de cache manquantes et contrôles d'accès compris.</figcaption></figure>
+                <p><code>assertQueryCount</code> est un gestionnaire de contexte des classes de test d'Odoo (<code>odoo/tests/common.py</code>). Avant le bloc, il envoie les écritures en attente et exécute les traitements de pré-validation (flush), puis relève le compteur de requêtes du curseur ; après le bloc, il fait un nouveau flush et compare l'écart au nombre attendu. Le nombre attendu se donne en premier argument, ou par login : <code>assertQueryCount(admin=1, demo=1)</code>.</p>
+                <p>Le compteur ne mesure pas un temps : il mesure un nombre de requêtes, qui ne dépend ni de la machine ni de la charge. C'est ce qui en fait un bon garde-fou dans une suite de tests ou une intégration continue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module d'essai : un compteur de commandes</h2>
+                <p>Le module <code>oski_requetes_comptees</code> (dépendance : <code>sale</code>) ajoute aux contacts un champ calculé non stocké, le nombre de commandes confirmées. Première version, la plus naturelle à écrire :</p>
+<pre class="language-python"><code class="language-python">from odoo import fields, models
+
+
+class ResPartner(models.Model):
+    _inherit = 'res.partner'
+
+    oski_nb_commandes = fields.Integer('Commandes confirmées', compute='_compute_oski_nb_commandes')
+
+    def _compute_oski_nb_commandes(self):
+        # version naïve : une requête COUNT par contact
+        for partner in self:
+            partner.oski_nb_commandes = self.env['sale.order'].search_count(
+                [('partner_id', '=', partner.id), ('state', '=', 'sale')])</code></pre>
+                <p>Le module n'ajoute pas de modèle : il n'a donc pas besoin de fichier de droits. Les tests partagent une classe de base qui crée dix clients et deux commandes confirmées pour chacun :</p>
+<pre class="language-python"><code class="language-python">from odoo.tests import TransactionCase, users, warmup
+
+
+class RequetesCommon(TransactionCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        produit = cls.env.ref('product.product_product_4')
+        cls.clients = cls.env['res.partner'].create([{'name': f'Client {i}'} for i in range(10)])
+        commandes = cls.env['sale.order'].create([
+            {'partner_id': client.id, 'order_line': [(0, 0, {'product_id': produit.id})]}
+            for client in cls.clients for _ in range(2)
+        ])
+        commandes.action_confirm()</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Premier test : laisser Odoo donner le nombre</h2>
+                <p>On ne devine pas un nombre de requêtes. On écrit <code>0</code>, on lance le test, et le message d'échec donne le nombre réel. Deux mesures : un client, puis dix.</p>
+<pre class="language-python"><code class="language-python">class TestRequetes(RequetesCommon):
+
+    def test_un_client(self):
+        client = self.env['res.partner'].browse(self.clients[0].id)
+        with self.assertQueryCount(0):
+            self.assertEqual(client.oski_nb_commandes, 2)
+
+    def test_dix_clients(self):
+        clients = self.env['res.partner'].browse(self.clients.ids)
+        with self.assertQueryCount(0):
+            self.assertEqual(clients.mapped('oski_nb_commandes'), [2] * 10)</code></pre>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base -u oski_requetes_comptees \
+    --test-tags /oski_requetes_comptees --stop-after-init --no-http</code></pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Terminal : Query count more than expected for user __system__: 10 > 0 in test_dix_clients, puis 1 > 0 in test_un_client ; 2 failed of 2 tests." style="max-width:100%; height:auto;"/><figcaption>Une requête pour un client, dix pour dix clients : le calcul fait une requête par enregistrement.</figcaption></figure>
+                <p>Le message dit tout : le nombre réel (<code>10 &gt; 0</code>), le test, le fichier et la ligne du bloc. Dix requêtes pour dix contacts, c'est le schéma « une requête par enregistrement » (souvent appelé N+1) : sur une liste de 80 contacts, ce serait 80 requêtes.</p>
+                <p>Le login affiché est <code>__system__</code> : sans décorateur <code>@users</code>, un <code>TransactionCase</code> tourne en superutilisateur. C'est sous ce login que le nombre attendu est cherché ; le premier argument (<code>assertQueryCount(1)</code>) sert de valeur par défaut pour tous les logins.</p>
+                <div class="pitfall-box">
+                    <h4>Mesurer un seul enregistrement peut tromper, dans les deux sens</h4>
+                    <p>Avec un seul client, la version naïve fait une requête, exactement comme une version correcte : un test sur un enregistrement ne voit pas le N+1. Mesurez toujours sur plusieurs enregistrements. À l'inverse, <code>self.clients[:1]</code> garde le lot de préchargement des dix clients créés ensemble : après un <code>invalidate_recordset()</code>, lire le champ sur ce « seul » client le calcule pour les dix et le test annonce <code>10 &gt; 0 in test_un_client</code>. Un <code>browse()</code> neuf mesure vraiment un enregistrement.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Corriger, puis figer le nombre</h2>
+                <p>La correction regroupe le comptage en une requête pour tout le lot, avec <code>_read_group</code> (voir <a href="/blog/developpement-odoo-2/read-group-odoo-20-270">read_group en Odoo 20</a>) :</p>
+<pre class="language-python"><code class="language-python">    def _compute_oski_nb_commandes(self):
+        # une seule requête GROUP BY pour tous les contacts du lot
+        groupes = self.env['sale.order']._read_group(
+            [('partner_id', 'in', self.ids), ('state', '=', 'sale')],
+            groupby=['partner_id'], aggregates=['__count'])
+        nb = {partner.id: count for partner, count in groupes}
+        for partner in self:
+            partner.oski_nb_commandes = nb.get(partner.id, 0)</code></pre>
+                <p>Relancé avec <code>assertQueryCount(0)</code>, le test annonce maintenant <code>1 &gt; 0</code> pour un client <em>et</em> pour dix. On remplace donc les <code>0</code> par <code>1</code> : le test est vert, et il le restera tant que le calcul ne fait qu'une requête, quel que soit le nombre de contacts.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Terminal : 0 failed of 5 tests, code de sortie 0 ; puis, calcul remis en version naïve, 10 > 1 pour __system__, admin et demo, Not the expected queries, 4 failed of 5 tests, code de sortie 1." style="max-width:100%; height:auto;"/><figcaption>La suite complète du module (les cinq tests de cet article) est verte ; remettre la version naïve la fait échouer, code de sortie 1.</figcaption></figure>
+                <p>C'est tout l'intérêt : quelqu'un qui, plus tard, réécrit le calcul en boucle verra le test échouer avec <code>10 &gt; 1</code>, sans que la valeur calculée ait changé. Le code de sortie 1 suffit à bloquer une intégration continue.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Compter pour un vrai utilisateur : @users et @warmup</h2>
+                <p>Le superutilisateur n'est pas soumis aux droits d'accès. Un utilisateur réel, si : ses requêtes ne sont pas les mêmes. Le décorateur <code>@users</code> rejoue la méthode pour chaque login, et le nombre attendu se donne par login. Premier essai, sans autre précaution :</p>
+<pre class="language-python"><code class="language-python">class TestRequetesUtilisateurs(RequetesCommon):
+
+    @users('admin', 'demo')
+    def test_froid(self):
+        clients = self.env['res.partner'].browse(self.clients.ids)
+        with self.assertQueryCount(admin=0, demo=0):
+            clients.mapped('oski_nb_commandes')
+
+    @users('admin', 'demo')
+    @warmup
+    def test_chaud(self):
+        clients = self.env['res.partner'].browse(self.clients.ids)
+        with self.assertQueryCount(admin=0, demo=0):
+            clients.mapped('oski_nb_commandes')</code></pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_04" alt="Terminal : test_chaud 1 > 0 pour admin et demo ; test_froid 7 > 0 pour admin et 4 > 0 pour demo ; 4 failed of 2 tests." style="max-width:100%; height:auto;"/><figcaption>Sans chauffe, 7 requêtes pour le premier login et 4 pour le second ; avec <code>@warmup</code>, 1 pour chacun.</figcaption></figure>
+                <p>Le même code fait 7 requêtes pour le premier login, 4 pour le second, et 1 avec <code>@warmup</code>. La différence ne vient pas du calcul : ce sont des caches, dont une partie est déjà remplie quand le second login passe. Les requêtes du test à froid se listent en remplaçant <code>assertQueryCount</code> par <code>assertQueries([])</code> (section suivante). Le détail montré ici est celui d'<code>admin</code> : sept requêtes, sur ces tables :</p>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>#</th><th>Table lue</th><th>Pourquoi</th></tr></thead><tbody>
+<tr><td>1</td><td><code>properties_base_definition</code></td><td>définitions de propriétés</td></tr>
+<tr><td>2</td><td><code>res_users</code></td><td>la fiche de l'utilisateur courant</td></tr>
+<tr><td>3</td><td><code>res_groups_users_rel</code></td><td>ses groupes</td></tr>
+<tr><td>4</td><td><code>ir_access</code></td><td>les droits d'accès (modèle unique en Odoo 20)</td></tr>
+<tr><td>5</td><td><code>ir_model</code></td><td>les modèles visés par ces droits</td></tr>
+<tr><td>6</td><td><code>res_company</code></td><td>ses sociétés autorisées</td></tr>
+<tr><td>7</td><td><code>sale_order</code></td><td>le <code>GROUP BY</code> du calcul, la seule requête « utile »</td></tr>
+</tbody></table></div>
+                <p>Les six premières alimentent des caches (cache des enregistrements et caches ORM des droits) : elles disparaissent dès que ces caches sont remplis. C'est le rôle de <code>@warmup</code> : il exécute la méthode une première fois, sans vérifier les nombres, annule ses données par un point de sauvegarde mais garde les caches ORM, vide le cache des enregistrements, puis exécute la méthode pour de bon. Il reste la requête du calcul. Le test retenu dans le module :</p>
+<pre class="language-python"><code class="language-python">    @users('admin', 'demo')
+    @warmup
+    def test_dix_clients(self):
+        clients = self.env['res.partner'].browse(self.clients.ids)
+        with self.assertQueryCount(admin=1, demo=1):
+            clients.mapped('oski_nb_commandes')</code></pre>
+                <p>L'ordre est celui des tests d'Odoo : <code>@users</code> à l'extérieur, <code>@warmup</code> juste au-dessus de la méthode ; la chauffe a ainsi lieu pour chaque login. Les droits de chaque utilisateur se retrouvent dans le SQL : le <code>GROUP BY</code> chaud porte un filtre <code>"sale_order"."company_id" IN %s</code>, issu de la ligne d'accès multi-société de <code>sale.order</code> (voir <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Voir les requêtes : assertQueries</h2>
+                <p>Quand un nombre augmente, il faut savoir quelle requête est en trop. <code>assertQueries</code> compare la liste des requêtes du bloc à une liste attendue. Avec une liste vide, il échoue en affichant toutes les requêtes réelles, préfixées par <code>+++</code> : c'est le moyen le plus court de les lire sans changer le niveau du journal (pour une session entière, voir <code>--log-sql</code> dans <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20</a>).</p>
+<pre class="language-python"><code class="language-python">        with self.assertQueries([]):
+            clients.mapped('oski_nb_commandes')</code></pre>
+                <p>On peut aussi en faire un test à part entière. Les espaces et la casse sont ignorés, et en Odoo 20 la chaîne <code>...</code> remplace n'importe quel morceau de la requête : on fige la forme (un <code>GROUP BY</code> sur <code>sale_order</code>) sans recopier le détail du <code>WHERE</code>.</p>
+<pre class="language-python"><code class="language-python">class TestRequetesSql(RequetesCommon):
+
+    @users('admin')
+    @warmup
+    def test_requete_group_by(self):
+        clients = self.env['res.partner'].browse(self.clients.ids)
+        with self.assertQueries(['''
+            SELECT "sale_order"."partner_id", COUNT(*)
+            FROM "sale_order"
+            WHERE ...
+            GROUP BY "sale_order"."partner_id"
+            ORDER BY "sale_order"."partner_id" ASC
+        ''']):
+            clients.mapped('oski_nb_commandes')</code></pre>
+                <p>Avec la version naïve, ce test échoue en montrant la requête attendue (<code>---</code>) et les dix requêtes réelles (<code>+++</code>) :</p>
+<pre class="out">AssertionError: Not the expected queries :
+---
+            SELECT "sale_order"."partner_id", COUNT(*)
+            FROM "sale_order"
+            WHERE ...
+            GROUP BY "sale_order"."partner_id"
+            ORDER BY "sale_order"."partner_id" ASC
+
++++ SELECT COUNT(*) FROM "sale_order" WHERE ("sale_order"."partner_id" IN %s AND "sale_order"."state" IN %s) AND "sale_order"."company_id" IN %s
++++ SELECT COUNT(*) FROM "sale_order" WHERE ("sale_order"."partner_id" IN %s AND "sale_order"."state" IN %s) AND "sale_order"."company_id" IN %s
+… (dix lignes identiques au total)</pre>
+                <p>Les paramètres restent des <code>%s</code> : la comparaison porte sur le texte de la requête, pas sur ses valeurs. Comme pour les nombres, la comparaison n'a lieu qu'au passage réel, pas pendant la chauffe de <code>@warmup</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les écritures et le flush</h2>
+                <p>Une affectation <code>record.champ = valeur</code> ne part pas tout de suite en base : l'ORM la garde jusqu'au prochain flush (voir <a href="/blog/developpement-odoo-2/cache-sql-flush-invalidate-odoo-20-280">Cache et SQL en Odoo 20 : flush, invalidate</a>). Par défaut, <code>assertQueryCount</code> fait un flush avant et après le bloc : les écritures en attente avant le bloc ne sont pas comptées, celles du bloc le sont.</p>
+<pre class="language-python"><code class="language-python">class TestRequetesEcriture(RequetesCommon):
+
+    @users('admin')
+    @warmup
+    def test_ecriture(self):
+        client = self.env['res.partner'].browse(self.clients[0].id)
+        with self.assertQueryCount(admin=4):
+            client.comment = 'Client fidèle'
+        with self.assertQueryCount(admin=0, flush=False):
+            client.comment = 'Client très fidèle'</code></pre>
+                <p>Ce test est vert. La première écriture coûte 4 requêtes, relevées avec <code>assertQueries([])</code> : trois lectures (la société, les utilisateurs liés au contact, ses contacts enfants) et l'<code>UPDATE</code> envoyé par le flush de fin de bloc. La seconde, avec <code>flush=False</code>, en coûte 0 : l'<code>UPDATE</code> partira plus tard, hors du bloc. <code>flush=False</code> sert à mesurer une lecture sans payer les écritures du code autour ; pour mesurer une écriture, gardez le flush par défaut.</p>
+                <div class="pitfall-box">
+                    <h4>flush=False rend une écriture invisible</h4>
+                    <p>Avec <code>flush=False</code>, un bloc qui écrit peut afficher 0 requête : le coût réel est reporté hors du bloc, et aucun test ne le mesure plus. Réservez cette option aux blocs qui ne font que lire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Ce que le compteur laisse passer</h2>
+                <p>Trois comportements à connaître, rejoués chacun dans un test d'essai :</p>
+                <ul>
+                    <li><strong>Moins que prévu = test vert.</strong> Un bloc qui fait 1 requête quand on en attend 3 ne fait pas échouer le test : une simple ligne INFO dans le journal.
+<pre class="out">INFO ma_base odoo.addons.oski_requetes_comptees.tests.test_requetes: Query count less than expected for user admin: 1 &lt; 3 in test_moins_que_prevu at …/oski_requetes_comptees/tests/test_requetes.py:69</pre></li>
+                    <li><strong>Attendu supérieur à 0, aucune requête = échec.</strong> Relire un champ déjà en cache dans le bloc ne fait aucune requête ; si le test en attend une, Odoo 20 échoue :
+<pre class="out">AssertionError: Query count did not detect any queries admin: expected 1 in test_aucune_requete at …/oski_requetes_comptees/tests/test_requetes.py:77</pre>
+                    Ce message signale le plus souvent un bloc qui ne mesure plus ce qu'il croit mesurer : valeur déjà en cache, appel déplacé hors du bloc.</li>
+                    <li><strong>Un échec n'arrête pas le test.</strong> Chaque dépassement est enregistré comme sous-test et la méthode continue : un test d'essai à deux blocs faux et une assertion fausse a donné <code>3 failed, 0 error(s) of 1 tests</code>. Le nombre d'échecs du résumé peut donc dépasser le nombre de tests.</li>
+                </ul>
+                <div class="pitfall-box">
+                    <h4>Un nombre trop haut ne fait pas échouer : baissez-le</h4>
+                    <p>Après une optimisation, le test reste vert avec l'ancien nombre, plus haut. Il ne protège alors plus rien : une régression jusqu'à ce plafond passerait sans bruit. Cherchez <code>Query count less than expected</code> dans le journal des tests et remettez le nombre exact.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ne lancer que les tests de requêtes</h2>
+                <p>Quand l'étiquette <code>is_query_count</code> figure dans <code>--test-tags</code>, Odoo l'ajoute à toute méthode de test dont le source contient <code>self.assertQueryCount</code>. On peut ainsi relancer seulement ces tests, ici limités au module :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin -c odoo.conf -d ma_base -u oski_requetes_comptees \
+    --test-tags 'is_query_count/oski_requetes_comptees' --stop-after-init --no-http</code></pre>
+<pre class="out">INFO ma_base odoo.addons.oski_requetes_comptees.tests.test_requetes: Starting TestRequetes.test_dix_clients ...
+INFO ma_base odoo.addons.oski_requetes_comptees.tests.test_requetes: Starting TestRequetes.test_un_client ...
+INFO ma_base odoo.addons.oski_requetes_comptees.tests.test_requetes: Starting TestRequetesUtilisateurs.test_dix_clients ...
+INFO ma_base odoo.addons.oski_requetes_comptees.tests.test_requetes: Starting TestRequetesEcriture.test_ecriture ...
+INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 4 tests when loading database 'ma_base'</pre>
+                <p>Quatre tests sur cinq : <code>test_requete_group_by</code>, qui n'utilise que <code>assertQueries</code>, est écarté. La détection lit le texte de la méthode : un appel fait depuis une fonction utilitaire n'est pas repéré.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Ce qui a changé depuis la 19</h2>
+                <p>Le même module, passé en version <code>19.0.1.0.0</code>, a été lancé sur une base Odoo 19 neuve (Ventes et démonstration). Les nombres du module sont identiques (1, 1, 1 et 4) ; les différences tiennent aux outils de test :</p>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>Point</th><th>19.0</th><th>20.0</th></tr></thead><tbody>
+<tr><td>Attendu supérieur à 0, aucune requête</td><td>ligne INFO <code>0 &lt; 1</code>, test vert</td><td>échec « did not detect any queries »</td></tr>
+<tr><td><code>...</code> dans <code>assertQueries</code></td><td>pris à la lettre : le test échoue</td><td>remplace n'importe quel morceau</td></tr>
+<tr><td>Message d'<code>assertQueries</code></td><td>longueurs comparées (listes réelle et attendue affichées en bloc), puis requête par requête</td><td>liste complète en <code>---</code> / <code>+++</code> / <code>===</code></td></tr>
+<tr><td><code>assertQueriesContain</code></td><td>présent</td><td>supprimé : <code>AttributeError: … has no attribute 'assertQueriesContain'</code></td></tr>
+<tr><td>Droits lus à froid</td><td><code>ir_model_access</code> et <code>ir_rule</code> (13 requêtes à froid sur la base de comparaison)</td><td><code>ir_access</code> seul (7 requêtes)</td></tr>
+<tr><td>Phase d'une classe sans <code>@tagged</code></td><td><code>at_install</code></td><td><code>post_install</code></td></tr>
+</tbody></table></div>
+                <p>Les deux bases n'ont pas les mêmes modules installés : les nombres à froid ne se comparent pas un pour un. Ils montrent seulement que les tables de droits interrogées ne sont plus les mêmes.</p>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Les tests de nombre de requêtes d'un module 19 se portent presque tels quels : remplacer <code>assertQueriesContain</code> (par <code>assertQueries</code> avec <code>...</code>), corriger les blocs qui attendaient des requêtes et n'en font plus, et relire les nombres « à froid » (sans <code>@warmup</code>), qui dépendent des tables de droits. Vérifiez aussi la phase des classes sans <code>@tagged</code> : <code>post_install</code> en 20.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Écrivez <code>assertQueryCount(0)</code>, lancez le test et recopiez le nombre réel du message d'échec.</li>
+                    <li>Mesurez sur plusieurs enregistrements, chargés par un <code>browse()</code> neuf : c'est là qu'une requête par enregistrement se voit.</li>
+                    <li><code>@users('admin', 'demo')</code> + <code>@warmup</code> donnent un nombre stable, par login ; sans <code>@users</code>, le login est <code>__system__</code>.</li>
+                    <li><code>assertQueries([])</code> affiche les requêtes réelles ; en Odoo 20, <code>...</code> sert de joker.</li>
+                    <li>Moins que prévu ne fait pas échouer : baissez le nombre après chaque optimisation. Gardez le flush par défaut pour mesurer une écriture.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a></h5>
+                            <p class="small text-muted mb-0">Écrire, étiqueter et lancer les tests d'un module Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/champs-calcules-odoo-20-286">Champs calculés Odoo 20 : store, inverse, search</a></h5>
+                            <p class="small text-muted mb-0">Le calcul par lot, le stockage et ce qu'ils changent au nombre de requêtes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/search-read-fetch-odoo-20-279">search, search_read, search_fetch, fetch : lire vite en Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Choisir la méthode de lecture qui fait le moins de requêtes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
