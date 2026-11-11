@@ -1,0 +1,541 @@
+<!--
+Article — Odoo 20 pour une association : adhésions, dons, évènements
+Série « Odoo 20 par métier » (blog Fonctionnel, série 68), vague 3 F5.1, étape 1
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : association-adhesions-dons-evenements-odoo
+Tags : intermediaire, crm, cas-pratique, community
+Sources vérifiées le 2026-11-11 : Odoo 20.0 Community (révision 3538ed82), base vs20_func_f51 (copie neutralisée de vs20_func), société My Company (San Francisco), USD.
+  Déjà installés sur la base : crm, sale, account, website, website_sale, website_payment, payment_demo, event, website_event, event_sale, mass_mailing.
+  Installé par l'article : partnership (case « Adhésion / Partenariat » des paramètres CRM, crm/views/res_config_settings_views.xml:28-33,
+  crm/models/res_config_settings.py:18-19). Module membership absent de odoo/addons (20.0 et 19.0) ; sale_subscription absent.
+  partnership (LGPL-3, depends crm + sale) : res.partner.grade (nom, liste de prix par défaut, partnership/models/res_partner_grade.py),
+  res.partner.grade_id « Niveau de partenariat » suivi (res_partner.py:8), liste de prix du niveau recopiée sur le contact (res_partner.py:10-22),
+  product.template.service_tracking + « Adhésion / Partenariat » et grade_id « Niveau assigné » (product_template.py:7-11),
+  sale.order.action_confirm → _add_partnership → commercial_partner_id.grade_id (sale_order.py:26-36), contrainte un seul niveau par commande (:12-18),
+  libellé res.company.partnership_label (défaut « Members », renomme le menu, res_config_settings.py:12-15), niveaux Gold/Silver/Bronze
+  (data/res_partner_grade_data.xml). Aucun champ de date sur res.partner.grade ni sur le contact (shell : champs listés).
+  Essai shell (rollback) : devis OpenWood brouillon = aucun niveau ; confirmé = Adhérent ; commande annulée = Adhérent conservé.
+  website_partnership : page /partners (website_partnership/controllers/main.py:106-120), non activée.
+  Joué à l'écran : CRM › Configuration › Paramètres (unité « Heures » proposée pour un service, remplacée), case Adhésion / Partenariat → « Nom donné aux affiliés : Members » → Adhérents ;
+  menu CRM › Configuration › Adhérents › Niveaux ; niveau « Adhérent » (id 4) ; article « Adhésion annuelle » (178) Service, Créer à la commande
+  Adhésion / Partenariat, Niveau assigné Adhérent, 30 $, taxe de vente retirée, Achats décoché, unité Unité(s) ; S00082 Joel Willis → Confirmer
+  → contact « None → Adhérent (Niveau de partenariat) » ; Créer une facture › Créer brouillon → FAC/2026/00015 → Payer → PAYÉ ;
+  Contacts › Regrouper par › Niveau : Gold/Silver/Bronze 0, Adhérent 1, Aucun 108.
+  Don : bloc s_donation dans website_sale (templates/snippets/s_donation.xml, snippets.xml:28-36 groupe contact_and_forms),
+  /shop/donation/info (controllers/donation.py), article website_sale.product_donation « Donation » service sans taxe, catégorie Donations
+  (data/donation_data.xml), ni archivable ni supprimable (models/product_template.py:332-333, 382-384), montant ≥ 1 (models/sale_order.py:898-900),
+  ajout au panier isBuyNow (static/src/snippets/s_donation/donation_snippet.js:184-193). Odoo 19 : bloc et route /donation/pay dans website_payment
+  (odoo19 website_payment/controllers/portal.py:19-21), absents de website_payment 20.
+  Joué : Site › Modifier › Contact & Formulaires › Donation ajouté à l'accueil, titres, 4 descriptions (panneau Donation Form) et bouton
+  « Faire un don » remplacés dans l'éditeur ; visiteur anonyme : 25 $ → panier « Donation » → adresse (nom, e-mail, téléphone, pays, rue, ville requis)
+  → Démo, 4111 1111 1111 1111, Succès → Pay now → S00086 confirmée, « Le paiement lié à la transaction S00086 a été validé : PBNK1/2026/00014 »,
+  facturation « à facturer ». Courriel de confirmation (en file, base neutralisée) : sujet « … Order S00086 », corps « Hello …, Your order … has been
+  confirmed », pièce « Commande - S00086.pdf ». Deux dons anonymes avec le même e-mail → contacts 118 et 119 distincts. Objet traduit absent (sale/i18n/fr.po, sujet de mail_template_sale_confirmation, msgstr vide). Facturation automatique :
+  res.company.sale_automatic_invoice False sur la copie (sale/models/payment_transaction.py:103-107). Aucun reçu fiscal dans
+  odoo/addons (grep cerfa / tax receipt : sans objet).
+  Évènement 10 « Assemblée générale annuelle » 12/12/2026 14:00-17:00 Europe/Paris, billet « Participation » (produit Event Registration, prix proposé
+  30 $ ramené à 0), Publié ; page du site : bouton S'inscrire, billet « GRATUIT » ; description par défaut « Rejoignez-nous pour cet événement de 24 heures » ; lieu = adresse de la société.
+  Inscriptions : Joel Willis (portail, champs préremplis, inscription 32) ; visiteur anonyme « Sympathisant de démonstration » (inscription 33,
+  sans contact créé). Participants : Marquer comme présent → Présent.
+  Email Marketing › Nouveau : Destinataires Contact, Domaine « Niveau de partenariat est égal à Adhérent » → 1 enregistrement, bouton
+  « Save as a Dynamic List » ; mailing laissé en Brouillon, aucun envoi.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Odoo 20 pour une association : adhésions, dons, évènements</h1>
+                <p class="lead mt-3 text-white">Encaisser les cotisations et tenir la liste des adhérents, recevoir des dons
+                    en ligne, réunir ses membres en assemblée générale, puis les convoquer par e-mail : cet article montre
+                    comment Odoo 20 Community couvre ces quatre besoins avec ses applications standard, et où s'arrête
+                    ce qu'il fait.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 par métier</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars),
+                        avec CRM, Ventes, Facturation, Site web, eCommerce, Événements et Email Marketing déjà installés.
+                        Ces applications existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pas d'application « Association », mais quatre briques</h2>
+                <p>Odoo 20 n'a pas d'application dédiée aux associations, et l'ancien module d'adhésions
+                    (<code>membership</code>) ne figure pas dans le dépôt d'Odoo 20. Les besoins d'une association se couvrent avec
+                    des applications existantes, chacune pour un volet :</p>
+                <ul>
+                    <li><strong>les adhésions</strong> : l'option « Adhésion / Partenariat » du CRM attribue un
+                        <em>niveau</em> au contact quand il achète un article d'adhésion ; la cotisation est une commande,
+                        puis une facture ;</li>
+                    <li><strong>les dons</strong> : le bloc « Donation » du site, fourni par l'eCommerce, fait passer le don
+                        par le panier et le paiement en ligne ;</li>
+                    <li><strong>les évènements</strong> : l'application Événements publie l'assemblée générale sur le site,
+                        enregistre les inscriptions et la présence ;</li>
+                    <li><strong>la communication</strong> : Email Marketing cible les contacts selon leur niveau.</li>
+                </ul>
+                <p>Cet article ne refait pas le tutoriel de chaque application : il les assemble pour un métier et renvoie,
+                    pour le détail, aux articles qui les décrivent. Les numéros de documents cités sont ceux obtenus sur la
+                    base de démonstration ; ils varient d'une base à l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>activer les adhésions et créer un article de cotisation qui fait d'un contact un adhérent ;</li>
+                    <li>encaisser la cotisation et retrouver la liste des adhérents ;</li>
+                    <li>ajouter un formulaire de don au site et suivre le don reçu ;</li>
+                    <li>publier une assemblée générale, recueillir les inscriptions et pointer les présents ;</li>
+                    <li>préparer un e-mail adressé aux seuls adhérents.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma d'une association dans Odoo 20 : CRM et Ventes, adhésion, niveau Adhérent et article Adhésion annuelle 30 $, confirmer la commande, le contact devient Adhérent ; Facturation, cotisation, facture FAC/2026/00015, confirmer puis payer ; Site web et boutique, don en ligne, bloc Donation 25 $ avec le fournisseur Démo, commande S00086 confirmée ; Email Marketing, convocation aux contacts dont le niveau est Adhérent, laissée en brouillon ; Événements, assemblée générale, billet gratuit et inscription depuis le site, marquer comme présent" style="max-width:100%; height:auto;"/>
+                    <figcaption>Quatre volets, un même carnet de contacts : adhérer, donner, se réunir, informer.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Activer les adhésions</h2>
+                <p>Ouvrez <strong>CRM › Configuration › Paramètres</strong> et cochez <strong>Adhésion /
+                    Partenariat</strong>, puis enregistrez : Odoo installe le module correspondant. Deux réglages
+                    apparaissent. Le champ <strong>Nom donné aux affiliés</strong> vaut « Members » par défaut ; remplacez-le
+                    par « Adhérents » : c'est le nom du menu qui regroupe les niveaux. La case <strong>Page web des
+                    partenaires</strong> publierait la liste des membres sur le site (page <code>/partners</code>) ; elle
+                    n'est pas activée ici.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Paramètres du CRM dans Odoo 20 : case Adhésion / Partenariat cochée, aide « Gérer les membres ou les partenaires. Les membres obtiennent des niveaux et des listes de prix », champ Nom donné aux affiliés : Members ; case Page web des partenaires non cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'option Adhésion / Partenariat, juste après son activation.</figcaption>
+                </figure>
+                <p>Le menu <strong>CRM › Configuration › Adhérents › Niveaux</strong> liste trois niveaux créés à
+                    l'installation : Gold, Silver et Bronze. Cliquez sur <strong>Nouveau</strong> et créez le niveau
+                    « Adhérent ». Son seul autre champ, <strong>Liste de prix par défaut</strong> (visible quand les listes de prix sont activées), sert à accorder un tarif
+                    aux membres : la liste de prix du niveau est recopiée sur le contact qui le reçoit (les listes de prix
+                    sont présentées dans <a href="/blog/fonctionnel-odoo-1/listes-prix-remises-ventes-odoo-203">Listes de
+                    prix et remises dans Odoo 20</a>). Elle reste vide ici.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer l'article de cotisation</h2>
+                <p>La cotisation est un article vendu. Dans <strong>Ventes › Produits › Produits</strong>, créez
+                    « Adhésion annuelle » : type <strong>Service</strong>, puis, dans le champ <strong>Créer à la
+                    commande</strong>, choisissez <strong>Adhésion / Partenariat</strong>. Un champ <strong>Niveau
+                    assigné</strong> apparaît : sélectionnez « Adhérent ». Saisissez le prix, ici 30 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche article Adhésion annuelle dans Odoo 20 : case Ventes cochée, Achats décochée ; type de produit Service ; Créer à la commande Adhésion / Partenariat ; Niveau assigné Adhérent ; politique de facturation Prépayé/Prix fixe ; prix de vente 30,00 $ par Unité(s), taxes de vente vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'article de cotisation : c'est lui qui porte le niveau à attribuer.</figcaption>
+                </figure>
+                <p>Trois détails de la fiche : l'unité proposée pour un service est « Heures », remplacée ici par
+                    « Unité(s) » ; la case Achats, inutile pour une cotisation, est décochée ; la taxe de vente proposée par la
+                    démonstration a été retirée. Le traitement fiscal des cotisations dépend de la situation de chaque
+                    association et se règle avec son comptable. Pour proposer plusieurs formules (membre actif, membre
+                    bienfaiteur), créez un niveau et un article par formule : une même commande ne peut pas contenir des
+                    articles attribuant des niveaux différents.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Enregistrer une adhésion</h2>
+                <p>Le responsable des adhésions crée un devis dans <strong>Ventes › Commandes › Devis</strong> : client Joel
+                    Willis (un contact de la démonstration), ligne « Adhésion annuelle ». Il clique sur
+                    <strong>Confirmer</strong> : la commande S00082 passe en commande client et, au même moment, la fiche du
+                    contact reçoit le niveau. L'historique du contact trace le changement « None → Adhérent (Niveau de
+                    partenariat) ». Si le contact est rattaché à une société, c'est la société qui reçoit le niveau.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche contact de Joel Willis dans Odoo 20 : champ Niveau de partenariat Adhérent sous Site Web ; onglets Contacts, Ventes &amp; Achats, Facturation, Assignation de partenaire, Notes ; historique du jour : Mitchell Admin, None vers Adhérent (Niveau de partenariat)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le contact est adhérent dès la confirmation de la commande.</figcaption>
+                </figure>
+                <p>Reste à encaisser. Depuis la commande, cliquez sur <strong>Créer une facture</strong>, gardez
+                    « Facture normale » et choisissez <strong>Créer brouillon</strong>, puis <strong>Confirmer</strong> la
+                    facture et <strong>Payer</strong> (journal Banque, 30 $). La facture FAC/2026/00015 porte le ruban
+                    <strong>PAYÉ</strong>. Le détail de l'encaissement, et des relances si la cotisation tarde, est dans
+                    <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo
+                    20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Facture client FAC/2026/00015 dans Odoo 20, ruban PAYÉ : client Joel Willis, journal Ventes en USD ; ligne Adhésion annuelle, 1,00 Unité(s), 30,00, sans taxe, 30,00 $ ; total 30,00 $, payé le 11/11/2026, montant dû 0,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La cotisation facturée et payée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Tenir la liste des adhérents</h2>
+                <p>La liste des membres est un regroupement des contacts. Dans <strong>Contacts</strong>, passez en vue liste
+                    et choisissez <strong>Regrouper par › Niveau</strong> : chaque niveau devient un groupe, y compris les
+                    niveaux vides, et les contacts sans niveau sont rangés sous « Aucun ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste des contacts dans Odoo 20 regroupée par Niveau : Gold 0, Silver 0, Bronze 0, Adhérent 1 avec Joel Willis, e-mail, téléphone et pays États-Unis, Aucun 108" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les contacts regroupés par niveau : un adhérent, après la première cotisation.</figcaption>
+                </figure>
+                <p>La même liste s'ouvre depuis la fiche du niveau (<strong>CRM › Configuration › Adhérents ›
+                    Niveaux</strong>), par son bouton qui compte les membres. Depuis la vue liste, l'export vers un tableur
+                    donne un fichier des adhérents ; les contacts d'une association existante s'importent comme décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ajouter un formulaire de don au site</h2>
+                <p>Dans Odoo 20, le don en ligne est fourni par l'<strong>eCommerce</strong> : le bloc « Donation » ajoute au
+                    panier un article « Donation » au montant choisi, puis le visiteur paie comme pour un achat. Le site et la
+                    boutique doivent donc être installés (voir <a
+                    href="/blog/fonctionnel-odoo-1/creer-site-web-odoo-233">Créer son site web avec Odoo 20</a>).</p>
+                <p>Ouvrez le site, cliquez sur <strong>Modifier</strong>, puis sur la catégorie <strong>Contact &amp;
+                    Formulaires</strong> du panneau de blocs, et choisissez <strong>Donation</strong>. Le bloc arrive avec des
+                    textes d'exemple en anglais : remplacez le titre, la phrase d'accroche et le libellé du bouton en
+                    cliquant dessus. Les montants proposés et leurs descriptions se règlent dans le panneau de droite,
+                    rubrique <strong>Donation Form</strong> : montants prédéfinis (10, 25, 50 et 100 par défaut), montant
+                    libre (« Custom Amount » : champ, curseur ou aucun), montant minimum (5) et montant par défaut (25).
+                    Le texte indicatif « Custom Amount » du montant libre reste en anglais ; choisir « Aucun » pour le
+                    montant libre le fait disparaître. Cliquez sur <strong>Sauver</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Bloc de don sur la page d'accueil du site Odoo 20 : titre Soutenir l'association, phrase Chaque don, petit ou grand, finance nos activités ; boutons 10 $ Un mois d'activités pour un enfant, 25 $ Le matériel d'un atelier, 50 $ Une sortie pour un groupe, 100 $ Un an de local associatif ; champ Custom Amount ; bouton Faire un don ; illustration d'un cadeau" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bloc Donation après remplacement des textes ; « Custom Amount » est le texte du champ de
+                        montant libre.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Recevoir un don</h2>
+                <p>Côté visiteur, le parcours est celui d'une commande en ligne. Il choisit 25 $ et clique sur
+                    <strong>Faire un don</strong> : le panier affiche une ligne « Donation » de 25 $. Il clique sur
+                    <strong>Payer</strong>, renseigne ses coordonnées (nom, e-mail, téléphone, pays, rue et ville sont
+                    obligatoires), puis arrive à l'étape Paiement.</p>
+                <p>La base de démonstration ne propose qu'un fournisseur de paiement, <strong>Démo</strong>, qui simule un
+                    paiement sans encaisser d'argent : le numéro de carte de test et le statut « Succès » suffisent. Pour
+                    recevoir de vrais dons, un fournisseur réel (Stripe, PayPal, Mollie…) se configure dans les paramètres du
+                    site ; le paiement en ligne est présenté dans <a
+                    href="/blog/fonctionnel-odoo-1/boutique-en-ligne-odoo-234">La boutique en ligne dans Odoo 20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Étape Paiement de la boutique Odoo 20 pour un don : mode de paiement Démo, montant 25,0, données de paiement de test 4111 1111 1111 1111, statut Succès ; adresse de facturation Donateur de démonstration, 1 rue de l'Exemple, 75001 Paris, France ; résumé Donation 25,00 $, total 25,00 $, bouton Pay now" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le don au moment du paiement, avec le fournisseur de démonstration.</figcaption>
+                </figure>
+                <p>Après « Pay now », la page « Merci pour votre commande » s'affiche avec le message « Votre paiement a été
+                    traité ». Dans <strong>Ventes</strong>, le don est une commande client confirmée, S00086, au nom du
+                    donateur ; son historique indique « Le paiement lié à la transaction S00086 a été validé ». La commande
+                    reste à facturer : sur cette base, la facturation automatique au paiement, réglage des paramètres de
+                    l'eCommerce, n'est pas activée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Commande S00086 dans Odoo 20 : client Donateur de démonstration, 1 rue de l'Exemple, 75001 Paris, France ; liste de prix USD ; conditions de paiement Paiement immédiat ; ligne Donation, quantité 1,00 Unité(s), prix unitaire 25,00, sans taxe, montant 25,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Dans le back-office, le don est une commande d'une ligne « Donation ».</figcaption>
+                </figure>
+                <p>L'article « Donation » est créé avec l'eCommerce, sans taxe, dans la catégorie « Donations » ; Odoo refuse
+                    de l'archiver ou de le supprimer, car le bloc en dépend.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Organiser l'assemblée générale</h2>
+                <p>Dans <strong>Événements</strong>, cliquez sur <strong>Nouveau</strong> : nom « Assemblée générale
+                    annuelle », date du 12 décembre de 14 h à 17 h. Dans l'onglet <strong>Tickets</strong>, ajoutez une
+                    ligne « Participation » : Odoo propose le prix de l'article « Event Registration », 30 $ ; ramenez-le à 0
+                    pour une inscription gratuite. Activez <strong>Publié</strong>. Le lieu proposé est l'adresse de la
+                    société ; modifiez-le si l'assemblée se tient ailleurs.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Évènement Assemblée générale annuelle dans Odoo 20 : date 12 déc. 14:00 à 17:00, fuseau Europe/Paris, organisateur My Company (San Francisco), responsable Mitchell Admin, Publié activé, visibilité Public, lieu adresse de la société ; onglet Tickets : produit Event Registration, nom Participation, prix 0,00 $, inscriptions 0" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'assemblée générale, publiée, avec un billet gratuit.</figcaption>
+                </figure>
+                <p>Sur le site, la page de l'évènement affiche le bouton <strong>S'inscrire</strong> et le billet
+                    « Participation » marqué GRATUIT. Elle reprend aussi une description par défaut (« Rejoignez-nous pour cet
+                    événement de 24 heures ») à remplacer dans l'éditeur du site par l'ordre du jour. Un adhérent connecté à
+                    son espace client (si un accès portail lui a été accordé) trouve son nom et son e-mail déjà remplis ; un visiteur les saisit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Participants de l'inscription en ligne Odoo 20 : Ticket #1 Participation, Nom Sympathisant de démonstration, E-mail sympathisant@example.com, Téléphone vide ; boutons Annuler et Confirmer l'inscription" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'inscription d'un visiteur depuis le site.</figcaption>
+                </figure>
+                <p>Le jour venu, ouvrez l'évènement, puis le bouton <strong>Participants</strong> : chaque inscription porte
+                    les boutons <strong>Marquer comme présent</strong> et <strong>Annuler</strong>. Le statut passe de
+                    « Inscrit » à « Présent ». Le bureau d'inscription, les badges, les billets payants et les rappels
+                    automatiques sont détaillés dans <a href="/blog/fonctionnel-odoo-1/evenements-sondages-odoo-237">Évènements
+                    et sondages dans Odoo 20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste des participants de l'Assemblée générale annuelle dans Odoo 20, filtre Occupé : Sympathisant de démonstration, billet Participation, statut Inscrit, Gratuit, boutons Marquer comme présent et Annuler ; Joel Willis, billet Participation, statut Présent, Gratuit" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux inscrits : l'adhérent est pointé présent.</figcaption>
+                </figure>
+                <p>L'inscription du visiteur non connecté ne crée pas de contact : elle garde un nom et un e-mail.
+                    L'inscription de l'adhérent, elle, est rattachée à sa fiche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Convoquer les adhérents par e-mail</h2>
+                <p>Dans <strong>Email Marketing</strong>, créez un mailing « Convocation à l'assemblée générale annuelle ».
+                    Pour <strong>Destinataires</strong>, choisissez <strong>Contact</strong> au lieu d'une liste de
+                    diffusion, puis cliquez sur <strong>Ajouter une condition</strong> (puis <strong>Nouvelle règle</strong> pour en ajouter
+                    d'autres) : champ <strong>Niveau de
+                    partenariat</strong>, « est égal à », valeur « Adhérent ». Le compteur affiche « 1 enregistrement(s) ».
+                    Le bouton « Save as a Dynamic List » enregistre ce filtre comme liste réutilisable, tenue à jour au fil
+                    des adhésions.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Mailing en brouillon dans Odoo 20 : boutons Envoyer et Planifier ; Destinataires Contact ; Domaine, faire correspondre tous : Niveau de partenariat est égal à Adhérent ; 1 enregistrement(s) ; bouton Save as a Dynamic List ; case Exclude Blacklisted Recipients cochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un mailing qui ne vise que les adhérents, encore en brouillon.</figcaption>
+                </figure>
+                <p>Le mailing est resté en brouillon : le corps du message se compose à partir d'un modèle, puis se teste,
+                    s'envoie ou se planifie comme décrit dans <a href="/blog/fonctionnel-odoo-1/emailing-sms-odoo-236">Emailing
+                    et SMS dans Odoo 20</a>. La valeur d'une convocation par e-mail dépend des statuts de l'association. Pour écrire aux seuls inscrits de l'assemblée, le bouton « Contacter les
+                    participants » de l'évènement prépare un mailing sur ses inscriptions.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Application</th><th>Où</th><th>Résultat</th></tr></thead>
+                    <tbody>
+                        <tr><td>Définir les formules d'adhésion</td><td>CRM, Ventes</td><td>Configuration › Adhérents › Niveaux ; article « Créer à la commande : Adhésion / Partenariat »</td><td>Niveau et article de cotisation</td></tr>
+                        <tr><td>Enregistrer une adhésion</td><td>Ventes</td><td>Devis, Confirmer</td><td>Contact au niveau Adhérent</td></tr>
+                        <tr><td>Encaisser la cotisation</td><td>Facturation</td><td>Créer une facture, Confirmer, Payer</td><td>Facture payée</td></tr>
+                        <tr><td>Lister les adhérents</td><td>Contacts</td><td>Regrouper par › Niveau</td><td>Liste par niveau, exportable</td></tr>
+                        <tr><td>Recevoir des dons</td><td>Site web, eCommerce</td><td>Bloc Donation</td><td>Commande « Donation » payée</td></tr>
+                        <tr><td>Réunir les membres</td><td>Événements</td><td>Billet, Publié, Participants</td><td>Inscrits, puis présents</td></tr>
+                        <tr><td>Informer</td><td>Email Marketing</td><td>Destinataires Contact, condition sur le niveau</td><td>Mailing ciblé</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Tout le parcours montré ici fonctionne avec Odoo 20 Community, sans abonnement : l'option Adhésion /
+                    Partenariat, l'eCommerce et son bloc de don, Événements et Email Marketing font partie de la Community.
+                    Deux absences sont à connaître : aucune adhésion ne porte de date de fin ni de renouvellement
+                    automatique (le module Abonnements n'est pas inclus dans la Community), et aucun reçu fiscal de don n'est fourni en standard.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Adhérent dès la confirmation, et sans date de fin</h4>
+                    <p>Le niveau est posé quand la commande est confirmée, avant toute facture ni tout paiement (voir la fiche du contact à l'étape 3). Il
+                        n'a pas d'échéance, et annuler la commande ne le retire pas : un essai sur une seconde commande
+                        confirmée puis annulée a laissé le contact au niveau Adhérent. En fin d'exercice, le retrait des
+                        membres qui n'ont pas renouvelé se fait à la main, sur la fiche ou par modification groupée.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Chaque don d'un visiteur crée un nouveau contact</h4>
+                    <p>Deux dons faits sans compte, avec les mêmes nom et e-mail, ont créé deux fiches « Donateur de
+                        démonstration » distinctes. Avant d'écrire aux donateurs ou de faire un bilan par personne, regroupez
+                        les doublons.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le donateur reçoit une confirmation de commande, pas un reçu</h4>
+                    <p>Après le paiement, Odoo prépare pour le donateur le courriel de confirmation de la commande, avec le PDF
+                        « Commande - S00086.pdf » ; son objet reste en anglais (« … Order S00086 »). Ce n'est pas un reçu
+                        fiscal : aucun modèle de reçu de don n'est fourni en standard. Relisez ce courriel avant d'ouvrir le
+                        formulaire de don au public.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> proposer une seconde formule, « Membre bienfaiteur », et y inscrire un
+                        contact.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration avec CRM et Ventes, activez
+                        Adhésion / Partenariat, créez le niveau « Membre bienfaiteur » et un article service « Adhésion
+                        bienfaiteur » à 100 $ qui l'attribue, puis vendez-le au contact OpenWood et confirmez la commande.</p>
+                    <p><strong>Critère de réussite :</strong> la fiche d'OpenWood affiche « Membre bienfaiteur » en Niveau de
+                        partenariat, et la liste des contacts regroupée par niveau compte un contact dans ce groupe.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les adhésions passent par l'option « Adhésion / Partenariat » du CRM : un article de cotisation attribue un niveau au contact à la confirmation de la commande.</li>
+                    <li>La liste des adhérents est la liste des contacts regroupée par niveau ; le niveau n'a pas de date de fin.</li>
+                    <li>Le don en ligne d'Odoo 20 est un bloc de l'eCommerce : il produit une commande « Donation », payée en ligne, sans reçu fiscal.</li>
+                    <li>L'assemblée générale est un évènement publié avec un billet gratuit ; inscriptions et présences se suivent dans Participants.</li>
+                    <li>Email Marketing cible les adhérents par une condition sur leur niveau, enregistrable comme liste dynamique.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article ouvre la série <strong>Odoo 20 par métier</strong>. Le prochain article applique la même
+                    démarche à un bureau d'études : projets, temps passé, facturation et planning.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/evenements-sondages-odoo-237">Évènements et sondages</a></h5>
+                            <p class="small text-muted mb-0">Billets payants, rappels, bureau d'inscription et questionnaires.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/emailing-sms-odoo-236">Emailing et SMS</a></h5>
+                            <p class="small text-muted mb-0">Listes de diffusion, modèles, tests et statistiques.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement</a></h5>
+                            <p class="small text-muted mb-0">Un cycle complet à travers plusieurs applications, côté ventes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
