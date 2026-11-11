@@ -1,0 +1,640 @@
+<!--
+Article — Migrer sa base Community vers Odoo 20 : recette et checklist
+Série « Passer à Odoo 20 » (blog Fonctionnel, série 69), vague 3 F6.4, étape 4 (dernière)
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : recette-migration-odoo
+Tags : intermediaire, guide, community (3, 36, 16)
+Titre du plan « Migrer sa base Community vers Odoo 20 : recette fonctionnelle et checklist » (74 car.) raccourci à 60 ;
+  meta title « Migration Odoo 19 vers 20 Community : recette et checklist ».
+AUCUNE migration n'a été jouée : les écrans montrent les contrôles de recette sur une copie de la base de démonstration Odoo 20.
+Sources vérifiées le 2026-11-11 :
+  - Voies de migration :
+    · Documentation officielle 20.0, page Upgrade (dépôt odoo/documentation, branche 20.0, content/administration/upgrade.rst,
+      dernière modification 65ad28bbf5 du 16/12/2025, lue le 11/11/2026) : « Test databases are neutralized… Scheduled actions are disabled.
+      Outgoing mail servers are disabled by archiving the existing ones and adding a fake one. Payment providers and delivery carriers are
+      reset to the test environment. Bank synchronization is disabled » ; « Basic test checklist » (vues, rapports, pages du site, création
+      et modification, modèles de courriel, traductions, filtres, export) ; « Do not forget to test: Integrations… Workflows… Data exports…
+      Automated actions… Server actions » ; « Fully rehearsing the upgrade process the day before upgrading the production database is also
+      recommended » ; « Once the database is uploaded, any modification to your production database will not be present on your upgraded
+      database » ; « With Odoo Enterprise, upgrading a database to the most recent version of Odoo is free » (section SLA) ; « An upgrade does
+      not cover: … Switching editions (e.g., from Community to Enterprise) » ; « On-premise: You can stay on the same version indefinitely » ;
+      « Each major version is supported for three years ».
+    · Script officiel https://upgrade.odoo.com/upgrade (téléchargé et lu le 11/11/2026, NON exécuté) : get_db_contract lit
+      ir_config_parameter « database.enterprise_code » (l. 564-586), sinon UpgradeError « Unable to get the subscription code of your
+      database. Your database must be registered to be eligible for an upgrade… Alternatively, you can specify the subscription code using
+      the `--contract` argument » (l. 588-592). Aucune occurrence de enterprise_code comme paramètre dans odoo/addons 20.0 Community
+      (seulement iot_drivers). Page upgrade.odoo.com (lue le 11/11/2026) : champ « Enterprise subscription code » dans les formulaires.
+    · OCA/OpenUpgrade (GitHub public, gh api, lu le 11/11/2026) : branche 20.0 = 431b1a8e, 10/11/2026 « [20.0][IMP] openupgrade_scripts:
+      fill full apriori » ; openupgrade_scripts = README, __manifest__, apriori.py, i18n, readme, static : aucun dossier scripts/, aucun
+      openupgrade_framework, pas de docsource ; 6 PR ouvertes vers 20.0 (#6046 openupgrade_framework, #6068 base, #6087 mail, #6071, #6079,
+      #6088). Branche 19.0 : openupgrade_scripts/scripts = 332 dossiers. Rien n'a été exécuté.
+  - Base de preuve : vs20_func_f64 (copie de vs20_func, PG 16), Odoo 20.0 Community (révision 3538ed82), société My Company (San Francisco),
+    aucun module installé. Neutralisée par la commande odoo-bin neutralize : avant 64 actions planifiées actives sur 73 et aucun serveur
+    sortant ; après 1 active (Base : données internes de l'aspiration automatique), serveur « neutralization - disable emails » hôte
+    invalid:1025, vues web.neutralize_banner et website.neutralize_ribbon actives (psql). Contenu : odoo/odoo/addons/base/data/neutralize.sql
+    l. 1-11 (serveurs sortants archivés, identifiants effacés, serveur leurre), 13-22 (actions planifiées sauf autovacuum), 30-33 (webhooks) ;
+    addons/payment/data/neutralize.sql (is_live = False) ; addons/delivery/data/neutralize.sql (prod_environment false, transporteurs
+    externes archivés) ; addons/mail/data/neutralize.sql (modèles sans serveur, serveurs entrants archivés) ; 79 fichiers neutralize.sql
+    en 20. 19.0 : même mécanisme (base neutralize.sql, 68 fichiers ; payment : state = 'disabled').
+  - Écrans (tous joués, menus relevés à l'écran) : bandeau « Base de données neutralisée pour les tests : aucun e-mail envoyé, etc. » ;
+    Paramètres › Technique › E-mail › Serveurs de messagerie sortants ; Technique › Automatisation › Actions planifiées, filtre Tous +
+    regroupement Actif (Non 71, Oui 1) ; devis S00022 Azure Interior « Envoyer » → fenêtre → Envoyer → Technique › E-mail › E-mails :
+    « My Company (San Francisco) Quotation S00022 », statut Échec de l'envoi, motif « -2 Nom ou service inconnu ».
+    Ventes › Commandes › Commandes, sans filtre, regroupé par Statut : AVANT le courriel Devis 11 (41 898,40), Envoyé 1 (1 799,00),
+    Commande client 63 (520 694,73), Annulé 1 (2 001,00), total 566 393,13 ; APRÈS : Devis 10 (41 504,01), Envoyé 2 (2 193,39).
+    Achats › Commandes › Demandes de prix, sans filtre, par Statut : 12 / 2 / 15 / 1, total 108 620,01.
+    Facturation › Clients › Factures, filtre Comptabilisé, regroupé par Partenaire : Montant dû total 94 764,95 (Acme Corporation 88 573,00).
+    Mouvements de stock faits : 57 le 27/09/2026, aucun après (psql stock_move state done).
+    Inventaire › Analyse › Stock, Stock à date 25/09/2026 : Boîte de rangement 18 / 252,00 $ (jour : 110 / 1 540,00 $) ; valeur à la date :
+    stock_account/models/product.py:97-121 (to_date) ; panneau stock/static/src/views/search/stock_report_search_panel.xml:6-23.
+    PDF : /report/pdf/account.report_invoice/10 (FAC/2026/00001), aucune adresse locale dans le texte (pdftotext).
+    Paramètres › Technique › Sécurité › Droits d'accès regroupé par Type : Permission 1500, Restriction 153.
+  - Reprises des articles précédents de la série (brouillons 433, 434, 435, non liés) : hors ligne = contexte sécurisé (HTTPS) ;
+    restriction sans groupe et permissions sans domaine ; Customize ; comptes parents et code facultatif.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+
+  ul.checklist { list-style: none; padding-left: 0.25rem; }
+  ul.checklist li { margin-bottom: 0.45rem; padding-left: 1.6rem; position: relative; }
+  ul.checklist li::before { content: "\2610"; position: absolute; left: 0; top: -0.05rem; font-size: 1.15em; color: #059669; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Migrer sa base Community vers Odoo 20 : recette et checklist</h1>
+                <p class="lead mt-3 text-white">Une migration ne se juge pas au fait que la base s'ouvre en Odoo 20, mais au fait
+                    que l'entreprise peut y travailler comme la veille. Cet article fait le point sur les voies de migration
+                    d'une base Community, puis donne au responsable de la migration une méthode de recette : jeu d'essai par
+                    processus, compteurs à recouper avant et après, journal des écarts, critères de bascule et checklist.</p>
+                <p class="small text-light mt-2">~15 minutes de lecture · niveau intermédiaire · série <strong>Passer à Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026. Les écrans
+                        sont pris sur une copie de la base de démonstration (société « My Company (San Francisco) »), enrichie par
+                        les articles précédents du blog et neutralisée comme doit l'être une base de recette ; aucun module n'a
+                        été ajouté. <strong>Aucune base Odoo 19 n'a été
+                        migrée pour cet article</strong> : les captures montrent les contrôles de la recette, pas une migration.
+                        L'état des outils de migration est celui relevé le 11 novembre 2026.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi dans une migration</h2>
+                <p>Migrer une base, c'est convertir ses données d'une version d'Odoo à la suivante. La conversion elle-même est
+                    un travail technique : copier la base, passer les scripts de migration, porter les modules spécifiques.
+                    Le jugement sur le résultat, lui, appartient au métier. Seuls les utilisateurs savent si une commande,
+                    une facture ou un état de stock est « comme avant ».</p>
+                <p>Cette répartition donne au <strong>responsable de la migration</strong> trois livrables : un jeu d'essai
+                    préparé avant la migration, un journal des écarts tenu pendant la recette, et une décision de bascule
+                    fondée sur des critères écrits à l'avance. Les trois articles précédents de la série ont décrit ce qui
+                    change à l'écran, dans les droits d'accès et dans le plan comptable ; celui-ci les rassemble en une
+                    recette.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>quelles voies existent, à ce jour, pour migrer une base Odoo 19 Community vers Odoo 20 ;</li>
+                    <li>vérifier qu'une base de recette est neutralisée avant d'y jouer le moindre essai ;</li>
+                    <li>relever les compteurs à recouper avant et après : commandes, soldes clients, valeur du stock ;</li>
+                    <li>construire un jeu d'essai par processus et tenir un journal des écarts ;</li>
+                    <li>fixer des critères de bascule et dérouler une checklist complète.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DÉROULÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le déroulé en un schéma</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en quatre étapes : 1. Copier (équipe technique : copie de la base Odoo 19 de production, neutralisée, compteurs relevés au même instant), 2. Migrer la copie (équipe technique : base convertie en Odoo 20, modules spécifiques portés, outil à décider), 3. Recetter (responsable de la migration et utilisateurs clés : jeu d'essai par processus, compteurs avant et après, droits, PDF, courriels, intégrations, journal des écarts), 4. Basculer (direction et responsable de la migration : critères remplis, production gelée, migration répétée la veille, mêmes compteurs après) ; une boucle en pointillé relie la recette à la migration en cas d'écart bloquant" style="max-width:100%; height:auto;"/>
+                    <figcaption>Copier, migrer la copie, recetter, basculer : la production reste en Odoo 19 tant que la recette n'a pas conclu.</figcaption>
+                </figure>
+                <p>La boucle est la partie la plus importante du schéma. Un écart bloquant ne se corrige pas sur la base de
+                    recette : il se corrige à la source (script, module, paramétrage), puis l'équipe technique refait une copie
+                    fraîche, la migre de nouveau, et la recette rejoue ses essais. La documentation d'Odoo recommande d'ailleurs
+                    de demander plusieurs bases de test si la préparation dure, et de répéter entièrement la migration la veille
+                    de la bascule.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. LES VOIES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Les voies de migration d'une base Community, au 11 novembre 2026</h2>
+                <p>Avant de planifier une recette, il faut savoir qui convertira la base. Pour une base Odoo 19 Community, trois
+                    situations se présentent.</p>
+                <table class="tmc">
+                    <thead><tr><th>Voie</th><th>Ce qu'en disent les sources (lues le 11/11/2026)</th><th>Pour une base Community</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>Service de mise à niveau d'Odoo</strong> (upgrade.odoo.com)</td>
+                            <td>La documentation officielle 20.0 (page « Upgrade ») le rattache à l'abonnement : « With Odoo
+                                Enterprise, upgrading a database to the most recent version of Odoo is free ». Pour une base
+                                hébergée chez soi, le script officiel lit le code d'abonnement Enterprise enregistré dans la base ;
+                                sans lui, il s'arrête sur « Your database must be registered to be eligible for an upgrade ». La même
+                                page précise qu'une mise à niveau ne couvre pas le changement d'édition (Community vers
+                                Enterprise).</td>
+                            <td>Pas accessible sans abonnement Enterprise.</td></tr>
+                        <tr><td><strong>OpenUpgrade</strong> (projet libre de l'association OCA, sur GitHub)</td>
+                            <td>Une branche 20.0 existe (dernière modification le 10/11/2026), mais elle ne contient encore
+                                <strong>aucun script de migration</strong> : seulement la table des renommages et fusions de modules.
+                                Les premiers chantiers (le socle, les modules <code>base</code> et <code>mail</code>) sont des
+                                propositions en cours de revue. À titre de comparaison, la branche 19.0 compte 332 dossiers de
+                                scripts.</td>
+                            <td>Aucun module couvert à ce jour : la voie habituelle de la Community n'est pas encore prête pour
+                                le passage 19 → 20.</td></tr>
+                        <tr><td><strong>Rester en Odoo 19</strong>, ou repartir d'une base Odoo 20 neuve</td>
+                            <td>La documentation indique qu'une base hébergée chez soi peut rester sur sa version, même si Odoo
+                                ne le recommande pas ; chaque version majeure est suivie trois ans. Repartir d'une base neuve revient à une reprise de données
+                                (contacts, articles, soldes, pièces ouvertes) plutôt qu'à une migration de l'historique.</td>
+                            <td>Possible dès aujourd'hui ; la recette décrite ici s'applique aussi à une reprise.</td></tr>
+                    </tbody>
+                </table>
+                <p>Conséquence pratique : pour une base Community, le calendrier dépend aujourd'hui de l'avancement d'OpenUpgrade
+                    ou de l'outil propre au prestataire retenu. Rien n'empêche de préparer la recette dès maintenant : le jeu
+                    d'essai, les compteurs et les critères de bascule ne dépendent pas de l'outil. Le volet technique de la
+                    conversion (outil, scripts) n'a pas encore d'article dédié sur le blog Développement ; deux étapes voisines y
+                    sont déjà traitées : <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod
+                    en base de test Odoo 20</a> pour la copie neutralisée, et
+                    <a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les
+                    messages d'erreur et leur correctif</a> pour les modules spécifiques.</p>
+                <p>Si la base repart d'une installation neuve, la méthode de contrôle par compteurs est détaillée, pour
+                    Odoo 19, dans <a href="/blog/fonctionnel-odoo-1/recetter-reprise-donnees-odoo-176">Recetter sa reprise de
+                    données dans Odoo 19 Community</a> ; elle se transpose telle quelle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. NEUTRALISATION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Vérifier que la base de recette est neutralisée</h2>
+                <p>Une base de recette est une copie de la production : mêmes clients, mêmes adresses électroniques, mêmes
+                    actions planifiées. Sans précaution, un essai d'envoi de devis part chez le vrai client, et une relance
+                    automatique se déclenche la nuit suivante. Odoo prévoit pour cela la <strong>neutralisation</strong> :
+                    l'équipe technique la lance à la copie, et le responsable de la migration la vérifie à l'écran avant tout
+                    essai. Ce contrôle est rapide.</p>
+                <p>Premier signe : un bandeau rouge en haut de chaque écran. Ouvrez ensuite, en mode développeur,
+                    <strong>Paramètres › Technique › E-mail › Serveurs de messagerie sortants</strong>. La neutralisation archive
+                    les serveurs réels, efface leurs identifiants et installe un serveur leurre, « neutralization - disable
+                    emails », dont l'adresse « invalid » n'existe pas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bandeau rouge Base de données neutralisée pour les tests : aucun e-mail envoyé, etc. ; en dessous, liste Serveurs de messagerie sortants avec une seule ligne : nom neutralization - disable emails, serveur SMTP invalid, chiffrement Aucun" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bandeau de la base neutralisée et le seul serveur sortant actif : le leurre installé par la neutralisation.</figcaption>
+                </figure>
+                <p>Ouvrez ensuite <strong>Paramètres › Technique › Automatisation › Actions planifiées</strong>. La liste
+                    s'ouvre sur le filtre « Tous », qui inclut les actions archivées ; regroupez-la par <strong>Actif</strong>.
+                    Sur la copie de démonstration, 64 actions étaient actives avant la neutralisation ; il n'en reste qu'une,
+                    le nettoyage interne de la base, sans effet sur les clients.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste Actions planifiées avec les filtres Tous et regroupement Actif : groupe Non 71 enregistrements, groupe Oui 1 enregistrement déplié : priorité 3, Base : données internes de l'aspiration automatique, modèle Aspiration automatique" style="max-width:60%; height:auto;"/>
+                    <figcaption>Après neutralisation, une seule action planifiée reste active : le nettoyage interne.</figcaption>
+                </figure>
+                <p>Dernière preuve, la plus parlante : envoyer un document. Sur le devis S00022 d'Azure Interior, le bouton
+                    <strong>Envoyer</strong> ouvre la fenêtre du courriel ; cliquez sur Envoyer. Le message est créé, mais il
+                    n'atteint personne. <strong>Paramètres › Technique › E-mail › E-mails</strong> le montre au statut
+                    <strong>Échec de l'envoi</strong>, et l'onglet « Motif de l'échec » donne la raison : le serveur leurre est
+                    introuvable.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche E-mail : sujet My Company (San Francisco) Quotation S00022, par Mitchell Admin le 11 novembre, De Mitchell Admin admin@example.com, À (partenaires) Azure Interior ; barre d'état sur Échec de l'envoi, bouton Réessayer ; onglet Motif de l'échec ouvert : -2 Nom ou service inconnu" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le courriel d'essai reste dans Odoo, en « Échec de l'envoi » : la neutralisation fonctionne.</figcaption>
+                </figure>
+                <p>La neutralisation touche aussi d'autres liaisons avec l'extérieur : les fournisseurs de paiement ne peuvent
+                    plus encaisser réellement, les transporteurs passent en environnement de test (ceux qui reposent sur un service externe sont
+                    archivés), les webhooks sont désactivés et les serveurs de courriel entrant archivés. C'est voulu, mais
+                    cela signifie qu'une <strong>intégration ne se recette pas de bout en bout</strong> sur cette base : il
+                    faut prévoir un environnement de test chez le partenaire (banque, transporteur, plateforme de paiement) ou
+                    un essai encadré juste après la bascule.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. COMPTEURS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Relever les compteurs à recouper</h2>
+                <p>Les compteurs répondent à une question simple : la migration a-t-elle perdu ou modifié des données ? Ils se
+                    relèvent à deux moments, sur la production Odoo 19 au moment de la copie, puis sur la base migrée avant le
+                    premier essai, avec les mêmes écrans et les mêmes filtres. Les listes regroupées d'Odoo suffisent ; aucun
+                    rapport particulier n'est nécessaire.</p>
+                <p><strong>Commandes clients.</strong> Ouvrez <strong>Ventes › Commandes › Commandes</strong>, retirez le
+                    filtre proposé par défaut, puis regroupez par <strong>Statut</strong> (dans « Regrouper par », entrée
+                    « Groupe personnalisé »). Notez le nombre et le total de chaque groupe.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste Commandes clients sans filtre, regroupée par Statut : Devis 10 enregistrements 41 504,01 dollars, Envoyé 2 enregistrements 2 193,39, Commande client 63 enregistrements 520 694,73, Annulé 1 enregistrement 2 001,00, total 566 393,13" style="max-width:100%; height:auto;"/>
+                    <figcaption>Commandes clients par statut : un nombre et un total par groupe, à recopier dans le relevé.</figcaption>
+                </figure>
+                <p>Cette capture a été prise après l'essai de courriel de la section 2 : le devis S00022 est passé de
+                    « Devis » à « Envoyé ». Avant l'essai, la même liste donnait Devis 11 et Envoyé 1. L'écart est attendu, mais il
+                    montre pourquoi les compteurs se relèvent <strong>avant</strong> de jouer le moindre essai.</p>
+                <p><strong>Commandes fournisseurs.</strong> Même geste dans <strong>Achats › Commandes › Demandes de
+                    prix</strong>, sans filtre, regroupé par Statut (là aussi par « Groupe personnalisé »). L'écran affiche au-dessus du tableau des indicateurs
+                    d'achat (en retard, délais) : ils dépendent de la date du jour et ne se comparent pas ; seuls les groupes du
+                    tableau se recopient.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste Demandes de prix sans filtre, regroupée par Statut : Demande de prix 12 enregistrements 26 145,03 dollars, Envoyé 2 enregistrements 33 494,90, Bon de commande fournisseur 15 enregistrements 48 980,08, Annulé 1 enregistrement 0,00, total 108 620,01" style="max-width:100%; height:auto;"/>
+                    <figcaption>Commandes fournisseurs par statut (barre de recherche et tableau ; les indicateurs d'achat sont retirés de l'image).</figcaption>
+                </figure>
+                <p><strong>Soldes clients.</strong> Dans <strong>Facturation › Clients › Factures</strong>, remplacez le
+                    filtre par défaut par <strong>Comptabilisé</strong> et regroupez par <strong>Partenaire</strong>. La
+                    colonne <strong>Montant dû</strong> donne, client par client, ce qui reste à encaisser. Un montant
+                    dû nul peut avoir deux causes : Azure Interior a un total nul (ses factures sont compensées par un avoir),
+                    Odoo POS a des factures entièrement payées.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste Factures avec les filtres Comptabilisé et regroupement Partenaire : Acme Corporation 6 enregistrements, montant dû 88 573,00 dollars ; Azure Interior 3, 0,00 ; Client particulier 3, 216,00 ; LightsUp 1, 750,00 ; Odoo POS 8, 0,00 ; OpenWood 4, 5 074,00 ; Wood Corner 2, 151,95 ; total hors taxes 84 107,77, total 95 754,22, montant dû 94 764,95" style="max-width:100%; height:auto;"/>
+                    <figcaption>Montant dû par client : le chiffre que la comptabilité attend identique avant et après.</figcaption>
+                </figure>
+                <p><strong>Valeur du stock.</strong> <strong>Inventaire › Analyse › Stock</strong> affiche, par article, la
+                    quantité disponible et la valeur totale. Le panneau <strong>Stock à date</strong> recalcule les deux à
+                    l'instant choisi. C'est l'outil qui permet de comparer des choses comparables : la production continue de
+                    bouger pendant la migration, alors que la copie est figée à l'heure où elle a été prise. Saisissez cette
+                    heure des deux côtés. Sur la démonstration, la Boîte de rangement passe de 110 unités (1 540 $) aujourd'hui
+                    à 18 unités (252 $) au 25 septembre 2026, avant les mouvements enregistrés le 27. Le lien « Current stock »
+                    sous la date ramène au stock du jour.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Inventaire, liste Stock avec le panneau Stock à date réglé sur 25/09/2026 00:00:00 et le lien Current stock pour revenir au stock du jour ; colonnes Produit, Disponible, Virtuellement disponible, Coût unitaire, Valeur totale, Entrant, Sortant, Unité ; ligne E-COM08 Boîte de rangement : disponible 18, coût unitaire 14 dollars, valeur totale 252 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Stock à date : quantités et valeurs à l'heure de la copie, pour comparer la production et la base migrée.</figcaption>
+                </figure>
+                <p>La liste n'additionne pas la colonne Valeur totale. Comparez ligne à ligne les articles qui pèsent le plus,
+                    ou sélectionnez toutes les lignes et exportez-les (bouton Actions › Exporter) pour faire le total dans un
+                    tableur ; contrôlez alors sur deux ou trois articles que le fichier reprend bien les valeurs affichées à la
+                    date choisie.</p>
+                <p>Le relevé tient en un tableau. Voici celui de la copie de démonstration, à reproduire avec vos chiffres :</p>
+                <table class="tmc">
+                    <thead><tr><th>Compteur</th><th>Écran et filtre</th><th>Production 19 (heure de la copie)</th><th>Base migrée</th><th>Écart expliqué ?</th></tr></thead>
+                    <tbody>
+                        <tr><td>Commandes clients par statut</td><td>Ventes › Commandes, sans filtre, par Statut</td><td>ex. Devis 11 · Envoyé 1 · Commande client 63 · Annulé 1</td><td></td><td></td></tr>
+                        <tr><td>Total des commandes clients</td><td>même liste, pied du tableau</td><td>ex. 566 393,13 $</td><td></td><td></td></tr>
+                        <tr><td>Commandes fournisseurs par statut</td><td>Achats › Demandes de prix, sans filtre, par Statut</td><td>ex. 12 · 2 · 15 · 1 (108 620,01 $)</td><td></td><td></td></tr>
+                        <tr><td>Montant dû total et par gros client</td><td>Facturation › Factures, Comptabilisé, par Partenaire</td><td>ex. 94 764,95 $</td><td></td><td></td></tr>
+                        <tr><td>Valeur du stock à l'heure de la copie</td><td>Inventaire › Analyse › Stock, Stock à date</td><td>articles principaux, ou total d'un export</td><td></td><td></td></tr>
+                        <tr><td>Contacts, articles, utilisateurs actifs</td><td>compteur en haut à droite de chaque liste</td><td></td><td></td><td></td></tr>
+                    </tbody>
+                </table>
+                <p>Dans une base à plusieurs sociétés, chaque liste ne montre que les sociétés cochées dans le sélecteur de
+                    société : relevez les compteurs société par société.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. JEU D'ESSAI ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le jeu d'essai par processus</h2>
+                <p>Les compteurs disent si les données ont survécu ; le jeu d'essai dit si l'entreprise peut encore travailler.
+                    Chaque processus est joué de bout en bout par un utilisateur clé du métier, avec son propre compte, sur des
+                    données réelles de la copie. Le parcours de vente complet (piste, devis, livraison, facture, paiement) est
+                    décrit pas à pas dans <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à
+                    l'encaissement dans Odoo 20</a> : c'est la trame à suivre pour l'essai de vente.</p>
+                <table class="tmc">
+                    <thead><tr><th>Processus</th><th>Essai à jouer</th><th>Ce qui doit être identique à Odoo 19</th></tr></thead>
+                    <tbody>
+                        <tr><td>Vente</td><td>Devis sur un client et un article réels → confirmation → livraison → facture</td><td>prix, remises, taxes, conditions de paiement, route de livraison</td></tr>
+                        <tr><td>Achat</td><td>Demande de prix → bon de commande → réception → facture fournisseur</td><td>fournisseur et prix d'achat de l'article, route de réception</td></tr>
+                        <tr><td>Stock</td><td>Ajustement d'inventaire, transfert interne, retour</td><td>emplacements, quantités, valeur après mouvement</td></tr>
+                        <tr><td>Facturation</td><td>Facture client, avoir, paiement et lettrage</td><td>comptes, taxes, journaux, numérotation qui suit la dernière pièce d'Odoo 19</td></tr>
+                        <tr><td>Droits</td><td>Une session par profil : commercial, magasinier, comptable, responsable</td><td>ce que chacun voit et peut modifier (voir la section 5)</td></tr>
+                        <tr><td>Rapports et PDF</td><td>Devis, facture, bon de livraison imprimés</td><td>logo, adresse, mentions, pied de page</td></tr>
+                        <tr><td>Courriels</td><td>Envoi d'un devis et d'une facture (en échec, voir la section 2)</td><td>texte et langue des modèles, pièce jointe</td></tr>
+                        <tr><td>Intégrations</td><td>Liste des liaisons : banque, paiement, transporteurs, webhooks, imports et exports réguliers</td><td>chaque liaison a un plan de test (environnement de test du partenaire ou essai encadré après bascule)</td></tr>
+                    </tbody>
+                </table>
+                <p>Pour les rapports, comparez la même pièce imprimée des deux côtés. Sur la démonstration, la facture
+                    FAC/2026/00001 sort ainsi en Odoo 20 :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Facture PDF FAC/2026/00001 d'Odoo 20 : en-tête avec l'emplacement de logo Your logo et l'adresse de la société 8000 Marina Blvd, Suite 300, 94005 Brisbane, France ; client Azure Interior, 4557 De Silva St, Fremont CA 94538, États-Unis, TIN US12345677 ; dates de facturation, d'échéance et de livraison ; deux lignes Grande table de réunion et Bureau pour quatre personnes, taxe 15 %, total 36 512,50 dollars ; conditions de paiement Fin du mois suivant, communication de paiement et compte ; pied de page avec téléphone, adresse électronique et site, numéro de facture, Page 1 / 1" style="max-width:70%; height:auto;"/>
+                    <figcaption>La facture imprimée en Odoo 20 (bande grise : partie blanche de la page retirée de l'image).</figcaption>
+                </figure>
+                <p>Ce qu'il faut regarder : le logo (ici l'emplacement « Your logo » de la base de démonstration, qui n'a pas de
+                    logo), l'adresse de la société (celle de la démonstration associe une rue et un code postal américains au
+                    pays France : c'est exactement le genre d'incohérence à noter au journal), les mentions légales, le libellé des taxes (« Tax 15% » dans la démonstration),
+                    les coordonnées de paiement et le pied de page. Un modèle de document personnalisé en Odoo 19 est souvent
+                    le premier écart du journal.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. CE QUE LA SÉRIE A DÉJÀ MONTRÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Les contrôles propres au passage à Odoo 20</h2>
+                <p>Trois sujets de la série demandent un contrôle explicite, parce qu'Odoo 20 y change le comportement sans
+                    message d'erreur.</p>
+                <p><strong>Les droits d'accès.</strong> Odoo 20 réunit droits d'accès et règles d'enregistrement en une seule
+                    liste, <strong>Paramètres › Technique › Sécurité › Droits d'accès</strong>, où chaque ligne est une
+                    <strong>Permission</strong> (avec groupe) ou une <strong>Restriction</strong> (sans groupe, appliquée à tous).
+                    Regroupée par Type, la liste de démonstration compte 1 500 permissions et 153 restrictions.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Liste Droits d'accès regroupée par Type : Permission 1500 enregistrements, Restriction 153 enregistrements ; colonnes Nom, Modèle, Groupe, Créer, Lire, Mettre à jour, Supprimer, Domaine, Type" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les droits d'accès d'Odoo 20 : des permissions, qui s'additionnent, et des restrictions, qui valent pour tous.</figcaption>
+                </figure>
+                <p>Deux conséquences se vérifient en recette. Une permission sans domaine venant d'un autre groupe annule
+                    « mes documents seulement » : sur la démonstration, un commercial qui a aussi un accès Inventaire voit
+                    toutes les commandes en Odoo 20, quand Odoo 19 ne lui montrait que les siennes. Et une ligne créée sans
+                    groupe restreint tout le monde, administrateur compris. Le filtre <strong>Personnalisé</strong> isole les
+                    lignes propres à votre base ; le test se fait dans la session de chaque profil. Les lignes livrées par les
+                    modules sont en lecture seule : le bouton <strong>Customize</strong> en crée une copie modifiable et
+                    archive l'original.</p>
+                <p><strong>Le plan comptable.</strong> Les groupes de comptes d'Odoo 19 n'existent plus : Odoo 20 les remplace
+                    par des comptes parents, et le code d'un compte devient facultatif. Vérifiez que chaque compte de votre plan
+                    garde son code (l'export comptable s'appuie dessus) et ce que sont devenus vos groupes de comptes.</p>
+                <p><strong>Le mode hors ligne.</strong> Nouveau en Odoo 20, il ne fonctionne que dans un contexte sécurisé :
+                    une adresse en HTTPS. Si la base de production est jointe en HTTP simple, les utilisateurs n'en profiteront
+                    pas ; la mise en place est décrite dans <a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre
+                    Odoo 20 en HTTPS avec Nginx</a>. Plus largement, les nouveautés visibles (menu Actions, flèches de période,
+                    formulaires mobiles) sont recensées dans <a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les
+                    nouveautés d'Odoo 20, en Community et en Enterprise</a> : elles font partie de la formation des
+                    utilisateurs avant la bascule.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. JOURNAL ET CRITÈRES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le journal des écarts et les critères de bascule</h2>
+                <p>Chaque différence constatée entre Odoo 19 et la base migrée devient une ligne du journal, même quand elle est
+                    attendue. Un tableur partagé suffit ; l'important est que chaque ligne ait une gravité et un responsable.</p>
+                <table class="tmc">
+                    <thead><tr><th>N°</th><th>Processus</th><th>Écran ou document</th><th>Constat (19 / 20)</th><th>Gravité</th><th>Responsable</th><th>Décision</th><th>Statut</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td>Vente</td><td>Liste des commandes</td><td>ex. 1 devis passé en « Envoyé » pendant l'essai de courriel</td><td>Mineur</td><td>Responsable de la migration</td><td>Écart attendu, expliqué</td><td>Clos</td></tr>
+                        <tr><td>2</td><td>Facturation</td><td>PDF de facture</td><td></td><td></td><td></td><td></td><td></td></tr>
+                    </tbody>
+                </table>
+                <p>Trois niveaux de gravité suffisent : <strong>bloquant</strong> (un processus ne peut pas être mené, un
+                    chiffre ne se recoupe pas), <strong>gênant</strong> (un contournement existe, il sera corrigé après la
+                    bascule), <strong>mineur</strong> (présentation, habitude). La décision de bascule se prend sur des critères
+                    écrits avant la recette, pas sur une impression :</p>
+                <ul>
+                    <li>aucun écart bloquant ouvert dans le journal ;</li>
+                    <li>chaque compteur identique entre la production et la base migrée, ou son écart expliqué ;</li>
+                    <li>chaque processus clé joué de bout en bout par un utilisateur clé, avec son propre compte ;</li>
+                    <li>les documents imprimés validés par leurs destinataires internes ;</li>
+                    <li>chaque intégration avec un plan de test daté ;</li>
+                    <li>les utilisateurs informés des changements d'écran et de droits ;</li>
+                    <li>la migration répétée en entier sur une copie récente, avec sa durée mesurée pour fixer le créneau d'arrêt.</li>
+                </ul>
+                <p>Le jour de la bascule, la production Odoo 19 est gelée : la documentation d'Odoo rappelle qu'une modification
+                    faite après la copie n'est pas reprise dans la base migrée. Conservez la dernière sauvegarde Odoo 19 et
+                    décidez à l'avance jusqu'à quand un retour arrière reste envisageable. Une fois la base Odoo 20 en service,
+                    relevez les mêmes compteurs une dernière fois, puis vérifiez que les courriels partent et que les actions
+                    planifiées tournent : contrairement à la base de recette, la production migrée ne doit pas être
+                    neutralisée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. CHECKLIST ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. La checklist de recette</h2>
+                <p>Cette liste reprend les sections précédentes et le « Basic test checklist » de la documentation officielle
+                    d'Odoo. Recopiez-la dans le journal des écarts ; chaque case non cochée est une ligne ouverte.</p>
+                <h3>Avant la migration</h3>
+                <ul class="checklist">
+                    <li>Voie de migration choisie et outil vérifié pour la version 20 (section 1).</li>
+                    <li>Liste des modules spécifiques et de leur portage en Odoo 20.</li>
+                    <li>Jeu d'essai écrit : un essai par processus, un utilisateur clé par essai.</li>
+                    <li>Critères de bascule écrits et validés par la direction.</li>
+                </ul>
+                <h3>Sur la base de recette, avant tout essai</h3>
+                <ul class="checklist">
+                    <li>Bandeau « Base de données neutralisée » visible.</li>
+                    <li>Seul serveur sortant actif : « neutralization - disable emails ».</li>
+                    <li>Actions planifiées désactivées (une seule active, le nettoyage interne).</li>
+                    <li>Compteurs relevés et comparés à ceux de la production à la même heure.</li>
+                </ul>
+                <h3>Pendant la recette</h3>
+                <ul class="checklist">
+                    <li>Vues habituelles affichées correctement ; vues personnalisées et filtres enregistrés toujours présents.</li>
+                    <li>Création et modification de documents : commandes, factures, achats, contacts, utilisateurs.</li>
+                    <li>Processus vente, achat, stock et facturation joués de bout en bout.</li>
+                    <li>Numérotation des pièces : la suivante continue celle d'Odoo 19.</li>
+                    <li>PDF de devis, facture et bon de livraison relus.</li>
+                    <li>Modèles de courriel : texte, langue, pièces jointes (envois en échec sur la base neutralisée).</li>
+                    <li>Traductions enregistrées dans la base toujours présentes.</li>
+                    <li>Actions automatisées et actions du menu Actions (sur une fiche et sur une sélection de lignes).</li>
+                    <li>Droits relus : filtre Personnalisé, restrictions sans groupe, une session par profil.</li>
+                    <li>Plan comptable : codes présents, ce que sont devenus les groupes de comptes.</li>
+                    <li>Export des données possible.</li>
+                    <li>Pages du site web, si la base en a un.</li>
+                    <li>Intégrations : chacune a son plan de test.</li>
+                </ul>
+                <h3>Bascule</h3>
+                <ul class="checklist">
+                    <li>Aucun écart bloquant ouvert.</li>
+                    <li>Migration répétée la veille, durée connue.</li>
+                    <li>Production Odoo 19 gelée, dernière sauvegarde conservée.</li>
+                    <li>Adresse de production en HTTPS (mode hors ligne).</li>
+                    <li>Après la bascule : compteurs relevés, courriels et actions planifiées actifs, premiers documents du jour contrôlés.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Un essai modifie les compteurs</h4>
+                    <p>Un seul envoi de devis a fait passer S00022 de « Devis » à « Envoyé » sur la copie (figure 5). Relevez
+                        tous les compteurs avant le premier essai, et notez dans le journal chaque document que la recette a
+                        modifié ; sinon, la comparaison avec la production ne veut plus rien dire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une copie non neutralisée parle aux vrais clients</h4>
+                    <p>La base de recette contient les adresses réelles des clients et toutes les actions planifiées de la
+                        production. Avant le premier clic, vérifiez le bandeau, le serveur leurre et les actions planifiées
+                        (figures 2 et 3). Un courriel d'essai doit finir en « Échec de l'envoi », jamais dans la boîte d'un
+                        client.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Tout s'ouvre » ne veut pas dire « les droits sont bons »</h4>
+                    <p>En Odoo 20, un utilisateur peut voir davantage de documents qu'en Odoo 19 sans qu'aucun écran ne le
+                        signale. Seul un essai dans la session de chaque profil le révèle : la recette des droits ne se fait pas
+                        avec le compte administrateur.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> sur une copie neutralisée d'une base de démonstration Odoo 20, constater
+                        l'effet d'un essai sur les compteurs.</p>
+                    <p><strong>Indication :</strong> relevez les commandes clients par statut (section 3), envoyez par
+                        courriel un devis encore au statut « Devis », puis ouvrez Paramètres › Technique › E-mail › E-mails
+                        (mode développeur) et relevez de nouveau les commandes par statut. Notez l'écart dans un journal à
+                        deux lignes.</p>
+                    <p><strong>Critère de réussite :</strong> le courriel apparaît en « Échec de l'envoi », le groupe
+                        « Devis » a perdu une commande et le groupe « Envoyé » en a gagné une, le total général est inchangé,
+                        et le journal explique l'écart.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Au 11 novembre 2026, le service de mise à niveau d'Odoo exige un abonnement Enterprise, et la branche
+                        20.0 d'OpenUpgrade ne contient encore aucun script : la recette se prépare dès maintenant, l'outil se
+                        choisit ensuite.</li>
+                    <li>La production reste en Odoo 19 tant que la recette n'a pas conclu ; un écart bloquant se corrige à la
+                        source, puis copie et migration sont refaites.</li>
+                    <li>Base de recette : bandeau, serveur leurre et actions planifiées désactivées, vérifiés avant tout essai.</li>
+                    <li>Compteurs relevés avant les essais, à la même heure que la production : commandes par statut, montant dû,
+                        stock à date.</li>
+                    <li>Bascule sur critères écrits : zéro bloquant, compteurs recoupés, processus joués par les utilisateurs
+                        clés, droits testés dans chaque profil.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article clôt la série <strong>Passer à Odoo 20</strong>, après les changements à l'écran, les droits
+                    d'accès et la comptabilité. La série suivante portera sur le multi-société dans Odoo 20 : créer, partager
+                    et cloisonner plusieurs sociétés dans une même base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La copie neutralisée, côté équipe technique.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/recetter-reprise-donnees-odoo-176">Recetter sa reprise de données (Odoo 19)</a></h5>
+                            <p class="small text-muted mb-0">La méthode des compteurs, appliquée à une reprise.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les nouveautés d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Ce que les utilisateurs découvriront après la bascule.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
