@@ -1,0 +1,485 @@
+<!--
+Article — Commande client, fabrication et livraison dans Odoo 20
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), vague 3 F2.3
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : commande-fabrication-livraison-odoo
+Tags : intermediaire, stock, guide, community
+Sources vérifiées le 2026-11-11 : Odoo 20.0 Community, base vs20_func_f23 (copie neutralisée de vs20_func), société My Company (San Francisco), USD, taxe 15 %.
+  Réglage de la copie : entrepôt WH passé en livraison 1 étape (ship_only, défaut Odoo) ; réception 2 étapes et fabrication 1 étape (mrp_one_step) inchangées.
+  Joué à l'écran : Panneau de bois (FURN_7023, 50 en stock, 48 prévus) : onglet Inventaire, Routes = Dropshipping seule → Inventaire › Configuration › Paramètres, bloc Logistique,
+  « Réapprovisionner sur commande (MTO) » coché, Enregistrer → la case apparaît sur l'article, cochée, enregistrée ; Politique de facturation Quantités commandées → Quantités livrées.
+  Nomenclature Panneau de bois (démo) : 3 Couche de pli + 1 Couche d'usure, type Fabriquer ce produit.
+  Ventes › Commandes › Devis › Nouveau › Nouveau devis : Wood Corner, 2 Panneau de bois à 100 → S00082 (230 $ TTC) → Confirmer → boutons Livraison 1, Fabrication 1 ;
+  WH/MO/00010 Confirmé, Source S00082, bouton Ventes, Statut des composants Pas disponible (Couche de pli 6 à consommer, 5 en stock) ; « Créer une facture » secondaire avant livraison.
+  Couche de pli : bouton de stock (5 / -1 prévu) → Prévision de Stock → Mettre la quantité à jour → 10 → OF Disponible, 6 réservées automatiquement.
+  OF : Lancer → Produire → Terminé (6 et 2 consommées). WH/OUT/00085 : Prêt, Document d'origine S00082, historique « En attente d'une autre opération → Prêt » ; Valider.
+  S00082 Entièrement livré, Délivré 2, « Créer une facture » primaire → Facture normale → Créer brouillon → Confirmer → FAC/2026/00015, bouton Commandes clients → S00082 (Livraison, Factures clients, Fabrication).
+  Second essai à l'écran : S00083 Azure Interior 2 Panneau de bois → WH/MO/00011, Couche de pli Pas disponible (4 pour 6) → Produire → Terminé sans message, 6 consommées ; Couche de pli -2 en stock.
+  Exercice vérifié en shell (rollback) : Stratifié en plastique (FURN_8621) en MTO, vente de 1 → OF Confirmé, Source = la vente, Plis de placage Pas disponible, livraison En attente.
+  Code : stock/data/stock_data.xml:42-48 (route_warehouse0_mto, active False) ; stock/models/res_config_settings.py:46,52-60 (case = route.active) ; stock/views/res_config_settings_views.xml:189-194 ;
+  mrp/data/mrp_data.xml:10-16 (route Fabriquer product_selectable False) ; sale_mrp/views/sale_order_views.xml:13-17 (bouton Fabrication) ; sale_mrp/views/mrp_production_views.xml:10 (bouton Ventes) ;
+  mrp/models/mrp_production.py:2379-2420 (button_mark_done : aucun contrôle de disponibilité, mouvements non prélevés marqués picked :2417) ; stock/models/stock_warehouse.py:421-446 (règle MTO).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Commande client, fabrication et livraison dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Certains articles ne se fabriquent qu'une fois vendus. Dans Odoo 20, la
+                    confirmation de la commande crée alors l'ordre de fabrication, la livraison attend qu'il soit
+                    terminé, et la facture suit la livraison. Cet article rejoue ce parcours en entier sur la base de
+                    démonstration, avec un composant manquant, et signale ce qu'Odoo ne contrôle pas.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %), avec Ventes, Achats, Inventaire, Fabrication et Facturation installés. L'entrepôt de cette
+                        copie livre en une étape, le réglage par défaut d'Odoo, et fabrique en une étape. Ces modules
+                        existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Fabriquer à la commande : quatre applications sur un même fil</h2>
+                <p>Un article fabriqué à la commande (en anglais <em>make to order</em>, MTO) n'est pas pris en rayon :
+                    chaque vente déclenche sa propre fabrication, à la quantité vendue. Le parcours mobilise les
+                    <strong>Ventes</strong> (commande client), la <strong>Fabrication</strong> (ordre de fabrication et
+                    composants), l'<strong>Inventaire</strong> (livraison) et la <strong>Facturation</strong>. Il prolonge
+                    le cycle de vente décrit dans <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du
+                    prospect à l'encaissement dans Odoo 20</a>, en ajoutant l'atelier entre la commande et la livraison.</p>
+                <p>Le fil conducteur est un article de la démonstration, le « Panneau de bois », vendu en 2 exemplaires à Wood
+                    Corner. Sa nomenclature demande 3 « Couche de pli » et 1 « Couche d'usure » par panneau ; la base
+                    n'a que 5 couches de pli pour les 6 nécessaires, ce qui permet de voir ce qu'Odoo fait d'un composant
+                    manquant. Les numéros de documents cités sont ceux obtenus sur cette base ; ils varient d'une base à l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>rendre disponible la route à la commande et l'appliquer à un article doté d'une nomenclature ;</li>
+                    <li>faire créer l'ordre de fabrication par la confirmation de la commande client ;</li>
+                    <li>lire la disponibilité des composants, compléter le stock et terminer la fabrication ;</li>
+                    <li>livrer puis facturer ce qui a été fabriqué ;</li>
+                    <li>passer d'un document à l'autre, de la facture jusqu'à l'ordre de fabrication.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du flux de fabrication à la commande dans Odoo 20 : Inventaire, article Panneau de bois avec route MTO et nomenclature, cocher la route MTO ; Ventes, commande client S00082, Confirmer ; Fabrication, ordre de fabrication WH/MO/00010 créé seul, Lancer puis Produire ; Inventaire, livraison WH/OUT/00085 qui attend l'OF, Valider ; Facturation, facture client FAC/2026/00015, Créer une facture puis Confirmer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Cinq étapes, quatre applications : la commande déclenche la fabrication, la livraison attend sa fin.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Préparer l'article : route à la commande et nomenclature</h2>
+                <p>Ouvrez <strong>Inventaire › Produits › Produits</strong>, puis le Panneau de bois, onglet
+                    <strong>Inventaire</strong>. La rubrique <strong>Routes</strong> ne propose que « Dropshipping » :
+                    la stratégie à la commande n'apparaît pas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche article Panneau de bois dans Odoo 20, onglet Inventaire : bouton intelligent 50 Unité(s), 48 Prévu(e), bouton Nomenclatures 1 ; rubrique Routes avec la seule case Dropshipping" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avant réglage : 50 panneaux en stock, une nomenclature, mais aucune route à la commande.</figcaption>
+                </figure>
+                <p>La route existe, mais Odoo la livre archivée. Ouvrez <strong>Inventaire › Configuration ›
+                    Paramètres</strong>, descendez jusqu'au bloc <strong>Logistique</strong>, cochez
+                    <strong>Réapprovisionner sur commande (MTO)</strong>, puis cliquez sur <strong>Enregistrer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Paramètres Inventaire dans Odoo 20, bloc Logistique : cases Dropshipping et Réapprovisionner sur commande (MTO) cochées, texte Autoriser la fabrication à la commande, ou automatiser le bon de commande lorsqu'un produit est vendu" style="max-width:85%; height:auto;"/>
+                    <figcaption>La case qui rend la route à la commande disponible.</figcaption>
+                </figure>
+                <p>De retour sur l'article, la case <strong>Réapprovisionner sur commande (MTO)</strong> est apparue :
+                    cochez-la et enregistrez. Aucune case « Fabriquer » ne s'y ajoute : la fabrication est une route de
+                    l'entrepôt, retenue parce que l'article a une nomenclature. Le détail du choix entre achat et
+                    fabrication est donné dans <a href="/blog/fonctionnel-odoo-1/stock-ou-commande-mto-odoo-253">Sur stock
+                    ou à la commande (MTO) dans Odoo 20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Onglet Inventaire du Panneau de bois dans Odoo 20 : Routes, case Réapprovisionner sur commande (MTO) cochée, case Dropshipping décochée" style="max-width:100%; height:auto;"/>
+                    <figcaption>La route à la commande, cochée sur l'article.</figcaption>
+                </figure>
+                <p>Sur l'onglet <strong>Informations générales</strong>, la démonstration règle la
+                    <strong>Politique de facturation</strong> du panneau sur « Quantités commandées ». Pour ne facturer
+                    qu'après livraison, choisissez « Quantités livrées » et enregistrez.</p>
+                <p>Reste la nomenclature, déjà présente dans la démonstration : <strong>Fabrication › Produits ›
+                    Nomenclatures</strong>, Panneau de bois. Elle est de type <strong>Fabriquer ce produit</strong> et
+                    consomme, pour un panneau, 3 couches de pli et 1 couche d'usure. Sa création est détaillée dans <a
+                    href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de
+                    fabrication dans Odoo 20</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Nomenclature du Panneau de bois dans Odoo 20 : quantité 1,00 Unité(s), type de nomenclature Fabriquer ce produit, composants Couche de pli 3,00 et Couche d'usure 1,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La nomenclature : deux composants pour un panneau.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Confirmer la commande client</h2>
+                <p>Ouvrez <strong>Ventes › Commandes › Devis</strong>, cliquez sur <strong>Nouveau</strong> puis
+                    <strong>Nouveau devis</strong>. Choisissez le client Wood Corner, ajoutez 2 Panneaux de bois à 100 $,
+                    puis cliquez sur <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Commande client S00082 confirmée dans Odoo 20 : boutons intelligents Livraison 1 et Fabrication 1 ; boutons Créer une facture, Envoyer une facture PRO FORMA, Envoyer, Aperçu, Annuler ; état Commande client ; client Wood Corner ; badge Non livré ; ligne Panneau de bois quantité 2,00, délivré 0,00, facturé 0,00, montant 200,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande confirmée : un bouton Fabrication s'ajoute au bouton Livraison.</figcaption>
+                </figure>
+                <p>La confirmation a créé deux documents : la livraison et l'ordre de fabrication, chacun accessible par
+                    son bouton intelligent en haut de la commande. Le bouton <strong>Créer une facture</strong> est
+                    présent, mais en bouton secondaire : avec une politique « Quantités livrées », rien n'est encore à
+                    facturer. Il sera mis en avant après la livraison (figure 11).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Lire l'ordre de fabrication et ses composants</h2>
+                <p>Cliquez sur <strong>Fabrication</strong>. L'ordre WH/MO/00010 est à l'état <strong>Confirmé</strong>,
+                    pour 2 panneaux. Le bouton intelligent <strong>Ventes</strong> ramène à la commande, et l'onglet
+                    <strong>Divers</strong> indique S00082 comme <strong>Source</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Ordre de fabrication WH/MO/00010 dans Odoo 20 : bouton intelligent Ventes 1 ; boutons Produire, Lancer, Annuler ; état Confirmé ; produit Panneau de bois, quantité 2,00 à produire ; Statut des composants Pas disponible ; Couche de pli Pas disponible, à consommer 6,00, consommé 5,00 ; Couche d'usure Disponible, 2,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'ordre créé par la commande : il manque une couche de pli.</figcaption>
+                </figure>
+                <p>Le <strong>Statut des composants</strong> affiche « Pas disponible » : il faut 6 couches de pli et
+                    la base n'en a que 5. Odoo n'a lancé aucune demande pour ce composant, qui n'a ni règle de
+                    réapprovisionnement ni route à la commande. Dans la pratique, la couche manquante arrive par une réception d'achat, décrite dans
+                    <a href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la demande de
+                    prix à la facture dans Odoo 20</a> ; ici, pour rester sur la fabrication, le stock est simplement
+                    corrigé.</p>
+                <p>Sur la fiche de la « Couche de pli », le bouton de stock (5 en stock, -1 prévu) ouvre la
+                    <strong>Prévision de Stock</strong> ; cliquez sur <strong>Mettre la quantité à jour</strong> et
+                    saisissez 10 sur la ligne WH/Stock. Revenez à l'ordre de fabrication : sans autre action, les 6
+                    couches sont réservées et le statut passe à <strong>Disponible</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Ordre de fabrication WH/MO/00010 dans Odoo 20 après mise à jour du stock : Statut des composants Disponible ; Couche de pli Disponible, à consommer 6,00, consommé 6,00 ; Couche d'usure Disponible, 2,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le stock complété, les composants sont réservés d'eux-mêmes.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Fabriquer</h2>
+                <p>Cliquez sur <strong>Lancer</strong> au début du travail, puis, une fois les panneaux assemblés, sur
+                    <strong>Produire</strong>. L'ordre passe à <strong>Terminé</strong> :
+                    les composants sont sortis du stock, les 2 panneaux y entrent, et les boutons
+                    <strong>Mouvements de produit</strong> et <strong>Traçabilité</strong> apparaissent.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Ordre de fabrication WH/MO/00010 terminé dans Odoo 20 : boutons intelligents Ventes 1, Aperçu, Mouvements de produit, Traçabilité ; état Terminé ; quantité 2,00 / 2,00 ; dates de début et de fin ; Couche de pli consommé 6,00, Couche d'usure consommé 2,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fabrication terminée : 6 couches de pli et 2 couches d'usure consommées.</figcaption>
+                </figure>
+                <p>L'onglet <strong>Ordres de travail</strong> est vide : la nomenclature ne définit aucune opération. Les postes de travail et
+                    le suivi des temps sont traités dans l'article sur les nomenclatures cité plus haut.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Livrer</h2>
+                <p>Revenez à la commande S00082 et cliquez sur <strong>Livraison</strong>. Le bon WH/OUT/00085 est
+                    <strong>Prêt</strong>, avec S00082 comme document d'origine. Son historique montre qu'il est resté
+                    « En attente d'une autre opération » jusqu'à la fin de la fabrication : la livraison ne prend pas les
+                    panneaux en rayon, elle attend ceux de l'ordre de fabrication.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Bon de livraison WH/OUT/00085 dans Odoo 20 : boutons Valider, Imprimer, Retour, Annuler ; état Prêt ; adresse de livraison Wood Corner ; type d'opération YourCompany: Bons de livraison ; document d'origine S00082 ; ligne Panneau de bois demande 2,00 quantité 2,00 ; historique En attente d'une autre opération vers Prêt" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison, passée de « En attente d'une autre opération » à « Prêt » à la fin de la fabrication.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Valider</strong>. Sur la commande, la colonne <strong>Délivré</strong> passe à
+                    2, le badge devient <strong>Entièrement livré</strong> et le bouton <strong>Créer une
+                    facture</strong> passe au premier plan.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Commande client S00082 livrée dans Odoo 20 : bouton Créer une facture mis en avant ; badge Entièrement livré ; date effective ; ligne Panneau de bois quantité 2,00, délivré 2,00, facturé 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Livrée : la commande est prête à être facturée.</figcaption>
+                </figure>
+                <p>Avec une livraison en plusieurs étapes, des transferts intermédiaires s'intercalent entre la
+                    fabrication et l'expédition ; voir <a
+                    href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et
+                    livraisons en plusieurs étapes dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Facturer</h2>
+                <p>Cliquez sur <strong>Créer une facture</strong>, laissez « Facture normale » et cliquez sur
+                    <strong>Créer brouillon</strong>, puis sur <strong>Confirmer</strong>. La facture FAC/2026/00015
+                    reprend les 2 panneaux livrés, soit 200 $ hors taxes et 230 $ taxes comprises.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Facture client FAC/2026/00015 (S00082) comptabilisée dans Odoo 20 : boutons intelligents Écritures comptables et Commandes clients 1 ; boutons Envoyer, Imprimer, Payer, Aperçu, Avoir, Remettre en brouillon ; état Comptabilisé ; client Wood Corner ; ligne Panneau de bois 2,00 à 100,00, taxe 15 %, 200,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture, reliée à la commande par le bouton Commandes clients.</figcaption>
+                </figure>
+                <p>L'envoi, le paiement et le suivi du montant dû se déroulent comme dans le cycle de vente : voir <a
+                    href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement dans
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Remonter la chaîne</h2>
+                <p>Chaque document mène aux autres. Depuis la facture, <strong>Commandes clients</strong> rouvre
+                    S00082. La commande affiche alors trois boutons intelligents : <strong>Livraison</strong>,
+                    <strong>Factures clients</strong> et <strong>Fabrication</strong>. Depuis l'ordre de fabrication,
+                    <strong>Ventes</strong> ramène à la commande ; la livraison, elle, porte S00082 comme document
+                    d'origine.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="En-tête de la commande S00082 dans Odoo 20, ouverte depuis la facture FAC/2026/00015 : boutons intelligents Livraison 1, Factures clients 1, Fabrication 1 ; état Commande client" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande, point de départ de tous les documents du parcours.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Application</th><th>Bouton</th><th>Document obtenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>Préparer (une fois)</td><td>Inventaire, Fabrication</td><td>Case MTO des paramètres, route MTO de l'article</td><td>Article à la commande, avec nomenclature</td></tr>
+                        <tr><td>Vendre</td><td>Ventes</td><td>Confirmer</td><td>Commande S00082, livraison et ordre de fabrication</td></tr>
+                        <tr><td>Fabriquer</td><td>Fabrication</td><td>Lancer, Produire</td><td>Ordre WH/MO/00010 terminé</td></tr>
+                        <tr><td>Livrer</td><td>Ventes → Inventaire</td><td>Valider</td><td>Livraison WH/OUT/00085</td></tr>
+                        <tr><td>Facturer</td><td>Ventes → Facturation</td><td>Créer une facture, Confirmer</td><td>Facture FAC/2026/00015</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Les quatre applications du parcours (Ventes, Fabrication, Inventaire, Facturation) font partie d'Odoo
+                    20 Community : tout ce qui est montré ici est disponible sans abonnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Sans la case des paramètres, pas de route à la commande</h4>
+                    <p>La route « Réapprovisionner sur commande (MTO) » est livrée archivée : tant que la case du bloc
+                        Logistique des paramètres d'Inventaire n'est pas cochée, l'onglet Inventaire de l'article ne la
+                        propose pas (figure 2), même si l'article a une nomenclature. La même case figure dans les
+                        paramètres d'Achats.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>À la commande, le stock existant n'est pas utilisé</h4>
+                    <p>Le panneau comptait 50 unités en stock (48 prévues), et la commande de 2 a tout de même
+                        créé un ordre de fabrication ; la livraison a attendu les panneaux fabriqués. C'est le principe
+                        de la route : chaque vente a sa fabrication. Pour ne fabriquer que la part manquante, la règle à la
+                        commande peut prendre d'abord dans le stock, comme décrit dans <a
+                        href="/blog/fonctionnel-odoo-1/stock-ou-commande-mto-odoo-253">Sur stock ou à la commande (MTO)
+                        dans Odoo 20</a>.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Produire » ne bloque pas un composant manquant</h4>
+                    <p>Sur une seconde commande de 2 panneaux, l'ordre WH/MO/00011 affichait « Pas disponible » : 4
+                        couches de pli en stock pour 6. Un clic sur <strong>Produire</strong> l'a terminé sans message,
+                        avec 6 couches consommées, et le stock de couches de pli est passé à -2. Vérifiez le statut des
+                        composants avant de produire.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_14" alt="Extrait de l'ordre de fabrication WH/MO/00011 dans Odoo 20 avant production : boutons Produire, Lancer, Annuler ; état Confirmé ; Statut des composants Pas disponible ; Couche de pli Pas disponible, à consommer 6,00, consommé 4,00" style="max-width:100%; height:auto;"/>
+                        <figcaption>Avant le clic : 4 couches de pli pour 6 nécessaires.</figcaption>
+                    </figure>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_15" alt="En-tête de la fiche article Couche de pli dans Odoo 20 après production : bouton intelligent -2 Unité(s), -2 Prévu(e)" style="max-width:100%; height:auto;"/>
+                        <figcaption>Après le clic : le stock du composant est négatif.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> faire fabriquer à la commande un autre article de la démonstration.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration avec Ventes, Inventaire et
+                        Fabrication, la case MTO des paramètres cochée, passez l'article « Stratifié en plastique » en
+                        route « Réapprovisionner sur commande (MTO) », puis vendez-en 1 et confirmez la commande.</p>
+                    <p><strong>Critère de réussite :</strong> la commande affiche un bouton Fabrication ; l'ordre de
+                        fabrication est à l'état Confirmé, avec la commande pour Source et le composant « Plis de
+                        placage » à « Pas disponible » ; la livraison attend.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>La fabrication à la commande demande deux réglages : la case MTO des paramètres d'Inventaire, puis la route sur l'article ; la nomenclature fait retenir la route de fabrication de l'entrepôt.</li>
+                    <li>La confirmation de la commande crée l'ordre de fabrication, relié à la vente par les boutons Fabrication et Ventes.</li>
+                    <li>La livraison attend la fin de la fabrication ; avec « Quantités livrées », la facture suit la livraison.</li>
+                    <li>Sans règle de réapprovisionnement, un composant manquant n'est ni commandé ni bloquant : le statut des composants est l'indicateur à lire avant de produire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Le prochain article de la série <strong>Odoo 20 de bout en
+                    bout</strong> quitte la chaîne logistique pour les ressources humaines : de l'embauche à la note de
+                    frais. Pour revoir la fabrication séparément, le point de départ reste <a
+                    href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de
+                    fabrication dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement</a></h5>
+                            <p class="small text-muted mb-0">Le cycle complet côté ventes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/stock-ou-commande-mto-odoo-253">Sur stock ou à la commande (MTO)</a></h5>
+                            <p class="small text-muted mb-0">Achat ou fabrication, et la variante qui puise d'abord dans le stock.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nomenclatures-ordres-fabrication-odoo-223">Nomenclatures et ordres de fabrication</a></h5>
+                            <p class="small text-muted mb-0">Composants, opérations et coûts de production.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
