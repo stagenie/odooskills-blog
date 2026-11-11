@@ -1,0 +1,535 @@
+<!--
+Article — Migrer un module 19 → 20 : scripts pre, post, end et upgrade_code
+Série « Migrer et tester en Odoo 20 » (id 64), étape 2 ; lot T6 (T6.2 du plan vague 3 technique)
+Date : 2026-11-11
+Slug : scripts-migration-module-odoo-20
+Mot-clé cible : odoo migration script
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Preuves (Odoo 20.0 Community 3538ed82 et Odoo 19.0 du poste, PostgreSQL 16, bases jetables, module oski_parc) :
+- 19 : base neuve, oski_parc 19.0.1.0.0 installé (DeprecationWarning odoo.osv seulement), rapport HTML rendu « Fiche de prêt ».
+- 20 tel quel : « The module oski_parc has an incompatible version, setting installable=False », exit 0, état uninstallable.
+- upgrade_code : --script un par un avec --glob (t-call, base64-in-xml, ir-access, ormcache-on-transaction, tuple-rec_names_search) ;
+  --from 19.0 → KeyError 'ar_base' même avec --glob (19.3-00-account-groups.py:123 ; corrigé dans la 20.0 publique du 11/11, .get + continue, non rejoué).
+- Port manuel, 20.0.1.0.0 : tests 2/2 ; rapport t-esc vide + WARNING Unknown directives, t-out rendu.
+- 20.0.1.0.0 → 20.0.1.1.0 : ordre pre 0.0.0, pre 1.1.0, post 1.1.0, post 0.0.0, end 1.1.0, end 0.0.0, puis Deleting ir.model.fields numero.
+  Sans pre : exit 0, colonnes vides. Sans changement de version : aucun script, colonne numero supprimée. Signature (env, version) → TypeError, exit 255.
+- Source : odoo/modules/migration.py (MigrationManager, exec_script), odoo/modules/loading.py:163-224, :482-510, odoo/modules/module.py:495-502,579-608,
+  odoo/cli/upgrade_code.py ; 19.0 publique 40e9be2 (10/11/2026) relue : même mécanisme, sans la ligne de durée ; même ordre rejoué sur la base 19.
+Captures : content/blog/screenshots/scripts-migration-module-odoo-20/ (01 schéma, 02 repérage, 03 upgrade_code, 04 rapport, 05 journal, 06 avec/sans pre).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Migrer un module 19 → 20 : scripts pre, post, end et upgrade_code</h1>
+                <p class="lead mt-3 text-white">Faire passer un module de la 19 à la 20, c'est deux travaux distincts. Le code d'abord : <code>odoo-bin upgrade_code</code> en réécrit une partie, le reste se fait à la main. Les données ensuite : quand le module change de forme (un champ renommé, un format revu), ce sont les scripts du dossier <code>migrations/</code> qui préservent ce qui est déjà en base. Voici les deux, sur un vrai module, avec l'ordre d'exécution relevé dans le journal et ce qui se perd quand on oublie un script.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Porter le code</h4>
+                        <p>Ce que fait Odoo 20 d'un module 19, les scripts d'<code>upgrade_code</code> fournis pour la 20, et ce qu'il reste à corriger à la main.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Migrer les données</h4>
+                        <p>Écrire des scripts <code>pre</code>, <code>post</code> et <code>end</code>, savoir ce qui est disponible à chaque étape et dans quel ordre ils passent.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Ne rien perdre</h4>
+                        <p>Ce qui arrive sans script <code>pre</code>, ou sans changement de version : aucune erreur, des données en moins.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une instance Odoo 20 Community lancée depuis les sources (<code>./odoo-bin</code>), et le module à porter sous Git : <code>upgrade_code</code> réécrit les fichiers sur place.</li>
+                        <li>Savoir installer et mettre à jour un module en ligne de commande : voir <a href="/blog/developpement-odoo-2/module-ligne-de-commande-odoo-20-278">Installer, mettre à jour, désinstaller un module Odoo 20 en CLI</a>.</li>
+                        <li>Une base de test, jamais la production, pour rejouer chaque mise à jour : voir <a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20</a>.</li>
+                    </ul>
+                </div>
+                <p>Ce guide porte un <em>module</em>, pas une base entière : migrer toute une base Odoo 19 vers la 20 en Community passe par OpenUpgrade, dont la branche 20.0 ne contient encore aucun script de migration (relevé du 11/11/2026).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le module d'exemple, écrit pour la 19</h2>
+                <p>Le module <code>oski_parc</code> suit le matériel prêté aux contacts : une désignation, un numéro, une référence calculée à partir d'un préfixe stocké en paramètre système, un rapport « Fiche de prêt ». Il est volontairement écrit comme on l'écrivait en 19, version <code>19.0.1.0.0</code> :</p>
+<pre class="language-python"><code class="language-python">from odoo import api, fields, models, tools
+from odoo.osv import expression
+
+
+class OskiParcMateriel(models.Model):
+    _name = 'oski.parc.materiel'
+    _description = 'Matériel prêté'
+    _rec_names_search = ['name', 'numero']
+
+    name = fields.Char('Désignation', required=True)
+    numero = fields.Char('Numéro')
+    reference = fields.Char('Référence', compute='_compute_reference', store=True)
+    partner_id = fields.Many2one('res.partner', 'Prêté à')
+    date_pret = fields.Date('Date du prêt')
+    company_id = fields.Many2one('res.company', 'Société', default=lambda self: self.env.company)
+
+    @api.model
+    @tools.ormcache()
+    def _prefixe(self):
+        return self.env['ir.config_parameter'].sudo().get_param('oski_parc.prefixe', 'MAT')
+
+    @api.depends('numero')
+    def _compute_reference(self):
+        for rec in self:
+            rec.reference = f"{self._prefixe()}-{rec.numero}" if rec.numero else False
+
+    @api.model
+    def _changer_prefixe(self, prefixe):
+        self.env['ir.config_parameter'].sudo().set_param('oski_parc.prefixe', prefixe)
+        self.env.registry.clear_cache()
+
+    @api.model
+    def _domaine_en_pret(self, partner=None):
+        domaine = [('partner_id', '!=', False)]
+        if partner:
+            domaine = expression.AND([domaine, [('partner_id', '=', partner.id)]])
+        return domaine</code></pre>
+                <p>S'y ajoutent les droits au format 19 (<code>security/ir.model.access.csv</code> et une règle multi-société <code>ir.rule</code> en XML), une liste, un formulaire, un menu, et le rapport, dont le gabarit passe un titre au sous-gabarit par un <code>t-set</code> placé dans le corps du <code>t-call</code> :</p>
+<pre class="language-markup"><code class="language-markup">&lt;template id="materiel_fiche"&gt;
+    &lt;div class="page"&gt;
+        &lt;h2 t-esc="titre"/&gt;
+        &lt;p&gt;Référence : &lt;span t-esc="o.reference"/&gt;&lt;/p&gt;
+        &lt;p&gt;Désignation : &lt;span t-esc="o.name"/&gt;&lt;/p&gt;
+        &lt;p&gt;Prêté à : &lt;span t-esc="o.partner_id.name"/&gt;&lt;/p&gt;
+    &lt;/div&gt;
+&lt;/template&gt;
+
+&lt;template id="report_materiel"&gt;
+    &lt;t t-call="web.html_container"&gt;
+        &lt;t t-foreach="docs" t-as="o"&gt;
+            &lt;t t-call="oski_parc.materiel_fiche"&gt;
+                &lt;t t-set="titre" t-value="'Fiche de prêt'"/&gt;
+            &lt;/t&gt;
+        &lt;/t&gt;
+    &lt;/t&gt;
+&lt;/template&gt;</code></pre>
+                <p>Installé sur une base Odoo 19 neuve, il fonctionne : trois matériels saisis, références <code>MAT-PC-0042</code>, <code>MAT-VP-0007</code>, <code>MAT-PE-0103</code>, rapport complet avec son titre. Hors l'absence de clé <code>author</code> dans le manifeste (ajoutée ensuite), le seul signal est un <code>DeprecationWarning: Since 19.0, odoo.osv is deprecated use odoo.fields.Domain</code> au chargement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce qu'Odoo 20 fait du module tel quel</h2>
+                <p>Le même dossier, copié dans les chemins d'une instance Odoo 20 et installé avec <code>-i oski_parc</code> :</p>
+<pre class="out">WARNING ma_base odoo.modules.module: The module oski_parc has an incompatible version, setting installable=False</pre>
+                <p>Rien d'autre : pas d'erreur, code de sortie 0, et le module reste à l'état <code>uninstallable</code> dans <code>ir_module_module</code>. Odoo 20 rend non installable toute version complète d'une autre série, comme <code>19.0.1.0.0</code> (<code>odoo/modules/module.py</code>, contrôle déjà présent en 19 pour <code>19.0</code>). Attention aux versions courtes : <code>1.0.0</code> est complétée en <code>20.0.1.0.0</code> et passe le contrôle. Un module 19 bien versionné ne peut donc pas s'installer par accident sur une base 20 ; en contrepartie, une installation scriptée qui ne lit pas le journal croit avoir réussi. Les erreurs que le module provoquerait une fois installable sont détaillées dans <a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a>.</p>
+                <p>Changer la version du manifeste est donc la <em>dernière</em> étape du port, pas la première : tant qu'elle reste en <code>19.0.x</code>, le module 19 peut cohabiter sans danger avec une instance 20 pendant le travail.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Repérer ce qui va casser</h2>
+                <p>Avant de toucher au code, une recherche sur les motifs connus pour casser ou se taire en 20 donne la liste de travail :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Terminal : grep sur le module 19 ; il trouve la règle ir.rule, quatre t-esc dans le rapport, l'import odoo.osv, _rec_names_search en liste, tools.ormcache, get_param, set_param, registry.clear_cache et la version 19.0.1.0.0 du manifeste ; le dossier security contient ir.model.access.csv et oski_parc_security.xml." style="max-width:100%; height:auto;"/><figcaption>Douze lignes et deux fichiers de droits : la liste de travail du port.</figcaption></figure>
+                <p>Le <code>t-set</code> placé dans le corps du <code>t-call</code> n'apparaît pas : il tient sur plusieurs lignes, une recherche ligne à ligne ne le voit pas. Chaque point relève de l'un de ces deux traitements :</p>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>Point</th><th>Effet en 20</th><th>Traité par</th></tr></thead><tbody>
+<tr><td><code>ir.model.access.csv</code>, <code>ir.rule</code></td><td>modèles supprimés : l'installation échoue</td><td><code>upgrade_code</code> (19.4-00-ir-access)</td></tr>
+<tr><td><code>t-set</code> dans le corps d'un <code>t-call</code></td><td>la variable n'arrive plus, sans erreur</td><td><code>upgrade_code</code> (19.1-00-t-call)</td></tr>
+<tr><td><code>registry.clear_cache()</code></td><td><code>AttributeError</code> à l'appel</td><td><code>upgrade_code</code> (19.4-00-ormcache-on-transaction)</td></tr>
+<tr><td><code>_rec_names_search</code> en liste</td><td>accepté (le type déclaré est une collection) ; le cœur 20 écrit un tuple</td><td><code>upgrade_code</code> (19.5-00-tuple-rec_names_search)</td></tr>
+<tr><td><code>odoo.osv</code></td><td>paquet supprimé : l'import échoue</td><td>à la main</td></tr>
+<tr><td><code>get_param</code> / <code>set_param</code></td><td>méthodes supprimées</td><td>à la main</td></tr>
+<tr><td><code>t-esc</code> (QWeb serveur)</td><td>ne rend plus rien, sans erreur</td><td>à la main</td></tr>
+<tr><td><code>tools.ormcache</code></td><td><code>DeprecationWarning: Since 20.0 import ormcache from odoo.api</code></td><td>à la main</td></tr>
+<tr><td>version <code>19.0.1.0.0</code></td><td>module non installable</td><td>à la main, en dernier</td></tr>
+</tbody></table></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. upgrade_code : les scripts fournis pour passer en 20</h2>
+                <p><code>odoo-bin upgrade_code</code> existe toujours en 20. Il applique aux fichiers sources des scripts de réécriture rangés dans <code>odoo/upgrade_code/</code>, nommés par la version qui a introduit le changement. Ses options, lues dans <code>odoo-bin upgrade_code --help</code> : <code>--script NOM</code> ou <code>--from VERSION</code> (l'un des deux est obligatoire), <code>--to</code> (par défaut <code>20.0</code>), <code>--glob</code>, <code>--dry-run</code>, <code>--addons-path</code>. Les scripts qui concernent le passage de 19 à 20 sont ceux en <code>19.x</code> et <code>20.0</code>, plus un script nommé sans version :</p>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>Script</th><th>Ce qu'il réécrit</th></tr></thead><tbody>
+<tr><td><code>19.1-00-t-call</code></td><td><code>t-set</code> du corps d'un <code>t-call</code> → attribut du <code>t-call</code></td></tr>
+<tr><td><code>19.3-00-account-groups</code>, <code>19.3-00-account-report-foldable</code></td><td>données comptables (groupes de comptes, rapports) : modules de localisation</td></tr>
+<tr><td><code>19.3-00-base64-in-xml</code></td><td><code>type="base64"</code> avec <code>file=</code> → <code>type="bytes"</code> dans les données XML</td></tr>
+<tr><td><code>19.4-00-ir-access</code></td><td><code>ir.model.access.csv</code> et <code>ir.rule</code> → <code>security/ir.access.csv</code>, manifeste mis à jour</td></tr>
+<tr><td><code>19.4-00-ormcache-on-transaction</code></td><td><code>registry.clear_cache</code> → <code>transaction.invalidate_ormcache</code></td></tr>
+<tr><td><code>19.5-00-tuple-rec_names_search</code></td><td><code>_rec_names_search</code> en liste → tuple</td></tr>
+<tr><td><code>owl3-migration</code></td><td>composants JavaScript vers OWL 3 ; pris seulement par <code>--script</code></td></tr>
+</tbody></table></div>
+                <p>Cette liste est celle de la 20.0 utilisée ici (septembre 2026). La branche 20.0 publique relue le 11/11/2026 en compte deux de plus : <code>19.5-00-material-symbols-icons</code> (icônes FontAwesome → <code>&lt;i class="oi" data-icon="…"/&gt;</code>) et <code>20.0-00-search-date-filters</code> (retire <code>start_month</code>, <code>end_month</code>, <code>start_year</code>, <code>end_year</code> des filtres de date). La branche 19.0 publique, elle, s'arrête aux scripts <code>18.5</code>.</p>
+                <p>On lance les scripts un par un, limités au module par <code>--glob</code>, sur une copie sous Git :</p>
+<pre class="language-bash"><code class="language-bash">./odoo-bin upgrade_code --addons-path=mes_addons --glob 'oski_parc/**/*' --script 19.4-00-ir-access</code></pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Terminal : cinq appels upgrade_code avec --glob ; t-call met à jour materiel_report.xml ; base64-in-xml ne change rien (code 0) ; ir-access met à jour le manifeste, crée ir.access.csv et supprime ir.model.access.csv et oski_parc_security.xml ; ormcache-on-transaction et tuple-rec_names_search mettent à jour materiel.py ; code de sortie 1 quand un fichier change." style="max-width:100%; height:auto;"/><figcaption>Code de sortie 1 dès qu'un fichier change, 0 sinon : ce n'est pas une erreur.</figcaption></figure>
+                <p>Le diff, relu avant tout commit :</p>
+<pre class="language-diff"><code class="language-diff">--- a/oski_parc/__manifest__.py
++++ b/oski_parc/__manifest__.py
+     'data': [
+-        'security/ir.model.access.csv',
+-        'security/oski_parc_security.xml',
+         'views/materiel_views.xml',
+         'report/materiel_report.xml',
++        'security/ir.access.csv',
+     ],
+--- a/oski_parc/models/materiel.py
++++ b/oski_parc/models/materiel.py
+-    _rec_names_search = ['name', 'numero']
++    _rec_names_search = ('name', 'numero')
+@@
+-        self.env.registry.clear_cache()
++        self.env.transaction.invalidate_ormcache()
+--- a/oski_parc/report/materiel_report.xml
++++ b/oski_parc/report/materiel_report.xml
+-                &lt;t t-call="oski_parc.materiel_fiche"&gt;
+-                    &lt;t t-set="titre" t-value="'Fiche de prêt'"/&gt;
+-                &lt;/t&gt;
++                &lt;t t-call="oski_parc.materiel_fiche" titre.f="Fiche de prêt"/&gt;</code></pre>
+<pre class="out">id,name,model_id,group_id/id,operation,domain
+access_materiel_user,materiel user,oski.parc.materiel,base.group_user,cru,
+access_materiel_admin,materiel admin,oski.parc.materiel,base.group_system,crud,
+materiel_rule_company,Matériel : multi-société,oski.parc.materiel,,crud,"[('company_id', 'in', company_ids + [False])]"</pre>
+                <p>La règle multi-société est devenue une ligne <em>sans groupe</em> : en 20, c'est une restriction appliquée à tous, ce qu'était la règle globale en 19 (le modèle est expliqué dans <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>). Le titre constant est passé en <code>titre.f</code>, attribut de texte littéral.</p>
+                <div class="pitfall-box">
+                    <h4>--from 19.0 : sur cette 20.0, l'arrêt est garanti, même avec --glob</h4>
+                    <p>Les chemins du cœur sont toujours ajoutés à ceux parcourus : sans <code>--glob</code>, <code>upgrade_code</code> réécrirait aussi Odoo lui-même. Avec <code>--glob 'oski_parc/**/*'</code>, <code>--from 19.0</code> s'arrête quand même, sur <code>KeyError: 'ar_base'</code> dans <code>19.3-00-account-groups.py</code> : ce script cherche des fichiers de plans comptables que le motif exclut. La branche 20.0 publique a depuis remplacé cet accès par un <code>.get()</code> qui ignore le plan absent (non rejoué ici). <code>--from 19.4</code> passe, mais saute <code>19.1-00-t-call</code>. Lancer les scripts un par un avec <code>--script</code> marche dans tous les cas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce qu'upgrade_code ne fait pas</h2>
+                <p>Le reste de la liste se corrige à la main (le module fourni avec l'article est dans son état final, celui de la section 7). Diff entre la sortie d'<code>upgrade_code</code> et le modèle porté :</p>
+<pre class="language-diff"><code class="language-diff">-from odoo import api, fields, models, tools
+-from odoo.osv import expression
++from odoo import api, fields, models
++from odoo.fields import Domain
+@@
+     @api.model
+-    @tools.ormcache()
++    @api.ormcache(cache='stable')
+     def _prefixe(self):
+-        return self.env['ir.config_parameter'].sudo().get_param('oski_parc.prefixe', 'MAT')
++        return self.env['ir.config_parameter'].sudo().get_str('oski_parc.prefixe', 'MAT')
+@@
+     def _changer_prefixe(self, prefixe):
+-        self.env['ir.config_parameter'].sudo().set_param('oski_parc.prefixe', prefixe)
+-        self.env.transaction.invalidate_ormcache()
++        self.env['ir.config_parameter'].sudo().set_str('oski_parc.prefixe', prefixe)
+@@
+     def _domaine_en_pret(self, partner=None):
+-        domaine = [('partner_id', '!=', False)]
++        domaine = Domain('partner_id', '!=', False)
+         if partner:
+-            domaine = expression.AND([domaine, [('partner_id', '=', partner.id)]])
++            domaine &amp;= Domain('partner_id', '=', partner.id)
+         return domaine</code></pre>
+                <p>Le cache du préfixe passe dans le cache <code>stable</code>, que l'écriture d'un paramètre système vide d'elle-même : la ligne <code>invalidate_ormcache()</code> ajoutée par <code>upgrade_code</code> n'a plus d'objet et disparaît. Un test du module le vérifie (préfixe changé, nouvelle valeur lue aussitôt). Pour les domaines, voir <a href="/blog/developpement-odoo-2/domaines-odoo-20-274">Les domaines en Odoo 20 : opérateurs, Domain, any et chemins</a>. Enfin la version passe en <code>20.0.1.0.0</code>, et les <code>t-esc</code> en <code>t-out</code>.</p>
+                <p>Ce dernier point est celui qu'aucun outil ne rattrape et qu'aucune installation ne signale. Avant de le corriger, le module s'installe sans un avertissement ; c'est à l'affichage du rapport que le journal écrit <code>WARNING … Unknown directives or unused attributes: {'t-esc'} from &lt;span t-esc="o.reference"/&gt;</code>, et les valeurs restent vides :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_04" alt="Deux rendus du rapport en Odoo 20 : à gauche, gabarit en t-esc, les libellés Référence, Désignation, Prêté à sans valeur et sans titre ; à droite, gabarit en t-out, titre Fiche de prêt et valeurs MAT-PC-0042, Ordinateur portable, Service technique." style="max-width:100%; height:auto;"/><figcaption>Même enregistrement, même instance : seule la directive change. Avec <code>t-esc</code>, la page s'affiche sans erreur et sans données.</figcaption></figure>
+                <p>Le module porté s'installe, ses deux tests passent (<code>0 failed, 0 error(s) of 2 tests</code>), le rapport est complet. Les autres pannes silencieuses à chercher dans un module plus gros (pièces jointes en <code>datas</code>, <code>t-set</code> mal placés) sont décrites dans <a href="/blog/developpement-odoo-2/pannes-silencieuses-module-odoo-354">Pannes silencieuses d'un module 19 sous Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Les scripts de migration : où, quand, avec quoi</h2>
+                <p><code>upgrade_code</code> réécrit des fichiers. Il ne touche à aucune base. Dès qu'une nouvelle version du module change la forme des données déjà enregistrées, il faut un script de migration, exécuté par Odoo pendant le <code>-u</code>. Ils se rangent dans le module, un dossier par version :</p>
+<pre class="out">oski_parc/
+└── migrations/
+    ├── 0.0.0/
+    │   ├── pre-journal.py
+    │   ├── post-journal.py
+    │   └── end-journal.py
+    └── 20.0.1.1.0/
+        ├── pre-renommer_numero.py
+        ├── post-prefixe_et_references.py
+        └── end-supprimer_parametre.py</pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma : pour chaque module mis à jour, pre (0.0.0 puis versions croissantes, SQL seulement), chargement du nouveau code et des données, post (versions croissantes puis 0.0.0, ORM disponible) ; puis, tous modules à jour, end (versions croissantes puis 0.0.0) et nettoyage des champs retirés avec DROP COLUMN. Condition : version installée inférieure à la version du dossier, elle-même inférieure ou égale à celle du manifeste." style="max-width:100%; height:auto;"/><figcaption>Ordre lu dans <code>odoo/modules/loading.py</code> et <code>odoo/modules/migration.py</code>, puis vérifié dans le journal (section 7).</figcaption></figure>
+                <ul>
+                    <li><strong>Nom des fichiers</strong> : seuls les fichiers <code>.py</code> commençant par <code>pre-</code>, <code>post-</code> ou <code>end-</code> sont lus, triés par nom dans chaque dossier. Le dossier peut porter la version complète (<code>20.0.1.1.0</code>) ou la seule version du module (<code>1.1.0</code>), complétée par la série d'Odoo.</li>
+                    <li><strong>Condition</strong> : un dossier passe si <em>version installée &lt; version du dossier ≤ version du manifeste</em>. Le dossier spécial <code>0.0.0</code> passe à chaque montée de version : en premier pour <code>pre</code>, en dernier pour <code>post</code> et <code>end</code>.</li>
+                    <li><strong>Signature</strong> : chaque fichier définit <code>migrate(cr, version)</code> (les noms <code>_cr</code> et <code>_version</code> sont aussi acceptés). <code>version</code> est la version installée <em>avant</em> la mise à jour ; une autre signature arrête tout, comme on le verra.</li>
+                </ul>
+                <p>La version 20.0.1.1.0 du module fait trois changements : le champ <code>numero</code> devient <code>numero_serie</code>, le préfixe passe du paramètre système à un champ de la société (<code>oski_parc_prefixe</code>), et la référence prend la forme <code>PRÉFIXE/NUMÉRO</code> au lieu de <code>PRÉFIXE-NUMÉRO</code>. Chaque changement a son script.</p>
+                <h3 class="h5 mt-4">pre : renommer la colonne avant que l'ORM ne la remplace</h3>
+                <p>Au chargement, l'ORM voit un champ <code>numero_serie</code> sans colonne et crée une colonne vide. Le script <code>pre</code> passe juste avant : il renomme la colonne, et l'ORM la trouve déjà remplie. À ce stade, le nouveau code du module n'est pas chargé ; on travaille en SQL.</p>
+<pre class="language-python"><code class="language-python">import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    # avant le chargement du nouveau code : SQL seulement
+    cr.execute("""
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'oski_parc_materiel' AND column_name = 'numero'
+    """)
+    if not cr.fetchone():
+        return
+    cr.execute("ALTER TABLE oski_parc_materiel RENAME COLUMN numero TO numero_serie")
+    cr.execute("SELECT count(*) FROM oski_parc_materiel WHERE numero_serie IS NOT NULL")
+    _logger.info("colonne numero renommée en numero_serie (%s valeurs gardées)", cr.fetchone()[0])</code></pre>
+                <p>Le test d'existence rend le script rejouable : relancé sur une base déjà migrée, il ne fait rien.</p>
+                <h3 class="h5 mt-4">post : l'ORM est là, recalculer</h3>
+                <p>Après le chargement, le modèle et ses nouveaux champs existent : on peut ouvrir un environnement. La référence est un champ calculé stocké dont la <em>formule</em> a changé ; Odoo ne recalcule pas tout seul les valeurs déjà enregistrées (sans script, elles restent à l'ancien format, section 8). Ici, écrire le préfixe sur la société en recalcule déjà une partie ; <code>add_to_compute</code> couvre tous les cas, matériel sans société compris :</p>
+<pre class="language-python"><code class="language-python">import logging
+
+from odoo import SUPERUSER_ID, api
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    # après le chargement du module : l'ORM est là, nouveaux champs compris
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    prefixe = env['ir.config_parameter'].get_str('oski_parc.prefixe')
+    if prefixe:
+        env['res.company'].search([]).oski_parc_prefixe = prefixe
+    # le format de la référence a changé : recalculer toutes les références stockées
+    materiels = env['oski.parc.materiel'].search([])
+    env.add_to_compute(materiels._fields['reference'], materiels)
+    materiels.flush_recordset(['reference'])
+    _logger.info("préfixe %r repris, %s références recalculées", prefixe, len(materiels))</code></pre>
+                <h3 class="h5 mt-4">end : nettoyer quand tout le monde est à jour</h3>
+                <p>Les scripts <code>end</code> passent une fois <em>tous</em> les modules mis à jour. C'est l'endroit des nettoyages : un autre module mis à jour dans le même <code>-u</code> a pu lire l'ancien paramètre dans son propre script <code>post</code>.</p>
+<pre class="language-python"><code class="language-python">import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    # tous les modules sont à jour : l'ancien paramètre ne sert plus à personne
+    cr.execute("DELETE FROM ir_config_parameter WHERE key = 'oski_parc.prefixe'")
+    _logger.info("paramètre oski_parc.prefixe supprimé (%s ligne)", cr.rowcount)</code></pre>
+                <p>Les trois scripts de <code>0.0.0</code> se contentent de journaliser leur étape, la version reçue et la présence du modèle dans le registre :</p>
+<pre class="language-python"><code class="language-python"># imports et _logger comme dans le script post
+def migrate(cr, version):
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    _logger.info("pre 0.0.0 : version installée %s, modèle chargé : %s",
+                 version, 'oski.parc.materiel' in env.registry)</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. La montée de version, lue dans le journal</h2>
+                <p>Sur la base de test, le module est en 20.0.1.0.0 avec trois matériels, et le préfixe a été changé en <code>PARC</code> (les références stockées, elles, sont restées en <code>MAT-…</code> : la 1.0.0 ne les recalculait pas). Le manifeste passe en <code>20.0.1.1.0</code> ; <code>odoo-bin module list</code> montre l'écart entre la base et le disque :</p>
+<pre class="out">oski_parc 20.0.1.0.0 20.0.1.1.0 'installed' Parc de matériel prêté</pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_05" alt="Journal de la mise à jour : pre-journal de 0.0.0 avec modèle chargé False, pre-renommer_numero avec 3 valeurs gardées, ligne de durée de l'étape pre ; post-prefixe_et_references avec préfixe PARC repris et 3 références recalculées, post-journal 0.0.0 avec modèle chargé True ; end-supprimer_parametre (1 ligne), end-journal 0.0.0 ; enfin suppression du champ numero dans ir.model.fields." style="max-width:100%; height:auto;"/><figcaption>Lignes du module extraites du journal de <code>-u oski_parc</code> (horodatage abrégé). Code de sortie 0.</figcaption></figure>
+                <p>Ce que le journal établit :</p>
+                <ul>
+                    <li><strong>L'ordre</strong> : <code>pre</code> de <code>0.0.0</code> puis de <code>20.0.1.1.0</code> ; <code>post</code> de <code>20.0.1.1.0</code> puis de <code>0.0.0</code> ; <code>end</code> dans le même ordre que <code>post</code>. Le préfixe de chaque ligne <code>Running upgrade</code> dit l'étape : <code>[&gt;v]</code> pour pre, <code>[v&gt;]</code> pour post, <code>[$v]</code> pour end.</li>
+                    <li><strong>Ce qui est disponible</strong> : en <code>pre</code>, <code>'oski.parc.materiel' in env.registry</code> vaut <code>False</code> ; en <code>post</code> et <code>end</code>, <code>True</code>. En <code>pre</code>, le modèle du module n'existe pas encore pour l'ORM : seul le SQL sur ses tables est sûr.</li>
+                    <li><strong>La version reçue</strong> : <code>20.0.1.0.0</code> à toutes les étapes, y compris en <code>end</code>. Un script qui doit savoir d'où l'on vient la compare avec <code>odoo.tools.parse_version</code>, pas en chaîne.</li>
+                    <li><strong>La ligne de durée</strong> <code>oski_parc.pre from 20.0.1.0.0 to 20.0.1.1.0 in 0.003 seconds</code> résume chaque étape. Quand <code>0.0.0</code> passe en dernier, elle annonce « <code>to 0.0.0</code> » : c'est le dernier dossier exécuté, pas une version cible.</li>
+                    <li><strong>Le nettoyage d'Odoo vient après les scripts end</strong> : <code>Deleting … ir.model.fields (oski_parc.field_oski_parc_materiel__numero)</code> retire la définition de l'ancien champ.</li>
+                </ul>
+                <p>Après la mise à jour : colonne <code>numero_serie</code> remplie (<code>PC-0042</code>, <code>VP-0007</code>, <code>PE-0103</code>), références <code>PARC/PC-0042</code>…, préfixe <code>PARC</code> sur la société, paramètre système supprimé, et les deux tests du module toujours verts. Pour voir aussi les requêtes SQL d'une mise à jour, <code>--log-sql</code> est présenté dans <a href="/blog/developpement-odoo-2/journaux-logger-odoo-20-283">Journaux Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Contre-épreuves : ce qui se perd sans bruit</h2>
+                <p>Deux copies de la même base, prises avant la mise à jour, ont servi à rejouer les oublis les plus courants.</p>
+                <h3 class="h5 mt-4">Sans le script pre</h3>
+                <p>Même version 20.0.1.1.0, même <code>-u</code>, fichier <code>pre-renommer_numero.py</code> retiré : code de sortie 0, aucune erreur, aucun avertissement. Les scripts <code>post</code> et <code>end</code> passent normalement.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_06" alt="Deux listes Matériel prêté après la mise à jour : avec le script pre, colonnes Référence PARC/PC-0042, PARC/VP-0007, PARC/PE-0103 et Numéro de série remplies ; sans le script pre, colonnes Référence et Numéro de série vides pour les trois lignes." style="max-width:100%; height:auto;"/><figcaption>En bas, la même base mise à jour sans le script pre : les numéros ont disparu, et avec eux les références recalculées par le post.</figcaption></figure>
+                <p>L'ORM a créé une colonne <code>numero_serie</code> vide, puis le nettoyage de fin a supprimé le champ <code>numero</code> <em>et sa colonne</em> (<code>ALTER TABLE … DROP COLUMN … CASCADE</code>, dans <code>odoo/addons/base/models/ir_model.py</code>). Les numéros ne sont plus dans la base : seule une sauvegarde les rendrait.</p>
+                <h3 class="h5 mt-4">Sans changer la version du manifeste</h3>
+                <p>Nouveau code, mais manifeste resté en 20.0.1.0.0 : <code>-u oski_parc</code> n'exécute <strong>aucun</strong> script, pas même ceux de <code>0.0.0</code>, et le journal ne le signale pas. Résultat relevé : la colonne <code>numero</code> est supprimée, <code>numero_serie</code> est vide, les références restent à l'ancien format <code>MAT-PC-0042</code> et le paramètre système est toujours là.</p>
+                <div class="pitfall-box">
+                    <h4>Un champ renommé sans script pre, c'est une suppression</h4>
+                    <p>Pour l'ORM, renommer un champ revient à en supprimer un et à en créer un autre. Sans script <code>pre</code>, la mise à jour se termine en succès et supprime la colonne d'origine. Rejouez toujours une montée de version sur une copie de la production et comparez les données avant et après, pas seulement le code de sortie.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Pas de nouvelle version, pas de script</h4>
+                    <p>Les scripts ne tournent que si la version du manifeste <em>augmente</em> par rapport à celle enregistrée en base. Ajouter un dossier <code>migrations/</code> sans changer la version, ou numéroter le dossier au-delà de la version du manifeste, et rien ne s'exécute. Vérifiez avec <code>odoo-bin module list</code> que les deux colonnes de version diffèrent avant le <code>-u</code>.</p>
+                </div>
+                <p>Dernier essai, sur la copie de l'essai précédent, encore en 20.0.1.0.0 : un script <code>pre-a_signature.py</code> défini comme <code>def migrate(env, version)</code>. La mise à jour s'arrête sur <code>TypeError: module oski_parc: `migrate`'s signature should be `(cr, version)`, … is (env, version)</code>, code de sortie 255 ; la transaction est annulée et le module reste en 20.0.1.0.0. Le fichier, trié par nom, est passé juste après le <code>pre</code> de <code>0.0.0</code> : l'erreur vient avant toute modification.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Ce qui a changé depuis la 19</h2>
+                <p>Les mêmes scripts de journal, placés dans un dossier <code>19.0.1.1.0</code> et dans <code>0.0.0</code> du module 19, ont été rejoués sur la base 19 : même ordre (pre 0.0.0, pre 19.0.1.1.0, post 19.0.1.1.0, post 0.0.0, end 19.0.1.1.0, end 0.0.0), même version reçue. Le gestionnaire de migrations a été comparé à celui de la branche 19.0 publique (relue le 11/11/2026) :</p>
+<div class="table-responsive"><table class="tmc"><thead><tr><th>Point</th><th>19.0</th><th>20.0</th></tr></thead><tbody>
+<tr><td>Dossiers, préfixes, <code>0.0.0</code>, condition de version, signature</td><td colspan="2">identiques</td></tr>
+<tr><td>Ligne de durée par étape (<code>… from … to … in … seconds</code>)</td><td>absente</td><td>présente</td></tr>
+<tr><td>Libellé du journal</td><td colspan="2"><code>Running upgrade [&gt;v] nom</code> dans les deux branches publiques ; des 19.0 plus anciennes écrivent <code>Running migration</code></td></tr>
+<tr><td>Scripts d'<code>upgrade_code</code></td><td>jusqu'à <code>18.5</code></td><td><code>19.1</code> à <code>20.0</code>, plus <code>owl3-migration</code></td></tr>
+<tr><td>Version complète d'une autre série dans le manifeste</td><td colspan="2">module rendu non installable, avertissement, code de sortie 0 (une version courte comme <code>1.0.0</code> est complétée par la série et passe)</td></tr>
+</tbody></table></div>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Un script de migration s'écrit en 20 comme en 19, dans un dossier <code>20.0.x.y.z</code>. Ce qui change, c'est le code qu'il appelle : un script <code>post</code> qui utilise <code>get_param</code>, <code>odoo.osv</code> ou <code>ir.model.access</code> échoue en 20 comme le reste du module. Portez-les avec le module, et relisez les lignes de journal que vos outils d'exploitation analysent.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un manifeste en <code>19.0.x.y.z</code> rend le module non installable en 20, sans erreur (une version courte, elle, passe) : changez la version en dernier, une fois le code porté.</li>
+                    <li><code>upgrade_code</code> se lance script par script, avec <code>--glob 'mon_module/**/*'</code>, sur un dépôt Git propre ; il ne traite ni <code>odoo.osv</code>, ni <code>get_param</code>, ni <code>t-esc</code>.</li>
+                    <li><code>pre</code> : SQL seulement, avant le nouveau code. <code>post</code> : ORM disponible, après le chargement du module. <code>end</code> : après tous les modules.</li>
+                    <li><code>0.0.0</code> passe à chaque montée de version, en premier pour pre, en dernier pour post et end ; la fonction est <code>migrate(cr, version)</code>.</li>
+                    <li>Un champ renommé sans script <code>pre</code>, ou une version inchangée, et la mise à jour réussit en perdant des données.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a></h5>
+                            <p class="small text-muted mb-0">Chaque erreur d'installation d'un module 19, et sa correction.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/odoo-bin-sous-commandes-odoo-20-282">odoo-bin en Odoo 20 : toutes les sous-commandes et options utiles</a></h5>
+                            <p class="small text-muted mb-0"><code>upgrade_code</code>, <code>module</code>, <code>db</code> et les autres sous-commandes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/copier-prod-base-test-odoo-20-284">Copier la prod en base de test Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">La copie neutralisée sur laquelle rejouer une montée de version.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
