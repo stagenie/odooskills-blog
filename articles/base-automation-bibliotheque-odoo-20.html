@@ -1,0 +1,701 @@
+<!--
+Article — Automatiser la Bibliothèque sans coder : base.automation
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — étape 25 « règles d'automatisation » ; lot T7 « Sécuriser et automatiser Odoo 20 » (T7.1 du plan vague 3 technique)
+Date : 2026-11-11
+Slug : base-automation-bibliotheque-odoo-20
+Mot-clé cible : odoo scheduled actions, automation
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~13 minutes
+Preuves (copies jetables de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16 ; module biblio 20.0.1.21.0 installé puis 20.0.1.22.0) :
+- Règle « Exemplaire perdu » créée dans le navigateur (Paramètres > Technique > Automatisation), relevée en shell (read + xmlid), recopiée en XML ; règle de l'interface + règle du module = deux exécutions (journal), règle de l'interface supprimée.
+- -u biblio sur une base sans base_automation : module installé automatiquement (Loading module base_automation 70/71), exit 0, aucun ERROR.
+- Règle on_create_or_write : activité To-Do créée à 30 j et à 14 -> 28 j, rien à 28 -> 35 ni sur un champ non surveillé (tests) ; règle de contrôle sans champs surveillés : 2 notes pour 2 écritures hors durée ; Form : trigger_field_ids vide après saisie du domaine.
+- on_state_set Rendu : 1 mail.mail outgoing, auto_comment, destinataire = partenaire de l'adhérent, aucun serveur SMTP.
+- on_time date_due + 7 j : action planifiée activée à 4 h ; passage 1 = 3 emprunts un par un (0,223 s), passage 2 = 0 (0,011 s) ; INFO à 0,118 s, DEBUG sinon ; activités pour le créateur (Bibliothécaire), note signée OdooBot ; délai 1 h -> 6 min, retour à 7 j -> reste 6 min, règle archivée -> action planifiée inactive.
+- Droits : has_access(read) sur base.automation = False pour Accueil ; activité synchrone create_uid = utilisateur, temporelle = OdooBot.
+- Code : variables relevées par _get_eval_context ; timezone = ZoneInfo, .localize -> AttributeError, tzinfo= OK ; mail_post_method -> Invalid field.
+- -u biblio réécrit la règle modifiée à la main (délai 10 -> 7, ligne de code ajoutée effacée).
+- Action planifiée maison du module (relances) : 0,095 s puis 0,008 s.
+- Tests : --test-tags=/biblio, 46/46 sur base neuve sans langue et avec fr_FR (db-filter strict).
+19.0 publique (40e9be2b5a, 10/11/2026) lue, non exécutée : base_automation.py, mail/models/ir_actions_server.py, base/models/ir_actions.py.
+Captures : content/blog/screenshots/base-automation-bibliotheque-odoo-20/ (01 schéma, 02 action dans l'interface, 03 activité, 04 accusé de retour, 05 règle temporelle, 06 retard après passage).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Automatiser la Bibliothèque sans coder : base.automation</h1>
+                <p class="lead mt-3 text-white">Une règle d'automatisation se crée en quelques clics : un déclencheur, deux domaines, des actions.
+                    Encore faut-il savoir quand elle part, sous quel utilisateur, et ce que devient une règle temporelle
+                    dans l'action planifiée commune. On en crée une dans l'interface, on la fait entrer dans le module, puis on en ajoute trois autres,
+                    testées.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>De l'écran au module</h4>
+                        <p>Créer une règle dans Paramètres › Technique, la relever en shell, la livrer en XML avec le module
+                            et ce que <code>-u</code> fait ensuite des retouches faites à la main.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Déclencheurs et domaines</h4>
+                        <p>Champs surveillés, domaine avant et après, état défini sur une valeur, règle temporelle relative à
+                            une date, et l'action planifiée qui porte ces dernières.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Actions et tests</h4>
+                        <p>Mise à jour de champ, activité, courriel mis en file, code Python et ses variables en Odoo 20, puis
+                            les tests du module.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> de la série, jusqu'à
+                            <a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347">l'API JSON-2</a> (étape 21) ; les étapes 22 et 23,
+                            import du catalogue et rapport Excel, le portent en 20.0.1.21.0. On le fait passer ici en 20.0.1.22.0. Les règles
+                            ne s'appuient que sur les emprunts, les exemplaires et deux champs vus plus tôt : la date de retour prévue et l'état.</li>
+                        <li>L'action planifiée de relance écrite à l'étape
+                            <a href="/blog/developpement-odoo-2/retards-cron-odoo-20-183">des retards</a> et le modèle de courriel de l'étape
+                            <a href="/blog/developpement-odoo-2/relance-courriel-odoo-20-188">de la relance</a> : on les compare plus bas.</li>
+                        <li>Le module « Règles d'automatisation » (<code>base_automation</code>), disponible en Community, et le mode développeur
+                            pour voir le menu Technique.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Une règle d'automatisation, c'est un déclencheur, des filtres et une liste d'actions serveur. Le déclencheur décide du moment :
+                    pendant l'écriture de l'enregistrement, ou plus tard, par une action planifiée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : chemin synchrone (écriture, filtres, actions) et chemin temporel (action planifiée, fenêtre depuis last_run, actions un enregistrement à la fois), actions de la Bibliothèque et écarts entre Odoo 19 et Odoo 20" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les deux chemins mènent aux mêmes actions serveur. Seul le second dépend d'une action planifiée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. INTERFACE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Une première règle, dans l'interface</h2>
+                <p>Le besoin : un exemplaire déclaré perdu ne doit plus être rangé dans un rayon. En mode développeur, menu
+                    <strong>Paramètres › Technique › Automatisation › Règles d'automatisation</strong>, bouton Nouveau :</p>
+                <ul>
+                    <li>Modèle : <strong>Exemplaire</strong> ;</li>
+                    <li>Déclencher : <strong>Le statut est défini sur</strong>, valeur <strong>Perdu</strong>. Le champ « Appliquer sur » se remplit
+                        seul avec <code>État = Perdu</code> ;</li>
+                    <li>Ajouter une action, type <strong>Mettre à jour l'enregistrement</strong>, champ <strong>Rayon</strong>, valeur laissée vide.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Créer Actions au-dessus de la règle Exemplaire perdu : douze types d'action, Mettre à jour l'enregistrement choisi, champ Rayon sans valeur" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les douze types d'action proposés sur l'exemplaire. « Log Note », « Explanation » ou « Search a record… » ne sont pas traduits dans cette version, et « Envoyer un SMS » vient du module SMS.</figcaption>
+                </figure>
+                <p>On enregistre, on passe un exemplaire rangé à l'état Perdu : son rayon est vidé. La règle vit en base, sans identifiant
+                    externe. Elle disparaîtra avec la base de test, et une autre instance ne la connaîtra pas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. DANS LE MODULE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. La faire entrer dans le module</h2>
+                <p>On relève les valeurs de la règle dans <code>odoo-bin shell</code>, avec les identifiants externes des champs pointés :</p>
+<pre class="language-python"><code class="language-python">regle = env['base.automation'].search([('name', '=', "Exemplaire perdu : retirer du rayon")], order='id', limit=1)
+print(regle.read(['model_name', 'trigger', 'filter_pre_domain', 'filter_domain'])[0])
+for champ in ('trg_selection_field_id', 'trigger_field_ids'):
+    print(champ, '-&gt;', list(regle[champ].get_external_id().values()))
+for action in regle.action_server_ids:
+    print(action.read(['name', 'state', 'update_path', 'evaluation_type', 'value'])[0])</code></pre>
+<pre class="out">{'id': 1, 'model_name': 'library.copy', 'trigger': 'on_state_set', 'filter_pre_domain': False, 'filter_domain': "[('state', '=', 'lost')]"}
+trg_selection_field_id -&gt; ['biblio.selection__library_copy__state__lost']
+trigger_field_ids -&gt; ['biblio.field_library_copy__state']
+{'id': 500, 'name': 'Vider le rayon', 'state': 'object_write', 'update_path': 'shelf_id', 'evaluation_type': 'value', 'value': False}</pre>
+                <p>Pour <code>on_state_set</code>, Odoo calcule lui-même le domaine et le champ surveillé à partir de la valeur choisie ; les écrire dans
+                    le XML ne fait que les rendre explicites. Ces valeurs se recopient dans un nouveau fichier <code>data/library_automation.xml</code>. Une règle et chacune de ses actions sont deux
+                    enregistrements : l'action pointe vers la règle par <code>base_automation_id</code> et porte <code>usage = base_automation</code>.</p>
+<pre class="language-markup"><code class="language-markup">&lt;record id="automation_copy_lost" model="base.automation"&gt;
+    &lt;field name="name"&gt;Exemplaire perdu : retirer du rayon&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_copy"/&gt;
+    &lt;field name="trigger"&gt;on_state_set&lt;/field&gt;
+    &lt;field name="trg_selection_field_id" ref="selection__library_copy__state__lost"/&gt;
+    &lt;field name="trigger_field_ids" eval="[(6, 0, [ref('field_library_copy__state')])]"/&gt;
+    &lt;field name="filter_domain"&gt;[('state', '=', 'lost')]&lt;/field&gt;
+&lt;/record&gt;
+
+&lt;record id="action_copy_lost_clear_shelf" model="ir.actions.server"&gt;
+    &lt;field name="name"&gt;Vider le rayon&lt;/field&gt;
+    &lt;field name="base_automation_id" ref="automation_copy_lost"/&gt;
+    &lt;field name="usage"&gt;base_automation&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_copy"/&gt;
+    &lt;field name="state"&gt;object_write&lt;/field&gt;
+    &lt;field name="update_path"&gt;shelf_id&lt;/field&gt;
+    &lt;field name="evaluation_type"&gt;value&lt;/field&gt;
+&lt;/record&gt;</code></pre>
+                <p>Le manifeste passe en <code>20.0.1.22.0</code>, ajoute <code>base_automation</code> aux dépendances et le fichier aux données, après les
+                    modèles de courriel qu'il référence :</p>
+<pre class="language-python"><code class="language-python">    'version': '20.0.1.22.0',
+    'depends': ['base', 'mail', 'portal', 'base_automation'],
+    'data': [
+        # …
+        'data/library_mail_template.xml',
+        'data/library_automation.xml',
+        # …
+    ],</code></pre>
+                <p>Sur une base où <code>base_automation</code> n'était pas installé, <code>-u biblio</code> l'installe au passage :</p>
+<pre class="out">odoo.modules.loading: Loading module base_automation (70/71)
+odoo.modules.loading: Module base_automation loaded in 0.70s, 957 queries (+957 other)
+odoo.modules.loading: Loading module biblio (71/71)</pre>
+                <p>Sur la base où la règle a été créée à la main, elle existe maintenant deux fois. Le journal le montre au premier exemplaire perdu
+                    (la ligne est au niveau DEBUG, visible avec <code>--log-handler=odoo.addons.base_automation:DEBUG</code>) :</p>
+<pre class="out">Automation Rule 'Exemplaire perdu : retirer du rayon' (1) done (write; 1/1 records; duration 0.006s)
+Automation Rule 'Exemplaire perdu : retirer du rayon' (2) done (write; 1/1 records; duration 0.001s)</pre>
+                <p>On supprime la règle 1, celle de l'interface : la règle du module, avec son identifiant <code>biblio.automation_copy_lost</code>, reste seule.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CRÉATION ET MODIFICATION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. À la création et à la modification : champs surveillés et deux domaines</h2>
+                <p>Deuxième règle : un emprunt de plus de 21 jours doit être validé. Une activité « à faire » est créée pour celui qui a saisi
+                    l'emprunt.</p>
+<pre class="language-markup"><code class="language-markup">&lt;record id="automation_loan_long" model="base.automation"&gt;
+    &lt;field name="name"&gt;Emprunt de plus de 21 jours : à faire valider&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="trigger"&gt;on_create_or_write&lt;/field&gt;
+    &lt;field name="trigger_field_ids" eval="[(6, 0, [ref('field_library_loan__duration')])]"/&gt;
+    &lt;field name="filter_pre_domain"&gt;[('duration', '&amp;lt;=', 21)]&lt;/field&gt;
+    &lt;field name="filter_domain"&gt;[('duration', '&amp;gt;', 21), ('state', '=', 'ongoing')]&lt;/field&gt;
+&lt;/record&gt;
+
+&lt;record id="action_loan_long_activity" model="ir.actions.server"&gt;
+    &lt;field name="name"&gt;Activité : faire valider la durée&lt;/field&gt;
+    &lt;field name="base_automation_id" ref="automation_loan_long"/&gt;
+    &lt;field name="usage"&gt;base_automation&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="state"&gt;next_activity&lt;/field&gt;
+    &lt;field name="activity_type_id" ref="mail.mail_activity_data_todo"/&gt;
+    &lt;field name="activity_summary"&gt;Faire valider une durée de plus de 21 jours&lt;/field&gt;
+    &lt;field name="activity_user_type"&gt;generic&lt;/field&gt;
+    &lt;field name="activity_user_field_name"&gt;create_uid&lt;/field&gt;
+    &lt;field name="activity_date_deadline_range"&gt;1&lt;/field&gt;
+    &lt;field name="activity_date_deadline_range_type"&gt;days&lt;/field&gt;
+&lt;/record&gt;</code></pre>
+                <p>Trois filtres s'enchaînent. Les <strong>champs surveillés</strong> : les actions ne partent que si la valeur de la durée a changé
+                    (réécrire la même valeur ne déclenche rien). Le
+                    <strong>domaine avant</strong> (<code>filter_pre_domain</code>) est lu avant l'écriture et ignoré à la création. Le
+                    <strong>domaine après</strong> (<code>filter_domain</code>) doit être vrai une fois l'écriture faite. Résultat, mesuré par les tests du module :</p>
+                <table class="tmc">
+                    <thead><tr><th>Opération</th><th>Activité créée</th><th>Pourquoi</th></tr></thead>
+                    <tbody>
+                        <tr><td>Création à 30 jours (par un agent d'accueil)</td><td>oui, pour lui, échéance demain</td><td>pas de domaine avant à la création</td></tr>
+                        <tr><td>Création à 14 jours</td><td>non</td><td>domaine après faux</td></tr>
+                        <tr><td>Durée 14 → 28</td><td>oui</td><td>avant ≤ 21, après &gt; 21</td></tr>
+                        <tr><td>Durée 28 → 35</td><td>non</td><td>domaine avant faux : déjà au-dessus</td></tr>
+                        <tr><td>Écriture du nombre de relances</td><td>non</td><td>champ non surveillé</td></tr>
+                    </tbody>
+                </table>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Emprunt EMP/2026/0005 dont la durée passe de 14 à 28 jours : activité planifiée Faire valider une durée de plus de 21 jours pour Bibliothécaire, échéance demain" style="max-width:100%; height:auto;"/>
+                    <figcaption>La durée passe de 14 à 28 jours dans le formulaire : l'activité apparaît au-dessus du suivi de la modification.</figcaption>
+                </figure>
+                <p>L'agent d'accueil n'a aucun droit de lecture sur les règles (<code>has_access('read')</code> rend <code>False</code>), et la règle
+                    s'applique pourtant à son écriture : Odoo lit les règles et lance leurs actions en <code>sudo</code>, sous l'identité de l'utilisateur.
+                    <code>sudo</code> lève les droits sans changer l'utilisateur : l'activité créée depuis le formulaire a pour auteur (<code>create_uid</code>)
+                    le bibliothécaire, pas OdooBot. Les droits ne filtrent donc rien dans une action : c'est une raison de garder son code court et relu.</p>
+                <div class="pitfall-box">
+                    <h4>Sans champs surveillés, toute écriture déclenche la règle</h4>
+                    <p>Une règle « À la création et modification » dont les champs surveillés sont vides réagit à n'importe quel champ. Essai sur
+                        l'emprunt de 28 jours, règle sans champs surveillés ni domaine avant : écrire le nombre de relances puis la date de relance ajoute
+                        deux notes. En Odoo 20, saisir le domaine ne remplit plus ces champs (vérifié par un <code>Form</code> sur
+                        <code>base.automation</code> : liste vide). Il faut les choisir, ou poser un domaine avant qui écarte les enregistrements déjà
+                        dans l'état visé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. ÉTAT ET COURRIEL ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Quand l'état passe à « Rendu » : un courriel mis en file</h2>
+                <p>Troisième règle : à chaque retour, un accusé part vers l'adhérent. Déclencheur <code>on_state_set</code> sur la valeur Rendu, une
+                    action <code>mail_post</code> qui pointe vers un nouveau modèle de courriel, <code>mail_template_loan_returned</code>, bâti comme celui de
+                    la relance (destinataire : le contact de l'adhérent).</p>
+<pre class="language-markup"><code class="language-markup">&lt;record id="automation_loan_returned" model="base.automation"&gt;
+    &lt;field name="name"&gt;Emprunt rendu : accusé de retour&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="trigger"&gt;on_state_set&lt;/field&gt;
+    &lt;field name="trg_selection_field_id" ref="selection__library_loan__state__returned"/&gt;
+    &lt;field name="trigger_field_ids" eval="[(6, 0, [ref('field_library_loan__state')])]"/&gt;
+    &lt;field name="filter_domain"&gt;[('state', '=', 'returned')]&lt;/field&gt;
+&lt;/record&gt;
+
+&lt;record id="action_loan_returned_mail" model="ir.actions.server"&gt;
+    &lt;field name="name"&gt;Courriel : accusé de retour&lt;/field&gt;
+    &lt;field name="base_automation_id" ref="automation_loan_returned"/&gt;
+    &lt;field name="usage"&gt;base_automation&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="state"&gt;mail_post&lt;/field&gt;
+    &lt;field name="template_id" ref="mail_template_loan_returned"/&gt;
+&lt;/record&gt;</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Emprunt EMP/2026/0004 marqué comme rendu : suivi de l'état, note de remise en rayon, et message Retour enregistré adressé à l'adhérent, avec l'icône d'enveloppe" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bouton « Marquer comme rendu » écrit l'état : la règle poste l'accusé dans le fil de l'emprunt.</figcaption>
+                </figure>
+                <p>Le message est posté dans le fil (type <code>auto_comment</code>) et le courriel correspondant reste dans la file.</p>
+<p>Dans <code>mail.mail</code>, le courriel « Retour enregistré : L'ORM sans secret » est à l'état <code>outgoing</code>, adressé au contact
+                    de l'adhérent.</p>
+                <p>Rien ne part pendant le clic : avec le module de messagerie, toute action serveur s'exécute avec <code>mail_notify_force_send=False</code>,
+                    et la file est traitée par l'action planifiée « E-mail : Gestionnaire de la file d'attente des e-mails ». Le courriel attend son prochain passage.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RÈGLE TEMPORELLE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Une règle temporelle : sept jours après la date de retour</h2>
+                <p>Quatrième règle : un emprunt toujours en cours sept jours après sa date de retour prévue mérite un appel. Déclencheur
+                    <code>on_time</code> sur <code>date_due</code>, délai de 7 jours, mode « Après », et deux actions : une activité « Appeler », puis du code.</p>
+<pre class="language-markup"><code class="language-markup">&lt;record id="automation_loan_overdue" model="base.automation"&gt;
+    &lt;field name="name"&gt;Retard de 7 jours : appeler l'adhérent&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="trigger"&gt;on_time&lt;/field&gt;
+    &lt;field name="trg_date_id" ref="field_library_loan__date_due"/&gt;
+    &lt;field name="trg_date_range"&gt;7&lt;/field&gt;
+    &lt;field name="trg_date_range_type"&gt;day&lt;/field&gt;
+    &lt;field name="trg_date_range_mode"&gt;after&lt;/field&gt;
+    &lt;field name="filter_domain"&gt;[('state', '=', 'ongoing')]&lt;/field&gt;
+&lt;/record&gt;
+
+&lt;!-- action 1 : activité « Appeler » (mail.mail_activity_data_call), même forme qu'au § 3 --&gt;
+
+&lt;record id="action_loan_overdue_note" model="ir.actions.server"&gt;
+    &lt;field name="name"&gt;Code : note de retard et journal&lt;/field&gt;
+    &lt;field name="base_automation_id" ref="automation_loan_overdue"/&gt;
+    &lt;field name="usage"&gt;base_automation&lt;/field&gt;
+    &lt;field name="sequence"&gt;2&lt;/field&gt;
+    &lt;field name="model_id" ref="model_library_loan"/&gt;
+    &lt;field name="state"&gt;code&lt;/field&gt;
+    &lt;field name="code"&gt;
+for emprunt in records:
+    emprunt.message_post(
+        body="Retard de %s jours : appel de l'adhérent planifié." % emprunt.days_late,
+        subtype_xmlid='mail.mt_note',
+    )
+log("Retard de 7 jours : %s emprunt(s) traité(s)" % len(records))
+&lt;/field&gt;
+&lt;/record&gt;</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Règle Retard de 7 jours : déclencheur Sur la base du champ de date À rendre le, délai 7 jours après, lien Action planifiée, domaine État = En cours, deux actions" style="max-width:100%; height:auto;"/>
+                    <figcaption>La règle chargée par le module. Le lien « Action planifiée », sous le délai, ouvre l'action planifiée qui la porte.</figcaption>
+                </figure>
+                <p>Cette règle n'a pas d'action planifiée à elle. Toutes les règles temporelles passent par
+                    <strong>« Règles d'automatisation : vérification et exécution »</strong> (<code>base_automation.ir_cron_data_base_automation_check</code>),
+                    livrée inactive et activée par la première règle temporelle. On la déclenche à la main, deux fois de suite, dans
+                    <code>odoo-bin shell</code> :</p>
+<pre class="language-python"><code class="language-python">import time
+cron = env.ref('base_automation.ir_cron_data_base_automation_check')
+print(cron.active, cron.interval_number, cron.interval_type)
+for passage in (1, 2):
+    debut = time.perf_counter()
+    cron.method_direct_trigger()
+    print(passage, '%.3f s' % (time.perf_counter() - debut))
+env.cr.rollback()   # nouvel instantané : voir ce que l'action planifiée a validé
+appel = env.ref('mail.mail_activity_data_call')
+print(env.ref('biblio.automation_loan_overdue').last_run)
+print(env['mail.activity'].search([('res_model', '=', 'library.loan'), ('activity_type_id', '=', appel.id)]).mapped(lambda a: (a.res_name, a.user_id.name)))
+print(env['ir.logging'].search([('path', '=', 'action')]).mapped('message'))</code></pre>
+<pre class="out">True 4 hours
+1 0.223 s
+2 0.011 s
+2026-11-11 13:15:39.400142
+[('EMP/2026/0003 (BIB-0011)', 'Bibliothécaire'), ('EMP/2026/0002 (BIB-0010)', 'Bibliothécaire'), ('EMP/2026/0001 (BIB-0009)', 'Bibliothécaire')]
+['Retard de 7 jours : 1 emprunt(s) traité(s)', 'Retard de 7 jours : 1 emprunt(s) traité(s)', 'Retard de 7 jours : 1 emprunt(s) traité(s)']</pre>
+                <p><code>method_direct_trigger()</code> exécute le travail dans un curseur à lui, qui valide en base : le <code>rollback()</code> du shell
+                    n'annule rien, il ouvre seulement un nouvel instantané. Ces relevés viennent d'une base repartie de zéro avec le module 20.0.1.22.0
+                    (la règle temporelle y porte l'id 4). Avec <code>--log-handler=odoo.addons.base_automation:DEBUG</code>, le premier passage montre une ligne par action et par emprunt.
+                    Le niveau monte avec la durée : INFO au-delà de 0,1 s, WARNING au-delà d'une seconde, ERROR en cas d'échec.</p>
+<pre class="out">INFO  Starting time-based automation rule `Retard de 7 jours : appeler l'adhérent`.
+INFO  Automation Rule "Retard de 7 jours : appeler l'adhérent" (4) done (time-based; 1/1 records; duration 0.118s)
+DEBUG Automation Rule "Retard de 7 jours : appeler l'adhérent" (4) done (time-based; 1/1 records; duration 0.014s)
+…     (six lignes en tout : deux actions × trois emprunts)
+INFO  Time-based automation rule `Retard de 7 jours : appeler l'adhérent` done.</pre>
+                <p>Quatre constats :</p>
+                <ul>
+                    <li>Les trois emprunts en retard de 8, 16 et 26 jours sont traités au premier passage, même ceux qui avaient franchi les sept jours bien
+                        avant la création de la règle. La recherche porte sur la fenêtre entre <code>last_run</code> et maintenant, et une règle neuve n'a
+                        pas de <code>last_run</code>. Sur une base ancienne, la première exécution rattrape donc tout l'historique.</li>
+                    <li>Le second passage ne reprend rien : <code>last_run</code> a avancé, et l'emprunt ne sera plus repris tant que sa date de retour
+                        ne change pas.</li>
+                    <li>Les actions reçoivent <strong>un emprunt à la fois</strong> : <code>records</code> en contient un, d'où les trois lignes
+                        « 1 emprunt(s) » dans <code>ir.logging</code>.</li>
+                    <li>L'activité revient au créateur de l'emprunt (<code>create_uid</code>), mais la note est signée OdooBot : l'action planifiée
+                        tourne sous l'utilisateur système, et les actions héritent de son identité.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Emprunt EMP/2026/0001, 26 jours de retard : activité Appeler l'adhérent pour Bibliothécaire, note de retard signée OdooBot et relance par courriel de l'action planifiée maison" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le passage : l'activité « Appeler » et la note de la règle, signée OdooBot. Au-dessus, la relance postée et mise en file ensuite par l'action planifiée maison du module.</figcaption>
+                </figure>
+                <p>L'intervalle de l'action planifiée suit le plus petit délai des règles temporelles : un dixième du délai, entre 1 minute et 4 heures.
+                    Il ne fait que raccourcir :</p>
+<pre class="language-python"><code class="language-python">cron = env.ref('base_automation.ir_cron_data_base_automation_check')
+regle = env.ref('biblio.automation_loan_overdue')
+print('départ', regle.trg_date_range, regle.trg_date_range_type, '-&gt;', cron.interval_number, cron.interval_type)
+regle.write({'trg_date_range': 1, 'trg_date_range_type': 'hour'})
+print('1 heure -&gt;', cron.interval_number, cron.interval_type)
+regle.write({'trg_date_range': 7, 'trg_date_range_type': 'day'})
+print('retour à 7 jours -&gt;', cron.interval_number, cron.interval_type)
+regle.active = False
+print('règle archivée -&gt; cron actif', cron.active, cron.interval_number, cron.interval_type)
+env.cr.rollback()</code></pre>
+<pre class="out">départ 7 day -&gt; 4 hours
+1 heure -&gt; 6 minutes
+retour à 7 jours -&gt; 6 minutes
+règle archivée -&gt; cron actif False 6 minutes</pre>
+                <p>Un essai à une heure laisse donc l'action planifiée tourner toutes les six minutes. Il faut remettre l'intervalle à la main dans
+                    Paramètres › Technique › Automatisation › Actions planifiées.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. CODE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le code d'une action : ce qui est disponible en Odoo 20</h2>
+                <p>Le code d'une action « Exécuter le code » est évalué par <code>safe_eval</code>. Les noms disponibles, relevés
+                    sur l'action de la règle temporelle :</p>
+<pre class="language-python"><code class="language-python">action = env.ref('biblio.action_loan_overdue_note')
+emprunt = env['library.loan'].search([], limit=1)
+contexte = action.with_context(active_model='library.loan', active_id=emprunt.id)._get_eval_context(action)
+print(sorted(contexte))
+essai = env['ir.actions.server'].create({
+    'name': 'essai', 'model_id': action.model_id.id, 'state': 'code',
+    'code': "log(str(timezone('Europe/Paris').localize(datetime.datetime(2026, 11, 11, 9, 0))))",
+})
+try:
+    essai.with_context(active_model='library.loan', active_id=emprunt.id).run()
+except Exception as e:
+    print(type(e).__name__, e)
+env.cr.rollback()</code></pre>
+<pre class="out">['BinaryBytes', 'Command', 'UserError', '_logger', 'b64decode', 'b64encode', 'datetime', 'dateutil', 'env', 'float_compare', 'json', 'log', 'model', 'record', 'records', 'time', 'timezone', 'uid', 'user']
+ValueError AttributeError("'ZoneInfo' object has no attribute 'localize'") while evaluating
+"log(str(timezone('Europe/Paris').localize(datetime.datetime(2026, 11, 11, 9, 0))))"</pre>
+                <ul>
+                    <li><code>record</code> et <code>records</code> : l'enregistrement et le lot concernés ; <code>env</code>, <code>model</code>, <code>user</code>, <code>uid</code>.</li>
+                    <li><code>log(message, level="info")</code> écrit dans <code>ir.logging</code> par sa propre connexion : la ligne reste même si la transaction
+                        est annulée (essai : action lancée, <code>rollback</code>, ligne toujours là). <code>_logger</code> écrit dans le journal du serveur.</li>
+                    <li><code>json</code> est ajouté par <code>base_automation</code> aux actions de code ; <code>BinaryBytes</code> est nouveau en 20.</li>
+                    <li><code>timezone</code> est désormais <code>ZoneInfo</code>. L'écriture pytz <code>.localize()</code> échoue ;
+                        <code>datetime.datetime(2026, 11, 11, 9, 0, tzinfo=timezone('Europe/Paris'))</code> donne <code>2026-11-11 09:00:00+01:00</code>.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. CRON MAISON ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Règle temporelle ou action planifiée maison ?</h2>
+                <p>Le module a déjà une action planifiée à lui : <code>library_cron_reminder</code>, qui appelle <code>_cron_relancer_retards()</code> chaque jour
+                    et envoie la relance par courriel. Déclenchées l'une après l'autre sur la même base :</p>
+                <table class="tmc">
+                    <thead><tr><th></th><th>Action planifiée maison</th><th>Règle temporelle</th></tr></thead>
+                    <tbody>
+                        <tr><td>Où est la logique</td><td>une méthode Python du modèle</td><td>un enregistrement <code>base.automation</code> et ses actions</td></tr>
+                        <tr><td>Fréquence</td><td>fixée dans le XML (1 jour)</td><td>déduite du plus petit délai (ici 4 h), partagée par toutes les règles</td></tr>
+                        <tr><td>Ne pas traiter deux fois</td><td>à écrire soi-même (<code>reminder_date</code>)</td><td>fenêtre depuis <code>last_run</code>, fournie</td></tr>
+                        <tr><td>Traitement</td><td>un <code>search</code>, puis une boucle dans la méthode</td><td>un enregistrement par appel d'action</td></tr>
+                        <tr><td>Durée mesurée, 3 emprunts en retard</td><td>0,095 s, puis 0,008 s</td><td>0,223 s, puis 0,011 s</td></tr>
+                        <tr><td>Modifiable sans déploiement</td><td>non</td><td>oui, jusqu'au prochain <code>-u</code> (§ 8)</td></tr>
+                    </tbody>
+                </table>
+                <p>Le second passage ne fait rien dans les deux cas. La règle convient aux réactions simples à une date, qu'un administrateur ajuste
+                    sans toucher au code. L'action planifiée maison reste préférable dès qu'il faut traiter un lot d'un coup, compter, ou tester une
+                    méthode Python ordinaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. MISE À JOUR ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce que <code>-u</code> fait des retouches faites dans l'interface</h2>
+                <p>Les règles du fichier ne sont pas en <code>noupdate</code>. Essai : le délai de la règle temporelle passe à 10 jours dans
+                    l'interface, une ligne de commentaire est ajoutée à son code, puis on lance <code>-u biblio</code>.</p>
+<p>Après la mise à jour, le délai est revenu à 7 jours et la ligne ajoutée au code a disparu.</p>
+                <div class="pitfall-box">
+                    <h4>Une règle livrée par le module appartient au module</h4>
+                    <p>Chaque mise à jour réécrit les champs déclarés dans le XML : ce qu'un administrateur a changé à l'écran disparaît sans avertissement.
+                        Deux choix assumés : laisser le module maître (le cas ici, comme pour l'action planifiée maison) et faire passer toute retouche par le
+                        code, ou placer les règles dans <code>&lt;data noupdate="1"&gt;</code> pour les livrer une fois et laisser l'interface les ajuster,
+                        au prix de corrections du module qui ne descendront plus sur les bases déjà installées.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 9. TESTS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Tester les règles</h2>
+                <p>Les règles sont des données du module : un test les trouve installées. Pour la règle temporelle, le test lance l'action planifiée elle-même,
+                    dans <code>registry_test_mode()</code>, qui lui fait utiliser le curseur du test. Extrait de <code>tests/test_automation.py</code> :</p>
+<pre class="language-python"><code class="language-python">    def test_overdue_rule_runs_once_from_cron(self):
+        rule = self.env.ref('biblio.automation_loan_overdue')
+        cron = self.env.ref('base_automation.ir_cron_data_base_automation_check')
+        self.assertTrue(cron.active)
+        late = self._emprunter(self.copy_1, date_out=self.today - relativedelta(days=30))   # 16 j de retard
+        recent = self._emprunter(self.copy_2, date_out=self.today - relativedelta(days=17))  # 3 j de retard
+        returned = self._emprunter(self.copy_3, date_out=self.today - relativedelta(days=40))
+        returned.action_return()
+        with self.registry_test_mode():
+            cron.method_direct_trigger()
+        self.assertTrue(rule.last_run)
+        self.assertEqual(len(self._activities(late, self.call)), 1)
+        self.assertFalse(self._activities(recent, self.call))
+        self.assertFalse(self._activities(returned, self.call))
+        self.assertIn("Retard de 16 jours", late.message_ids[0].body)
+        # Second passage : la fenêtre part de last_run, l'emprunt n'est pas repris.
+        with self.registry_test_mode():
+            cron.method_direct_trigger()
+        self.assertEqual(len(self._activities(late, self.call)), 1)</code></pre>
+                <p>Le fichier contient aussi les cas du tableau du § 3, le courriel en file (état <code>outgoing</code>, destinataire), le rayon vidé et
+                    l'intervalle de l'action planifiée.</p>
+<pre class="language-bash"><code class="language-bash"># une base neuve sans langue, puis une autre base neuve en français
+odoo-bin -c odoo.conf -d ma_base -i biblio --test-enable --test-tags=/biblio --stop-after-init
+odoo-bin -c odoo.conf -d ma_base_fr -i biblio --load-language=fr_FR --test-enable --test-tags=/biblio --stop-after-init</code></pre>
+<pre class="out">INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 46 tests when loading database 'ma_base'
+INFO ma_base_fr odoo.tests.result: 0 failed, 0 error(s) of 46 tests when loading database 'ma_base_fr'</pre>
+                <p>Quarante-six tests, dont six nouveaux. Les libellés des règles, des actions et du nouveau modèle de courriel entrent dans
+                    <code>i18n/biblio.pot</code> par la commande d'export de l'étape précédente. Aucun nouveau modèle, donc rien à ajouter à
+                    <code>security/ir.access.csv</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 19 → 20 ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="v19-box">
+                    <h4>Depuis Odoo 19 : ce qui change pour une règle livrée en XML</h4>
+                    <ul class="mb-0">
+                        <li><code>mail_post_method</code> (courriel, message, note) n'existe plus : un fichier qui le pose échoue
+                            (<code>ValueError: Invalid field 'mail_post_method' in 'ir.actions.server'</code>). Sur un modèle à fil de discussion,
+                            <code>mail_post</code> poste toujours un message ; une note passe par le nouveau type <code>log_note</code> et son champ
+                            <code>log_note_note</code>. Sur un tel modèle, on n'envoie plus de courriel sans trace dans le fil.</li>
+                        <li>Les champs surveillés d'une règle « À la création et modification » ne sont plus déduits du domaine. En 19, une règle XML sans
+                            <code>trigger_field_ids</code> les recevait du domaine ; en 20, elle surveille tous les champs.</li>
+                        <li>L'action « Créer une activité » passe par l'assistant de planification : responsable par rôle, plans d'activités, échéance à 1 jour
+                            par défaut. Créée par code ou en XML, elle n'hérite plus du résumé du type d'activité (essai : <code>activity_summary</code> reste
+                            <code>False</code>) : on le donne.</li>
+                        <li>Dans le code, <code>timezone</code> est <code>ZoneInfo</code> (pytz en 19) et <code>BinaryBytes</code> s'ajoute aux noms disponibles.</li>
+                        <li>Chaque action exécutée laisse une ligne de journal avec son statut et sa durée ; la 19 n'écrivait, pour les règles synchrones, qu'une
+                            ligne DEBUG avant traitement (les lignes de début et de fin des règles temporelles existaient déjà).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer une règle à l'écran</td><td>Paramètres › Technique › Automatisation › Règles d'automatisation (mode développeur)</td></tr>
+                        <tr><td>Réagir à une valeur de sélection</td><td><code>on_state_set</code> + <code>trg_selection_field_id</code> (<code>selection__&lt;modèle&gt;__&lt;champ&gt;__&lt;valeur&gt;</code>)</td></tr>
+                        <tr><td>Réagir au passage d'un seuil</td><td><code>on_create_or_write</code>, <code>trigger_field_ids</code>, domaine avant et après</td></tr>
+                        <tr><td>Agir N jours après une date</td><td><code>on_time</code>, <code>trg_date_id</code>, <code>trg_date_range</code>, <code>trg_date_range_type</code>, <code>trg_date_range_mode</code></td></tr>
+                        <tr><td>Lancer les règles temporelles</td><td><code>env.ref('base_automation.ir_cron_data_base_automation_check').method_direct_trigger()</code></td></tr>
+                        <tr><td>Livrer une action</td><td><code>ir.actions.server</code> avec <code>base_automation_id</code> et <code>usage = base_automation</code></td></tr>
+                        <tr><td>Écrire une note sans modèle</td><td>type <code>log_note</code>, champ <code>log_note_note</code></td></tr>
+                        <tr><td>Fuseau horaire dans le code</td><td><code>tzinfo=timezone('Europe/Paris')</code>, plus de <code>.localize()</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une règle créée à l'écran reste dans la base : pour la livrer, on la recopie en XML (règle + actions) et on supprime l'originale.</li>
+                    <li>Les actions tournent en <code>sudo</code> ; celles d'une règle synchrone dans la transaction de l'écriture. Les courriels restent en file.</li>
+                    <li>Les règles temporelles partagent une action planifiée dont l'intervalle ne fait que raccourcir, et une règle neuve rattrape tout le passé.</li>
+                    <li>Champs surveillés vides = tous les champs ; et un <code>-u</code> efface ce qu'on a retouché à l'écran.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module <code>biblio</code> mis à jour de 20.0.1.21.0 en 20.0.1.22.0 le 11/11/2026 sur Odoo 20.0 Community (PostgreSQL 16), sur des
+                    copies jetables de base supprimées ensuite ; règle créée et utilisée dans le navigateur, action planifiée déclenchée et mesurée par
+                    <code>odoo-bin shell</code> ; tests sur deux bases neuves. La branche 19.0 a été lue, et non exécutée pour cet article. Code relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/base_automation/models/base_automation.py" target="_blank" rel="noopener"><code>addons/base_automation/models/base_automation.py</code></a> (20.0) : <code>_update_cron</code>, <code>_get_cron_interval</code>, <code>_search_time_based_automation_records</code>, <code>_process</code> ;
+                        <a href="https://github.com/odoo/odoo/blob/19.0/addons/base_automation/models/base_automation.py" target="_blank" rel="noopener">19.0</a> : <code>_onchange_domain</code>, <code>_get_trigger_specific_field</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/mail/models/ir_actions_server.py" target="_blank" rel="noopener"><code>addons/mail/models/ir_actions_server.py</code></a> (20.0) : <code>log_note</code>, <code>_run_action_next_activity_multi</code> ;
+                        <a href="https://github.com/odoo/odoo/blob/19.0/addons/mail/models/ir_actions_server.py" target="_blank" rel="noopener">19.0</a> : <code>mail_post_method</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_actions.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_actions.py</code></a> : <code>_get_eval_context</code> (<code>timezone</code>, <code>BinaryBytes</code>)</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/base_automation/data/base_automation_data.xml" target="_blank" rel="noopener"><code>addons/base_automation/data/base_automation_data.xml</code></a> : l'action planifiée commune, inactive à l'installation</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/cron-ne-s-execute-pas-odoo-20-289">L'action planifiée ne s'exécute pas en Odoo 20 : les vérifications</a></h5>
+                            <p class="small text-muted mb-0">Quand « Règles d'automatisation : vérification et exécution » ne passe pas, les mêmes contrôles s'appliquent.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/webhooks-odoo-20-389">Webhooks en Odoo 20 : recevoir et émettre des appels HTTP</a></h5>
+                            <p class="small text-muted mb-0">Deux autres usages du même module : le déclencheur « Sur webhook » et l'action d'appel sortant.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/automatisation-odoo-studio-343">Odoo 20 Studio : créer une règle d'automatisation</a></h5>
+                            <p class="small text-muted mb-0">Le même mécanisme côté utilisateur, depuis Studio en édition Enterprise.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
