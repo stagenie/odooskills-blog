@@ -1,0 +1,552 @@
+<!--
+Article — Importer ses écritures et soldes d'ouverture dans Odoo 20
+Série « Clôture et pilotage financier avec Odoo 20 » (blog Fonctionnel), vague 3 F3.4, Enterprise, fin de série
+Date : 2026-11-11 (poste)
+Slug : importer-ecritures-comptables-odoo
+Tags : intermediaire, comptabilite, guide, enterprise
+Différenciation : 175 (balance d'ouverture v19 Community par l'import des pièces) non repris ; 264 (mécanique de l'import, Tester) lié ;
+  clôture (414), analytique (417), trésorerie (419), bilan et TVA (303) non repris.
+Preuves (11/11/2026, base éducative Odoo Online 20.0+e, compte formateur, société FR Company id 4, plan fr_comp, EUR) :
+  - Modules (RPC ir.module.module) : account_base_import « Accounting Import » installé (OEEL-1, auto_install, dépend de account_accountant,
+    base_import, account_asset) ; l10n_fr_fec_import « France - FEC Import » (OEEL-1) non installé au départ, dépend de account_accountant,
+    l10n_fr_account, l10n_fr_reports, account_base_import ; description : formats CSV seulement, encodages utf-8, utf-8-sig, iso8859_15,
+    séparateurs ; | , tabulation. Installé à l'écran pour l'article (lien du guide → fiche du module → Installer) et laissé installé.
+  - Comptabilité › Configuration › Paramètres, bloc « Import comptable » : « Choisir comment vous souhaitez configurer votre plan comptable »,
+    « Réviser manuellement (balances de fin d'année) », « Import (pour l'historique complet) » (vue account_base_import.res_config_settings_import_view_form).
+  - Guide d'import pour la comptabilité (action client account_import_guide) : FEC, Import Excel, Importer des contacts / un plan comptable
+    (ou Réviser manuellement) / Import des écritures comptables / Importer des actifs & modèles d'amortissement ; « Astuce : … » ;
+    liens modèle : /account/static/xls/coa_import_template.xlsx, /account/static/xls/aml_import_template.xlsx (fichiers aussi en CE).
+    Après installation du module FEC : bouton « Importer FEC ».
+  - Réviser manuellement : liste du plan comptable (vue account.init_accounts_tree, account/wizard/setup_wizards_view.xml:89-115), boutons Nouveau,
+    Valider et enregistrer, Import ; colonnes Solde d'initialisation au débit / au crédit. Saisie à l'écran 101300 C 20 000, 218300 D 6 000,
+    512001 D 12 000 → pièce brouillon « Pièce comptable d'initialisation », journal Opérations diverses, date 11/10/2026, ligne « Ligne de solde
+    automatique » 999999 D 2 000, lignes « Solde initial » sans partenaire ; res.company.account_opening_move_id posé. Date = account_opening_date − 1 jour
+    (account/models/company.py:970), account_opening_date = 12/10/2026 (défaut = jour de création, company.py:177 ; société créée le 12/10/2026, RPC).
+    Ligne d'équilibrage sur le compte equity_unaffected (company.py:977-985, 1066, 1084-1085). Date modifiable en brouillon (account_move_views.xml:1169-1171).
+    Valider et enregistrer → fenêtre « Valider l'écriture ? » « Cette action est irréversible… » (Comptabiliser / Ignorer) : vue, non confirmée.
+  - Import des écritures comptables (account.move.line) : écran Charger ; fichier reprise-tiers.xlsx (journal_id, move_id, date, partner_id, name,
+    account_id, debit, credit) ; Tester → « Tout semble correct. » ; Importer → liste des 4 lignes ; pièce OD/2026/10/0002 en **brouillon** ;
+    Comptabiliser à l'écran OK ; Échéancier clients : Gemini Furniture 2 400 et Wood Corner 1 800 en 31-60 (lignes sans date d'échéance, RPC
+    date_maturity vide).
+  - Erreurs obtenues (Tester) : déséquilibre → « L’écriture n’est pas équilibrée. à plusieurs lignes » ; journal ODX inconnu, compte 411900 inconnu,
+    partenaire « Wood Corners » → « Tout semble correct. ». Import réel d'un fichier combinant les trois : journal ODX (général), compte 411900 sans nom
+    (type Créances), contact « Wood Corners » créés, pièce ODX/2026/10/0001 brouillon (RPC), puis supprimés.
+    Modèle aml (account/static/xls/aml_import_template.xlsx, onglet Instructions) : partenaire inconnu → créé ; compte inconnu → créé ;
+    journaux de factures : « will not create Invoices ».
+  - Import FEC (assistant « Importation FEC », action serveur env.company.fec_import_action) : fichier, « Ajouter un préfixe au document »,
+    « Que devons-nous faire avec le nom de document en double » Ignorer / Mettre à jour (défaut Mettre à jour, RPC default_get), Importer / Ignorer.
+    Fichier 000000000FEC20251231.txt (18 colonnes, séparateur |, SIREN fictif, comptes existants avec leurs libellés exacts) :
+    résumé « Import Summary » : 2 journaux, 3 écritures, 3 partenaires importés ; journaux VE « FEC-Ventes », AC « FEC-Achats » (type général),
+    contacts Wood Corner / Gemini Furniture / Lumber Inc **nouveaux** (réf. CWOOD, CGEMINI, FLUMBER, société FR Company) à côté des contacts de démo,
+    pièces VE000001, VE000002, AC000001 en brouillon (numéros du FEC) ; Actions › Confirmer les écritures → Comptabilisé ; Balance comptable 2025 :
+    total 4 200 / 4 200, 411100 3 600, 401100 -600, 706000 -3 000, 445710 -600, 607000 500, 445660 100 ; noms de comptes inchangés (RPC avant/après).
+    Fichier déséquilibré (VE000001 crédit TVA 150 au lieu de 200) : « Opération invalide — Soldes incorrects de rapports de mouvements : Le mouvement
+    comptable 'VE000001' a un solde de 50.00 », alors que le résumé affiche 2 journaux, 2 écritures, 2 partenaires importés : restés en base (RPC).
+  - Menus (RPC ir.ui.menu, complete_name) : Comptabilité/Transactions/Pièces comptables, Analyse/Grands livres/Balance générale.
+    Bouton Import de la liste du plan comptable = action 1085 (Guide d'import), vue account_base_import.view_account_base_import_list.
+  - Tout ce qui a été créé a été supprimé (pièces 257, 263, 265-270, journaux, comptes, contacts, résumés d'import) ; aucune date de verrouillage.
+  - Community 20 : l10n_fr_fec_import et account_base_import absents de odoo/addons ; seul l'export FEC existe (l10n_fr_account/wizard/
+    account_fr_fec_export_wizard.py), sans action ni menu ; administrateur de démo sans menu Comptabilité ni écritures (copie vs20_func_f31, F3.1).
+Captures : content/blog/screenshots/importer-ecritures-comptables-odoo/ (scripts docs/blog-odoo20/captures-base-edu/f3-4-import/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Importer ses écritures et soldes d'ouverture dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Soldes de départ saisis dans le plan comptable, montants ouverts des clients et
+                    fournisseurs importés par fichier, historique repris d'un FEC : les trois voies de l'application
+                    Comptabilité d'Odoo 20 Enterprise, leurs contrôles et les erreurs qu'elles laissent passer.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Clôture et pilotage financier avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), novembre 2026, sur la société de démonstration « FR Company » (plan comptable
+                        français, montants en euros). Le module d'import FEC y est installé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Passer à Odoo en cours de route, c'est reprendre ce que l'ancien logiciel savait : les soldes des comptes
+                    à la date du changement, ce que chaque client doit encore et ce qui reste à payer à chaque fournisseur,
+                    parfois tout l'historique des écritures. Odoo 20 Enterprise rassemble ces reprises dans un
+                    <strong>Guide d'import pour la comptabilité</strong>, avec un écran de saisie des soldes, un import
+                    d'écritures par fichier tableur et, pour la France, un import du fichier des écritures comptables (FEC).</p>
+                <p>Cet article joue les trois sur la société de démonstration <strong>FR Company</strong>, avec de petits
+                    fichiers fabriqués pour l'occasion (données fictives), et montre ce que chaque contrôle d'Odoo voit, et
+                    ce qu'il ne voit pas. La mécanique générale de l'import (charger un fichier, <strong>Tester</strong>,
+                    <strong>Importer</strong>) est décrite dans
+                    <a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs dans
+                    Odoo 20</a> ; elle n'est pas reprise ici.</p>
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>choisir entre soldes d'ouverture, import d'écritures et import FEC ;</li>
+                    <li>saisir des soldes d'ouverture et lire la pièce qu'Odoo en tire ;</li>
+                    <li>importer les montants ouverts des clients et fournisseurs, partenaire par partenaire ;</li>
+                    <li>importer un FEC et contrôler le résultat dans la balance comptable ;</li>
+                    <li>repérer ce qu'un import crée sans le signaler : journaux, comptes, contacts.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Trois reprises, un même contrôle</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma des reprises comptables dans Odoo 20. Le Guide d'import pour la comptabilité (Paramètres › Import comptable) mène à trois voies : Soldes de fin d'exercice par Plan comptable › Réviser manuellement, qui donne une Pièce comptable d'initialisation en brouillon avec une ligne de solde automatique sur 999999 ; Montants ouverts des clients et fournisseurs par Import des écritures comptables (fichier XLSX ou CSV), qui donne des pièces en brouillon avec un partenaire par ligne de tiers ; Historique complet d'un logiciel français par Importer FEC (module France - FEC Import), qui donne journaux, contacts et pièces en brouillon. Les trois mènent à Comptabiliser, puis à Contrôler : pièce équilibrée, échéancier clients, balance comptable" style="max-width:75%; height:auto;"/>
+                    <figcaption>Les trois voies du guide d'import : chacune finit par des pièces en brouillon à comptabiliser, puis à contrôler.</figcaption>
+                </figure>
+                <p>Les <strong>soldes d'ouverture</strong> suffisent quand l'historique reste dans l'ancien logiciel : un
+                    montant par compte, à la date du passage. Les <strong>montants ouverts</strong> des clients et des
+                    fournisseurs s'importent à part, ligne par ligne, pour que chaque facture non réglée garde son
+                    partenaire. Le <strong>FEC</strong> reprend l'historique complet d'un logiciel français. Dans les trois
+                    cas, Odoo produit des pièces en brouillon, à comptabiliser ensuite. Un même solde client ou fournisseur ne
+                    passe que par une voie : l'astuce du guide (figure 3) réserve l'import des écritures aux montants ouverts.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le point d'entrée : le guide d'import</h2>
+                <p>Ouvrez <strong>Comptabilité › Configuration › Paramètres</strong>. Le bloc <strong>Import
+                    comptable</strong> propose deux liens.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bloc Import comptable des paramètres de la Comptabilité : Choisir comment vous souhaitez configurer votre plan comptable ; liens Réviser manuellement (balances de fin d'année) et Import (pour l'historique complet)" style="max-width:50%; height:auto;"/>
+                    <figcaption>Réviser manuellement pour des soldes, Import pour un historique.</figcaption>
+                </figure>
+                <p><strong>Réviser manuellement</strong> ouvre la saisie des soldes (étape 2). <strong>Import</strong> ouvre le
+                    guide, accessible aussi par le bouton <strong>Import</strong> de la liste du plan comptable.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Guide d'import pour la comptabilité, titre Options d'importation comptabilité. Section FEC : utiliser le Module d'import FEC pour importer le fichier FEC. Section Import Excel : Importer des contacts (bouton Importer les contacts), Importer un plan comptable (bouton Importer un plan comptable ou lien Réviser manuellement), Import des écritures comptables (bouton du même nom), Importer des actifs et modèles d'amortissement (boutons Importer les immobilisations et Importer des modèles d'amortissement). Chaque section a un lien modèle. En bas : Astuce, nous vous recommandons d'importer vos soldes d'ouverture en utilisant le plan comptable importé, utilisez seulement l'import des écritures comptables pour les écritures non lettrées pour les comptes débiteurs et les comptes créditeurs ouverts" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le guide : un modèle de fichier par type de données, et le conseil d'Odoo en bas de page.</figcaption>
+                </figure>
+                <p>Chaque section du guide fournit un <strong>modèle</strong> de fichier tableur. L'astuce du bas de page
+                    résume la méthode recommandée par Odoo : les soldes d'ouverture passent par le plan comptable, l'import
+                    des écritures ne sert qu'aux écritures non lettrées des comptes clients et fournisseurs. La section
+                    <strong>FEC</strong> renvoie à un module à installer (étape 4). Les immobilisations, enfin, ont leur
+                    propre import ; leur fonctionnement est décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/immobilisations-amortissements-budgets-odoo-302">Immobilisations,
+                    amortissements et budgets avec Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Les soldes d'ouverture, compte par compte</h2>
+                <p><strong>Réviser manuellement</strong> affiche le plan comptable avec deux colonnes à saisir :
+                    <strong>Solde d'initialisation au débit</strong> et <strong>au crédit</strong>. Cliquez dans la cellule
+                    d'un compte, tapez le montant, enregistrez. Ici, trois soldes : un capital de 20 000 € au crédit du
+                    101300, du matériel de bureau pour 6 000 € au débit du 218300 et 12 000 € en banque au 512001.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Plan comptable en mode révision, boutons Nouveau, Valider et enregistrer, Import ; recherche Compte 101300 ou 218300 ou 512001 ou 999999 ; colonnes Code, Nom du compte, Type, Actif, Solde d'initialisation au débit, Solde d'initialisation au crédit ; 101300 Capital souscrit appelé, versé 0,00 et 20 000,00 ; 218300 Matériel de bureau et informatique 6 000,00 et 0,00 ; 512001 Banque 12 000,00 et 0,00 ; 999999 Affectation du résultat 2 000,00 et 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois soldes saisis ; le 999999 s'est rempli seul.</figcaption>
+                </figure>
+                <p>Le compte <strong>999999 Affectation du résultat</strong> affiche 2 000 € au débit sans avoir été
+                    touché : les débits saisis (18 000 €) ne couvrent pas les crédits (20 000 €), et Odoo comble l'écart
+                    sur ce compte. Chaque saisie alimente une seule pièce, visible dans
+                    <strong>Comptabilité › Transactions › Pièces comptables</strong>, au statut Brouillon.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Pièce comptable en brouillon, boutons Comptabiliser et Annuler la pièce ; Référence Pièce comptable d'initialisation, Date comptable 11 oct., Journal Opérations diverses ; lignes 101300 Capital souscrit appelé, versé, Solde initial, crédit 20 000,00 € ; 999999 Affectation du résultat, Ligne de solde automatique, débit 2 000,00 € ; 218300 Matériel de bureau et informatique, Solde initial, débit 6 000,00 € ; 512001 Banque, Solde initial, débit 12 000,00 € ; colonne Partenaire vide ; totaux 20 000,00 € et 20 000,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>La pièce d'initialisation : une ligne « Solde initial » par compte, plus la ligne de solde automatique.</figcaption>
+                </figure>
+                <p>La pièce s'appelle <strong>Pièce comptable d'initialisation</strong>, dans le journal Opérations diverses.
+                    Elle est datée du <strong>11 octobre</strong> : la veille de la date d'ouverture enregistrée sur la
+                    société, qui vaut par défaut son jour de création (ici le 12 octobre 2026). Tant que la pièce est en
+                    brouillon, sa date se corrige dans le formulaire. La colonne <strong>Partenaire</strong> reste vide : un
+                    solde saisi ici sur le compte clients ne dirait pas qui doit quoi, d'où l'import de l'étape 3.</p>
+                <p>Pour reproduire ces écrans sur une base à soi, une base d'essai s'ouvre depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    en choisissant l'application Comptabilité.</p>
+                <p>Le bouton <strong>Valider et enregistrer</strong> de la liste comptabilise la pièce. Odoo prévient avant :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Valider l'écriture ? : Cette action est irréversible : le crédit/débit ne pourra plus être modifié depuis cet écran. Cette action affectera uniquement votre société actuelle. Boutons Comptabiliser et Ignorer" style="max-width:50%; height:auto;"/>
+                    <figcaption>Après validation, les soldes ne se modifient plus depuis cet écran.</figcaption>
+                </figure>
+                <p>Une fois la pièce comptabilisée, les colonnes de soldes ne sont plus modifiables depuis le plan comptable,
+                    et cela pour la seule société active. Vérifiez donc la date et les montants avant de cliquer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Les montants ouverts des clients et fournisseurs, par fichier</h2>
+                <p>Dans le guide, <strong>Import des écritures comptables</strong> ouvre l'écran d'import, avec un lien
+                    <strong>Modèle pour les écritures comptables</strong>. Le fichier reprend les colonnes de ce modèle : une
+                    ligne par écriture, les lignes d'une même pièce partageant la même valeur de <code>move_id</code>.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>journal_id</th><th>move_id</th><th>date</th><th>partner_id</th><th>name</th><th>account_id</th><th>debit</th><th>credit</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>OD</td><td>OD/2026/10/0002</td><td>2026-10-11</td><td>Wood Corner</td><td>Facture F-2026-118 (reprise)</td><td>411100</td><td>1800</td><td></td></tr>
+                        <tr><td>OD</td><td>OD/2026/10/0002</td><td>2026-10-11</td><td>Gemini Furniture</td><td>Facture F-2026-121 (reprise)</td><td>411100</td><td>2400</td><td></td></tr>
+                        <tr><td>OD</td><td>OD/2026/10/0002</td><td>2026-10-11</td><td>Lumber Inc</td><td>Facture LI-5521 (reprise)</td><td>401100</td><td></td><td>900</td></tr>
+                        <tr><td>OD</td><td>OD/2026/10/0002</td><td>2026-10-11</td><td></td><td>Contrepartie reprise des tiers</td><td>999999</td><td></td><td>3300</td></tr>
+                    </tbody>
+                </table>
+                <p>Le journal se désigne par son code, le compte par son numéro, le partenaire par son nom. La contrepartie
+                    est portée ici sur le 999999, le compte qu'Odoo emploie pour équilibrer la pièce d'initialisation. Le
+                    modèle d'Odoo précise qu'une écriture importée dans un journal de factures ne crée pas de facture : la
+                    reprise se fait en écritures, dans les Opérations diverses.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Écran Importer reprise-tiers.xlsx après Tester : boutons Importer, Tester, Charger à nouveau ; options Utiliser la première ligne comme en-tête (cochée) et Suivre les modifications dans le chatter ; Aide : Modèle pour les écritures comptables, Documentation ; bandeau Tout semble correct. ; correspondances journal_id → Journal, move_id → Pièce comptable, date → Date, partner_id → Partenaire, name → Description, account_id → Compte, debit → Débit, credit → Crédit" style="max-width:100%; height:auto;"/>
+                    <figcaption>Chaque colonne du modèle trouve son champ ; Tester ne relève rien.</figcaption>
+                </figure>
+                <p>Chargez le fichier, cliquez sur <strong>Tester</strong> : chaque colonne est rapprochée de son champ et le
+                    bandeau annonce « Tout semble correct. ». <strong>Importer</strong> crée la pièce, en
+                    <strong>brouillon</strong> ; ouvrez-la et cliquez sur <strong>Comptabiliser</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Pièce OD/2026/10/0002 comptabilisée, boutons Écriture d'extourne, Remettre en brouillon, Aucune révision ; Date comptable 11 oct., Journal Opérations diverses ; lignes 411100 Clients, Wood Corner, Facture F-2026-118 (reprise), 1 800,00 € au débit ; 411100 Clients, Gemini Furniture, Facture F-2026-121 (reprise), 2 400,00 € ; 401100 Fournisseurs, Lumber Inc, Facture LI-5521 (reprise), 900,00 € au crédit ; 999999 Affectation du résultat, Contrepartie reprise des tiers, 3 300,00 € au crédit ; totaux 4 200,00 € et 4 200,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>La pièce importée et comptabilisée : chaque ligne de tiers porte son partenaire.</figcaption>
+                </figure>
+                <p>Le contrôle se fait là où ces montants doivent apparaître : <strong>Analyse › Rapports partenaires ›
+                    Échéancier clients</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Échéancier clients, colonnes Date, À la date, 1-30, 31-60, 61-90, 91-120, Plus de 120 jours, Total ; total 52 946,40 € ; Acme Corporation 41 750,00 € en 31-60 ; Azure Interior 31 750,00 € À la date et -31 750,00 € en 61-90 ; Gemini Furniture 2 400,00 € en 31-60 ; LightsUp 750,00 € et 600,00 € ; OpenWood 3 275,00 € et 1 799,00 € ; Wood Corner 572,40 € en 1-30 et 1 800,00 € en 31-60, total 2 372,40 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les montants repris apparaissent au nom de chaque client, comme une facture.</figcaption>
+                </figure>
+                <p>Gemini Furniture (2 400,00 €) et Wood Corner (1 800,00 €, à côté de ses factures de démonstration)
+                    figurent dans la tranche <strong>31-60</strong>. Le modèle n'a pas de colonne d'échéance : sans elle, ces
+                    montants sont traités comme échus depuis la date de la pièce, le 11 octobre. Les autres lignes sont les
+                    factures de la base de démonstration.</p>
+                <h3>Ce que Tester voit, et ce qu'il ne voit pas</h3>
+                <p>Un fichier dont une pièce ne s'équilibre pas est arrêté au test : le bandeau rouge affiche « L’écriture
+                    n’est pas équilibrée. à plusieurs lignes », et rien n'est importé. En revanche, un code de journal
+                    inconnu, un numéro de compte absent du plan ou un nom de client mal orthographié passent le test avec
+                    « Tout semble correct. ». Importé pour de bon, un fichier qui combine les trois donne ceci :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Pièce ODX/2026/10/0001 en brouillon, Journal ODX, Date comptable 11 oct. ; ligne 411900 sans libellé de compte, partenaire Wood Corners, Facture F-2026-118 (reprise), 1 800,00 € au débit ; ligne 999999 Affectation du résultat, Contrepartie reprise des tiers, 1 800,00 € au crédit" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un journal ODX, un compte 411900 sans nom et un contact « Wood Corners » : tous créés par l'import.</figcaption>
+                </figure>
+                <p>Odoo a créé un journal <strong>ODX</strong>, un compte <strong>411900</strong> sans nom (classé en
+                    créances) et un nouveau contact <strong>Wood Corners</strong>, distinct de Wood Corner. Le modèle d'Odoo
+                    l'annonce dans son onglet d'instructions : un partenaire ou un compte introuvable est créé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. L'historique complet : l'import FEC</h2>
+                <p>Le module <strong>France - FEC Import</strong> fait partie de l'Enterprise mais n'est pas installé
+                    d'office. Le lien <strong>Module d'import FEC</strong> du guide ouvre sa fiche dans les Applications.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Écran Installer un module, recherche Module l10n_fr_fec_import et filtre Extra ; carte France - FEC Import, Import Accounting Data from FEC files, boutons Installer et Info sur le module" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le module d'import FEC, ouvert depuis le guide.</figcaption>
+                </figure>
+                <p>Après <strong>Installer</strong>, le guide affiche un bouton <strong>Importer FEC</strong>. La description du
+                    module indique qu'il importe les comptes, journaux, partenaires et écritures d'un FEC, au seul format CSV,
+                    en UTF-8 ou ISO-8859-15, avec un séparateur point-virgule, barre verticale, virgule ou tabulation. Le fichier d'essai, nommé <code>000000000FEC20251231.txt</code> (numéro SIREN fictif), décrit
+                    trois factures de 2025 :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>JournalCode</th><th>EcritureNum</th><th>EcritureDate</th><th>CompteNum</th><th>CompAuxNum</th><th>CompAuxLib</th><th>Debit</th><th>Credit</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>VE</td><td>VE000001</td><td>20250115</td><td>411100</td><td>CWOOD</td><td>Wood Corner</td><td>1200,00</td><td>0,00</td></tr>
+                        <tr><td>VE</td><td>VE000001</td><td>20250115</td><td>706000</td><td></td><td></td><td>0,00</td><td>1000,00</td></tr>
+                        <tr><td>VE</td><td>VE000001</td><td>20250115</td><td>445710</td><td></td><td></td><td>0,00</td><td>200,00</td></tr>
+                        <tr><td>VE</td><td>VE000002</td><td>20250210</td><td>411100</td><td>CGEMINI</td><td>Gemini Furniture</td><td>2400,00</td><td>0,00</td></tr>
+                        <tr><td colspan="8">… puis 706000 (2 000,00) et 445710 (400,00) au crédit ; AC000001 du 20250120 : 607000 (500,00) et 445660 (100,00) au débit, 401100 FLUMBER Lumber Inc (600,00) au crédit</td></tr>
+                    </tbody>
+                </table>
+                <p>Le tableau montre les colonnes utiles ; le fichier contient les dix-huit colonnes du FEC (JournalLib,
+                    CompteLib, PieceRef, EcritureLib, ValidDate…), séparées par une barre verticale. Les comptes y portent les
+                    numéros et les libellés du plan de la base.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fenêtre Importation FEC : Importer vos données comptables à partir de fichiers FEC, File: 000000000FEC20251231.txt, bouton Replace ; Options d'importation : Ajouter un préfixe au document (vide) ; Que devons-nous faire avec le nom de document en double : Ignorer ou Mettre à jour (coché) ; boutons Importer et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>L'assistant d'import FEC et ses deux options.</figcaption>
+                </figure>
+                <p>L'assistant <strong>Importation FEC</strong> reçoit le fichier et propose deux options : un
+                    <strong>préfixe</strong> à ajouter aux numéros de pièces, et le traitement des numéros déjà présents,
+                    <strong>Ignorer</strong> ou <strong>Mettre à jour</strong> (choix par défaut). <strong>Importer</strong>
+                    affiche un résumé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Écran Import Summary, fil d'Ariane Guide d'import pour la comptabilité ; Données importées : 2 journaux importés, 3 écritures importées, 3 partenaires importés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le résumé : chaque ligne ouvre la liste des enregistrements créés.</figcaption>
+                </figure>
+                <p>Les deux codes VE et AC n'existaient pas : Odoo a créé les journaux <strong>FEC-Ventes</strong> et
+                    <strong>FEC-Achats</strong>, de type général. Les comptes, déjà présents dans le plan, n'ont pas été
+                    recréés. Les trois écritures arrivent en brouillon, sous leurs numéros d'origine.</p>
+                <p>Depuis le résumé, <strong>3 écritures importées</strong> ouvre leur liste. Sélectionnez-les toutes, puis
+                    <strong>Actions › Confirmer les écritures</strong> : elles passent au statut Comptabilisé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Liste des écritures importées, colonnes Date, Numéro, Partenaire, Référence, Journal, Société, Total, Statut : 10 févr. 2025 VE000002 Gemini Furniture FA-2025-002 FEC-Ventes FR Company 2 400,00 € Comptabilisé ; 20 janv. 2025 AC000001 Lumber Inc LI-2025-77 FEC-Achats 600,00 € Comptabilisé ; 15 janv. 2025 VE000001 Wood Corner FA-2025-001 FEC-Ventes 1 200,00 € Comptabilisé ; total 4 200,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les pièces du FEC, gardant leurs numéros, après Confirmer les écritures.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Contrôler la reprise dans la balance</h2>
+                <p>La <strong>balance comptable</strong> (<strong>Analyse › Grands livres › Balance générale</strong>) répond à la question
+                    « la reprise est-elle complète ? ». Choisissez la période des écritures reprises, ici l'exercice
+                    fiscal 2025, que FR Company n'avait pas encore utilisé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Balance comptable 2025, colonnes Solde initial, 2025 Débit et Crédit, Solde final : 401100 Fournisseurs, crédit 600,00, solde -600,00 ; 411100 Clients, débit 3 600,00 ; 445660 TVA déductible sur autres biens et services, débit 100,00 ; 445710 TVA collectée, crédit 600,00 ; 607000 Marchandises, débit 500,00 ; 706000 Ventes de prestations de services, crédit 3 000,00 ; Total débit 4 200,00, crédit 4 200,00, solde 0,00" style="max-width:85%; height:auto;"/>
+                    <figcaption>Exercice 2025 : la balance ne contient que le FEC, total des débits égal au total des crédits.</figcaption>
+                </figure>
+                <p>Chaque compte se compare au total du même compte dans l'ancien logiciel : 3 600,00 € de clients, 3 000,00 € de
+                    ventes, 600,00 € de TVA collectée. Le total s'équilibre à 4 200,00 €. La lecture des états financiers est décrite dans
+                    <a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan, compte de résultat et TVA
+                    avec Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SYNTHÈSE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Quelle reprise pour quel besoin</h2>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Besoin</th><th>Écran</th><th>Ce qu'Odoo crée</th><th>Contrôle</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Soldes de départ par compte</td><td>Plan comptable › Réviser manuellement</td><td>Une pièce d'initialisation, ligne de solde automatique sur 999999, sans partenaire</td><td>La pièce elle-même</td></tr>
+                        <tr><td>Factures clients et fournisseurs non réglées</td><td>Import des écritures comptables</td><td>Des pièces en brouillon ; journal, compte ou contact introuvable créé</td><td>Échéanciers clients et fournisseurs</td></tr>
+                        <tr><td>Historique complet d'un logiciel français</td><td>Importer FEC (module France - FEC Import)</td><td>Journaux, contacts et pièces en brouillon</td><td>Balance comptable de la période</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Ni guide d'import comptable, ni import FEC</h4>
+                    <p>Odoo 20 Community ne contient ni le guide d'import pour la comptabilité ni le module d'import FEC : seul
+                        l'<strong>export</strong> FEC y figure, et il n'a ni menu ni action à l'écran. L'administrateur de la base
+                        de démonstration n'y voit pas non plus de menu des pièces ou des écritures comptables. L'import
+                        standard d'Odoo reste disponible sur les écrans qui le proposent, comme les contacts :
+                        <a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs dans
+                        Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Tout semble correct » ne vérifie pas les noms</h4>
+                    <p>Le test de l'import des écritures arrête une pièce déséquilibrée, mais pas un code de journal, un
+                        numéro de compte ou un nom de partenaire inconnus : à l'import, Odoo les crée. Avant d'importer,
+                        comparez la liste des journaux, des comptes et des noms de partenaires du fichier à ceux de la base.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un FEC en erreur peut laisser une partie de ses données</h4>
+                    <p>Avec une écriture déséquilibrée de 50 €, l'import FEC a affiché « Opération invalide » et « Le
+                        mouvement comptable 'VE000001' a un solde de 50.00 ».</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_16" alt="Écran Import Summary : Données importées, 2 journaux importés, 2 écritures importées, 2 partenaires importés ; par-dessus, fenêtre Opération invalide : Soldes incorrects de rapports de mouvements : Le mouvement comptable 'VE000001' a un solde de 50.00, bouton Fermer" style="max-width:100%; height:auto;"/>
+                        <figcaption>Le résumé derrière l'erreur : deux journaux, deux écritures et deux partenaires sont restés.</figcaption>
+                    </figure>
+                    <p>Derrière le message, le résumé compte deux journaux, deux écritures et deux partenaires importés : ils
+                        sont restés dans la base. Après une erreur, ouvrez chaque ligne du résumé, supprimez ce qui a été
+                        créé, corrigez le fichier, puis relancez.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le FEC crée ses propres contacts</h4>
+                    <p>Les comptes auxiliaires du FEC (CWOOD, CGEMINI, FLUMBER) sont devenus trois nouveaux contacts, avec le
+                        code auxiliaire en référence, à côté des contacts existants du même nom.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_17" alt="Liste des Contacts filtrée sur le nom Wood Corner, deux premières lignes : un premier Wood Corner sans e-mail ni téléphone ni pays, créé par l'import FEC, puis le Wood Corner de démonstration avec bhu.a100@ic.example.com, +1 623-853…, États-Unis" style="max-width:85%; height:auto;"/>
+                        <figcaption>Deux Wood Corner : celui de l'import FEC, sans coordonnées, et celui de la base.</figcaption>
+                    </figure>
+                    <p>Factures et paiements saisis ensuite risquent de viser l'un ou l'autre. Repérez ces doublons dans les Contacts
+                        après l'import, avant de saisir de nouvelles pièces.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir Odoo équilibrer seul une balance d'ouverture.</p>
+                    <p><strong>Indication :</strong> sur une base d'essai, ouvrez <strong>Réviser manuellement</strong> et saisissez
+                        un solde au débit sur un compte de banque, sans contrepartie.</p>
+                    <p><strong>Critère de réussite :</strong> la Pièce comptable d'initialisation, en brouillon dans
+                        Comptabilité › Transactions › Pièces comptables, contient votre ligne « Solde initial » et une « Ligne de solde
+                        automatique » du même montant, au crédit du compte d'affectation du résultat ; supprimez ensuite la
+                        pièce si la base sert à autre chose.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le guide d'import pour la comptabilité (Paramètres › Import comptable › Import) réunit toutes les reprises.</li>
+                    <li>Les soldes d'ouverture se saisissent dans le plan comptable ; Odoo les réunit dans une pièce d'initialisation
+                        équilibrée sur le 999999, datée de la veille de la date d'ouverture de la société.</li>
+                    <li>Les factures non réglées s'importent en écritures, un partenaire par ligne de tiers, pour apparaître dans les échéanciers.</li>
+                    <li>L'import FEC est un module Enterprise à installer ; il crée journaux, contacts et pièces en brouillon.</li>
+                    <li>Toute reprise se comptabilise puis se contrôle : pièce, échéanciers, balance comptable.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article clôt la série <strong>Clôture et pilotage financier avec Odoo 20</strong>. Une fois les données
+                    reprises, les états financiers se lisent dans
+                    <a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan, compte de résultat et TVA
+                    avec Odoo 20</a>, et les relevés bancaires se rapprochent comme décrit dans
+                    <a href="/blog/fonctionnel-odoo-1/rapprochement-bancaire-automatique-odoo-298">Rapprochement bancaire
+                    automatique dans Odoo 20</a>. Pour reprendre aussi le catalogue, voir
+                    <a href="/blog/fonctionnel-odoo-1/importer-produits-odoo-266">Importer ses produits dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/import-contacts-odoo-264">Importer ses clients et fournisseurs dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Importer les contacts avant les écritures, sans doublon.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan, compte de résultat et TVA avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Lire les comptes une fois la reprise faite.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/immobilisations-amortissements-budgets-odoo-302">Immobilisations, amortissements et budgets avec Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les immobilisations, qui ont leur propre import.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
