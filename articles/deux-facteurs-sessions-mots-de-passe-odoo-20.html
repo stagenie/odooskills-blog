@@ -1,0 +1,447 @@
+<!--
+Article — Deux facteurs, sessions et mots de passe : durcir les comptes Odoo 20
+Série « Sécuriser et automatiser Odoo 20 » (id 67), étape 3 ; lot T7 (T7.b, retenu à la place de T7.4)
+Date : 2026-11-11
+Slug : deux-facteurs-sessions-mots-de-passe-odoo-20
+Mot-clé cible : odoo 2FA, odoo two factor authentication, odoo session
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~16 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, serveur jetable, puits SMTP local, aucun courriel sorti) :
+- auth_password_policy installé (+ _portal, _signup), minlength 8, refus en shell, dans l'assistant et au lien de réinitialisation.
+- Verrouillage : 10 échecs → refus, bon mot de passe et autre compte compris ; +55 s refus, +61 s accepté ; un échec après la fin du blocage rebloque.
+- TOTP : activation par RPC (identité, assistant, code calculé), connexion /web/login/totp, code faux / non numérique / réutilisé, 5 échecs par heure et par compte, appareil de confiance (cookie td_id, 90 jours), désactivation par l'admin.
+- auth_totp_mail : politique employee_required, code par courriel (puits SMTP), invalidé après connexion, XML-RPC par mot de passe refusé, portail non concerné, invitation.
+- Clé d'accès : authentificateur virtuel Chromium, connexion sans code TOTP.
+- Sessions : jeton (activation 2FA, changements de mot de passe), « Se déconnecter de tous les appareils », Max-Age 60 / fichier gardé jusqu'au nettoyage.
+- Clés d'API : XML-RPC et JSON-2 malgré la 2FA ; durée max 90 j ; clé valide après désactivation 2FA, déconnexion de tous les appareils, mot de passe changé par l'admin.
+- 19.0 publique 40e9be2b5a lue (non exécutée) : mêmes modules, mêmes valeurs par défaut ; écarts : res.session, totp_enabled masqué, get_param retiré.
+Captures : content/blog/screenshots/deux-facteurs-sessions-mots-de-passe-odoo-20/ (01 schéma, 02 code, 03 assistant QR flouté, 04 refus, 05 onglet Sécurité).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Deux facteurs, sessions et mots de passe : durcir les comptes Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un compte Odoo se protège en trois endroits : le mot de passe, le second facteur et la session. Cet article règle chacun dans Odoo 20 Community, mesures à l'appui : longueur minimale, blocage après des échecs, code par application ou par courriel, clés d'accès, sessions qui tombent quand il le faut. Et il montre ce qui passe à côté de tout cela : la clé d'API.</p>
+                <p class="small text-light mt-2">~16 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Le mot de passe</h4>
+                        <p>Imposer une longueur, connaître le blocage après des échecs, réinitialiser sans ouvrir de brèche.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le second facteur</h4>
+                        <p>Application, courriel imposé, appareils de confiance, clés d'accès : ce que chacun demande et ce qu'il laisse passer.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Sessions et clés</h4>
+                        <p>Quand une session tombe, quand elle reste, et pourquoi une clé d'API se révoque à part.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Une base Odoo 20 Community avec Discussion installée (<code>mail</code>), des utilisateurs créés (<a href="/blog/fonctionnel-odoo-1/ajouter-utilisateur-mot-de-passe-odoo-380">Ajouter un utilisateur dans Odoo 20</a>) et un serveur de courriel sortant qui fonctionne : la 2FA par courriel et la réinitialisation en dépendent.</li>
+                        <li>Savoir ouvrir le shell Odoo (<code>odoo-bin shell -d ma_base</code>). Pour un administrateur qui a perdu son propre mot de passe, voir <a href="/blog/developpement-odoo-2/mot-de-passe-admin-oublie-odoo-374">Odoo 20 mot de passe oublié : réinitialiser l'admin en shell ou SQL</a>.</li>
+                        <li>Pour reproduire : une copie de base de démonstration servie sur <code>localhost:8069</code>, l'utilisateur de démonstration <code>demo</code> (utilisateur interne) et le compte <code>portal</code>. Les mots de passe, clés et secrets sont écrits <code>&lt;le mot de passe&gt;</code>, <code>&lt;la clé&gt;</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Trois portes, et une clé d'API à côté</h2>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma : une connexion par le navigateur passe trois étapes, le mot de passe (10 échecs depuis une même adresse IP donnent 60 secondes de blocage, longueur minimale de 8 caractères), le second facteur (code d'application de 30 secondes ou code par courriel, 5 codes faux par heure et par compte, cookie d'appareil de confiance de 90 jours) et la session (cookie de 7 jours, jeton calculé sur le mot de passe, le secret 2FA et les clés d'accès). Une clé d'accès remplace les deux premières étapes. Une clé d'API ne passe ni le second facteur ni la session. En bas, un tableau des effets mesurés de cinq événements sur les autres sessions, la session qui agit, les appareils de confiance et la clé d'API." style="max-width:100%; height:auto;"/><figcaption>Les trois étapes d'une connexion par le navigateur, et ce que chaque événement ferme ou laisse ouvert. Toutes les valeurs du tableau ont été mesurées (sections 4 à 7) ; un tiret signale une case non mesurée ou sans objet.</figcaption></figure>
+                <p>Les modules principaux sont les suivants. Trois arrivent seuls dès que leurs dépendances sont installées ; le quatrième, la politique de mot de passe, est à installer :</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th>Module</th><th>Installé</th><th>Ce qu'il apporte</th></tr></thead>
+<tbody>
+<tr><td><code>auth_totp</code></td><td>automatiquement, avec <code>web</code></td><td>Second facteur par application (code à 6 chiffres), appareils de confiance</td></tr>
+<tr><td><code>auth_totp_mail</code></td><td>automatiquement, avec <code>mail</code></td><td>Code par courriel, politique « employés » ou « tous les utilisateurs », invitation, alertes de sécurité</td></tr>
+<tr><td><code>auth_passkey</code></td><td>automatiquement, avec <code>base_setup</code></td><td>Clés d'accès (passkeys, WebAuthn) pour se connecter sans mot de passe</td></tr>
+<tr><td><code>auth_password_policy</code></td><td><strong>non</strong> : <code>-i auth_password_policy</code></td><td>Longueur minimale du mot de passe ; installe avec lui <code>auth_password_policy_portal</code> et <code>auth_password_policy_signup</code></td></tr>
+</tbody></table></div>
+                <p>Le blocage après des échecs, les sessions et les clés d'API sont dans le module <code>base</code> : rien à installer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le mot de passe : longueur minimale et réinitialisation</h2>
+                <p>Une fois <code>auth_password_policy</code> installé, le réglage apparaît dans Paramètres, bloc Permissions : « Longueur minimale du mot de passe ». L'installation pose le paramètre <code>auth_password_policy.minlength</code> à 8. La vérification se fait côté serveur, dans <code>_set_password</code> : elle s'applique à toute écriture du mot de passe, y compris par l'administrateur ou en shell.</p>
+<pre class="language-python"><code class="language-python">from odoo.exceptions import UserError
+ICP = env['ir.config_parameter'].sudo()
+print(ICP.get_int('auth_password_policy.minlength'))
+demo = env.ref('base.user_demo')
+for mdp in ('court', 'aaaaaaaa'):
+    try:
+        with env.cr.savepoint():
+            demo.write({'password': mdp})
+        print(mdp, '-&gt; accepté')
+    except UserError as e:
+        print(mdp, '-&gt;', e)
+env.cr.rollback()</code></pre>
+<div class="out">8
+court -&gt; Votre mot de passe doit contenir au moins 8 caractères et dispose de seulement 5.
+aaaaaaaa -&gt; accepté</div>
+                <p>Le serveur ne contrôle que la <strong>longueur</strong> : huit fois la même lettre passe. La jauge « Faible / Moyen / Fort » de la fenêtre de changement est un indicateur dans le navigateur, pas une règle. Pour exiger mieux, il faut allonger le minimum (12 caractères et plus, des phrases de passe), ou s'appuyer sur un fournisseur d'identité externe.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_04" alt="Fenêtre de changement de mot de passe d'Odoo 20 avec un mot de passe de 5 caractères, la jauge indique Faible, et la boîte Opération invalide : Votre mot de passe doit contenir au moins 8 caractères et dispose de seulement 5." style="max-width:90%; height:auto;"/><figcaption>Préférences › Sécurité › Modifier le mot de passe, avec cinq caractères : la jauge prévient, le serveur refuse.</figcaption></figure>
+                <p>Le même refus s'applique à l'assistant « Changer le mot de passe » de la fiche utilisateur et au formulaire du lien de réinitialisation. Ce lien, envoyé par le bouton « Envoyer la réinitialisation du mot de passe » de la fiche utilisateur ou par « Réinitialiser le mot de passe » sur la page de connexion, a été mesuré ainsi :</p>
+                <ul>
+                    <li>il est valable 4 heures (paramètre <code>auth_signup.reset_password.validity.hours</code>) et ne sert qu'une fois : rouvert après usage, il affiche « Jeton de connexion invalide » ;</li>
+                    <li>dans nos essais, un premier envoi refusé (mot de passe trop court) a suffi à le rendre invalide : il a fallu en demander un autre ;</li>
+                    <li>la réinitialisation change le mot de passe, pas le second facteur : la connexion suivante demande toujours le code.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le blocage après des échecs : par adresse IP, pas par compte</h2>
+                <p>Odoo 20 bloque les tentatives de connexion après une série d'échecs. Deux paramètres système le règlent : <code>base.login_cooldown_after</code> (nombre d'échecs, 10 à la création de la base) et <code>base.login_cooldown_duration</code> (durée en secondes, 60). Le compteur est tenu <strong>par adresse IP</strong>, dans la mémoire du processus. Pour le voir, dix connexions ratées avec <code>curl</code>, puis deux bonnes :</p>
+<pre class="language-bash"><code class="language-bash">connexion() {  # $1 = identifiant, $2 = mot de passe
+  csrf=$(curl -s -c c.txt -b c.txt http://localhost:8069/web/login \
+         | grep -o 'name="csrf_token" value="[^"]*"' | cut -d'"' -f4)
+  curl -s -c c.txt -b c.txt --data-urlencode "login=$1" --data-urlencode "password=$2" \
+       --data-urlencode "csrf_token=$csrf" -o page.html -w '%{http_code} ' \
+       http://localhost:8069/web/login
+  echo "$(tr '\n' ' ' &lt; page.html | grep -o 'alert-danger[^&gt;]*&gt;[^&lt;]*' | sed -e 's/.*&gt; *//; s/ *$//' -e "s/&amp;#39;/'/g")"
+}
+for i in $(seq 1 11); do connexion demo faux; done | uniq -c
+connexion demo '&lt;le bon mot de passe&gt;'
+connexion admin '&lt;le mot de passe admin&gt;'</code></pre>
+<div class="out">     10 200 Mauvais nom d'utilisateur/mot de passe
+      1 200 Trop d'erreurs de connexion, attendez un peu avant de réessayer.
+200 Trop d'erreurs de connexion, attendez un peu avant de réessayer.
+200 Trop d'erreurs de connexion, attendez un peu avant de réessayer.</div>
+                <p>Pendant le blocage, même le bon mot de passe est refusé, et pas seulement pour le compte visé : <code>admin</code>, depuis la même adresse, est refusé aussi. Mesures complémentaires :</p>
+                <ul>
+                    <li>la durée court depuis le <strong>dernier échec</strong> : refus 55 secondes après le dixième, connexion acceptée à 61 secondes ;</li>
+                    <li>le compteur n'est remis à zéro que par une connexion réussie depuis cette adresse. Après la fin du blocage, <strong>un seul</strong> nouvel échec rebloque 60 secondes ;</li>
+                    <li>le journal du serveur écrit un <code>WARNING</code> « Login attempt ignored for &lt;adresse&gt; (user 'demo') … 10 failures since last success », suivi, pour une adresse privée, d'un second avertissement : elle « might be a proxy ».</li>
+                </ul>
+                <p>Ce second avertissement est la vraie consigne d'exploitation. Derrière Nginx, sans <code>proxy_mode = True</code>, toutes les requêtes viennent de l'adresse du proxy : dix fautes de frappe de n'importe qui bloquent tout le monde pendant une minute. Avec <code>proxy_mode</code> et un en-tête <code>X-Forwarded-For</code> posé par Nginx, le compteur suit la vraie adresse du visiteur. Le compteur étant en mémoire, il n'est pas partagé entre workers (le code source le dit) et un redémarrage l'efface : c'est un frein contre le forçage en masse, pas un verrouillage de compte. Pour un vrai verrou, un outil devant Odoo (fail2ban sur les lignes « Login failed », limite de débit Nginx) reste nécessaire.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le second facteur par application</h2>
+                <p>Chaque utilisateur active la 2FA lui-même : menu de l'avatar › Mes préférences › onglet Sécurité › « Activer la 2FA ». Odoo redemande d'abord le mot de passe (contrôle d'accès valable 10 minutes), puis ouvre l'assistant : un QR code à scanner dans une application d'authentification, et un lien « Vous ne pouvez pas le scanner ? » qui affiche la clé en clair, par groupes de quatre caractères. L'administrateur ne peut pas l'activer à la place d'un utilisateur : le bouton refuse tout autre compte que le sien.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Assistant Activation de l'authentification à deux facteurs d'Odoo 20 : le texte Scannez ce code-barres dans votre application d'authentification, un QR code volontairement flouté, le lien Vous ne pouvez pas le scanner ?, le champ Code de vérification et le bouton Activer l'authentification à deux facteurs." style="max-width:60%; height:auto;"/><figcaption>L'assistant d'activation. Le QR code est flouté ici : il contient la clé secrète du compte, à ne jamais montrer.</figcaption></figure>
+                <p>Le QR code porte une adresse <code>otpauth://totp/&lt;nom d'hôte&gt;:&lt;identifiant&gt;?secret=…</code> : l'émetteur affiché dans l'application est le nom d'hôte du serveur. Le code change toutes les 30 secondes (SHA-1, 6 chiffres) et Odoo accepte aussi celui d'avant et celui d'après. Pour un test automatisé, le code se calcule avec la fonction d'Odoo elle-même, à partir de la clé que l'assistant affiche :</p>
+<pre class="language-python"><code class="language-python">import base64, time
+from odoo.addons.auth_totp.models.totp import hotp
+cle = base64.b32decode('&lt;la clé&gt;'.replace(' ', ''))
+print(str(hotp(cle, int(time.time() // 30))).zfill(6))</code></pre>
+                <p>Saisi dans l'assistant, ce code active la 2FA : « L'authentification à 2 facteurs est maintenant activée. » Un code faux est refusé (« La vérification a échoué, veuillez revérifier le code à 6 chiffres ») et rien n'est enregistré. Au même instant, <strong>les autres sessions du compte sont fermées</strong> ; celle qui vient d'activer reste ouverte (section 6).</p>
+                <p>À la connexion suivante, le mot de passe correct mène à <code>/web/login/totp</code>, et la session n'est pas encore ouverte :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Page de saisie du code d'Odoo 20 : titre Enter verification code, texte Check your Authenticator app for your code, champ Enter code, case à cocher Ne plus demander sur cet appareil, bouton Se connecter et lien Annuler." style="max-width:45%; height:auto;"/><figcaption>L'écran du second facteur. Dans la version testée, son titre et sa consigne restent en anglais même en français ; le reste de la page est traduit.</figcaption></figure>
+                <p>Ce que l'écran a répondu, essai par essai :</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th>Saisie</th><th>Réponse</th></tr></thead>
+<tbody>
+<tr><td>code juste</td><td>303 vers <code>/odoo</code>, session ouverte</td></tr>
+<tr><td>code faux</td><td>« La vérification a échoué, veuillez revérifier le code à 6 chiffres »</td></tr>
+<tr><td>lettres</td><td>« Format de code d'authentification invalide. »</td></tr>
+<tr><td>le code qui vient de servir, dans une autre connexion</td><td>« Échec de la vérification, veuillez utiliser le dernier code à 6 chiffres »</td></tr>
+<tr><td>après 5 vérifications ratées dans l'heure</td><td>« Vous avez atteint la limite de vérifications de code pour votre compte, veuillez réessayer plus tard. », <strong>même avec le bon code</strong></td></tr>
+</tbody></table></div>
+                <p>La limite de 5 vérifications par heure est tenue <strong>par compte</strong>, toutes adresses confondues, dans la table <code>auth_totp_rate_limit_log</code> ; une réussite la remet à zéro. Revers de la médaille : quelqu'un qui connaît le mot de passe peut empêcher le titulaire de se connecter pendant une heure en ratant cinq codes. L'administrateur débloque le compte en supprimant ses lignes dans cette table ; et un mot de passe connu d'un tiers se change de toute façon.</p>
+                <h3>Appareils de confiance</h3>
+                <p>La case « Ne plus demander sur cet appareil » crée un enregistrement <code>auth_totp.device</code> (nommé d'après le navigateur, « Chrome sur Linux ») et pose un cookie <code>td_id</code> (<code>HttpOnly</code>, <code>SameSite=Lax</code>). Mesuré : expiration à 90 jours ; depuis un navigateur qui présente ce cookie, le mot de passe suffit ; sans lui, le code est redemandé. La durée se règle par le paramètre <code>auth_totp.trusted_device_age</code>, en jours. Ces appareils figurent dans l'onglet Sécurité ; ils ne tombent pas avec tout (tableau du schéma) : un changement de mot de passe depuis les Préférences les garde, la désactivation de la 2FA les supprime.</p>
+                <h3>Désactiver la 2FA d'un utilisateur</h3>
+                <p>L'utilisateur qui a perdu son téléphone ne peut plus entrer. L'administrateur ouvre sa fiche (Paramètres › Utilisateurs), onglet Sécurité, et clique « Désactiver » ; Odoo lui redemande son propre mot de passe. Mesuré : notification « Authentification à deux facteurs désactivée pour le(s) utilisateur(s) suivant(s) : … », sessions ouvertes de l'utilisateur fermées, appareils de confiance supprimés, connexion suivante avec le mot de passe seul. L'utilisateur reçoit le courriel « Mise à jour de sécurité : 2FA désactivée ». Seuls lui-même, un administrateur ou un appel en superutilisateur peuvent désactiver ; le journal garde la trace : <code>2FA disable: SUCCESS for res.users(5,) ('demo') by uid #2</code>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Imposer la 2FA : le code par courriel</h2>
+                <p>Laisser chacun activer la 2FA, c'est accepter que beaucoup ne le fassent pas. Paramètres › bloc Permissions › « Appliquer l'authentification à deux facteurs », avec deux choix : « Employés uniquement » (utilisateurs internes) ou « Tous les utilisateurs » (portail compris). Le réglage est le paramètre <code>auth_totp.policy</code> (<code>employee_required</code> ou <code>all_required</code>).</p>
+                <p>Un utilisateur concerné qui n'a pas activé l'application reçoit alors un code par courriel à chaque connexion. Mesuré avec « Employés uniquement » :</p>
+                <ul>
+                    <li><code>demo</code>, mot de passe correct : <code>/web/login/totp</code>, et un courriel « Votre code d'authentification à deux facteurs » qui porte un code à 6 chiffres ; ce code ouvre la session ;</li>
+                    <li>le même code, réessayé après cette connexion : refusé. Le courriel annonce une validité d'une heure, mais une connexion réussie le rend inutilisable ;</li>
+                    <li><code>portal</code> se connecte avec son seul mot de passe, et arrive sur <code>/my</code> ;</li>
+                    <li>l'administrateur, utilisateur interne lui aussi, reçoit le code par courriel à sa connexion suivante ; sa session déjà ouverte n'est pas fermée par le changement du réglage.</li>
+                </ul>
+                <p>Un utilisateur qui a activé l'application garde l'application : le courriel ne sert qu'aux autres. L'envoi est limité à 5 courriels par heure et par compte. Sans serveur de courriel qui fonctionne, aucun utilisateur concerné sans application ni clé d'accès ne se connecte, administrateur compris : à vérifier <strong>avant</strong> de cocher la case, et à garder un accès shell pour revenir en arrière (<code>auth_totp.policy</code> vide).</p>
+                <p>Pour pousser vers l'application sans l'imposer, la fiche d'un utilisateur sans 2FA porte le bouton « Inviter à l'utiliser la 2FA » (libellé tel quel dans la traduction française). Il envoie « Invitation à activer l'authentification à deux facteurs sur votre compte Odoo », avec un lien vers l'assistant ; les utilisateurs déjà équipés sont ignorés.</p>
+                <div class="pitfall-box">
+                    <h4>Piège : la politique coupe les scripts par mot de passe</h4>
+                    <p>Dès qu'un compte a un second facteur, appli ou courriel imposé, Odoo refuse son mot de passe pour les appels non interactifs. Avec la politique « Employés uniquement », cela vaut pour <strong>tous</strong> les utilisateurs internes, administrateur compris :</p>
+<div class="out">XML-RPC authenticate, mot de passe, demo  -&gt; False
+XML-RPC authenticate, mot de passe, admin -&gt; False</div>
+                    <p>Un script, un connecteur ou une intégration qui s'authentifie par mot de passe s'arrête le jour où la case est cochée. Remplacer d'abord chaque mot de passe de script par une clé d'API (section 7), puis imposer la 2FA.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Clés d'accès et sessions</h2>
+                <h3>Les clés d'accès (passkeys)</h3>
+                <p><code>auth_passkey</code> est présent en Community et installé d'office. Préférences › Sécurité › « Ajouter une clé d'accès » : mot de passe redemandé, puis le navigateur crée la clé (empreinte, code du téléphone, clé USB…), à laquelle on donne un nom. La page de connexion propose alors « Utiliser une clé d'accès ».</p>
+                <p>Essai fait avec l'authentificateur virtuel de Chromium sur un compte qui a la 2FA par application : la clé enregistrée (domaine <code>localhost</code>), la connexion par « Utiliser une clé d'accès » ouvre la session <strong>sans mot de passe et sans code</strong>. C'est voulu : la clé d'accès est déjà une preuve à deux facteurs (l'appareil, et son déverrouillage). Le domaine est figé à la création : une clé créée sur un nom ne sert pas sur un autre, et le navigateur n'accepte ces clés qu'en HTTPS (ou sur <code>localhost</code>).</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Changer mes préférences d'Odoo 20, onglet Sécurité : Modifier le mot de passe ; Authentification à deux facteurs Activé avec le bouton Désactiver ; Clés API avec une clé RPC, sa date de création et son expiration un mois plus tard ; Clés d'accès avec une clé nommée Poste de test ; Périphériques avec plusieurs sessions Linux Chrome, leur adresse et un bouton Se déconnecter chacune, puis le bouton Se déconnecter de tous les appareils." style="max-width:85%; height:auto;"/><figcaption>Préférences › Sécurité d'un compte durci : 2FA active, une clé d'API qui expire, une clé d'accès, et la liste des sessions ouvertes (adresses remplacées). Sous la liste, le bouton « Se déconnecter de tous les appareils ».</figcaption></figure>
+                <h3>Ce qui ferme une session</h3>
+                <p>À chaque requête, Odoo recalcule un jeton de session à partir de l'identifiant de la session et de champs de l'utilisateur : <code>id</code>, <code>login</code>, <code>password</code>, <code>active</code>, plus le secret 2FA (<code>auth_totp</code>) et la liste des clés d'accès (<code>auth_passkey</code>). Si l'un change, le jeton ne correspond plus et la session est fermée. Odoo recalcule le jeton de la session qui fait le changement quand il veut la garder. Mesures, chacune avec deux sessions ouvertes du même compte :</p>
+                <ul>
+                    <li>activation de la 2FA : l'autre session tombe, celle qui active reste ;</li>
+                    <li>mot de passe changé depuis les Préférences : <strong>les deux</strong> tombent (Odoo recharge la page, il faut se reconnecter) ;</li>
+                    <li>mot de passe changé par l'administrateur, ou 2FA désactivée par lui : les sessions de l'utilisateur tombent ;</li>
+                    <li>« Se déconnecter de tous les appareils » cliqué par l'utilisateur : les autres sessions tombent, la sienne reste. Cliqué par l'administrateur sur la fiche d'un utilisateur : toutes celles de l'utilisateur tombent.</li>
+                </ul>
+                <p>Les appareils de confiance suivent une autre règle : la méthode <code>change_password(ancien, nouveau)</code>, celle du portail, les supprime ; le changement depuis les Préférences (assistant <code>change.password.own</code>) et l'assistant de l'administrateur les gardent. Après une fuite de mot de passe, supprimer les appareils à la main (onglet Sécurité) en plus du changement.</p>
+                <h3>Durée de vie</h3>
+                <p>Le cookie <code>session_id</code> part avec <code>Max-Age=604800</code> (7 jours). Le paramètre <code>sessions.max_inactivity_seconds</code> le change. Réglé à 60, le cookie est bien posé avec <code>Max-Age=60</code> : le navigateur l'oublie au bout d'une minute. Mais le serveur ne le refuse pas pour autant : le même cookie, renvoyé à la main 75 secondes plus tard, ouvrait toujours la session. Il n'a été refusé qu'après le passage du nettoyage automatique (<code>_gc_sessions</code>, lancé une fois par jour par l'action planifiée « Base : données internes de l'aspiration automatique »), qui supprime les fichiers de session inactifs depuis plus longtemps que ce paramètre. Pour couper une session volée, ne pas compter sur sa durée : la fermer.</p>
+                <p>Toutes ces sessions sont visibles en 20 dans le modèle <code>res.session</code>, ce qui permet de les lister et de les fermer en shell, par exemple pour un compte compromis. Le même shell liste les clés d'API, la seule chose que la fermeture des sessions ne touche pas :</p>
+<pre class="language-python"><code class="language-python">for k in env['res.users.apikeys'].sudo().search([]):
+    print('clé', k.user_id.login, k.name, k.scope, k.expiration_date)
+for s in env['res.session'].sudo().search([('user_id.login', '=', 'demo')]):
+    print('session', s.display_name, s.last_activity)
+print('2FA', env['res.users'].sudo().search([('totp_enabled', '=', True)]).mapped('login'))</code></pre>
+<div class="out">clé demo script-export rpc 2026-12-11 15:22:03.089611
+session Linux Chrome 2026-11-11 15:22:31
+2FA ['demo']</div>
+<pre class="language-python"><code class="language-python">demo = env['res.users'].search([('login', '=', 'demo')])
+env['res.users.apikeys'].sudo().search([('user_id', '=', demo.id)])._remove()
+env['res.session'].sudo().search([('user_id', '=', demo.id)])._revoke()
+env.cr.commit()</code></pre>
+                <p>Après ce script, la clé répond 401 et les sessions de <code>demo</code> sont fermées (mesuré).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les clés d'API passent à côté du second facteur</h2>
+                <p>Une clé d'API remplace le mot de passe pour les appels non interactifs : JSON-2 (<code>Authorization: bearer</code>) et XML-RPC (la clé à la place du mot de passe). Elle ne passe ni par le second facteur, ni par le jeton de session. Sur un compte qui a la 2FA :</p>
+<pre class="language-python"><code class="language-python">import xmlrpc.client
+common = xmlrpc.client.ServerProxy('http://localhost:8069/xmlrpc/2/common')
+print(common.authenticate('ma_base', 'demo', '&lt;le mot de passe&gt;', {}))
+print(common.authenticate('ma_base', 'demo', '&lt;la clé&gt;', {}))</code></pre>
+<div class="out">False
+5</div>
+<pre class="language-bash"><code class="language-bash">curl -s -H 'Authorization: bearer &lt;la clé&gt;' -H 'Content-Type: application/json' \
+     -d '{"domain": [["id", "=", 5]], "fields": ["login", "totp_enabled"]}' \
+     http://localhost:8069/json/2/res.users/search_read</code></pre>
+<div class="out">[{"id": 5, "login": "demo", "totp_enabled": true}]</div>
+                <p>C'est le fonctionnement prévu : un script ne peut pas taper un code. Mais une clé d'API vaut donc un accès complet au compte, sans second facteur. Odoo l'encadre par l'expiration : un utilisateur sans droits d'administration ne peut pas créer de clé sans date (« La clé API doit avoir une date d'expiration »), ni au-delà de la durée permise par ses groupes : « Vous ne pouvez pas dépasser la durée de 90.0 jours. » pour un utilisateur interne ordinaire. Cette durée est le plus grand « Durée maximale en jours des clés API » de ses groupes (90 jours sont posés sur un groupe technique des utilisateurs internes) ; sans valeur sur aucun groupe, la limite tombe à 1 jour. Son assistant ne propose que 1 jour et 1 mois ; l'administrateur a en plus 1 an et « Jamais ». Le passage de XML-RPC à JSON-2 est décrit dans <a href="/blog/developpement-odoo-2/xmlrpc-vers-json-2-odoo-20-281">Réécrire un script XML-RPC en JSON-2 pour Odoo 20</a>.</p>
+                <div class="pitfall-box">
+                    <h4>Piège : la clé d'API survit à tout le reste</h4>
+                    <p>Mesuré sur la même clé, appelée en JSON-2 après chaque événement : 200 après la désactivation de la 2FA par l'administrateur, 200 après « Se déconnecter de tous les appareils », 200 après un changement du mot de passe par l'administrateur. Pour couper l'accès d'un compte compromis ou d'un collaborateur qui part : changer le mot de passe, fermer les sessions, <strong>et</strong> supprimer ses clés d'API (onglet Sécurité, ou le script de la section 6). Archiver l'utilisateur coupe tout, clés comprises, mais seulement tant qu'il reste archivé : désarchivé, son ancienne session et sa clé fonctionnaient de nouveau (mesuré). Supprimer les clés reste donc nécessaire.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Ce qui reste comme trace</h2>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th>Où</th><th>Ce qui y est</th><th>À savoir</th></tr></thead>
+<tbody>
+<tr><td><code>res.users.log</code> (champ « Dernière connexion »)</td><td>une ligne par connexion réussie au mot de passe</td><td>écrite <strong>dès l'étape du mot de passe</strong>, même si le code n'est jamais saisi (mesuré : +1 sans second facteur) ; le nettoyage automatique ne garde que la dernière par utilisateur</td></tr>
+<tr><td><code>res.device.log</code> (onglet Sécurité, Périphériques)</td><td>session, adresse IP, navigateur, première et dernière activité, révoquée ou non</td><td>c'est ici qu'on lit d'où se connecte un compte</td></tr>
+<tr><td><code>auth_totp_rate_limit_log</code></td><td>échecs de code et courriels de code, par compte et par adresse</td><td>les lignes d'un compte bloqué pour une heure</td></tr>
+<tr><td>journal du serveur</td><td><code>Login failed for login:demo from &lt;adresse&gt;</code>, <code>Login successful …</code>, <code>2FA check: FAIL …</code>, <code>Password change for 'demo' (#5) by 'admin' (#2)</code>, <code>User 2 revokes devices (…)</code></td><td>la seule trace des échecs de mot de passe : la base n'en garde aucune</td></tr>
+<tr><td>courriels à l'utilisateur</td><td>« Mise à jour de sécurité : Mot de passe modifié », « … : 2FA activée / désactivée », « … : Périphérique supprimé », « Nouvelle connexion à votre compte » depuis un appareil inconnu quand un second facteur est exigé (application ou politique)</td><td>envoyés par <code>auth_totp_mail</code> et <code>mail</code> : l'utilisateur voit passer les changements</td></tr>
+</tbody></table></div>
+                <p>Ces réglages se relisent en une fois dans le shell, ce qui sert de contrôle avant une mise en production :</p>
+<pre class="language-python"><code class="language-python">ICP = env['ir.config_parameter'].sudo()
+for k in ('base.login_cooldown_after', 'base.login_cooldown_duration',
+          'auth_password_policy.minlength', 'auth_totp.policy',
+          'auth_totp.trusted_device_age', 'sessions.max_inactivity_seconds',
+          'auth_signup.reset_password.validity.hours'):
+    print(k, '=', ICP.get_str(k) or '(défaut)')</code></pre>
+<div class="out">base.login_cooldown_after = 10
+base.login_cooldown_duration = 60
+auth_password_policy.minlength = 8
+auth_totp.policy = (défaut)
+auth_totp.trusted_device_age = (défaut)
+sessions.max_inactivity_seconds = (défaut)
+auth_signup.reset_password.validity.hours = (défaut)</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Ce qui change entre Odoo 19 et Odoo 20</h2>
+                <p>Comparaison faite sur le code de la 19.0 publique (lu, non exécuté). Les modules sont les mêmes, avec les mêmes noms, et les valeurs par défaut aussi : 10 échecs et 60 secondes, 5 codes par heure, 90 jours pour un appareil de confiance, 8 caractères à l'installation de la politique, 7 jours de session, 4 heures pour un lien de réinitialisation, clés d'API limitées par la durée du groupe. Les différences :</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th></th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+<tbody>
+<tr><td>Liste de l'onglet Sécurité, « Se déconnecter de tous les appareils »</td><td>par appareil (<code>res.device</code>)</td><td>par session : nouveau modèle <code>res.session</code>, champ <code>session_ids</code> sur l'utilisateur</td></tr>
+<tr><td><code>totp_enabled</code> d'un autre utilisateur</td><td>lisible par tout utilisateur interne</td><td>vaut <code>False</code> pour qui n'est pas administrateur des accès (mesuré : un utilisateur simple ne voit pas la 2FA d'un collègue, l'administrateur la voit)</td></tr>
+<tr><td>Lire ces paramètres dans du code</td><td><code>ICP.get_param(clé, défaut)</code></td><td><code>get_param</code> n'existe plus : <code>get_int</code>, <code>get_str</code>, <code>get_bool</code></td></tr>
+<tr><td>Surcharger le contrôleur du second facteur</td><td><code>request.session.finalize(env)</code>, <code>.touch()</code></td><td>fonctions <code>finalize(session, env)</code> et <code>touch(session)</code> de <code>odoo.http.session</code></td></tr>
+</tbody></table></div>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Une base 19 qui avait la 2FA, une politique de mot de passe et des clés d'API les garde telles quelles : mêmes paramètres système, mêmes tables. Le code maison est seul à revoir : un module qui lisait <code>base.login_cooldown_after</code> ou <code>auth_totp.policy</code> avec <code>get_param</code>, qui surchargeait la page du code, ou qui listait les appareils d'un utilisateur pour un tableau de bord de sécurité (à faire désormais sur <code>res.session</code>).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><code>auth_password_policy</code> s'installe à la main et ne contrôle que la longueur ; le blocage après 10 échecs est par adresse IP et en mémoire : <code>proxy_mode</code> derrière Nginx, sinon tout le monde est bloqué en même temps.</li>
+                    <li>La 2FA par application s'active par chaque utilisateur ; pour l'imposer, la politique « Employés uniquement » envoie un code par courriel, et coupe en même temps toute authentification par mot de passe des scripts.</li>
+                    <li>Une session tombe quand le mot de passe, le secret 2FA ou les clés d'accès changent ; son cookie expire, mais son fichier reste valable jusqu'au nettoyage quotidien.</li>
+                    <li>Une clé d'API ne connaît ni second facteur ni session : elle survit à la désactivation de la 2FA, à la déconnexion de tous les appareils et au changement de mot de passe. Elle se supprime à part.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Une fois le compte protégé, ce qu'il a le droit de voir et de modifier.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/api-json-2-odoo-20-273">XML-RPC est déprécié : passer à l'API JSON-2 d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Les clés d'API et les appels JSON-2, côté développeur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a></h5>
+                            <p class="small text-muted mb-0">Le proxy, <code>proxy_mode</code> et HTTPS, nécessaires au blocage par adresse et aux clés d'accès.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
