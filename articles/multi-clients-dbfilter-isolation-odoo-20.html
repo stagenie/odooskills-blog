@@ -1,0 +1,491 @@
+<!--
+Article — Plusieurs clients sur un serveur Odoo 20 : dbfilter et isolation
+Série « Sécuriser et automatiser Odoo 20 » (id 67), étape 2 ; lot T7 (T7.3 du plan vague 3 technique)
+Date : 2026-11-11
+Slug : multi-clients-dbfilter-isolation-odoo-20
+Mot-clé cible : odoo multi tenant, multi database
+Catégorie : Développement Odoo
+Tags : intermediaire, infrastructure, guide, community
+Temps de lecture : ~16 minutes
+Preuves (copies jetables de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16, un seul processus odoo-bin, Nginx 1.24) :
+- Noms de bases et de domaines transposés dans l'article : base et nom réels identiques (premier élément du nom = nom de la base), renommés client-a / client-b / client-c / client-d ; rôle d'essai renommé odoo_d.
+- dbfilter ^%d$ (liste par Host, www. et port, nom inconnu, erp.<client>, ^%d non ancré avec une copie -test), %h par appel direct de db_filter.
+- Filtre trop large : sélecteur à trois bases, ?db=, authenticate, X-Odoo-Database + clé, cookie forcé ; list_db=False ; correction : refus, WARNING, session d'origine intacte.
+- proxy_mode + X-Forwarded-Host forgé en direct ; Nginx lancé (ports d'essai, certificats auto-signés) : en-tête écrasé, nom inconnu refusé en TLS, IP 444, 301, clé d'une autre base 401 ; nginx -t sur la conf de l'article.
+- Sessions (dossier commun, db dans chaque fichier, Set-Cookie sans Domain) ; filestore par base ; code exécuté pour A lisant la base et les fichiers de B ; safe_eval refuse import.
+- Rôle PostgreSQL d'une autre base : non listée, registre inutilisable (404), permission denied.
+- Tâches planifiées : 1 fil = B retardé de 30 s (threaded et prefork), 2 fils = 1 s ; dbfilter ^aucune$ : tâches exécutées quand même ; base hors db_name : 0 exécution ; -u refusé avec plusieurs db_name, -d le remplace.
+- 19.0 publique 40e9be2b5a lue (non exécutée) : db_filter, _get_session_and_dbname, cron_database_list, list_dbs, config.
+Captures : content/blog/screenshots/multi-clients-dbfilter-isolation-odoo-20/ (01 schéma, 02 filtre trop large, 03 filtre strict).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-nginx.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-ini.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Plusieurs clients sur un serveur Odoo 20 : dbfilter et isolation</h1>
+                <p class="lead mt-3 text-white">Un seul processus Odoo peut servir plusieurs bases, une par client, chacune derrière son nom de domaine. Reste à savoir ce qui sépare vraiment ces clients et ce qu'ils partagent sans le savoir. Cet article le mesure sur trois bases servies par un seul <code>odoo-bin</code> : un filtre trop large puis corrigé, les sessions, le filestore, le rôle PostgreSQL, les tâches planifiées, Nginx par domaine, et le moment où il faut un processus par client.</p>
+                <p class="small text-light mt-2">~16 minutes de lecture · niveau intermédiaire · parcours <strong>Infrastructure</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Aiguiller</h4>
+                        <p>Un <code>dbfilter</code> qui donne une base par nom de domaine, et rien d'autre, avec Nginx devant.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Cloisonner</h4>
+                        <p>Ce qui est séparé par base (données, fichiers, sessions) et ce que le processus partage (tâches planifiées, rôle, code).</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Décider</h4>
+                        <p>Les signes qui imposent de passer à un processus, voire à un serveur, par client.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un serveur Odoo 20 installé comme service (<a href="/blog/developpement-odoo-2/installer-odoo-20-serveur-ubuntu-242">Installer Odoo 20 sur un serveur Ubuntu</a>) et publié en HTTPS derrière Nginx (<a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a>).</li>
+                        <li>Savoir créer, dupliquer et lister des bases, et ce que fait le gestionnaire de bases. Ces gestes, comme le réglage des workers et des limites, ne sont pas repris ici : on part d'un serveur qui tourne déjà.</li>
+                        <li>Pour reproduire : trois bases <code>client-a</code>, <code>client-b</code> et <code>client-c</code>, copies d'une même base de démonstration dont la société a été renommée « Client A », « Client B », « Client C », servies par un seul <code>odoo-bin</code> à l'écoute sur <code>localhost:8069</code>. Les noms <code>client-a.example</code> et <code>client-b.example</code> sont simulés par l'en-tête <code>Host</code> de <code>curl</code>.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Un processus, plusieurs bases : ce qui est séparé, ce qui est partagé</h2>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma : les noms client-a.example et client-b.example passent par Nginx, un bloc server par client qui écrase l'en-tête X-Forwarded-Host et refuse les noms inconnus, puis par un seul processus odoo-bin réglé avec dbfilter ^%d$, db_name pour les tâches planifiées et un seul rôle PostgreSQL, vers deux bases qui ont chacune leurs tables, leurs utilisateurs et leur dossier de filestore. En bas, ce qui est séparé par base et ce qui est partagé par le processus : workers, fils de tâches planifiées, rôle PostgreSQL, système de fichiers, dossier des sessions." style="max-width:100%; height:auto;"/><figcaption>Le nom de domaine choisit la base ; le reste du processus est commun à tous les clients. Les mesures citées sont celles des sections suivantes.</figcaption></figure>
+                <p>Une base Odoo, c'est une base PostgreSQL et un dossier de pièces jointes. Le processus <code>odoo-bin</code>, lui, n'est attaché à aucune base : à chaque requête il en choisit une, charge son registre (les modèles de ses modules installés) s'il ne l'a pas déjà, et répond. Plusieurs clients sur un serveur, c'est donc d'abord une question d'<strong>aiguillage</strong> (quelle base pour quelle requête), puis de <strong>cloisonnement</strong> (ce qui reste commun une fois la base choisie).</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th>Séparé par base</th><th>Partagé par le processus</th></tr></thead>
+<tbody>
+<tr><td>Tables, utilisateurs, mots de passe, clés d'API</td><td>Port, workers, fils des tâches planifiées</td></tr>
+<tr><td>Pièces jointes : <code>&lt;data_dir&gt;/filestore/&lt;base&gt;/</code></td><td>Rôle PostgreSQL (<code>db_user</code>), utilisateur système, <code>data_dir</code></td></tr>
+<tr><td>Registre chargé en mémoire</td><td>Dossier des sessions : <code>&lt;data_dir&gt;/sessions/</code></td></tr>
+<tr><td>Modules installés, paramètres système</td><td>Code Python sur le disque, modules chargés au démarrage (<code>server_wide_modules</code>)</td></tr>
+</tbody></table></div>
+                <p>Chaque base chargée ajoute son registre à la mémoire du processus : mesuré au repos (mémoire résidente lue après la première page de chaque base), de 4 à 8 Mo par base de 69 modules, sur un processus d'environ 150 Mo. Sous charge, ce sont les requêtes qui consomment ; au repos, une base de plus coûte peu, et les limites viennent d'abord de ce qui est partagé dans la colonne de droite.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le nom de domaine choisit la base : <code>dbfilter = ^%d$</code></h2>
+                <p>Le <code>dbfilter</code> est une expression régulière appliquée aux noms des bases, après deux substitutions faites pour chaque requête à partir de l'en-tête <code>Host</code> : <code>%h</code> devient le nom complet, <code>%d</code> son premier élément. Odoo retire d'abord le port et un éventuel <code>www.</code>. Avec <code>dbfilter = ^%d$</code>, le nom <code>client-a.example</code> ne laisse passer que la base <code>client-a</code>. La route <code>/web/database/list</code> montre la liste vue depuis chaque nom :</p>
+<pre class="language-bash"><code class="language-bash">for h in client-a.example client-b.example www.client-a.example:443 inconnu.example; do
+  curl -s -H "Host: $h" -H 'Content-Type: application/json' \
+       -d '{"jsonrpc":"2.0","method":"call","params":{}}' http://localhost:8069/web/database/list; echo
+done</code></pre>
+<div class="out">{"jsonrpc": "2.0", "id": null, "result": ["client-a"]}
+{"jsonrpc": "2.0", "id": null, "result": ["client-b"]}
+{"jsonrpc": "2.0", "id": null, "result": ["client-a"]}
+{"jsonrpc": "2.0", "id": null, "result": []}</div>
+                <p>Une seule base pour un nom : Odoo la prend sans rien demander, et <code>/web/login</code> affiche directement la connexion du bon client. Un nom inconnu n'a aucune base : <code>/web/login</code> renvoie vers le sélecteur de bases (303), qui n'en liste aucune et propose « Create Database ». C'est une raison de plus pour que Nginx ne transmette que les noms connus (section 8).</p>
+                <p><code>%d</code> ne prend que le <strong>premier</strong> élément du nom. Le schéma « un sous-domaine par client » sous un domaine commun lui va bien ; le schéma inverse, non :</p>
+<div class="out">erp.client-a.example   -&gt; []              (%d vaut « erp » pour tous les clients)
+client-a.erp.example   -&gt; ["client-a"]</div>
+                <p>Si les clients arrivent par leur propre domaine avec un préfixe commun (<code>erp.client-a.example</code>), utilisez <code>%h</code> et nommez la base comme le nom complet : <code>^%h$</code> et une base <code>erp.client-a.example</code> (le point est admis dans un nom de base). Le <code>www.</code> est retiré aussi pour <code>%h</code> : ne commencez pas un nom de base par <code>www.</code>.</p>
+                <div class="pitfall-box">
+                    <h4>Piège : un filtre non ancré</h4>
+                    <p>Le filtre est appliqué avec <code>re.match</code> : il est ancré au début, pas à la fin. Avec <code>^%d</code>, sans le <code>$</code>, une copie de test <code>client-a-test</code> devient visible sur le domaine de production de ce client :</p>
+<div class="out">dbfilter = ^%d    client-a.example -&gt; ["client-a", "client-a-test"]
+dbfilter = ^%d$   client-a.example -&gt; ["client-a"]</div>
+                    <p>Le <code>$</code> final n'est pas un détail de style : sans lui, deux bases répondent au même nom, et les conséquences sont celles de la section suivante.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Un filtre trop large : la démonstration, puis la correction</h2>
+                <p>Un réglage qu'on rencontre : <code>dbfilter = ^client-</code>, « toutes les bases de clients ». Le serveur fonctionne, chaque client se connecte. Mais depuis <code>client-a.example</code>, le sélecteur de bases affiche maintenant les trois clients :</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Sélecteur de bases d'Odoo 20 ouvert sur le domaine du client A, avec un filtre trop large : il liste les trois bases client-a, client-b et client-c, et le lien Manage databases." style="max-width:70%; height:auto;"/><figcaption>Filtre <code>^client-</code>, page <code>/web/database/selector</code> ouverte sur <code>client-a.example</code> : les noms des autres clients sont publics, et chacun est un lien.</figcaption></figure>
+                <p>Ce n'est pas qu'une fuite de noms. Depuis le domaine du client A, sans rien forcer d'autre que les paramètres prévus par Odoo, on travaille dans la base du client B :</p>
+<pre class="language-bash"><code class="language-bash"># 1. Choisir la base dans l'URL : la session passe sur client-b (302 vers la même page)
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: client-a.example' 'http://localhost:8069/web/login?db=client-b'
+
+# 2. Se connecter à client-b en le nommant
+curl -s -H 'Host: client-a.example' -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","method":"call","params":{"db":"client-b","login":"admin","password":"admin"}}' \
+     http://localhost:8069/web/session/authenticate
+
+# 3. API JSON-2 : la base est choisie par un en-tête
+curl -s -H 'Host: client-a.example' -H 'X-Odoo-Database: client-b' -H "Authorization: bearer $CLE_CLIENT_B" \
+     -H 'Content-Type: application/json' -d '{"domain":[["id","=",1]],"fields":["name"]}' \
+     http://localhost:8069/json/2/res.company/search_read</code></pre>
+<div class="out">302
+… "db": "client-b", "uid": 2 …
+[{"id": 1, "name": "Client B"}]</div>
+                <p>Le cookie de session suit la même logique. Une session ouverte sur la base A, renvoyée telle quelle sur <code>client-b.example</code>, reste valide : la session porte le nom de sa base, et le filtre l'accepte sur ce domaine. La requête arrive sur le domaine de B et elle est servie dans la base de A : le domaine ne dit plus rien du client servi.</p>
+                <p>Couper la liste des bases (<code>list_db = False</code>) ne change rien à ces trois appels : la liste répond <code>AccessDenied</code> (« Database management functions blocked, admin disabled database listing. »), le sélecteur affiche « The database manager has been disabled by the administrator », mais <code>?db=client-b</code>, <code>/web/session/authenticate</code> et l'en-tête <code>X-Odoo-Database</code> passent comme avant (302, connexion, <code>Client B</code>). <code>list_db</code> cache la liste ; c'est le filtre qui décide de ce qui est joignable.</p>
+                <p><strong>La correction</strong> : <code>dbfilter = ^%d$</code>. Mêmes appels depuis <code>client-a.example</code> :</p>
+<div class="out">?db=client-b            -&gt; 200 : paramètre ignoré, page de connexion du client A
+authenticate client-b   -&gt; "Database not found."
+X-Odoo-Database         -&gt; 404 « No database is selected and the requested URL is not server-wide. »
+cookie de A sur client-b.example -&gt; SessionExpiredException</div>
+                <p>Le dernier cas laisse une ligne au journal, utile pour repérer un filtre resserré après coup :</p>
+<div class="out">WARNING client-a odoo.http: Logged into database 'client-a', but dbfilter rejects it; logging session out.</div>
+                <p>La session refusée n'est pas enregistrée : la même session, renvoyée ensuite sur <code>client-a.example</code>, est toujours connectée. Un navigateur, de toute façon, n'envoie pas ce cookie à l'autre domaine : Odoo le pose sans attribut <code>Domain</code> (<code>Set-Cookie: session_id=…; HttpOnly; Path=/</code>), il reste lié au nom exact qui l'a reçu.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Le même sélecteur de bases ouvert sur le domaine du client A après correction du filtre en ^%d$ : une seule base, client-a." style="max-width:70%; height:auto;"/><figcaption>Après correction, la même page sur <code>client-a.example</code> : une seule base.</figcaption></figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le filtre aiguille, il ne verrouille pas</h2>
+                <p>L'en-tête <code>Host</code> est écrit par le client HTTP, pas par le serveur. Avec <code>proxy_mode</code>, c'est <code>X-Forwarded-Host</code> qui le remplace, et lui aussi peut être écrit par n'importe qui. Sur le port d'Odoo atteint directement :</p>
+<pre class="language-bash"><code class="language-bash">curl -s -H 'Host: client-a.example' -H 'X-Forwarded-Host: client-b.example' \
+     -H "Authorization: bearer $CLE_CLIENT_B" -H 'Content-Type: application/json' \
+     -d '{"domain":[["id","=",1]],"fields":["name"]}' http://localhost:8069/json/2/res.company/search_read</code></pre>
+<div class="out">[{"id": 1, "name": "Client B"}]</div>
+                <p>Ce n'est pas une faille en soi : choisir la base B par un en-tête, c'est l'équivalent de taper <code>client-b.example</code>, et il faut toujours les identifiants de B. Mais cela fixe le rôle de chacun : le filtre <strong>range</strong> les requêtes, les mots de passe et les clés d'API <strong>protègent</strong> chaque base. Trois conséquences pratiques :</p>
+                <ul>
+                    <li>Odoo écoute sur <code>127.0.0.1</code> (la valeur par défaut de <code>http_interface</code> en Odoo 20) et seul Nginx est joignable de l'extérieur : c'est lui qui écrit <code>X-Forwarded-Host</code> (section 8).</li>
+                    <li>Un compte administrateur par client, avec un mot de passe propre à chaque base : une base dupliquée garde ceux de sa source.</li>
+                    <li>Le gestionnaire de bases ne consulte pas le filtre pour agir : avec le mot de passe maître, il supprime aussi une base que le filtre exclut. Sur un serveur partagé, <code>list_db = False</code> et un mot de passe maître fort, ou le gestionnaire fermé chez Nginx.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Sessions et filestore : séparés par base, sur un même disque</h2>
+                <p>Les sessions sont des fichiers, tous dans <code>&lt;data_dir&gt;/sessions/</code>, quelle que soit la base. Chaque fichier contient le nom de sa base et l'utilisateur connecté ; c'est ce champ que le filtre contrôle à chaque requête (section 3). Après quelques connexions sur les deux clients :</p>
+<div class="out">db= client-b uid= None
+db= client-a uid= 2
+db= client-b uid= 2</div>
+                <p>Les pièces jointes, elles, sont rangées par base : <code>&lt;data_dir&gt;/filestore/&lt;base&gt;/</code>. Le même fichier déposé chez les deux clients est stocké deux fois, une fois par base, même s'il porte la même empreinte :</p>
+<pre class="language-python"><code class="language-python">a = env['ir.attachment'].create({'name': 'contrat.txt', 'raw': b'Contrat type, identique dans les deux bases\n'})
+print(env.cr.dbname, a.id, a.store_fname)</code></pre>
+<div class="out">client-a 500 26/26adbc1c899e95b8bab24e38e5c018cad7b54ac4   -&gt; filestore/client-a/26/26adbc1c…
+client-b 500 26/26adbc1c899e95b8bab24e38e5c018cad7b54ac4   -&gt; filestore/client-b/26/26adbc1c…</div>
+                <p>Le même identifiant 500 dans les deux bases ne mélange rien : chaque base a sa table et son dossier. La séparation tient tant que c'est Odoo qui choisit la base. Elle ne tient plus quand c'est du code Python qui s'exécute : dans le même processus, tout code a le rôle PostgreSQL et l'utilisateur système de tous les clients. Exécuté dans la console de la base <code>client-a</code> (le même code dans un module installé chez A ferait pareil) :</p>
+<pre class="language-python"><code class="language-python">import os
+from odoo.modules.registry import Registry
+from odoo.tools import config
+
+print("je suis", env.cr.dbname, env.company.name)
+with Registry('client-b').cursor() as cr:
+    cr.execute("SELECT name FROM res_company WHERE id = 1")
+    print("lu dans l'autre base :", cr.fetchone()[0])
+p = os.path.join(config.filestore('client-b'), '26', '26adbc1c899e95b8bab24e38e5c018cad7b54ac4')
+print("fichier de l'autre base :", open(p).read().strip())</code></pre>
+<div class="out">je suis client-a Client A
+lu dans l'autre base : Client B
+fichier de l'autre base : Contrat type, identique dans les deux bases</div>
+                <p>Conclusion directe : un module développé pour un seul client et installé sur un serveur partagé a accès à tous les clients. Les actions serveur saisies à l'écran, elles, passent par un bac à sable qui refuse <code>import</code> (« forbidden opcode(s) in 'import os' ») ; c'est le code des modules qui compte.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Un rôle PostgreSQL par client ? Pas dans un seul processus</h2>
+                <p>L'idée vient vite : un rôle PostgreSQL par client, pour qu'une base ne puisse pas lire l'autre. Un processus Odoo n'a qu'un <code>db_user</code>, et il ne liste que les bases dont ce rôle est <strong>propriétaire</strong> (<code>datdba = current_user</code>). Une base <code>client-d</code> créée par un autre rôle, <code>odoo_d</code>, à côté des trois premières :</p>
+<div class="out">liste vue depuis client-d.example                     -&gt; []
+X-Odoo-Database: client-d                            -&gt; 404, et au journal :
+  ERROR client-d odoo.registry: Failed to load registry
+  WARNING client-d odoo.http: Database or registry unusable, trying without
+psql, rôle odoo, base client-d : SELECT login FROM res_users
+  ERROR:  permission denied for table res_users</div>
+                <p>La base de l'autre rôle est bien protégée, mais elle est aussi hors de portée du processus : pour la servir, il faut un second processus lancé avec <code>db_user = odoo_d</code>. Un rôle par client, c'est un processus par client. Inversement, tant que tous les clients partagent un processus, ils partagent son rôle, et la section 5 s'applique.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les tâches planifiées : partagées, et hors du filtre</h2>
+                <p>Les fils de tâches planifiées (<code>max_cron_threads</code>, 2 par défaut) parcourent les bases <strong>l'une après l'autre</strong>. Pour le mesurer : dans <code>client-a</code>, une tâche qui dure 30 secondes (<code>env.cr.execute("SELECT pg_sleep(30)")</code>), dans <code>client-b</code> une tâche instantanée, toutes deux dues chaque minute. Avec un seul fil (extrait du journal, date et chemin du module raccourcis) :</p>
+<div class="out">14:06:48,982 INFO client-a ir_cron: Job 'Relance lente A' (26) starting
+14:07:19,032 INFO client-a ir_cron: Job 'Relance lente A' (26) fully done (… duration 30.05s)
+14:07:19,050 INFO client-b ir_cron: Job 'Tâche rapide B' (26) starting
+14:07:19,084 INFO client-b ir_cron: Job 'Tâche rapide B' (26) fully done (… duration 0.04s)</div>
+                <p>La tâche du client B attend la fin de celle du client A : 30 secondes de retard, à chaque passage. Même résultat en mode multi-processus avec <code>workers = 2</code> et un seul processus de tâches planifiées (B démarre à la seconde où A finit). Avec deux fils, un fil libre saute la tâche verrouillée de A et passe à B, quand il est éveillé :</p>
+<div class="out">14:10:01,786 INFO client-a ir_cron: Job 'Relance lente A' (26) starting
+14:10:02,794 INFO client-b ir_cron: Job 'Tâche rapide B' (26) starting
+14:10:02,831 INFO client-b ir_cron: Job 'Tâche rapide B' (26) fully done (… duration 0.04s)
+14:10:31,842 INFO client-a ir_cron: Job 'Relance lente A' (26) fully done (… duration 30.06s)
+14:11:03,888 INFO client-a ir_cron: Job 'Relance lente A' (26) starting
+14:11:31,918 INFO client-b ir_cron: Job 'Tâche rapide B' (26) starting</div>
+                <p>Au premier passage, B part une seconde après A. Au suivant, il attend 28 secondes : le second fil dormait encore (chaque fil ne se réveille qu'environ une fois par minute, à un moment légèrement décalé), et le premier a enchaîné A puis B. Un second fil réduit le retard, il ne le supprime pas.</p>
+                <p>Un client dont les tâches sont lourdes (relances en masse, synchronisations) retarde donc les autres dès qu'il occupe tous les fils. Deuxième point, plus surprenant : <strong>le <code>dbfilter</code> ne compte pas pour les tâches planifiées</strong>. Elles tournent sur les bases de <code>db_name</code> si cette option est remplie, sinon sur <em>toutes</em> les bases du rôle. Un processus réglé avec <code>dbfilter = ^aucune$</code>, qui ne sert aucune base en HTTP, exécute quand même celles de la base de son rôle :</p>
+<div class="out">{"jsonrpc": "2.0", "id": null, "result": []}
+INFO client-d ir_cron: Job 'Base: Auto-vacuum internal data' (1) starting
+INFO client-d ir_cron: Job 'Tâche D' (3) starting</div>
+                <p>D'où le réglage : <code>db_name</code> donne la liste des clients dont les tâches doivent tourner, <code>dbfilter</code> l'aiguillage HTTP. Sans <code>dbfilter</code>, <code>db_name</code> sert aussi de filtre, mais sans tenir compte du domaine : tous les noms voient toute la liste (<code>["client-a", "client-b"]</code> depuis <code>client-a.example</code> comme depuis un nom inconnu). Les deux ensemble, donc.</p>
+                <div class="pitfall-box">
+                    <h4>Piège : le client ajouté au filtre, oublié dans <code>db_name</code></h4>
+                    <p>Avec <code>db_name = client-a,client-b</code> et <code>dbfilter = ^%d$</code>, la base <code>client-c</code> est servie normalement sur <code>client-c.example</code> (page de connexion, 200) mais ses tâches planifiées ne tournent jamais : sa tâche de test, due chaque minute, n'a laissé aucune ligne au journal pendant les mesures, et aucune erreur. Dès que <code>client-c</code> est ajouté à <code>db_name</code> et le service redémarré, elle part au premier passage (« Job 'Tâche C' (26) starting »). Pas de courriels envoyés, pas de relances. Chaque nouveau client s'ajoute aux deux endroits, et le service redémarre. Notez aussi qu'au démarrage, Odoo crée toute base de <code>db_name</code> qui n'existe pas : une faute de frappe y crée une base neuve, avec le seul module <code>base</code>.</p>
+                </div>
+                <p>Avec plusieurs bases dans <code>db_name</code>, <code>-u</code> est refusé (« Cannot use -i/--init or -u/--update with multiple databases ») : les mises à jour se font base par base, <code>-d</code> sur la ligne de commande remplaçant la liste (<code>odoo-bin -c /etc/odoo.conf -d client-a -u mon_module --stop-after-init --no-http</code>). Enfin, les modules chargés au démarrage (<code>server_wide_modules</code>, <code>base,rpc,web</code> par défaut) le sont une fois pour le processus : en ajouter un l'active pour tous les clients.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Nginx par domaine et la configuration d'Odoo</h2>
+                <p>Côté Nginx, un bloc <code>server</code> par client, un bloc par défaut qui ne répond à rien, et des en-têtes posés par Nginx, jamais repris de la requête. Le réglage commun va dans un fichier inclus :</p>
+<pre class="language-nginx"><code class="language-nginx"># /etc/nginx/snippets/odoo-proxy.conf : commun à tous les clients
+location / {
+    proxy_pass http://127.0.0.1:8069;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header X-Forwarded-For   $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 720s;
+}</code></pre>
+<pre class="language-nginx"><code class="language-nginx"># /etc/nginx/sites-enabled/odoo-clients.conf
+# Un nom inconnu (ou l'adresse IP seule) : aucune base, aucune page.
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+server {
+    listen 80 default_server;
+    return 444;
+}
+
+# Un bloc par client : le nom de domaine choisit la base (dbfilter = ^%d$).
+server {
+    listen 443 ssl;
+    server_name client-a.example;
+    ssl_certificate     /etc/letsencrypt/live/client-a.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/client-a.example/privkey.pem;
+    include snippets/odoo-proxy.conf;
+}
+server {
+    listen 443 ssl;
+    server_name client-b.example;
+    ssl_certificate     /etc/letsencrypt/live/client-b.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/client-b.example/privkey.pem;
+    include snippets/odoo-proxy.conf;
+}
+server {
+    listen 80;
+    server_name client-a.example client-b.example;
+    return 301 https://$host$request_uri;
+}</code></pre>
+                <p>Cette configuration passe <code>nginx -t</code> (Nginx 1.24, certificats d'essai auto-signés) et a été lancée devant le processus Odoo de l'article, sur des ports d'essai. Ce qu'elle donne, avec <code>curl --resolve</code> pour viser le serveur sous chaque nom :</p>
+<pre class="language-bash"><code class="language-bash">curl -sk --resolve client-a.example:443:127.0.0.1 -H 'Content-Type: application/json' \
+     -H 'X-Forwarded-Host: client-b.example' \
+     -d '{"jsonrpc":"2.0","method":"call","params":{}}' https://client-a.example/web/database/list</code></pre>
+<div class="out">{"jsonrpc": "2.0", "id": null, "result": ["client-a"]}</div>
+                <ul>
+                    <li>L'en-tête <code>X-Forwarded-Host</code> forgé par le client est remplacé par Nginx : la base reste <code>client-a</code>.</li>
+                    <li>Un nom absent de la configuration : la poignée de main TLS est refusée (« tlsv1 unrecognized name »), aucune page, aucun certificat d'un client montré à un autre nom.</li>
+                    <li>L'adresse IP en HTTP : réponse vide (444). Un nom de client en HTTP : 301 vers HTTPS.</li>
+                    <li>Une clé d'API du client B envoyée sur <code>client-a.example</code> : 401 « Invalid apikey », elle n'existe pas dans la base A.</li>
+                </ul>
+                <p>Côté Odoo, la configuration correspondante, vérifiée derrière ce Nginx :</p>
+<pre class="language-ini"><code class="language-ini">[options]
+http_interface = 127.0.0.1
+proxy_mode = True
+dbfilter = ^%d$
+db_name = client-a,client-b
+list_db = False
+max_cron_threads = 2</code></pre>
+                <p>Avec elle : connexion sur <code>client-a.example</code> et <code>client-b.example</code> (200), liste des bases fermée (<code>AccessDenied</code>), connexion à <code>client-b</code> demandée depuis <code>client-a.example</code> refusée (« Database not found. »). En mode multi-processus, le websocket s'ajoute au fichier commun comme pour un seul client (voir l'article HTTPS avec Nginx en fin de page).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>9. Quand passer à un processus, ou à un serveur, par client</h2>
+                <p>Un processus partagé convient à des clients de même confiance, sur la même version d'Odoo, avec des modules communs ou standard. Chacun des signes suivants pousse vers un processus par client (un service, un port, un <code>data_dir</code>, un rôle PostgreSQL, une seule base dans <code>db_name</code> et <code>dbfilter = ^client-a$</code>, un <code>upstream</code> Nginx par client) :</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th>Signe</th><th>Pourquoi un processus partagé ne suffit plus</th></tr></thead>
+<tbody>
+<tr><td>Un module spécifique pour un seul client</td><td>Son code lit les autres bases et leurs fichiers (section 5).</td></tr>
+<tr><td>Un rôle PostgreSQL par client exigé (contrat, audit, RGPD)</td><td>Un processus = un rôle (section 6).</td></tr>
+<tr><td>Des tâches planifiées lourdes chez un client</td><td>Elles occupent les fils communs et retardent les autres (section 7).</td></tr>
+<tr><td>Des versions ou des jeux de modules différents</td><td>Un processus charge un seul code Odoo et un seul <code>addons_path</code>.</td></tr>
+<tr><td>Des mises à jour à des dates différentes</td><td>Un redémarrage pour un client coupe tous les autres.</td></tr>
+</tbody></table></div>
+                <p>Le serveur séparé vient ensuite, quand la mémoire, le processeur ou PostgreSQL deviennent eux-mêmes le point commun gênant, ou quand un client exige que ses données ne partagent pas une machine.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>10. Ce qui change entre Odoo 19 et Odoo 20</h2>
+                <p>Sur l'aiguillage lui-même, rien : le code de la 19.0 publique (lu, non exécuté) applique le même filtre, avec les mêmes substitutions, la même règle pour la session et l'en-tête <code>X-Odoo-Database</code>, la même liste de bases par propriétaire, et les mêmes bases pour les tâches planifiées. Ce qui change est autour :</p>
+                <div class="table-responsive"><table class="tmc">
+<thead><tr><th></th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+<tbody>
+<tr><td><code>http_interface</code> par défaut</td><td><code>0.0.0.0</code>, toutes les interfaces</td><td><code>127.0.0.1</code> : Odoo n'est joignable que par le proxy, sauf réglage contraire</td></tr>
+<tr><td>Service RPC <code>db</code> (lister, créer, dupliquer les bases par XML-RPC)</td><td>présent</td><td>retiré : <code>Invalid service name: db</code></td></tr>
+<tr><td>Code de l'aiguillage</td><td><code>odoo/http.py</code></td><td>paquet <code>odoo/http/</code> (<code>router.py</code>) ; gestion des bases dans <code>odoo/modules/db.py</code></td></tr>
+<tr><td>Requête sans base sur une route non globale</td><td>404 « … not found in the server-wide controllers »</td><td>404 « … is not server-wide », avec un renvoi vers <code>/web/login</code></td></tr>
+</tbody></table></div>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <p>Un serveur multi-clients 19 passe en 20 avec le même <code>dbfilter</code>, le même <code>db_name</code> et la même configuration Nginx. Deux vérifications : si Odoo était joint directement par son adresse IP, régler <code>http_interface</code> (ou, mieux, passer par Nginx) ; si un script d'administration passait par le service RPC <code>db</code> (<code>/xmlrpc/2/db</code>), le réécrire : <code>odoo-bin db</code> pour créer, dupliquer, renommer, sauvegarder ou supprimer, <code>/web/database/list</code> ou <code>psql</code> pour lister.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li><code>dbfilter = ^%d$</code>, avec le <code>$</code> : une base par nom, et rien d'autre. Un filtre plus large permet de travailler dans la base d'un client depuis le domaine d'un autre, et <code>list_db = False</code> n'y change rien.</li>
+                    <li>Le filtre range les requêtes, il ne protège pas : <code>Host</code> et <code>X-Forwarded-Host</code> s'écrivent librement. Odoo sur <code>127.0.0.1</code>, Nginx qui pose les en-têtes, un mot de passe par base.</li>
+                    <li>Les tâches planifiées ignorent le filtre : <code>db_name</code> doit lister chaque client, et une tâche longue chez un client retarde les autres, et un second fil ne fait que réduire ce retard.</li>
+                    <li>Dans un processus partagé, tout code Python voit tous les clients : même rôle PostgreSQL, même système de fichiers. Un module spécifique, un rôle par client ou des versions différentes imposent un processus par client.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a></h5>
+                            <p class="small text-muted mb-0">Certificats, proxy et websocket pour un client : la base de la configuration ci-dessus.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/gestionnaire-bases-access-denied-odoo-382">Gestionnaire de bases Odoo 20 : Access Denied et mot de passe maître</a></h5>
+                            <p class="small text-muted mb-0">Le mot de passe maître, ce qu'il protège et comment le reprendre en main.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/cron-ne-s-execute-pas-odoo-20-289">L'action planifiée ne s'exécute pas en Odoo 20 : les vérifications</a></h5>
+                            <p class="small text-muted mb-0">Quand une tâche ne part pas : les causes à vérifier dans l'ordre.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
