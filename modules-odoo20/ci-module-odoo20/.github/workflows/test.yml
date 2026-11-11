@@ -1,0 +1,77 @@
+name: tests
+
+on:
+  push:
+    branches: ["20.0"]
+  pull_request:
+    branches: ["20.0"]
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pre-commit==4.7.0
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  tests:
+    runs-on: ubuntu-24.04
+    needs: pre-commit
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MODULES: oski_code_client,test_oski_code_client
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: odoo
+      PGPASSWORD: odoo
+      TMPDIR: /tmp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: addons
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Odoo 20 Community
+        run: git clone --depth 1 --branch 20.0 https://github.com/odoo/odoo.git odoo
+      - name: Dépendances Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libldap2-dev libsasl2-dev libpq-dev
+          python -m venv venv
+          venv/bin/pip install -r odoo/requirements.txt websocket-client
+      - name: Tests des modules
+        env:
+          ODOO: venv/bin/python odoo/odoo-bin --addons-path=odoo/addons,addons
+        run: addons/ci/lancer_tests.sh "ci_${{ github.run_id }}" "$MODULES"
+      - name: Journal et captures en cas d'échec
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: journal-tests
+          path: |
+            tests.log
+            /tmp/odoo_tests/
+          if-no-files-found: ignore

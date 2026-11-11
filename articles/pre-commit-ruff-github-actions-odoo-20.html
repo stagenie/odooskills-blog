@@ -1,0 +1,589 @@
+<!--
+Article — pre-commit, ruff et GitHub Actions pour un module Odoo 20
+Série « Migrer et tester en Odoo 20 » (id 64), étape 4 ; lot T6 (T6.4 du plan vague 3 technique), dernier du lot
+Date : 2026-11-11
+Slug : pre-commit-ruff-github-actions-odoo-20
+Mot-clé cible : odoo pre commit (secondaire : ci cd pipeline)
+Catégorie : Développement Odoo
+Tags : intermediaire, qualite-tests, guide, community
+Temps de lecture : ~12 minutes
+Preuves (11/11/2026, dépôt Git jetable, modules oski_code_client + test_oski_code_client, Odoo 20.0 publique fecee9af, PostgreSQL 16, Chrome 155) :
+- Versions : pre-commit 4.7.0, pre-commit-hooks v6.0.0, ruff-pre-commit v0.17.4, OCA odoo-pre-commit-hooks v0.2.27, pylint-odoo v10.0.12 ; « pre-commit autoupdate » : already up to date x4.
+- odoo/release.py : MIN_PY_VERSION (3, 12) et MIN_PG_VERSION 16 en 20.0 ; (3, 10) et 13 en 19.0 publique (40e9be2). ruff.toml du dépôt Odoo : identique 19.0/20.0 sauf target-version py310 -> py312.
+  ruff.toml d'Odoo sur addons/sale : 744 signalements (722 COM812) ; ruff format : 66 fichiers sur 83 (sale + contacts) réécrits même en quote-style preserve.
+- odoo/osv absent en 20 (présent en 19.0 publique), ir.model.access (ir_model.py:2096) et ir_rule.py en 19.0, ir_access.py seul en 20 ; pytz dans requirements 19.0, absent en 20.0 ; tools.ormcache : DeprecationWarning « Since 20.0 » (odoo/tools/__init__.py:24-25).
+- OCA : oca-addons-repo-template (master 447ed6ae) odoo_version 20.0 par défaut, .ruff.toml généré target-version py310 ; images ghcr oca-ci py3.12-odoo20.0 et py3.12-ocb20.0 présentes (non lancées) ;
+  pylint-odoo valid-odoo-versions=20.0 : C8106 sur 19.0.1.1.0 ; rien sur odoo.osv ni ir.model.access.csv ; oca-checks-odoo-module : t-esc (xml-deprecated-qweb-directive-15), csv-duplicate-record-id sur ir.access.csv, xml-header-wrong.
+- Commits : premier passage refusé (ruff format 4 fichiers, xml-header-wrong, manifest-superfluous-key x2) puis accepté ; commit refusé TID251 odoo.osv + C8106 19.0.1.1.0, accepté après Domain + 20.0.1.1.0 ; hooks locaux ir.model.access.csv / model="ir.rule" / t-esc vérifiés.
+- Workflow : actionlint 1.7.12 (shellcheck 0.11.0, pyflakes) 0 erreur ; faute « needs: precommit » détectée. Job pre-commit rejoué (clone neuf, venv neuf, cache pre-commit vide) : tout Passed.
+- Job tests rejoué : git clone --depth 1 --branch 20.0 (fecee9af), venv Python 3.12.3 + requirements.txt, PG16 par PGHOST/PGPORT/PGUSER/PGPASSWORD (journal « database: odoo@localhost:… »), TMPDIR=/tmp :
+  sans websocket-client : tour skipped, 0 failed of 16, Odoo 0, script 1 ; avec : tour succeeded, 16 tests, 0/0 ; « oski_code_client, test_oski_code_client » : Invalid tag x34, 14 tests, Odoo 0, script 1 ;
+  régression (| au lieu de &) : 1 failed of 16, Odoo 1, script 1. Non exécuté sur GitHub (aucun dépôt distant).
+- Image ubuntu-24.04 (liste publiée, version 20261101.360.1) : Python 3.12.3, Google Chrome 156, PostgreSQL 16.15 service désactivé.
+- Relecture : pytz reste installé (Babel 2.10.3 et zeep : Requires-Dist pytz) ; chiffres ruff sur sale arrondis (744/722 sur 3538ed82, 762/737 sur fecee9af) ; actions v7 = checkout v7.0.1, setup-python v7.1.0, upload-artifact v7.0.2 ; figure 05 : passages rejoués sur deux bases neuves distinctes (dropdb montré).
+Captures : content/blog/screenshots/pre-commit-ruff-github-actions-odoo-20/ (01 schéma, 02 commit refusé, 03 réflexes 19, 04 actionlint, 05 websocket-client, 06 espace dans la liste).
+Fichiers : content/blog/modules-odoo20/ci-module-odoo20/ (.pre-commit-config.yaml, ruff.toml, .gitignore, .github/workflows/test.yml, ci/lancer_tests.sh).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child, .v19-box ul { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-toml.min.js"></script>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">pre-commit, ruff et GitHub Actions pour un module Odoo 20</h1>
+                <p class="lead mt-3 text-white">Un dépôt de modules Odoo 20, des contrôles qui refusent un commit écrit avec des réflexes de la 19, et un workflow qui lance les tests sur PostgreSQL 16. Chaque version d'outil a été relevée le jour de l'écriture, chaque commande exécutée, et chaque étape du workflow rejouée en dehors de GitHub.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Qualité &amp; tests</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Contrôler avant le commit</h4>
+                        <p>Un <code>.pre-commit-config.yaml</code> pour Odoo 20 : ruff, les outils OCA qui fonctionnent en 20.0, et deux contrôles maison pour les fichiers qui n'existent plus.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Régler ruff pour Odoo 20</h4>
+                        <p><code>target-version = "py312"</code>, l'ordre des imports d'Odoo, et des imports interdits qui attrapent les modules supprimés.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Tester sur GitHub</h4>
+                        <p>Un workflow à deux jobs, PostgreSQL 16 en service, et un script qui juge le code de sortie <em>et</em> le journal.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Un module Odoo 20 qui a des tests, et savoir les lancer en ligne de commande (<a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a>).</li>
+                        <li>Git, et Python 3.12 sur le poste : c'est le minimum d'Odoo 20, et la version utilisée ici pour tous les outils.</li>
+                        <li>Pour la partie GitHub : un dépôt où vous pouvez ajouter un dossier <code>.github/workflows</code>. Aucun service payant n'est nécessaire.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Le dépôt et le pipeline</h2>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_01" alt="Schéma en deux bandes : sur le poste, git commit déclenche les contrôles de fichiers, ruff, les outils OCA, deux contrôles locaux, puis accepte le commit ; sur GitHub, un job pre-commit puis un job tests qui prépare PostgreSQL 16, Python 3.12 et Odoo 20.0, lance les tests et juge le code de sortie et le journal." style="max-width:100%; height:auto;"/><figcaption>Les mêmes contrôles tournent avant chaque commit puis sur GitHub ; le job de tests ne se fie pas au seul code de sortie d'Odoo.</figcaption></figure>
+                <p>Le dépôt suit la disposition habituelle d'un dépôt de modules : un module par dossier, à la racine, et la configuration à côté. Le module d'exemple pose un code client sur les contacts (<code>oski_code_client</code>), avec ses tests, dont un tour joué dans Chrome, et un petit module réservé aux tests (<code>test_oski_code_client</code>).</p>
+<pre class="language-bash"><code class="language-bash">.
+├── .github/workflows/test.yml     # le workflow GitHub Actions
+├── .gitignore
+├── .pre-commit-config.yaml        # les contrôles avant commit
+├── ruff.toml                      # les règles Python
+├── ci/lancer_tests.sh             # lancement des tests + garde-fous
+├── oski_code_client/
+└── test_oski_code_client/</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. ruff réglé pour Odoo 20</h2>
+                <p>ruff remplace à lui seul flake8, isort et pyupgrade, et sait aussi formater. Le réglage qui dépend de la version d'Odoo est <code>target-version</code> : il dit à ruff quelle version de Python le code doit supporter. Odoo 20 refuse de démarrer avec un Python plus ancien que 3.12 (<code>MIN_PY_VERSION = (3, 12)</code> dans <code>odoo/release.py</code>, contre <code>(3, 10)</code> en 19.0). Le dépôt d'Odoo contient d'ailleurs son propre <code>ruff.toml</code> : entre les branches 19.0 et 20.0, la seule ligne qui change est <code>target-version = "py310"</code> devenue <code>"py312"</code>.</p>
+<pre class="language-toml"><code class="language-toml"># Module Odoo 20 : Python &gt;= 3.12 exigé (odoo/release.py, MIN_PY_VERSION)
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "PLE", "T20", "TID", "G", "LOG"]
+ignore = [
+    "E501",   # longueur de ligne : laissée au formateur
+    "UP031",  # '%s-%05d' % (...) : style courant du code Odoo
+]
+
+[lint.per-file-ignores]
+"**/__init__.py" = ["F401", "I001"]   # un « from . import x » par ligne, comme dans Odoo
+"**/__manifest__.py" = ["B018"]       # le manifeste est un dictionnaire seul
+
+[lint.isort]
+section-order = ["future", "standard-library", "third-party", "odoo", "odoo-addons", "first-party", "local-folder"]
+
+[lint.isort.sections]
+"odoo" = ["odoo"]
+"odoo-addons" = ["odoo.addons"]
+
+[lint.flake8-tidy-imports.banned-api]
+"odoo.osv".msg = "paquet supprimé en Odoo 20 : from odoo.fields import Domain"
+"odoo.tools.ormcache".msg = "obsolète en Odoo 20 : from odoo.api import ormcache"
+"pytz".msg = "retiré du requirements.txt d'Odoo 20 (encore tiré par Babel) : utiliser zoneinfo"
+
+[format]
+quote-style = "preserve"</code></pre>
+                <p>Trois choix méritent une explication.</p>
+                <ul>
+                    <li><strong>Les imports interdits</strong> (règle <code>TID251</code>) transforment trois écarts d'Odoo 20 en erreurs de lint : le paquet <code>odoo.osv</code> n'existe plus (il est remplacé par <code>Domain</code>, voir <a href="/blog/developpement-odoo-2/domaines-odoo-20-274">les domaines en Odoo 20</a>), <code>pytz</code> a quitté le <code>requirements.txt</code> d'Odoo (il reste installé comme dépendance de Babel et de zeep, mais le cœur ne le garantit plus), et <code>from odoo.tools import ormcache</code> émet un <code>DeprecationWarning</code> « Since 20.0 ». Le message de chaque interdiction dit quoi écrire à la place.</li>
+                    <li><strong><code>target-version</code></strong> change ce que ruff propose. Sur la même ligne <code>datetime.timezone.utc</code>, la règle <code>UP017</code> demande l'alias <code>datetime.UTC</code> avec <code>py312</code>, et ne dit rien avec <code>py310</code> : l'alias n'existe que depuis Python 3.11.</li>
+                    <li><strong><code>quote-style = "preserve"</code></strong> : le code d'Odoo et de la plupart des modules utilise les apostrophes. Sans ce réglage, <code>ruff format</code> réécrit toutes les chaînes entre guillemets doubles : sur le module d'exemple, 10 fichiers sur 17.</li>
+                </ul>
+                <p>Sur un fichier qui accumule ces réflexes de la 19 :</p>
+<div class="out">$ ruff check piege.py
+TID251 `pytz` is banned: retiré du requirements.txt d'Odoo 20 (encore tiré par Babel) : utiliser zoneinfo
+ --&gt; piege.py:3:8
+TID251 `odoo.osv` is banned: paquet supprimé en Odoo 20 : from odoo.fields import Domain
+ --&gt; piege.py:4:1
+TID251 `odoo.tools.ormcache` is banned: obsolète en Odoo 20 : from odoo.api import ormcache
+ --&gt; piege.py:5:24
+UP017 [*] Use `datetime.UTC` alias
+ --&gt; piege.py:9:34
+Found 5 errors.          (extrait : la cinquième est l'ordre des imports, I001)</div>
+                <div class="pitfall-box">
+                    <h4>Le ruff.toml d'Odoo n'est pas un réglage de module</h4>
+                    <p>Copier tel quel le <code>ruff.toml</code> du dépôt d'Odoo est tentant. Son en-tête prévient pourtant qu'il est généré pour les contrôles nocturnes du runbot, et que certaines règles n'y sont « pas encore appliquées ». Lancé avec ruff 0.17.4 sur le seul module <code>sale</code> d'Odoo 20, il relève plus de 740 points, dont plus de 720 virgules finales manquantes (<code>COM812</code>). Et il n'a pas de section <code>[format]</code> : le cœur n'est pas formaté par <code>ruff format</code>, qui réécrirait deux fichiers sur trois dans <code>sale</code> et <code>contacts</code>, même en conservant les apostrophes. Partez d'un jeu de règles court, comme ci-dessus, et ajoutez-en au besoin.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ce que les outils OCA proposent pour la 20.0</h2>
+                <p>L'OCA maintient la plupart des outils de contrôle propres à Odoo. Avant de les mettre dans la configuration, chacun a été installé et essayé sur un module Odoo 20, le 11 novembre 2026 :</p>
+                <table class="tmc">
+                    <tr><th>Outil (version)</th><th>Pour la 20.0</th><th>Constaté sur un module Odoo 20</th></tr>
+                    <tr><td><code>oca-addons-repo-template</code> (gabarit copier)</td><td><code>20.0</code> proposé, et valeur par défaut</td><td>génère pre-commit, pylint et workflow ; son <code>.ruff.toml</code> garde <code>target-version = "py310"</code> ; son workflow utilise les images <code>ghcr.io/oca/oca-ci/py3.12-odoo20.0</code> et <code>py3.12-ocb20.0</code>, qui existent (non lancées ici)</td></tr>
+                    <tr><td><code>pylint-odoo</code> 10.0.12</td><td><code>--valid-odoo-versions=20.0</code></td><td>refuse un manifeste en <code>19.0.1.1.0</code> (<code>C8106</code>) ; ne dit rien de <code>odoo.osv</code> ni d'un <code>ir.model.access.csv</code></td></tr>
+                    <tr><td><code>oca-checks-odoo-module</code> 0.2.27</td><td>pas de réglage de version</td><td>signale <code>t-esc</code> et <code>t-raw</code>, un identifiant en double dans <code>ir.access.csv</code>, une en-tête XML non conforme ; ne vérifie rien de propre à <code>ir.access</code> (seulement les doublons d'identifiant, comme pour tout CSV)</td></tr>
+                </table>
+                <p>pylint-odoo et <code>oca-checks-odoo-module</code> fonctionnent donc en 20.0, mais aucun ne repère les fichiers de droits de la 19. D'où deux contrôles locaux dans la configuration : un nom de fichier interdit, et un motif cherché dans le XML.</p>
+<pre class="language-yaml"><code class="language-yaml"># Contrôles avant commit d'un dépôt de modules Odoo 20
+default_language_version:
+  python: python3.12
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-xml
+      - id: check-yaml
+      - id: check-toml
+      - id: debug-statements
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+  - repo: https://github.com/OCA/odoo-pre-commit-hooks
+    rev: v0.2.27
+    hooks:
+      - id: oca-checks-odoo-module
+  - repo: https://github.com/OCA/pylint-odoo
+    rev: v10.0.12
+    hooks:
+      - id: pylint_odoo
+        args:
+          - --load-plugins=pylint_odoo
+          - --disable=all
+          - --enable=odoolint
+          - --valid-odoo-versions=20.0
+          - --disable=manifest-required-author,missing-readme
+  - repo: local
+    hooks:
+      - id: odoo20-ir-model-access
+        name: "Odoo 20 : plus de ir.model.access.csv"
+        entry: "Odoo 20 lit les droits dans security/ir.access.csv (modèle ir.access)"
+        language: fail
+        files: ir\.model\.access\.csv$
+      - id: odoo20-ir-rule
+        name: "Odoo 20 : plus de ir.rule ni ir.model.access en XML"
+        entry: 'model="ir\.(rule|model\.access)"'
+        language: pygrep
+        types: [xml]</code></pre>
+                <p>Les deux messages désactivés de pylint-odoo sont propres aux dépôts de l'OCA (auteur « OCA » obligatoire, fichier <code>README.rst</code>). Les versions (<code>rev</code>) sont les dernières publiées le jour de l'écriture ; <code>pre-commit autoupdate</code> l'a confirmé : <code>already up to date!</code> pour les quatre dépôts. Relancez-le de temps en temps : c'est lui qui fait avancer ces numéros.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Installer, puis le premier passage</h2>
+                <p>pre-commit est un programme Python ; installez-le dans un environnement à part, pas dans celui d'Odoo, puis branchez-le sur le dépôt :</p>
+<pre class="language-bash"><code class="language-bash">python3.12 -m venv ~/outils &amp;&amp; ~/outils/bin/pip install pre-commit==4.7.0
+cd mon_depot
+~/outils/bin/pre-commit install        # écrit .git/hooks/pre-commit</code></pre>
+                <p>Au premier <code>git commit</code>, pre-commit prépare un environnement par dépôt de contrôles (une fois pour toutes), puis les lance sur les fichiers du commit. Sur les deux modules, écrits sans ces outils, le premier commit a été refusé par trois contrôles :</p>
+<div class="out">ruff format...............................................................Failed
+- hook id: ruff-format
+- files were modified by this hook
+4 files reformatted, 13 files left unchanged
+Checks for py, csv and xml files of Odoo modules..........................Failed
+oski_code_client/views/res_partner_views.xml:1: xml-header-wrong XML header expected '&lt;?xml version="1.0" encoding="UTF-8" ?&gt;' but received '&lt;?xml version="1.0" encoding="utf-8"?&gt;'
+Check for Odoo modules using pylint.......................................Failed
+oski_code_client/__manifest__.py:13:4: C8116: Manifest superfluous key "installable". It is the same as the default value: True. Better remove it (manifest-superfluous-key)
+…</div>
+                <p><code>ruff format</code> a corrigé lui-même ses quatre fichiers : il suffit de les ajouter de nouveau au commit. Les deux autres points se corrigent à la main : l'en-tête XML, et la clé <code>'installable': True</code>, qui ne fait que répéter la valeur par défaut. Le commit suivant passe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Un commit refusé sur une vraie faute</h2>
+                <p>Le cas qui justifie l'outil : une nouvelle méthode, écrite avec les habitudes de la 19, et un manifeste repris d'une branche 19.0 lors d'un report de correctif.</p>
+<pre class="language-python"><code class="language-python"># models/res_partner.py (version refusée)
+from odoo import api, models
+from odoo.osv import expression
+
+
+class ResPartner(models.Model):
+    _name = 'res.partner'
+    _inherit = ['res.partner', 'oski.code.mixin']
+    _oski_code_prefixe = 'CLI'
+
+    @api.model
+    def _oski_domaine_sans_code(self, domaine=None):
+        """Contacts encore sans code, dans le domaine donné."""
+        return expression.AND([domaine or [], [('oski_code', '=', False)]])
+
+# __manifest__.py : 'version': '19.0.1.1.0'</code></pre>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_02" alt="Sortie de terminal d'un git commit refusé : ruff check en échec avec TID251 odoo.osv is banned sur la ligne from odoo.osv import expression, puis pylint_odoo en échec avec C8106 Wrong Version Format 19.0.1.1.0 et l'expression attendue en 20.0." style="max-width:100%; height:auto;"/><figcaption>Deux contrôles en échec : l'import d'un paquet supprimé, et une version de manifeste qui rendrait le module non installable.</figcaption></figure>
+                <p>Ces deux fautes ne se voient pas de la même façon dans Odoo 20. L'import casse le chargement du module. La version <code>19.0.x</code>, elle, ne casse rien : Odoo marque le module non installable avec un simple avertissement, et un <code>-i</code> sort avec le code 0 (voir <a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">les messages d'un module 19 sous Odoo 20</a>). Le contrôle du manifeste attrape donc une panne silencieuse avant qu'elle ne parte.</p>
+<pre class="language-python"><code class="language-python"># models/res_partner.py (version acceptée)
+from odoo import api, models
+from odoo.fields import Domain
+
+
+class ResPartner(models.Model):
+    _name = 'res.partner'
+    _inherit = ['res.partner', 'oski.code.mixin']
+    _oski_code_prefixe = 'CLI'
+
+    @api.model
+    def _oski_domaine_sans_code(self, domaine=None):
+        """Contacts encore sans code, dans le domaine donné."""
+        return Domain(domaine or []) &amp; Domain('oski_code', '=', False)
+
+# __manifest__.py : 'version': '20.0.1.1.0'</code></pre>
+<div class="out">$ git commit -m "Contacts sans code : domaine réutilisable"
+…
+ruff check................................................................Passed
+ruff format...............................................................Passed
+Checks for py, csv and xml files of Odoo modules..........................Passed
+Check for Odoo modules using pylint.......................................Passed
+Odoo 20 : plus de ir.model.access.csv.................(no files to check)Skipped
+Odoo 20 : plus de ir.rule ni ir.model.access en XML...(no files to check)Skipped
+[main d3d4931] Contacts sans code : domaine réutilisable
+ 3 files changed, 16 insertions(+), 2 deletions(-)</div>
+                <p>Le commit contient aussi un test de la méthode : il servira plus bas. Les trois autres réflexes de la 19 ont été essayés sur une branche jetable : un <code>security/ir.model.access.csv</code>, un <code>&lt;record model="ir.rule"&gt;</code> et un gabarit en <code>t-esc</code>, qui en Odoo 20 n'affiche plus rien (<a href="/blog/developpement-odoo-2/pannes-silencieuses-module-odoo-354">pannes silencieuses d'un module 19</a>).</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_03" alt="Sortie de terminal de pre-commit run sur trois fichiers : oca-checks-odoo-module signale t-esc déprécié, le contrôle local refuse ir.model.access.csv avec le message Odoo 20 lit les droits dans security/ir.access.csv, et le motif XML trouve model=ir.rule à la ligne 3." style="max-width:100%; height:auto;"/><figcaption>Le <code>t-esc</code> est attrapé par l'outil OCA ; les deux fichiers de droits de la 19 par les contrôles locaux.</figcaption></figure>
+                <p>Les droits s'écrivent désormais dans <code>security/ir.access.csv</code>, détaillé dans <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">les droits d'accès en Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le workflow GitHub Actions</h2>
+                <p>Les contrôles du poste se contournent (<code>git commit --no-verify</code>, ou un poste où pre-commit n'est pas installé). Le workflow, enregistré dans <code>.github/workflows/test.yml</code>, les rejoue sur chaque push vers la branche <code>20.0</code> et chaque pull request qui la vise, puis lance les tests. Le dépôt d'essai de cet article travaillait sur <code>main</code> : adaptez <code>branches</code> à la branche de vos modules 20.</p>
+<pre class="language-yaml"><code class="language-yaml">name: tests
+
+on:
+  push:
+    branches: ["20.0"]
+  pull_request:
+    branches: ["20.0"]
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pre-commit==4.7.0
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  tests:
+    runs-on: ubuntu-24.04
+    needs: pre-commit
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: &gt;-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MODULES: oski_code_client,test_oski_code_client
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: odoo
+      PGPASSWORD: odoo
+      TMPDIR: /tmp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: addons
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Odoo 20 Community
+        run: git clone --depth 1 --branch 20.0 https://github.com/odoo/odoo.git odoo
+      - name: Dépendances Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libldap2-dev libsasl2-dev libpq-dev
+          python -m venv venv
+          venv/bin/pip install -r odoo/requirements.txt websocket-client
+      - name: Tests des modules
+        env:
+          ODOO: venv/bin/python odoo/odoo-bin --addons-path=odoo/addons,addons
+        run: addons/ci/lancer_tests.sh "ci_${{ github.run_id }}" "$MODULES"
+      - name: Journal et captures en cas d'échec
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: journal-tests
+          path: |
+            tests.log
+            /tmp/odoo_tests/
+          if-no-files-found: ignore</code></pre>
+                <ul>
+                    <li><strong><code>postgres:16</code></strong> : Odoo 20 attend PostgreSQL 16 au minimum (<code>MIN_PG_VERSION = 16</code>, 13 en 19.0). Une version plus ancienne ne bloque pas le démarrage : seul un avertissement dans le journal le signale, et le script ne le fait pas échouer.</li>
+                    <li><strong>Les variables <code>PG*</code></strong> : sans option <code>--db_host</code>, <code>--db_user</code>…, Odoo laisse la bibliothèque PostgreSQL lire <code>PGHOST</code>, <code>PGPORT</code>, <code>PGUSER</code> et <code>PGPASSWORD</code> ; la ligne <code>database: odoo@localhost:…</code> en tête du journal le confirme. Aucun fichier de configuration n'est nécessaire.</li>
+                    <li><strong>Le clone</strong> : <code>--depth 1</code> ne récupère que le dernier état de la branche <code>20.0</code>, sans l'historique. Le module est testé contre l'Odoo publié le jour du passage, ce qui fait aussi de ce job une alerte précoce sur les changements du cœur.</li>
+                    <li><strong><code>websocket-client</code></strong> : ce paquet n'est pas dans le <code>requirements.txt</code> d'Odoo (ni en 20.0, ni en 19.0), et sans lui aucun tour ne tourne. La section suivante montre ce qui se passe quand on l'oublie.</li>
+                    <li><strong><code>TMPDIR: /tmp</code></strong> : Chrome crée son profil et son socket de contrôle dans le dossier temporaire ; un chemin trop long l'empêche de démarrer, et le tour est alors sauté sans échec. Le dossier temporaire du système est court, autant le fixer.</li>
+                    <li><strong>Les paquets système</strong> servent à compiler <code>python-ldap</code> 3.4.4 et <code>psycopg2</code> 2.9.9, que PyPI ne publie pas en roues pour Linux ; l'image <code>ubuntu-24.04</code> fournit déjà Python 3.12 et Google Chrome, selon la liste de logiciels publiée pour cette image.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Juger le résultat : le code de sortie ET le journal</h2>
+                <p>Odoo sort avec 1 quand un test échoue, et 255 quand la base ne se charge pas. Mais il sort avec 0 dans des cas où rien, ou presque, n'a été testé. Le script <code>ci/lancer_tests.sh</code> ajoute quatre contrôles du journal au code de sortie. Le workflow l'appelle directement : committez-le exécutable (<code>chmod +x ci/lancer_tests.sh</code>), sinon l'étape s'arrête sur « Permission denied ».</p>
+<pre class="language-bash"><code class="language-bash">#!/bin/bash
+# Lance les tests Odoo 20 d'une liste de modules sur une base neuve, et échoue
+# si le code de sortie OU le journal montre un problème.
+# Usage : ODOO="venv/bin/python odoo/odoo-bin --addons-path=…" ci/lancer_tests.sh &lt;base_neuve&gt; &lt;module1,module2&gt;
+# Connexion PostgreSQL : variables PGHOST, PGPORT, PGUSER, PGPASSWORD.
+set -o pipefail
+BASE=$1
+MODULES=$2
+TAGS="/${MODULES//,/,/}"                 # oski_a,oski_b -&gt; /oski_a,/oski_b
+JOURNAL=${JOURNAL:-tests.log}
+
+$ODOO -d "$BASE" -i "$MODULES" --with-demo --test-tags "$TAGS" \
+      --db-filter="^${BASE}\$" --http-port="${ODOO_HTTP_PORT:-8069}" \
+      --stop-after-init 2&gt;&amp;1 | tee "$JOURNAL"
+RC=$?
+echo "Code de sortie d'Odoo : $RC"
+
+grep -q "odoo.tests.result: .* of 0 tests" "$JOURNAL" &amp;&amp; { echo "ÉCHEC : aucun test lancé"; RC=1; }
+grep -q " skipped" "$JOURNAL" &amp;&amp; { echo "ÉCHEC : au moins un test sauté"; grep -m3 -E "SkipTest|skipped" "$JOURNAL"; RC=1; }
+grep -qE "^[0-9-]+ [0-9:,]+ [0-9]+ (ERROR|CRITICAL) " "$JOURNAL" &amp;&amp; { echo "ÉCHEC : ERROR ou CRITICAL dans le journal"; RC=1; }
+grep -q "odoo.tests.result" "$JOURNAL" || { echo "ÉCHEC : pas de ligne de résultat"; RC=1; }
+echo "Code de sortie : $RC"
+exit $RC</code></pre>
+                <p>La base est neuve à chaque passage (nommée d'après le numéro du passage) : <code>-i</code> sur un module déjà installé ne relance pas ses tests. Le filtre de bases strict évite qu'un test HTTP ne tombe sur une autre base. Les quatre cas ci-dessous ont été rejoués avec ce script, sur PostgreSQL 16 et un clone frais de la branche 20.0 :</p>
+                <table class="tmc">
+                    <tr><th>Cas</th><th>Ligne de résultat d'Odoo</th><th>Code d'Odoo</th><th>Code du script</th></tr>
+                    <tr><td>Environnement installé avec <code>requirements.txt</code> seul</td><td>0 failed, 0 error(s) of 16 tests — tour <em>skipped</em></td><td>0</td><td><strong>1</strong> (test sauté)</td></tr>
+                    <tr><td>Même chose avec <code>websocket-client</code></td><td>0 failed, 0 error(s) of 16 tests — <code>tour succeeded</code></td><td>0</td><td>0</td></tr>
+                    <tr><td>Une espace après la virgule dans <code>MODULES</code></td><td>0 failed, 0 error(s) of 14 tests</td><td>0</td><td><strong>1</strong> (ERROR dans le journal)</td></tr>
+                    <tr><td>Régression : <code>|</code> au lieu de <code>&amp;</code> dans le domaine</td><td>1 failed, 0 error(s) of 16 tests</td><td>1</td><td>1</td></tr>
+                </table>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_05" alt="Sortie de terminal en deux passages : sans websocket-client, le tour est skipped car websocket-client module is not installed, 0 failed of 16 tests, code de sortie d'Odoo 0, échec au moins un test sauté, code de sortie 1 ; avec websocket-client, tour succeeded, 0 failed of 16 tests, codes de sortie 0 et 0." style="max-width:100%; height:auto;"/><figcaption>Sans <code>websocket-client</code>, le test du tour est compté mais pas joué : Odoo sort avec 0, le script avec 1.</figcaption></figure>
+                <p>Le premier cas est le plus probable sur un environnement neuf : <code>pip install -r requirements.txt</code> ne suffit pas pour les tours. Les 16 tests sont bien annoncés, la ligne de résultat est verte, et le seul indice est le mot <code>skipped</code>.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_06" alt="Sortie de terminal : avec MODULES contenant une espace après la virgule, 34 lignes ERROR odoo.tests.tag_selector Invalid tag / test_oski_code_client, 0 failed of 14 tests, code de sortie d'Odoo 0, échec ERROR ou CRITICAL dans le journal, code de sortie 1." style="max-width:100%; height:auto;"/><figcaption>Le module de test est installé, mais ses tests ne tournent pas : 14 tests au lieu de 16, et un code de sortie 0.</figcaption></figure>
+                <div class="pitfall-box">
+                    <h4>Une espace dans la liste des modules, et deux tests disparaissent</h4>
+                    <p>Avec <code>MODULES: oski_code_client, test_oski_code_client</code>, <code>-i</code> installe bien les deux modules, mais la sélection devient <code>/oski_code_client,/ test_oski_code_client</code>. Odoo refuse le second élément (<code>Invalid tag</code>, 34 fois dans le journal), ne lance que les 14 tests de <code>oski_code_client</code> et sort avec 0. Seul le contrôle des lignes <code>ERROR</code> fait échouer le job. Le même contrôle attrape toute ligne <code>ERROR</code> écrite pendant l'installation sans interrompre Odoo.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Validé et rejoué, pas exécuté sur GitHub</h2>
+                <p>Le workflow de cet article n'a pas tourné sur GitHub : il a été validé, puis chacune de ses étapes rejouée avec les mêmes commandes sur une machine Ubuntu 24.04. Avant de pousser un workflow, <code>actionlint</code> vérifie la syntaxe, les expressions <code>${{ … }}</code>, les dépendances entre jobs et, si <code>shellcheck</code> est installé, les scripts des étapes <code>run</code>.</p>
+<figure class="preview-figure"><img src="/web/image/PLACEHOLDER_04" alt="Sortie de terminal : actionlint signale job tests needs job precommit which does not exist in this workflow, code 1 ; après correction en needs: pre-commit, actionlint ne signale rien, code 0." style="max-width:100%; height:auto;"/><figcaption>Une faute de frappe dans <code>needs</code>, trouvée avant le premier push ; le workflow corrigé passe sans remarque.</figcaption></figure>
+                <table class="tmc">
+                    <tr><th>Étape du workflow</th><th>Rejouée ainsi</th></tr>
+                    <tr><td>Job <code>pre-commit</code></td><td>clone neuf du dépôt, environnement Python 3.12 neuf, cache pre-commit vide, <code>pre-commit run --all-files --show-diff-on-failure</code> : tous les contrôles <code>Passed</code></td></tr>
+                    <tr><td><code>postgres:16</code></td><td>un PostgreSQL 16 existant, mêmes variables <code>PG*</code> (port différent)</td></tr>
+                    <tr><td>Clone d'Odoo</td><td>la même commande <code>git clone --depth 1 --branch 20.0</code></td></tr>
+                    <tr><td>Dépendances Python</td><td>même commande <code>pip</code> dans un environnement neuf ; les paquets système étaient déjà présents</td></tr>
+                    <tr><td>Tests des modules</td><td>le même script, avec <code>TMPDIR=/tmp</code> et Chrome installé sur la machine</td></tr>
+                </table>
+                <p>Ce qui reste propre à GitHub et n'a pas été vérifié ici : le démarrage du conteneur de service, les actions <code>checkout</code>, <code>setup-python</code> et <code>upload-artifact</code> elles-mêmes, et le Chrome de l'image. Lors du premier passage, lisez le journal de l'étape « Tests des modules » jusqu'à la ligne <code>tour succeeded</code>.</p>
+                <div class="v19-box">
+                    <h4>Venant de la 19</h4>
+                    <ul>
+                        <li><code>target-version</code> : <code>py310</code> pour un module 19, <code>py312</code> pour un module 20 ; c'est la seule différence entre les <code>ruff.toml</code> du dépôt d'Odoo des deux versions. Le gabarit OCA généré pour la 20.0 écrit encore <code>py310</code> : corrigez-le.</li>
+                        <li>PostgreSQL : 13 au minimum en 19.0, 16 en 20.0, avec le même simple avertissement en dessous. Un workflow 19 sur <code>postgres:13</code> ou <code>14</code> est à changer.</li>
+                        <li><code>pylint-odoo</code> : <code>--valid-odoo-versions=19.0</code> devient <code>20.0</code>, sinon chaque manifeste porté est refusé, ou un manifeste oublié en 19.0 passe.</li>
+                        <li>Les imports et fichiers interdits ci-dessus (<code>odoo.osv</code>, <code>pytz</code>, <code>ir.model.access.csv</code>, <code>ir.rule</code>) existent tous en 19.0 : ces contrôles n'ont de sens que sur une branche 20.0.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">Aller plus loin</h4>
+                    <p class="mb-0">Modèles, vues, droits, tests et rapports, construits pas à pas sur Odoo 20 : c'est le programme de l'ebook
+                        <a href="/shop/ebook-e1-20-developper-sur-odoo-20-ebook-19">Développer sur Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>ruff pour Odoo 20 : <code>target-version = "py312"</code>, <code>quote-style = "preserve"</code>, et des imports interdits pour <code>odoo.osv</code>, <code>pytz</code>, <code>odoo.tools.ormcache</code>.</li>
+                    <li>pylint-odoo avec <code>--valid-odoo-versions=20.0</code> et <code>oca-checks-odoo-module</code> fonctionnent en 20.0 ; deux contrôles locaux couvrent <code>ir.model.access.csv</code> et <code>ir.rule</code>.</li>
+                    <li>Dans le workflow : <code>postgres:16</code>, Python 3.12, <code>git clone --depth 1 --branch 20.0</code>, et <code>websocket-client</code> en plus du <code>requirements.txt</code>.</li>
+                    <li>Odoo peut sortir avec 0 sans avoir tout testé : jugez aussi le journal (0 test, <code>skipped</code>, <code>ERROR</code>).</li>
+                    <li>Validez le workflow avec <code>actionlint</code> avant de le pousser, puis lisez le journal du premier passage.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/tests-automatises-odoo-20-194">Tests automatisés en Odoo 20 : TransactionCase</a></h5>
+                            <p class="small text-muted mb-0">Écrire les tests que le workflow va lancer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/erreurs-module-19-sous-odoo-20-288">Module Odoo 19 sous Odoo 20 : les messages d'erreur et leur correctif</a></h5>
+                            <p class="small text-muted mb-0">Ce que les contrôles de cet article évitent d'avoir à lire.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/dependances-python-module-odoo-377">Dépendances Python d'un module Odoo 20 : external_dependencies et venv</a></h5>
+                            <p class="small text-muted mb-0">Installer au bon endroit ce que le module et ses tests demandent.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
