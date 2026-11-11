@@ -1,0 +1,480 @@
+<!--
+Article — De la demande de prix au paiement fournisseur dans Odoo 20
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), vague 3 F2.2
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : demande-prix-paiement-fournisseur-odoo
+Tags : intermediaire, achats, guide, community
+Sources vérifiées le 2026-11-11 : Odoo 20.0 Community, base vs20_func_f22 (copie neutralisée de vs20_func), société My Company (San Francisco), USD, taxe 15 %.
+  Joué à l'écran : P00007 (brouillon démo, Ready Mat, 5 FURN_0269 à 130,50 + 15 FURN_8888 à 38) → Envoyer une demande de prix (composeur, courriel bloqué par la neutralisation) → statut Envoyé
+  → Confirmer la commande → Réception 1, WH/IN/00027 → quantité Lampe 12/15 → Valider → « Créer un reliquat » → WH/IN/00029 (reliquat) + WH/STOR/00005 (stockage Entrée → Stock), validé
+  → liste Bons de commande fournisseur, case, « Créer des factures » → brouillon quantités 5 et 12 → Confirmer sans Date : champ rouge + « Champs obligatoires manquants » → Date, Référence F-2026-0042 → FACTURE/2026/11/0001
+  → Payer (Banque, Manual Payment) → PBNK1/2026/00012 Rapproché, facture PAYÉ, montant dû 0 → reliquat WH/IN/00029 validé → P00007 : Reçu 15, Facturé 12, Rapprochement 90 %, Entièrement reçu.
+  Rejoué à l'écran sur P00005 : 2 reçues sur 3 (Support de bureau avec écran), Reçu 2 alors que WH/STOR/00007 est Prêt ; quantité portée de 2 à 3 sur le brouillon, Confirmer sans dialogue ni notification ; bon de commande Reçu 2 / Facturé 3, Rapprochement 125 %. Avoir RFACTURE/2026/09/0001 imputé par Ajouter sur FACTURE/2026/09/0005 : montant dû 7 976,40 → 7 941,90.
+  Prouvé en shell (rollback, copie) : Reçu = 12 dès WH/IN/00027 validé, WH/STOR encore « Prêt » ; facture créée avant toute réception (P00011) = brouillon à quantités 0, total 0 ; facture sans Référence comptabilisée. Reliquat validé sur P00007 : WH/STOR/00006 créé (Prêt).
+  Code : purchase/views/purchase_views.xml:115-127 (boutons), :300-301 (Reçu, Facturé) ; purchase/models/purchase_order.py:229-237 (bill_matched_ratio, moyenne des lignes), :131-135 (invoice_status), :820-890 (action_create_invoice) ;
+  purchase_stock/models/purchase_order_line.py:46-52,62-84 (qty_received = mouvements fournisseur terminés, compté au premier transfert) ; stock/models/stock_warehouse.py:56-60 (réception : défaut one_step) ;
+  purchase/views/res_config_settings_views.xml:43 (Correspondance à trois voies, upgrade_boolean, badge Entreprise à l'écran) ; account_3way_match absent de odoo/addons.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">De la demande de prix au paiement fournisseur dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une demande de prix part chez le fournisseur, revient en commande, puis
+                    en marchandise, en facture et en règlement. Dans Odoo 20, ce parcours traverse trois applications et
+                    chaque document reste rattaché à la commande. Cet article le rejoue en entier sur la base de
+                    démonstration, avec une réception partielle, et signale ce qu'Odoo contrôle réellement entre la
+                    commande, la réception et la facture.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %). L'entrepôt de cette base reçoit en deux étapes ; le réglage par défaut d'Odoo est
+                        une seule étape. Ces modules existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Un processus, trois applications</h2>
+                <p>Le cycle « procure-to-pay », de l'achat au règlement du fournisseur, est le pendant du cycle de vente
+                    décrit dans <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à
+                    l'encaissement dans Odoo 20</a>. Il mobilise les <strong>Achats</strong> (demande de prix et bon de
+                    commande), l'<strong>Inventaire</strong> (réception) et la <strong>Facturation</strong> (facture
+                    fournisseur et paiement).</p>
+                <p>Odoo 20 Community n'a pas de module de demande d'achat interne, avec validation d'un besoin avant
+                    consultation. Le parcours part donc de la <strong>demande de prix</strong>, saisie à la main ou créée
+                    par une règle de réapprovisionnement. L'application Achats propose aussi des contrats-cadres et des
+                    appels d'offres (réglage « Conventions d'achat »), traités dans <a
+                    href="/blog/fonctionnel-odoo-1/conventions-achat-appels-offres-odoo-218">Conventions d'achat et appels
+                    d'offres dans Odoo 20</a>.</p>
+                <p>Le fil conducteur est la demande de prix P00007 de la démonstration, adressée à Ready Mat : 5 « Chaise
+                    de bureau noire » et 15 « Lampe de bureau ». Seules 12 lampes arriveront dans un premier temps, ce
+                    qui permet de voir ce que chaque application fait d'un écart.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>envoyer une demande de prix et la transformer en bon de commande ;</li>
+                    <li>enregistrer une réception partielle et son reliquat, en une ou deux étapes ;</li>
+                    <li>créer la facture fournisseur à partir des quantités réellement reçues ;</li>
+                    <li>enregistrer le paiement et vérifier qu'il ne reste rien à régler ;</li>
+                    <li>remonter la chaîne et lire le rapprochement entre commande, réception et facture.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du cycle d'achat dans Odoo 20 : Achats, demande de prix P00007, bouton Envoyer une demande de prix ; Achats, bon de commande, bouton Confirmer la commande ; Inventaire, réception WH/IN/00027, boutons Recevoir puis Valider ; Inventaire, stockage WH/STOR/00005, bouton Valider ; Facturation, facture FACTURE/2026/11/0001, boutons Créer des factures puis Confirmer ; Facturation, paiement PBNK1/2026/00012, bouton Payer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Six étapes, trois applications : chaque document reste relié à la commande d'origine.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Préparer et envoyer la demande de prix</h2>
+                <p>Ouvrez <strong>Achats › Commandes › Demandes de prix</strong>. Cette base en compte 12 à
+                    l'état « Nouveau », visibles dans le compteur en tête de liste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des demandes de prix dans Odoo 20 : compteurs Nouveau 12, Envoyé 2, Demande de prix en retard 14, Non confirmé 8, Réception en retard 9 ; colonnes Référence, Fournisseur, Société, Acheteur, Échéance de commande, Total, Statut ; lignes P00033, P00032, P00031" style="max-width:100%; height:auto;"/>
+                    <figcaption>La liste des demandes de prix et ses compteurs.</figcaption>
+                </figure>
+                <p>Ouvrez P00007. La demande porte sur 5 chaises à 130,50 $ et 15 lampes à 38 $, soit 1 222,50 $ hors
+                    taxes et 1 405,88 $ taxes comprises. Parmi les boutons en tête, <strong>Envoyer une demande
+                    de prix</strong> et <strong>Confirmer la commande</strong> ouvrent deux chemins.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Demande de prix P00007 dans Odoo 20 : boutons Envoyer une demande de prix, Confirmer la commande, Imprimer, Annuler ; état Demande de prix ; fournisseur Ready Mat ; lignes 5 Chaise de bureau noire à 130,50 et 15 Lampe de bureau à 38,00, taxe 15 % ; total 1 405,88 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La demande de prix : fournisseur, lignes et deux chemins possibles.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Envoyer une demande de prix</strong>. Odoo prépare un courriel avec le PDF en
+                    pièce jointe.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fenêtre Rédiger un e-mail dans Odoo 20 : destinataire Ready Mat, sujet en anglais My Company (San Francisco) Request for Quotation (Ref P00007), corps en français, pièce jointe Demande de prix - P00007.pdf, boutons Envoyer et Ignorer" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le courriel préparé : corps en français, sujet en anglais, PDF joint.</figcaption>
+                </figure>
+                <p>Le corps du message est en français, mais le sujet reste en anglais (« Request for Quotation ») :
+                    relisez-le avant envoi. Une fois le message envoyé, la barre d'état affiche l'étape
+                    <strong>Envoyé</strong>, qui n'apparaît que lorsque la demande y est. L'envoi n'est pas obligatoire :
+                    une demande peut être confirmée directement depuis l'état « Demande de prix ». L'application est présentée en détail dans <a
+                    href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la demande de prix
+                    à la facture dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Confirmer le bon de commande</h2>
+                <p>Quand le fournisseur a répondu, cliquez sur <strong>Confirmer la commande</strong>. La demande devient
+                    un bon de commande fournisseur, sous le même numéro.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Bon de commande P00007 confirmé dans Odoo 20 : boutons intelligents Rapprochement des factures 0 %, Comparaison des prix, Réception 1 ; boutons Recevoir, Charger la facture, Envoyer un bon de commande, Accuser réception ; état Bon de commande fournisseur ; statut de la réception Non reçu ; colonnes Reçu et Facturé à 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La commande confirmée : Réception 1 en haut, colonnes Reçu et Facturé à zéro.</figcaption>
+                </figure>
+                <p>La confirmation a créé la réception et ajouté, en haut de la fiche, le bouton intelligent
+                    <strong>Réception</strong>. Le statut indique « Non reçu », et les colonnes <strong>Reçu</strong> et
+                    <strong>Facturé</strong> des lignes suivront désormais l'avancement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Recevoir la marchandise</h2>
+                <p>Cliquez sur <strong>Recevoir</strong>. Le bon WH/IN/00027 s'ouvre avec les quantités demandées déjà
+                    reportées dans la colonne <strong>Quantité</strong>. Seules 12 lampes sont arrivées : corrigez la
+                    quantité de la ligne, puis cliquez sur <strong>Valider</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Bon de réception WH/IN/00027 dans Odoo 20 : type d'opération YourCompany: Réceptions, emplacement de destination WH/Entrée, document d'origine P00007, lignes Chaise de bureau noire demande 5 quantité 5 et Lampe de bureau demande 15 quantité 12" style="max-width:100%; height:auto;"/>
+                    <figcaption>La réception : 15 lampes demandées, 12 comptées.</figcaption>
+                </figure>
+                <p>Comme la quantité comptée est inférieure à la demande, Odoo pose la question du reste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre de reliquat dans Odoo 20 : Vous avez traité moins de produits que la demande initiale, boutons Créer un reliquat, Aucun reliquat, Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Créer un reliquat garde les 3 lampes manquantes à recevoir.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un reliquat</strong>. Un nouveau bon, WH/IN/00029, attend les 3 lampes
+                    restantes : il s'ajoute à la première réception sous le bouton intelligent <strong>Réception</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste des transferts de la commande P00007 dans Odoo 20 : WH/IN/00029 de Vendors vers WH/Entrée, Prêt ; WH/IN/00027 de Vendors vers WH/Entrée, Terminé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le reliquat WH/IN/00029 à côté de la réception terminée.</figcaption>
+                </figure>
+                <p>Sur cette base, l'entrepôt reçoit en deux étapes, comme présenté dans <a
+                    href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et
+                    livraisons en plusieurs étapes dans Odoo 20</a>. La marchandise est d'abord posée à l'emplacement
+                    <strong>WH/Entrée</strong>, puis la validation de la réception crée le bon de stockage WH/STOR/00005,
+                    de WH/Entrée vers WH/Stock. Avec le réglage par défaut, une seule étape, ce second bon n'existe pas.
+                    Sur cette base, ouvrez <strong>Inventaire › Opérations › Transferts</strong>, cherchez P00007, ouvrez WH/STOR/00005 et cliquez sur <strong>Valider</strong> pour ranger la marchandise.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Bon de stockage WH/STOR/00005 terminé dans Odoo 20 : contact Ready Mat, type d'opération YourCompany: Stockage, de WH/Entrée vers WH/Stock, document d'origine P00007, lignes Chaise de bureau noire 5 et Lampe de bureau 12" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deuxième étape : de l'entrée au stock.</figcaption>
+                </figure>
+                <p>Revenez au bon de commande : le statut est passé à <strong>Partiellement reçu</strong> et la colonne
+                    Reçu affiche 5 chaises et 12 lampes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Bon de commande P00007 dans Odoo 20 après la première réception : bouton Réception 2, statut de la réception Partiellement reçu, lignes Chaise de bureau noire quantité 5 reçu 5, Lampe de bureau quantité 15 reçu 12, Facturé 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bon de commande reflète la réception : 12 lampes sur 15.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Enregistrer la facture fournisseur</h2>
+                <p>Sur le formulaire du bon de commande, le bouton <strong>Charger la facture</strong> attend un fichier
+                    transmis par le fournisseur. Sans fichier, passez par la liste <strong>Achats › Commandes › Bons de
+                    commande fournisseur</strong> : cochez P00007, puis cliquez sur <strong>Créer des factures</strong>.</p>
+                <p>Le brouillon reprend les quantités <strong>reçues</strong>, pas les quantités commandées : 5 chaises et
+                    12 lampes, soit 1 108,50 $ hors taxes et 1 274,78 $ taxes comprises. C'est le comportement de la
+                    <strong>Politique de contrôle</strong> « Sur base des quantités reçues » portée par ces articles ;
+                    l'autre valeur facture sur les quantités commandées, comme pour un service.</p>
+                <p>Avant toute réception, le même bouton produit un brouillon à quantités nulles, de total 0 : la facture n'a de sens qu'après la réception.</p>
+                <p>Renseignez la <strong>Date</strong> de la facture et la <strong>Référence facture</strong>, c'est-à-dire
+                    le numéro du document reçu du fournisseur (ici F-2026-0042), puis cliquez sur
+                    <strong>Confirmer</strong>. Sans date, Odoo refuse la confirmation : le champ passe en rouge et une
+                    notification signale « Champs obligatoires manquants ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Facture fournisseur FACTURE/2026/11/0001 comptabilisée dans Odoo 20 : boutons intelligents Écritures comptables, PO Matching 100 %, Achats P00007 ; boutons Payer, Avoir, Remettre en brouillon ; bandeau Vous avez des débits en circulation ; fournisseur Ready Mat, référence F-2026-0042 ; lignes 5 Chaise de bureau noire et 12 Lampe de bureau ; total 1 274,78 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture confirmée, reliée au bon de commande par le bouton Achats (compte bancaire masqué).</figcaption>
+                </figure>
+                <p>Le bouton intelligent <strong>Achats</strong> ramène au bon de commande, et l'indicateur « PO Matching »
+                    mesure la part des lignes rattachées à une commande. Les cas particuliers, doublons compris, sont
+                    traités dans <a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs
+                    dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Régler le fournisseur</h2>
+                <p>Cliquez sur <strong>Payer</strong>. La fenêtre reprend le journal, le montant restant dû, la date de
+                    règlement et un mémo égal à la référence de la facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fenêtre Payer dans Odoo 20 : journal Banque, Recipient Account masqué, montant 1 274,78 USD, date de règlement 11 nov., mémo F-2026-0042, boutons Créer un paiement et Ignorer" style="max-width:75%; height:auto;"/>
+                    <figcaption>Le règlement, prérempli depuis la facture (compte bancaire masqué).</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Créer un paiement</strong>. Sur cette base, avec le journal Banque, la facture passe aussitôt à l'état payé : un ruban <strong>PAYÉ</strong> apparaît, un
+                    bouton intelligent <strong>Paiements</strong> mène au paiement PBNK1/2026/00012 et le montant dû tombe
+                    à zéro.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Facture fournisseur FACTURE/2026/11/0001 payée dans Odoo 20 : ruban PAYÉ, boutons intelligents Paiements 1, Écritures comptables, PO Matching 100 %, Achats P00007 ; total 1 274,78 $, Payé le 11/11/2026 1 274,78 $, montant dû 0,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture réglée : ruban PAYÉ, bouton Paiements, montant dû à zéro.</figcaption>
+                </figure>
+                <p>Le suivi des échéances et le rapprochement avec le relevé bancaire font l'objet de <a
+                    href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a> et
+                    de <a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et
+                    rapprochement dans Odoo 20 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Remonter la chaîne et lire le rapprochement</h2>
+                <p>Chaque document mène au précédent : depuis le paiement, le bouton <strong>Facture</strong> rouvre la
+                    facture ; depuis la facture, <strong>Achats</strong> rouvre le bon de commande ; depuis le bon de
+                    commande, <strong>Réception</strong> liste les bons de réception et <strong>Factures
+                    fournisseurs</strong> les factures. Les bons de réception, eux, portent P00007 comme document
+                    d'origine.</p>
+                <p>Lorsque le reliquat WH/IN/00029 est à son tour validé, le bon de commande passe à
+                    <strong>Entièrement reçu</strong> ; en deux étapes, ce reliquat génère à son tour un bon de stockage à valider (WH/STOR/00006). Les 3 lampes reçues mais pas encore facturées ramènent le statut
+                    de facturation à « Factures en attente » (colonne de la liste des bons de commande) : il faudra une seconde facture, pour ces 3 lampes. Le
+                    bouton <strong>Rapprochement des factures</strong> affiche 90 %, moyenne ligne par ligne des quantités
+                    facturées rapportées aux quantités reçues (5/5 pour les chaises, 12/15 pour les lampes).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Bon de commande P00007 dans Odoo 20 après le reliquat : boutons Rapprochement des factures 90 %, Factures fournisseurs 1, Réception 2 ; statut de la réception Entièrement reçu ; lignes Chaise de bureau noire reçu 5 facturé 5, Lampe de bureau quantité 15 reçu 15 facturé 12" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le reliquat reçu, il reste 3 lampes à facturer : Rapprochement à 90 %.</figcaption>
+                </figure>
+                <p>En cliquant sur ce bouton, Odoo affiche toutes les lignes de commande et de facture du fournisseur, avec
+                    une colonne <strong>Qté à facturer</strong>. Seules les lignes rapprochées portent un numéro (<strong>Matching</strong>),
+                    commun à la ligne de commande et à sa ligne de facture ; l'extrait ci-dessous ne garde que celles de P00007.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_15" alt="Extrait de l'écran Rapprochement des factures dans Odoo 20 pour le fournisseur Ready Mat : colonnes Référence, Produit, Matching, Bill Qty, Qté à facturer, Prix unitaire, Facturé, Acheté ; lignes P00007 Lampe de bureau Qté à facturer 3,00 et FACTURE/2026/11 Lampe 12,00 rapprochées au numéro 16, lignes Chaise de bureau noire rapprochées au numéro 15" style="max-width:100%; height:auto;"/>
+                    <figcaption>Extrait limité à P00007 : 3 lampes restent à facturer.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Application</th><th>Bouton</th><th>Document obtenu</th></tr></thead>
+                    <tbody>
+                        <tr><td>Consulter</td><td>Achats</td><td>Envoyer une demande de prix</td><td>Demande de prix P00007, état Envoyé</td></tr>
+                        <tr><td>Engager</td><td>Achats</td><td>Confirmer la commande</td><td>Bon de commande et réception</td></tr>
+                        <tr><td>Recevoir</td><td>Achats → Inventaire</td><td>Recevoir, Valider</td><td>Réception WH/IN/00027, reliquat WH/IN/00029</td></tr>
+                        <tr><td>Ranger (2 étapes)</td><td>Inventaire</td><td>Valider</td><td>Stockage WH/STOR/00005 (et WH/STOR/00006 pour le reliquat)</td></tr>
+                        <tr><td>Facturer</td><td>Achats → Facturation</td><td>Créer des factures, Confirmer</td><td>Facture FACTURE/2026/11/0001</td></tr>
+                        <tr><td>Régler</td><td>Facturation</td><td>Payer</td><td>Paiement PBNK1/2026/00012</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Les trois applications du parcours (Achats, Inventaire, Facturation) font partie d'Odoo 20 Community :
+                    tout ce qui est montré ici est disponible sans abonnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Rien ne bloque une facture au-delà du reçu</h4>
+                    <p>Sur la commande P00005 de la base de démonstration, 2 unités sur 3 ont été reçues et la quantité portée à 3 sur le brouillon : la facture s'est comptabilisée sans message. Le bon de commande affichait alors 2 reçues, 3 facturées et un rapprochement à 125 %. Le contrôle se fait donc en lisant ces écrans. Le réglage <strong>Correspondance à trois voies</strong> des paramètres Achats
+                        porte le badge « Entreprise » : son module n'est pas inclus dans la Community.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>En deux étapes, « Reçu » compte dès l'entrée en magasin</h4>
+                    <p>La colonne <strong>Reçu</strong> du bon de commande est passée à 12 à la validation de WH/IN/00027,
+                        alors que le bon de stockage WH/STOR/00005 était encore à l'état Prêt. La facture peut donc partir
+                        avant le rangement. De plus, le bouton <strong>Réception</strong> du bon de commande ne liste que
+                        les réceptions (WH/IN), pas le bon de stockage : pour le retrouver, cherchez P00007 parmi les
+                        transferts de l'Inventaire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un avoir en attente ne se déduit pas tout seul</h4>
+                    <p>Le bandeau « Vous avez des débits en circulation » signalait ici un avoir de démonstration de 34,50 $
+                        au nom de Ready Mat, listé dans le pied de la facture. <strong>Payer</strong> a réglé le montant entier de la facture, et l'avoir
+                        est resté en attente. Pour le déduire, cliquez sur <strong>Ajouter</strong> en regard de cet avoir,
+                        avant de payer : sur une autre facture ouverte de la démonstration, FACTURE/2026/09/0005, le montant dû est passé de 7 976,40 $ à 7 941,90 $.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_16" alt="Pied de la facture fournisseur dans Odoo 20 avant paiement : montant dû 1 274,78 $, bloc Débits en circulation, 24/09/2026 RFACTURE/2026, bouton Ajouter, 34,50 $" style="max-width:55%; height:auto;"/>
+                        <figcaption>L'avoir en circulation et son bouton Ajouter, avant le paiement.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> rejouer le cycle complet sur une autre demande de prix, avec une réception partielle.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration avec Achats, Inventaire et
+                        Facturation, confirmez la demande de prix P00006, réceptionnez seulement une partie d'une ligne, créez un reliquat, puis créez
+                        la facture depuis la liste des bons de commande, confirmez-la et payez-la.</p>
+                    <p><strong>Critère de réussite :</strong> la facture porte le ruban PAYÉ avec un montant dû de 0 et ne
+                        contient que les quantités reçues ; le bon de commande affiche « Partiellement reçu » et, une fois
+                        le reliquat validé, une quantité restant à facturer.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le parcours traverse Achats, Inventaire et Facturation ; chaque document reste rattaché à la commande.</li>
+                    <li>En Community, il part de la demande de prix : il n'y a pas de demande d'achat interne à valider.</li>
+                    <li>La facture d'un bon de commande reprend les quantités reçues lorsque la Politique de contrôle de l'article est « Sur base des quantités reçues ».</li>
+                    <li>Une réception partielle donne un reliquat ; en deux étapes, Reçu augmente dès l'entrée en magasin.</li>
+                    <li>Odoo ne bloque pas une facture au-delà du reçu en Community : les colonnes Reçu et Facturé, et le Rapprochement des factures, sont les outils de contrôle.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article fait suite à <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect
+                    à l'encaissement dans Odoo 20</a>. Le prochain article de la série <strong>Odoo 20 de bout en
+                    bout</strong> enchaîne vente et production : de la commande client à la fabrication et à la livraison.
+                    Pour revoir l'application Achats séparément, le point de départ reste <a
+                    href="/blog/fonctionnel-odoo-1/achats-demande-prix-facture-odoo-217">Achats : de la demande de prix à
+                    la facture dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement</a></h5>
+                            <p class="small text-muted mb-0">Le cycle complet côté ventes.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-fournisseurs-odoo-214">Factures fournisseurs dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Saisie, doublons et comptabilisation.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reapprovisionnement-ne-se-declenche-pas-odoo-248">La règle de réapprovisionnement ne se déclenche pas</a></h5>
+                            <p class="small text-muted mb-0">Quand la demande de prix n'apparaît pas toute seule.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
