@@ -1,0 +1,666 @@
+<!--
+Article — Le rapport Excel de la Bibliothèque : Binary sans base64
+Série Développement Odoo 20 (fil rouge : module Bibliothèque) — étape 23 « rapport Excel » ; lot T5 « Rapports et documents en Odoo 20 » (T5.1 du plan vague 3 technique)
+Date : 2026-11-11
+Slug : rapport-excel-bibliotheque-odoo-20
+Mot-clé cible : odoo xlsx report
+Catégorie : Développement Odoo
+Tags : intermediaire, framework-orm, guide, community
+Temps de lecture : ~12 minutes
+Preuves (copie jetable de la base technique, Odoo 20.0 Community 3538ed82, PostgreSQL 16 ; module biblio 20.0.1.20.0 installé, 8 emprunts créés, mis à jour en 20.0.1.21.0) :
+- Assistant : classeur 6 515 octets (signature PK), téléchargement navigateur identique au champ ; openpyxl : feuille Emprunts, A1:I10, volets A2, filtre A1:I9, paysage A4, COUNTA 8, SUM 66 ; rendu LibreOffice headless en PNG.
+- Écriture Binary : bytes base64 ou nus → TypeError « use BinaryValue instead of bytes » ; str base64 décodée ; lecture read() = {filename, content base64, size} ; relecture depuis la base : filename vide.
+- Colonne bytea : octet_length = taille du fichier, commence par PK.
+- ir.attachment : raw=bytes ; raw=BinaryBytes(..., filename=...) sans name (nom repris) ; sans nom → NotNullViolation ; datas= → file_size 0, UserWarning.
+- Restriction create_uid : autre bibliothécaire et admin → AccessError, /web/content → 404 (aussi Accueil et sans session), sudo() lit, ligne retirée → lecture possible ; compte Accueil : menu absent, « Erreur d'accès ».
+- Tests : --test-tags=/biblio, 40/40 sur base neuve sans langue et avec fr_FR (db-filter strict).
+Captures : content/blog/screenshots/rapport-excel-bibliotheque-odoo-20/ (01 schéma, 02 assistant, 03 fichier prêt, 04 classeur).
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  pre[class*="language-"] { border-radius: 6px; font-size: 0.82em; line-height: 1.45; margin: 1rem 0; padding: 0.9rem 1rem; max-width: 100%; overflow-x: auto; }
+  code[class*="language-"] { font-family: 'Fira Code', 'Consolas', 'Menlo', monospace; font-size: inherit; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .v19-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .v19-box h4 { color: #1e40af; margin-top: 0; }
+  .v19-box p:last-child { margin-bottom: 0; }
+
+  .out { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.9rem 1rem; font-family: 'Fira Code','Consolas',monospace; font-size: 0.8em; line-height: 1.5; overflow-x: auto; white-space: pre; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
+
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Le rapport Excel de la Bibliothèque : Binary sans base64</h1>
+                <p class="lead mt-3 text-white">Un assistant qui écrit la liste des emprunts dans un vrai classeur <code>.xlsx</code>, le range
+                    dans un champ <code>Binary</code> et le propose au téléchargement. En Odoo 20, le geste de la version précédente,
+                    <code>base64.b64encode</code>, lève une erreur : le champ attend un <code>BinaryValue</code>, et l'ORM ne repasse en base64
+                    que pour le client web.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · parcours <strong>Framework &amp; ORM</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUE TU VAS APPRENDRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que tu vas apprendre</h2>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <h4>Écrire un classeur</h4>
+                        <p>xlsxwriter en mémoire : formats, dates, formules, volets figés, filtre et mise en page, sans les
+                            cellules <code>FAUX</code> ni les dates en nombre.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Le Binary d'Odoo 20</h4>
+                        <p><code>BinaryBytes</code> à l'écriture, <code>.content</code> à la lecture, ce qui lève
+                            <code>TypeError</code>, et ce que devient <code>datas=</code> sur une pièce jointe.</p>
+                    </div>
+                    <div class="col-md-4">
+                        <h4>Servir et protéger</h4>
+                        <p>Le téléchargement par <code>/web/content</code>, une restriction <code>ir.access</code> pour que
+                            chacun ne voie que son classeur, et un test Python du rapport.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== PRÉREQUIS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="alert alert-info">
+                    <h4 class="alert-heading">Prérequis</h4>
+                    <ul class="mb-0">
+                        <li>Le module <code>biblio</code> de la série, jusqu'à
+                            <a href="/blog/developpement-odoo-2/api-bibliotheque-json-2-odoo-20-347">l'API JSON-2</a> (étape 21) ; l'étape 22,
+                            sur l'import du catalogue, le porte en 20.0.1.20.0. On le fait passer ici en 20.0.1.21.0. Le code ajouté ne
+                            s'appuie que sur les emprunts et le groupe Bibliothécaire.</li>
+                        <li>Le patron de l'assistant, vu à l'étape
+                            <a href="/blog/developpement-odoo-2/assistant-prolonger-odoo-20-189">de l'assistant de prolongation</a>, et le fichier
+                            <code>ir.access.csv</code> des <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">droits d'accès</a>.</li>
+                        <li>XlsxWriter 3.1.9 et openpyxl 3.1.2, tous deux inscrits dans le <code>requirements.txt</code> d'Odoo 20 pour Python 3.12 : rien à
+                            ajouter au manifeste.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <p>Le rapport PDF de l'étape 13 répond à l'impression. Pour retravailler des chiffres, trier ou recouper, il faut
+                    un classeur. Le chemin tient en cinq étapes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : assistant, xlsxwriter, champ Binary avec BinaryBytes, colonne bytea, téléchargement par /web/content, et comparaison avec le base64 de la version 19" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le classeur circule en octets. Seul l'échange avec le client web repasse par du base64, et l'ORM s'en occupe.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. BINARY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ce qu'un champ Binary accepte en Odoo 20</h2>
+                <p>Commençons par le point qui casse tous les exports écrits pour la version précédente. Essai dans
+                    <code>odoo-bin shell</code>, sur l'assistant que l'on va construire ; <code>contenu</code> contient les octets du
+                    classeur :</p>
+<pre class="language-python"><code class="language-python">import base64
+from odoo.tools import BinaryBytes
+
+export.file_data = base64.b64encode(contenu)                 # l'écriture habituelle en 19
+export.file_data = contenu                                   # des octets nus
+export.file_data = BinaryBytes(contenu, filename=export.file_name)   # la bonne écriture
+export.file_data = base64.b64encode(b"abc").decode()         # une chaîne de caractères</code></pre>
+<pre class="out">TypeError: library.loan.export.file_data: use BinaryValue instead of bytes
+TypeError: library.loan.export.file_data: use BinaryValue instead of bytes
+(accepté)
+(accepté : décodé, export.file_data.content vaut b'abc')</pre>
+                <p>Le code du champ dit pourquoi les octets nus sont refusés : « <em>we used to write base64 encoded data and we cannot
+                    distinguish whether bytes are encoded or not in base64</em> ». Odoo préfère s'arrêter que de ranger dans la
+                    base du base64 qu'il prendrait pour le contenu du fichier. Le champ <code>raw</code> de
+                    <code>ir.attachment</code> est la seule exception, puisqu'on sait qu'il est brut. Une <code>str</code>, elle, continue d'être
+                    décodée comme du base64 : c'est la forme qui arrive par RPC.</p>
+                <div class="v19-box">
+                    <h4>Odoo 19 → Odoo 20</h4>
+                    <p>En 19.0, le champ transporte du base64 : <code>convert_to_column</code> le pose dans la colonne tel qu'il arrive, et l'assistant
+                        d'export des traductions écrit <code>base64.encodebytes(buf.getvalue())</code>. Le même assistant, en 20.0 :</p>
+<pre class="language-diff"><code class="language-diff">- out = is_exported and base64.encodebytes(buf.getvalue())
++ out = is_exported and BinaryBytes(buf.getvalue())</code></pre>
+                    <p>Lecture aussi : la valeur d'un champ est un <code>BinaryValue</code>, pas des <code>bytes</code> ni du base64.</p>
+                </div>
+                <p>À la lecture, on passe par les propriétés de l'objet. Valeurs relevées sur le classeur généré plus bas :</p>
+<pre class="language-python"><code class="language-python">valeur = export.file_data
+print(type(valeur).__name__, valeur.size, valeur.content[:4], valeur.filename, valeur.mimetype)
+print(valeur.to_base64()[:12])
+print(export.read(['file_data'])[0]['file_data'].keys())</code></pre>
+<pre class="out">BinaryBytes 6516 b'PK\x03\x04' emprunts_20260101_20261111.xlsx application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+UEsDBBQAAAAI
+dict_keys(['filename', 'content', 'size'])</pre>
+                <p>Le base64 n'a pas disparu : <code>read()</code> en sert un dans <code>content</code>, pour le client web. Simplement, il
+                    n'est plus dans le code du module.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ASSISTANT ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. L'assistant : deux états, un fichier</h2>
+                <p>Un nouveau fichier <code>wizard/library_loan_export.py</code>, importé dans <code>wizard/__init__.py</code>. L'assistant a deux
+                    états : <code>choose</code> pour la saisie, <code>get</code> quand le fichier est prêt.</p>
+<pre class="language-python"><code class="language-python">import io
+
+from odoo import api, fields, models
+from odoo.exceptions import UserError, ValidationError
+from odoo.fields import Domain
+from odoo.tools import BinaryBytes, date_utils
+
+
+class LibraryLoanExport(models.TransientModel):
+    _name = 'library.loan.export'
+    _description = "Exporter les emprunts vers Excel"
+    # Explicite : en 20.0, la valeur héritée tombe à 0 dans la tâche de nettoyage.
+    _transient_max_hours = 1.0
+
+    date_from = fields.Date(
+        string="Emprunts du",
+        required=True,
+        default=lambda self: date_utils.start_of(fields.Date.context_today(self), 'year'),
+    )
+    date_to = fields.Date(string="au", required=True, default=fields.Date.context_today)
+    scope = fields.Selection(
+        [
+            ('all', "Tous"),
+            ('ongoing', "En cours"),
+            ('late', "En retard"),
+        ],
+        string="Emprunts à inclure",
+        default='all',
+        required=True,
+    )
+    state = fields.Selection([('choose', "Choix"), ('get', "Fichier prêt")], default='choose')
+    loan_count = fields.Integer(string="Emprunts exportés", readonly=True)
+    # Le fichier : des octets bruts dans un BinaryValue, plus de base64 en 20.0.
+    file_data = fields.Binary(string="Classeur", readonly=True, attachment=False)
+    file_name = fields.Char(string="Nom du fichier", readonly=True)
+
+    @api.constrains('date_from', 'date_to')
+    def _check_dates(self):
+        for export in self:
+            if export.date_from &gt; export.date_to:
+                raise ValidationError(self.env._("La date de début doit précéder la date de fin."))</code></pre>
+                <p><code>attachment=False</code> range le fichier dans une colonne <code>bytea</code> de la table de l'assistant, au lieu de créer une pièce jointe.
+                    C'est ce que fait aussi l'assistant d'export des traductions du cœur. Le fichier disparaît avec la ligne
+                    de l'assistant, à la purge périodique (<code>_transient_max_hours</code> se déclare comme à l'étape 12), sans pièce jointe à nettoyer.
+                    Vérification dans PostgreSQL :</p>
+<pre class="out">SELECT octet_length(file_data), encode(substring(file_data from 1 for 2), 'escape') FROM library_loan_export;
+ 6516 | PK</pre>
+                <p>Le contenu de la colonne est bien le fichier, et non du texte base64.</p>
+                <p>Le champ <code>file_name</code> n'est pas un doublon. Le <code>filename</code> de <code>BinaryBytes</code> ne vit que dans la valeur
+                    en mémoire : relu depuis la base, il revient vide.</p>
+<pre class="out">avant relecture   : 'emprunts_20260101_20261111.xlsx'
+relu depuis la base : ''</pre>
+                <p>Le nom doit donc rester dans un champ, et la vue l'indique au widget par <code>filename="file_name"</code>.</p>
+<pre class="language-xml"><code class="language-xml">            &lt;form string="Exporter les emprunts"&gt;
+                &lt;field name="state" invisible="1"/&gt;
+                &lt;field name="file_name" invisible="1"/&gt;
+                &lt;group invisible="state != 'choose'"&gt;
+                    &lt;group&gt;
+                        &lt;field name="date_from"/&gt;
+                        &lt;field name="date_to"/&gt;
+                    &lt;/group&gt;
+                    &lt;group&gt;
+                        &lt;field name="scope" widget="radio"/&gt;
+                    &lt;/group&gt;
+                &lt;/group&gt;
+                &lt;div invisible="state != 'get'"&gt;
+                    &lt;p&gt;&lt;field name="loan_count" class="oe_inline" readonly="1"/&gt; emprunt(s) dans le classeur :&lt;/p&gt;
+                    &lt;p&gt;&lt;field name="file_data" readonly="1" filename="file_name"/&gt;&lt;/p&gt;
+                &lt;/div&gt;
+                &lt;footer invisible="state != 'choose'"&gt;
+                    &lt;button name="action_generate" type="object" string="Générer le classeur" class="btn-primary"/&gt;
+                    &lt;button string="Annuler" special="cancel" class="btn-secondary"/&gt;
+                &lt;/footer&gt;
+                &lt;footer invisible="state != 'get'"&gt;
+                    &lt;button name="action_download" type="object" string="Télécharger" class="btn-primary"/&gt;
+                    &lt;button string="Fermer" special="cancel" class="btn-secondary"/&gt;
+                &lt;/footer&gt;
+            &lt;/form&gt;</code></pre>
+                <p>La vue se déclare dans le manifeste, et un menu <em>Rapports › Emprunts (Excel)</em> ouvre l'action en
+                    <code>target="new"</code>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Assistant Exporter les emprunts : deux dates, trois choix Tous, En cours, En retard et le bouton Générer le classeur" style="max-width:100%; height:auto;"/>
+                    <figcaption>État <code>choose</code> : par défaut, du 1<sup>er</sup> janvier à aujourd'hui, tous les emprunts.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CLASSEUR ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Écrire le classeur avec xlsxwriter</h2>
+                <p>Le filtrage d'abord, avec les emprunts triés par date, puis la construction du fichier. Une méthode qui rend des octets et ne
+                    touche à aucun enregistrement : c'est elle que l'on teste.</p>
+<pre class="language-python"><code class="language-python">    def _get_loans(self):
+        self.ensure_one()
+        domain = Domain('date_out', '&gt;=', self.date_from) &amp; Domain('date_out', '&lt;=', self.date_to)
+        if self.scope == 'ongoing':
+            domain &amp;= Domain('state', '=', 'ongoing')
+        elif self.scope == 'late':
+            domain &amp;= Domain('is_late', '=', True)
+        return self.env['library.loan'].search(domain, order='date_out, reference')
+
+    def _build_workbook(self, loans):
+        """Rend le classeur .xlsx des emprunts, en octets."""
+        import xlsxwriter  # noqa: PLC0415 (dépendance d'Odoo, importée à l'usage comme dans le cœur)
+
+        etats = dict(loans._fields['state']._description_selection(self.env))
+        colonnes = [
+            (self.env._("Référence"), 16),
+            (self.env._("Livre"), 32),
+            (self.env._("Exemplaire"), 14),
+            (self.env._("Adhérent"), 24),
+            (self.env._("Emprunté le"), 13),
+            (self.env._("À rendre le"), 13),
+            (self.env._("Rendu le"), 13),
+            (self.env._("État"), 10),
+            (self.env._("Jours de retard"), 15),
+        ]
+        buffer = io.BytesIO()
+        with xlsxwriter.Workbook(buffer, {'in_memory': True}) as classeur:
+            feuille = classeur.add_worksheet(self.env._("Emprunts"))
+            entete = classeur.add_format({
+                'bold': True, 'font_color': '#FFFFFF', 'bg_color': '#017E84', 'border': 1,
+            })
+            date = classeur.add_format({'num_format': 'dd/mm/yyyy'})
+            retard = classeur.add_format({'bold': True, 'font_color': '#B91C1C'})
+            total = classeur.add_format({'bold': True, 'top': 1})
+
+            for col, (titre, largeur) in enumerate(colonnes):
+                feuille.write(0, col, titre, entete)
+                feuille.set_column(col, col, largeur)
+
+            for ligne, emprunt in enumerate(loans, start=1):
+                feuille.write_string(ligne, 0, emprunt.reference)
+                feuille.write_string(ligne, 1, emprunt.book_id.title or "")
+                feuille.write_string(ligne, 2, emprunt.copy_id.name or "")
+                feuille.write_string(ligne, 3, emprunt.member_id.name or "")
+                for col, valeur in ((4, emprunt.date_out), (5, emprunt.date_due), (6, emprunt.date_return)):
+                    if valeur:  # une date vide vaut False : write() l'écrirait comme booléen FAUX
+                        feuille.write_datetime(ligne, col, valeur, date)
+                feuille.write_string(ligne, 7, etats.get(emprunt.state, ""))
+                feuille.write_number(ligne, 8, emprunt.days_late, retard if emprunt.days_late else None)
+
+            fin = len(loans) + 1
+            feuille.write_string(fin, 0, self.env._("Total"), total)
+            feuille.write_formula(fin, 1, f'=COUNTA(A2:A{fin})', total, len(loans))
+            feuille.write_formula(fin, 8, f'=SUM(I2:I{fin})', total, sum(loans.mapped('days_late')))
+            feuille.freeze_panes(1, 0)
+            feuille.autofilter(0, 0, len(loans), len(colonnes) - 1)
+            # À l'impression : A4 paysage, toutes les colonnes sur une page de large.
+            feuille.set_paper(9)
+            feuille.set_landscape()
+            feuille.fit_to_pages(1, 0)
+        return buffer.getvalue()</code></pre>
+                <p>Quelques choix à relever :</p>
+                <ul>
+                    <li><strong><code>import xlsxwriter</code> dans la méthode</strong>, comme le fait le cœur dans
+                        <code>web/controllers/export.py</code>.</li>
+                    <li><strong><code>with xlsxwriter.Workbook(...)</code></strong> : le fichier ZIP n'est écrit dans le tampon qu'à la fermeture. Le
+                        <code>getvalue()</code> vient après le bloc.</li>
+                    <li><strong><code>self.env._()</code></strong> pour les titres et les libellés : ils seront traduits comme ceux des vues. Pour les
+                        états, on prend le libellé affiché de la sélection, pas la clé <code>ongoing</code>.</li>
+                    <li><strong>Formules avec valeur calculée</strong> : le dernier argument de <code>write_formula</code> est le résultat stocké. Sans
+                        lui, xlsxwriter stocke 0 : relu sans évaluation, <code>=1+1</code> vaut 0.</li>
+                    <li><strong>Mise en page</strong> : A4, paysage, une page de large. C'est aussi ce qui a permis le rendu complet de la dernière figure.</li>
+                </ul>
+                <div class="pitfall-box">
+                    <h4>write() sur une date : FAUX ou nombre</h4>
+                    <p>Un champ <code>Date</code> vide vaut <code>False</code> dans Odoo. La méthode générique <code>write()</code> de xlsxwriter en fait
+                        un booléen : la cellule affiche <code>FAUX</code>, relu par openpyxl comme <code>False</code>. Et une date écrite sans format
+                        devient un simple nombre : <code>2026-01-02</code> a été relu <code>46024</code>, format <code>General</code>. D'où le test sur
+                        la valeur et l'appel explicite à <code>write_datetime(ligne, col, valeur, date)</code>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. TÉLÉCHARGER ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ranger le fichier et le faire télécharger</h2>
+<pre class="language-python"><code class="language-python">    def action_generate(self):
+        self.ensure_one()
+        loans = self._get_loans()
+        if not loans:
+            raise UserError(self.env._("Aucun emprunt ne correspond à ces critères."))
+        nom = f"emprunts_{self.date_from:%Y%m%d}_{self.date_to:%Y%m%d}.xlsx"
+        self.write({
+            'state': 'get',
+            'loan_count': len(loans),
+            'file_data': BinaryBytes(self._build_workbook(loans), filename=nom),
+            'file_name': nom,
+        })
+        return {
+            'type': 'ir.actions.act_window',
+            'name': self.env._("Exporter les emprunts"),
+            'res_model': self._name,
+            'res_id': self.id,
+            'view_mode': 'form',
+            'views': [(False, 'form')],
+            'target': 'new',
+        }
+
+    def action_download(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_url',
+            'url': f'/web/content/{self._name}/{self.id}/file_data/{self.file_name}?download=true',
+            'target': 'download',
+        }</code></pre>
+                <p><code>action_generate</code> rouvre le même enregistrement, au lieu de fermer la fenêtre : le formulaire passe à l'état
+                    <code>get</code>. L'utilisateur a alors deux moyens d'obtenir le fichier : le lien du champ, ou le bouton
+                    <em>Télécharger</em>, qui renvoie une action <code>ir.actions.act_url</code>. La réponse étant un fichier à télécharger
+                    (<code>?download=true</code>), la page ne change pas. Avec <code>target: 'download'</code>, le client ne traite ni <code>close</code> ni
+                    <code>onClose</code> : la fenêtre de l'assistant reste ouverte après le téléchargement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Assistant à l'état fichier prêt : 8 emprunts dans le classeur, le lien emprunts_20260101_20261111.xlsx et les boutons Télécharger et Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>État <code>get</code> : le lien du champ <code>Binary</code> et le bouton mènent au même fichier.</figcaption>
+                </figure>
+                <p>La route utilisée est celle du cœur, <code>/web/content/&lt;modèle&gt;/&lt;id&gt;/&lt;champ&gt;/&lt;nom&gt;</code>, ici avec
+                    <code>?download=true</code>. Aucun contrôleur à écrire, et elle sert un champ <code>attachment=False</code> comme une pièce
+                    jointe. Réponse relevée pour le compte qui a généré le fichier :</p>
+<pre class="out">200
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+Content-Disposition: attachment; filename=emprunts_20260101_20261111.xlsx
+6515 octets</pre>
+                <p>Le type de contenu n'est écrit nulle part dans le module : Odoo le déduit du fichier. La taille bouge de quelques octets
+                    d'une génération à l'autre (6 515 ici, 6 516 dans les essais précédents), et le test HTTP de la section 8 compare les octets reçus au contenu du champ.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. CONTRÔLER ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Contrôler le classeur</h2>
+                <p>Un classeur qui se télécharge n'est pas encore un classeur correct. Le fichier obtenu par le navigateur, relu par
+                    openpyxl. Il lit soit les formules, soit leur dernière valeur calculée, d'où les deux ouvertures :</p>
+<pre class="language-python"><code class="language-python">import openpyxl
+
+classeur = openpyxl.load_workbook('emprunts_20260101_20261111.xlsx')
+feuille = classeur['Emprunts']
+print(classeur.sheetnames, feuille.dimensions, feuille.freeze_panes, feuille.auto_filter.ref)
+print(feuille['A2'].value, feuille['E2'].value, feuille['E2'].number_format, feuille['I2'].value)
+print(feuille['A10'].value, feuille['B10'].value, feuille['I10'].value)
+valeurs = openpyxl.load_workbook('emprunts_20260101_20261111.xlsx', data_only=True)['Emprunts']
+print(valeurs['B10'].value, valeurs['I10'].value)</code></pre>
+<pre class="out">['Emprunts'] A1:I10 A2 A1:I9
+EMP/2026/0001 2026-09-22 00:00:00 dd/mm/yyyy 36
+Total =COUNTA(A2:A9) =SUM(I2:I9)
+8 66</pre>
+                <p>Huit emprunts, dates formatées, en-tête figé, filtre limité aux lignes de données (la ligne Total reste hors du filtre). Rendu du même
+                    fichier par LibreOffice, sans interface graphique :</p>
+<pre class="language-bash"><code class="language-bash">soffice -env:UserInstallation=file://$(mktemp -d) --headless --convert-to png emprunts_20260101_20261111.xlsx</code></pre>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Classeur rendu par LibreOffice : huit emprunts sur neuf colonnes, en-tête sur fond bleu-vert, jours de retard en rouge, ligne Total à 8 et 66" style="max-width:100%; height:auto;"/>
+                    <figcaption>Rendu LibreOffice en image, recadré. Volets figés et flèches de filtre n'apparaissent pas à l'image : c'est openpyxl qui les a contrôlés ci-dessus.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. DROITS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Chacun son classeur</h2>
+                <p>Un modèle transitoire n'est pas privé par nature, et ce fichier contient les noms des adhérents. Deux lignes dans
+                    <code>security/ir.access.csv</code> :</p>
+<pre class="language-text"><code class="language-text">access_library_loan_export_manager,Exporter les emprunts : assistant,library.loan.export,group_library_manager,cru,
+restrict_library_loan_export_own,Exporter les emprunts : chacun son classeur,library.loan.export,,rud,"[('create_uid', '=', user.id)]"</code></pre>
+                <p>La première est une <strong>permission</strong> (avec groupe), la seconde une <strong>restriction</strong> (sans groupe, appliquée à tous).
+                    Le résultat, pour un classeur généré par un bibliothécaire :</p>
+                <table class="tmc">
+                    <thead><tr><th>Qui</th><th>En Python</th><th>Par <code>/web/content</code></th></tr></thead>
+                    <tbody>
+                        <tr><td>Celui qui l'a généré</td><td>lit le fichier</td><td>200</td></tr>
+                        <tr><td>Un autre bibliothécaire</td><td><code>AccessError</code></td><td>404</td></tr>
+                        <tr><td>Un administrateur (membre du groupe Bibliothécaire)</td><td><code>AccessError</code></td><td>404</td></tr>
+                        <tr><td>Un agent d'accueil (sans le groupe)</td><td>pas de droit de création, menu absent</td><td>404</td></tr>
+                        <tr><td>Sans session</td><td>—</td><td>404</td></tr>
+                    </tbody>
+                </table>
+                <p>Sans la restriction, l'autre bibliothécaire lit bien l'assistant : n'importe quel membre du groupe peut récupérer le fichier d'un collègue en changeant l'identifiant dans
+                    l'adresse. Une restriction sans groupe concerne tout le monde, administrateur compris ; seul <code>sudo()</code> passe outre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. PIÈCE JOINTE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Garder le fichier : ir.attachment</h2>
+                <p>L'assistant jette son fichier à la purge. Pour le conserver, attaché à un emprunt par exemple, on crée une pièce jointe. Quatre essais avec
+                    les mêmes octets :</p>
+<pre class="language-python"><code class="language-python">Attachment = env['ir.attachment']
+base = {'res_model': 'library.loan', 'res_id': emprunt.id}
+
+a = Attachment.create({**base, 'name': 'emprunts.xlsx', 'datas': base64.b64encode(contenu)})
+b = Attachment.create({**base, 'name': 'emprunts.xlsx', 'raw': contenu})
+c = Attachment.create({**base, 'raw': BinaryBytes(contenu, filename='emprunts.xlsx')})
+Attachment.create({**base, 'raw': contenu})   # sans nom</code></pre>
+<pre class="out">datas= : file_size 0, raw vide     UserWarning: Use raw, datas has beeen removed
+raw=   : file_size 6516, type application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+raw=BinaryBytes(filename=…) : name 'emprunts.xlsx', file_size 6516
+sans nom : NotNullViolation: null value in column "name" of relation "ir_attachment" violates not-null constraint</pre>
+                <div class="pitfall-box">
+                    <h4><code>datas=</code> ne lève rien et crée une pièce jointe vide</h4>
+                    <p>La clé est retirée des valeurs et un simple avertissement part dans le journal. L'enregistrement existe, porte son nom,
+                        et le fichier fait 0 octet. On ne le découvre qu'en ouvrant le document. <code>raw=</code>, ici en <code>bytes</code> ou en <code>BinaryBytes</code>, est la seule écriture à retenir ;
+                        avec <code>BinaryBytes</code> et son <code>filename</code>, le <code>name</code> peut même être omis.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 8. TESTS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Tester le rapport</h2>
+                <p>Le test relit le classeur avec openpyxl, comme on l'a fait à la main, et vérifie le refus du base64. Extrait de
+                    <code>tests/test_loan_export.py</code> (le fichier complet contrôle aussi le contenu des lignes, le filtre « En retard », l'absence d'emprunt et la
+                    mise en page) :</p>
+<pre class="language-python"><code class="language-python">    def test_file_is_raw_xlsx(self):
+        export = self._export()
+        self.assertEqual(export.state, 'get')
+        self.assertIsInstance(export.file_data, BinaryValue)
+        # Des octets bruts : la signature ZIP d'un .xlsx, pas du base64.
+        self.assertEqual(export.file_data.content[:2], b'PK')
+        self.assertTrue(export.file_name.endswith('.xlsx'))
+        self.assertEqual(export.loan_count, 3)
+
+    # …
+
+    def test_base64_bytes_refused(self):
+        export = self._export()
+        # L'écriture de la 19.0 : des octets base64 dans un champ Binary.
+        with self.assertRaisesRegex(TypeError, "use BinaryValue instead of bytes"):
+            export.file_data = base64.b64encode(b"PK...")</code></pre>
+                <p>Un second test passe par HTTP : il s'authentifie, appelle l'adresse rendue par <code>action_download</code> et compare les octets reçus au
+                    contenu du champ.</p>
+<pre class="language-bash"><code class="language-bash"># une base neuve sans langue, puis une autre base neuve en français
+odoo-bin -c odoo.conf -d ma_base -i biblio --test-enable --test-tags=/biblio --stop-after-init
+odoo-bin -c odoo.conf -d ma_base -i biblio --load-language=fr_FR --test-enable --test-tags=/biblio --stop-after-init</code></pre>
+<pre class="out">INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 40 tests when loading database 'ma_base'   (sans langue)
+INFO ma_base odoo.tests.result: 0 failed, 0 error(s) of 40 tests when loading database 'ma_base'   (fr_FR)</pre>
+                <p>Quarante tests au compte d'Odoo, dont sept nouveaux. Les libellés ajoutés entrent dans <code>i18n/biblio.pot</code> par la commande d'export. Les
+                    options globales, dont le chemin des modules, se placent avant la sous-commande : après, elle les refuse.</p>
+<pre class="language-bash"><code class="language-bash">odoo-bin --addons-path=odoo/addons,odoo/odoo/addons,custom-addons i18n export -c odoo.conf -d ma_base -o custom-addons/biblio/i18n/biblio.pot biblio</code></pre>
+                <p>Pour une base déjà installée, le manifeste passe en <code>20.0.1.21.0</code> et <code>-u biblio</code> crée la table de l'assistant, les droits, la vue et le menu.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== MÉMO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Mémo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Besoin</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Écrire dans un <code>Binary</code></td><td><code>BinaryBytes(octets, filename=nom)</code> (<code>from odoo.tools import BinaryBytes</code>)</td></tr>
+                        <tr><td>Lire un <code>Binary</code></td><td><code>rec.champ.content</code>, <code>.size</code>, <code>.mimetype</code>, <code>.filename</code></td></tr>
+                        <tr><td>Écrire avec <code>bytes</code> nus ou base64</td><td><code>TypeError … use BinaryValue instead of bytes</code></td></tr>
+                        <tr><td>Garder le nom d'un <code>Binary</code></td><td>un champ <code>Char</code> + <code>filename="..."</code> dans la vue</td></tr>
+                        <tr><td>Pièce jointe</td><td><code>raw=</code> ; <code>datas=</code> donne un fichier vide</td></tr>
+                        <tr><td>Faire télécharger</td><td><code>ir.actions.act_url</code>, <code>/web/content/&lt;modèle&gt;/&lt;id&gt;/&lt;champ&gt;/&lt;nom&gt;?download=true</code></td></tr>
+                        <tr><td>Fichier privé</td><td>restriction <code>ir.access</code> sans groupe : <code>[('create_uid', '=', user.id)]</code></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Odoo 20, un champ <code>Binary</code> reçoit un <code>BinaryBytes</code> : <code>base64.b64encode</code> lève <code>TypeError</code>.</li>
+                    <li>Le nom du fichier n'est pas conservé par le champ : il faut un <code>Char</code> à côté.</li>
+                    <li>Avec xlsxwriter, une date passe par <code>write_datetime</code> et un format, et jamais une valeur vide par <code>write()</code>.</li>
+                    <li>Un assistant n'est pas privé : une restriction <code>create_uid</code> empêche un collègue de récupérer le fichier par son adresse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources</h3>
+                <p class="small">Module <code>biblio</code> mis à jour de 20.0.1.20.0 en 20.0.1.21.0 le 11/11/2026 sur
+                    Odoo 20.0 Community (PostgreSQL 16), sur une copie jetable de base supprimée ensuite ; assistant utilisé dans le navigateur, classeur
+                    téléchargé relu par openpyxl et rendu par LibreOffice ; essais du champ et des pièces jointes par <code>odoo-bin shell</code> ; tests sur deux bases
+                    neuves. La branche 19.0 a été lue, et non exécutée pour cet article. Code relu :</p>
+                <ul class="small">
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/orm/fields_binary.py" target="_blank" rel="noopener"><code>odoo/orm/fields_binary.py</code></a> (20.0) : <code>convert_to_cache</code>, <code>convert_to_read</code> ; <a href="https://github.com/odoo/odoo/blob/19.0/odoo/orm/fields_binary.py" target="_blank" rel="noopener">19.0</a> : <code>convert_to_column</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/tools/binary.py" target="_blank" rel="noopener"><code>odoo/tools/binary.py</code></a> : <code>BinaryValue</code>, <code>BinaryBytes</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/wizard/base_export_language.py" target="_blank" rel="noopener"><code>base_export_language.py</code></a> : <code>BinaryBytes</code> en 20.0, <a href="https://github.com/odoo/odoo/blob/19.0/odoo/addons/base/wizard/base_export_language.py" target="_blank" rel="noopener"><code>base64.encodebytes</code> en 19.0</a></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_attachment.py" target="_blank" rel="noopener"><code>odoo/addons/base/models/ir_attachment.py</code></a> : retrait de <code>datas</code></li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/requirements.txt" target="_blank" rel="noopener"><code>requirements.txt</code></a> : XlsxWriter, openpyxl</li>
+                    <li><a href="https://github.com/odoo/odoo/blob/20.0/addons/web/controllers/binary.py" target="_blank" rel="noopener"><code>addons/web/controllers/binary.py</code></a> : route <code>/web/content</code></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/assistant-prolonger-odoo-20-189">L'assistant en Odoo 20 : prolonger en lot</a></h5>
+                            <p class="small text-muted mb-0">Le patron de cet article : l'assistant, son action, sa purge.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/rapport-pdf-odoo-20-190">Le rapport PDF en Odoo 20 : la fiche de prêt</a></h5>
+                            <p class="small text-muted mb-0">L'autre sortie de la Bibliothèque, pour l'impression.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/exporter-liste-excel-odoo-351">Exporter une liste vers Excel dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">L'export standard, côté utilisateur, quand un rapport dédié n'est pas nécessaire.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
