@@ -1,0 +1,525 @@
+<!--
+Article — Droits d'accès simplifiés Odoo 20 : relire après migration
+Série « Passer à Odoo 20 » (blog Fonctionnel, série 69), vague 3 F6.2, étape 2
+Date : 2026-11-11 (poste, rédaction anticipée)
+Slug : droits-acces-simplifies-migration-odoo
+Tags : intermediaire, guide, community (3, 36, 16 ; « configuration » (1) n'a pas de catégorie, refusé par le script de dépôt)
+Titre du plan « Droits d'accès simplifiés dans Odoo 20 : relire ses groupes et règles après migration » (83 car.) raccourci à 58 ;
+  meta title « Droits d'accès Odoo 20 : relire groupes et règles migrés ».
+Jumeau v19 : post 124 « Utilisateurs, groupes et droits d'accès dans Odoo 19 Community » (publié). Figure 3 reprise de cet article (Odoo 19).
+Sources vérifiées le 2026-11-11 : Odoo 20.0 Community (révision 3538ed82), base vs20_func_f62 (copie neutralisée de vs20_func),
+  société My Company (San Francisco). Aucun module installé pour l'article (Ventes, CRM, Inventaire, Fabrication déjà présents). Odoo 19 : source 19.0 (7196ee375) en lecture seule, aucune base 19 démarrée.
+  Modèle unique ir.access : odoo/addons/base/models/ir_access.py:64-81 (champs), :84-87 et :128-131 (kind permission/restriction =
+  groupe renseigné ou non), :139-145 (is_standard), :261-276 (customize = copie + original archivé) ; combinaison
+  odoo/orm/models.py:3647 « Domain.OR(permissions) & Domain.AND(restrictions) » ; aide du formulaire ir_access_views.xml:76-89 ;
+  lignes standard en lecture seule (readonly="is_standard") ; filtres Personnalisé / Archivé ir_access_views.xml:167-168.
+  Menus 20 : base_menus.xml:107-112 (Technique › Sécurité : Scopes, Droits d'accès, User Sessions, Périphériques) ; Groupes
+  base_menus.xml:42 (Utilisateurs & Sociétés, mode développeur). 19 : Droits d'accès ir_model_views.xml:707, Règles sur les
+  enregistrements ir_rule_views.xml:106, privilèges sous Utilisateurs & Sociétés res_groups_views.xml:50.
+  Groupe 20 : res_groups_views.xml:121-205 (boutons Groupes implicites, Impliquer des groupes, Droits d'accès ; onglets Utilisateurs,
+  Dépendances, Droits d'accès, Menus, Vues, Paramètres) ; 19 : res_groups_views.xml:84-142 (onglets Droits d'accès ET Règles
+  d'enregistrement).
+  Utilisateur 20 : res_users_views.xml:109-115 (boutons Groupes, Droits d'accès), :163-170 (Rôle, privilèges), res_users.py:264
+  (rôle Light / User / Administrateur), :507-510 et :1195-1205 (le bouton Droits d'accès liste les lignes des groupes de l'utilisateur :
+  domaine group_id in groupes, donc aucune restriction) ; 19 : res_users_views.xml:105-113 (bouton « Règles d'enregistrement » en
+  plus), res_users.py:272 (rôle User / Administrateur seulement).
+  Correspondances 19 → 20 dans les modules standard : sale.order 19 = addons/sale/security/ir.model.access.csv:31 (droit vendeur) +
+  ir_rules.xml:44-55 (règles personnelle / tout voir) → 20 = addons/sale/security/ir.access.csv:32-35 (« Personal Orders » …,
+  « Sales Order multi-company » sans groupe) ; account_payment_term_comp_rule 19 (règle globale) → 20 restriction
+  account/security/ir.access.csv:85. Droit 19 sans groupe = tous les utilisateurs (19 : odoo/addons/base/models/ir_model.py:2093-2094) ;
+  script officiel de conversion des modules : odoo/upgrade_code/19.4-00-ir-access.py:515-519 (sans groupe → base.group_everyone),
+  :126-143 (avertissement « acl group without rules, giving access to ALL records »). Aucun script de migration des données dans
+  odoo/addons/base (ni upgrades/ ni migrations/).
+  Changement silencieux (19 : ir_rule.py:157-171, seules les règles des groupes de l'utilisateur, en OU, et aucune règle pour
+  stock.group_stock_user ni mrp.group_mrp_user sur sale.order : sale_stock/security/ir.model.access.csv:5,
+  sale_mrp/security/ir.model.access.csv:3 sans règle ; 20 : sale_stock/security/ir.access.csv:7 et sale_mrp/security/ir.access.csv:3,
+  permissions « ru » sans domaine) : Marc Demo (Ventes / Utilisateur : mes documents seulement + Inventaire / Utilisateur + Fabrication
+  / Utilisateur) voit et peut modifier les 76 commandes de la démo, dont 37 à lui (shell : search_count 76, _filtered_access('write')
+  76 ; écran : regroupement par Vendeur, Marc Demo 37 / Mitchell Admin 38 / OdooBot 1).
+  Piège joué à l'écran puis supprimé : ligne « Commandes : chacun les siennes (essai) », sale.order, sans groupe, Lire + Mettre à jour,
+  domaine ['|', ('user_id', '=', user.id), ('user_id', '=', False)] → Mitchell Admin (administrateur) ne voit plus que ses 38
+  commandes, Marc Demo 37. Domaine corrigé « … if not user.has_group('sales_team.group_sale_salesman_all_leads') else [] » →
+  administrateur 76, Marc Demo 37 (écrit dans les deux sessions). Ligne supprimée : retour à 76 / 76 (écran et shell).
+  Customize sur « Personal Orders » : copie « Personal Orders (copie) » active, original archivé ; -u sale (odoo-bin --stop-after-init) :
+  original toujours archivé, copie et ligne d'essai intactes. Puis copie supprimée et original réactivé.
+  « Se connecter en tant que » : absent de odoo/addons 20.0 (grep impersonat : seulement un exemple de docstring res_users.py:348).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Droits d'accès simplifiés Odoo 20 : relire après migration</h1>
+                <p class="lead mt-3 text-white">Odoo 20 réunit en une seule liste ce qu'Odoo 19 répartissait entre droits
+                    d'accès et règles d'enregistrement. Le principe est plus simple, mais deux réflexes d'Odoo 19 n'y
+                    donnent plus le même résultat. Cet article montre où l'administrateur lit désormais les droits,
+                    ce que deviennent les règles, et comment relire une base après la migration.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · série <strong>Passer à Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) ») où Ventes, CRM,
+                        Inventaire et Fabrication sont installés ; aucun module n'a été ajouté pour l'article. Les écrans de sécurité exigent le mode développeur. Les comparaisons avec Odoo 19 s'appuient sur le
+                        code source de la version 19.0 et sur une capture de l'article Odoo 19 cité plus bas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Pourquoi relire ses droits après la migration</h2>
+                <p>En Odoo 19, la sécurité d'un modèle tenait sur deux étages. Les <strong>droits d'accès</strong> disaient
+                    si un groupe pouvait lire, modifier, créer ou supprimer un type de document ; les <strong>règles
+                    d'enregistrement</strong> disaient ensuite lesquels. Cette organisation est décrite pas à pas dans
+                    <a href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">Utilisateurs,
+                    groupes et droits d'accès dans Odoo 19 Community</a>, qui reste la référence pour une base en 19.</p>
+                <p>Odoo 20 supprime les règles d'enregistrement en tant que telles : une seule liste, toujours appelée
+                    <strong>Droits d'accès</strong>, porte à la fois les opérations et le domaine qui limite les
+                    enregistrements. Les groupes, la fiche utilisateur et les privilèges restent (l'écran des privilèges change de menu et de
+                    nom, voir la section 1). Ce qui
+                    change, c'est la façon dont les lignes se combinent. Une base qui donnait les bons droits en 19 peut
+                    en donner davantage, ou moins, en 20, sans aucun message d'erreur. Le responsable de la migration doit
+                    donc relire, et pas seulement vérifier que tout s'ouvre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>trouver et lire les droits d'accès d'Odoo 20 : menus, liste, fiche d'une ligne, fiche d'un groupe ;</li>
+                    <li>reconnaître ce qu'est devenue une règle d'enregistrement d'Odoo 19 ;</li>
+                    <li>repérer le cas où un utilisateur voit plus de documents qu'en Odoo 19 ;</li>
+                    <li>éviter le piège de la ligne sans groupe, qui restreint tout le monde ;</li>
+                    <li>dérouler une méthode de relecture après migration.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN UN COUP D'ŒIL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>En un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma Odoo 19 vers Odoo 20 : à gauche, droit d'accès d'un groupe devient permission du groupe, règle d'enregistrement du même groupe entre dans la permission, règle globale sans groupe devient restriction, droit d'accès sans groupe devient permission du groupe Rôle / Tout le monde ; à droite, ce qu'un utilisateur peut faire sur un modèle : permission A OU permission B, ET restriction 1 ET restriction 2 ; en bas, méthode en quatre temps : lister, repérer, croiser, tester" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une ligne par cas en Odoo 20, et la règle qui les combine : permissions en OU, restrictions en ET.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Sujet</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Où lire la sécurité d'un modèle</td><td>Technique › Sécurité : Droits d'accès, puis Règles sur les enregistrements</td><td>Technique › Sécurité › Droits d'accès, seul</td></tr>
+                        <tr><td>Ligne avec un groupe</td><td>droit d'accès (sans domaine) et, à part, règle du groupe</td><td><strong>Permission</strong> : opérations et domaine sur la même ligne</td></tr>
+                        <tr><td>Ligne sans groupe</td><td>droit d'accès sans groupe : accordé à tous les utilisateurs ; règle sans groupe : globale</td><td><strong>Restriction</strong> appliquée à tous, administrateur compris</td></tr>
+                        <tr><td>Fiche d'un groupe</td><td>onglets Droits d'accès et Règles d'enregistrement</td><td>un onglet Droits d'accès avec une colonne Type ; bouton du même nom</td></tr>
+                        <tr><td>Fiche utilisateur</td><td>rôle Utilisateur ou Administrateur ; boutons Groupes, Droits d'accès, Règles d'enregistrement</td><td>rôle Light, User ou Administrateur ; boutons Groupes et Droits d'accès</td></tr>
+                        <tr><td>Modifier une ligne livrée par un module</td><td>modifiable directement</td><td>en lecture seule ; bouton <strong>Customize</strong> = copie modifiable, original archivé</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. OÙ LIRE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Où lire les droits en Odoo 20</h2>
+                <p>Activez le mode développeur (Paramètres › Outils développeur › Activer le mode développeur), puis ouvrez
+                    <strong>Paramètres › Technique</strong>. La rubrique <strong>Sécurité</strong> ne compte plus d'entrée
+                    « Règles sur les enregistrements ». Elle propose <strong>Droits d'accès</strong>, la liste unique, et
+                    <strong>Scopes</strong>, l'ancien écran « Privilèges » qu'Odoo 19 rangeait sous Utilisateurs &amp;
+                    Sociétés. Les deux autres entrées, User Sessions et Périphériques de l'utilisateur, recensent les
+                    connexions ; elles ne règlent pas les droits.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Menu Technique des paramètres d'Odoo 20, rubrique Sécurité : User Sessions, Scopes, Droits d'accès, Périphériques de l'utilisateur ; au-dessus, Paramètres système" style="max-width:40%; height:auto;"/>
+                    <figcaption>Paramètres › Technique › Sécurité en Odoo 20 : plus d'entrée pour les règles d'enregistrement.</figcaption>
+                </figure>
+                <p>Pour comparer, voici une règle globale telle qu'Odoo 19 l'affichait : un écran à part, avec son domaine,
+                    ses quatre cases et une case « Global » cochée parce qu'aucun groupe n'y est rattaché.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Odoo 19 : formulaire de la règle d'enregistrement Account payment term company rule sur le modèle Conditions de paiement, Actif, cases Lire Écrire Créer Supprimer cochées, domaine company_id égal à False ou parent_of company_ids, rubrique Groupes (pas de groupe = global) avec la case Global cochée et aucun groupe, encadré Interaction entre les règles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Odoo 19 (capture de l'article Odoo 19 cité plus haut) : la règle globale « Account payment term company rule ». En Odoo 20, la même règle est une ligne de type Restriction de la liste des droits d'accès.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. CE QUE DEVIENT UNE RÈGLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que devient une règle d'enregistrement</h2>
+                <p>La liste des droits d'accès se filtre comme n'importe quelle liste. Tapez <code>sale.order</code> dans la
+                    recherche et choisissez « Rechercher Modèle » : la recherche ramène aussi les lignes de commande et
+                    l'assistant de remise, les onze premières lignes concernent la commande client elle-même. Les colonnes
+                    C, L, M et S sont Créer, Lire, Mettre à jour et Supprimer ; la colonne <strong>Type</strong> dit si la
+                    ligne est une <strong>Permission</strong> (elle a un groupe) ou une <strong>Restriction</strong>
+                    (elle n'en a pas).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des droits d'accès d'Odoo 20 filtrée sur le modèle sale.order : Personal Orders (Ventes / Utilisateur : mes documents, domaine user_id égal à l'utilisateur ou vide), All Orders pour tous les documents et pour l'administrateur, Project User User Orders avec domaine, MRP User Orders, Account Invoicing Orders, POS Sales Orders, Stock User Orders, Account Readonly Orders, Portal Personal Quotations avec domaine, toutes de type Permission en vert ; Sales Order multi-company sans groupe, domaine company_id in company_ids, de type Restriction en rouge" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les lignes de la commande client en Odoo 20 : dix permissions, une restriction multi-société.</figcaption>
+                </figure>
+                <p>La ligne <strong>Personal Orders</strong> illustre la fusion. En Odoo 19, le groupe « Ventes / Utilisateur :
+                    mes documents seulement » avait un droit d'accès sur la commande client, et une règle d'enregistrement
+                    distincte limitait ce droit à ses propres commandes. En Odoo 20, c'est une seule ligne : le groupe, les
+                    opérations Créer, Lire et Mettre à jour, et le domaine « vendeur = l'utilisateur, ou vendeur vide ». La
+                    règle multi-société, globale en 19, est devenue la restriction <strong>Sales Order multi-company</strong>.
+                    La règle globale de la figure 3 a suivi le même chemin : c'est en Odoo 20 une restriction sur les
+                    conditions de paiement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fiche de la ligne d'accès Personal Orders dans Odoo 20 : bouton Customize en haut, ruban vert Permission, Modèle Commande client, Groupe Ventes / Utilisateur : mes documents seulement, onglets Operations, Assistance, Notes ; Créer, Lire, Mettre à jour cochés, Supprimer décoché ; Domaine user_id égal à user.id ou à False" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une ligne livrée par le module Ventes : ruban Permission, champs grisés, bouton Customize.</figcaption>
+                </figure>
+                <p>Trois détails de cette fiche comptent pour l'administrateur. Le ruban indique le type. Les champs d'une
+                    ligne livrée par un module sont en lecture seule. Pour l'adapter, le bouton <strong>Customize</strong>
+                    crée une copie modifiable et archive l'original : l'essai mené sur la copie de la base a donné une ligne
+                    « Personal Orders (copie) » active et l'original archivé, et une mise à jour du module Ventes a laissé
+                    les deux dans cet état. L'onglet <strong>Assistance</strong> rappelle la règle de combinaison, en anglais :
+                    les lignes sans groupe sont des restrictions qui se cumulent (ET), les lignes avec groupe des
+                    permissions qui s'additionnent (OU), y compris entre les différents groupes d'un même utilisateur.</p>
+                <p><strong>Et une base migrée ?</strong> La Community ne contient aucun script de migration des données :
+                    la conversion des droits personnalisés d'une base 19 dépend de l'outil de migration retenu. Le script
+                    officiel qui convertit le code des modules applique les correspondances du schéma : un droit
+                    d'accès sans groupe, qui valait pour tous les utilisateurs en 19, y devient une permission du groupe
+                    <strong>Rôle / Tout le monde</strong>, et non une ligne sans groupe. Les lignes créées dans l'interface ou importées
+                    apparaissent sous le filtre « Personnalisé », point de départ de la relecture (section 6) ; celles
+                    des modules spécifiques n'y figurent pas, car elles sont livrées par un module comme les lignes
+                    standard.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. GROUPE ET UTILISATEUR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. La fiche d'un groupe et la fiche d'un utilisateur</h2>
+                <p>Les groupes s'ouvrent par <strong>Paramètres › Utilisateurs &amp; Sociétés › Groupes</strong>, en mode
+                    développeur. La fiche affiche désormais trois boutons en haut : <strong>Groupes implicites</strong> (les groupes
+                    que celui-ci donne d'office), <strong>Impliquer des groupes</strong> (ceux qui le donnent) et
+                    <strong>Droits d'accès</strong>. Les onglets deviennent Utilisateurs, Dépendances, Droits d'accès, Menus,
+                    Vues et Paramètres ; l'onglet « Règles d'enregistrement » d'Odoo 19 a disparu, puisque le domaine figure
+                    sur chaque ligne de l'onglet Droits d'accès, avec sa colonne Type.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fiche du groupe Ventes / Utilisateur : mes documents seulement dans Odoo 20 : boutons Groupes implicites 3, Impliquer des groupes 1, Droits d'accès 68 ; titre tronqué Utilisateur : mes documents se ; description l'utilisateur aura accès à ses données dans l'application Ventes ; onglet Droits d'accès ouvert, 1-40 sur 68 : Personal Orders sur Commande client avec domaine, account_account salesman sur Compte, account_analytic_account sur Compte analytique, user read access, edit all (crm) et res.partner.crm.user sur Contact, toutes de type Permission avec une corbeille" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le groupe « mes documents seulement » : 68 lignes d'accès, dont Personal Orders. Le titre de la fiche est tronqué par Odoo.</figcaption>
+                </figure>
+                <p>La fiche utilisateur garde l'onglet <strong>Droits d'accès</strong> organisé par privilèges, introduit
+                    en Odoo 19. Deux différences : le rôle propose désormais <strong>Light</strong> à côté de User et
+                    Administrateur (la démonstration contient un utilisateur « Monica Light » à ce rôle ; son incidence
+                    tarifaire est traitée dans
+                    <a href="/blog/fonctionnel-odoo-1/utilisateur-leger-tarifs-odoo-enterprise-292">Odoo 20 Enterprise :
+                    Utilisateur Léger et nouveaux tarifs</a>), et le bouton « Règles d'enregistrement » a disparu. Le bouton
+                    <strong>Droits d'accès</strong> (613 lignes pour Marc Demo) liste les lignes de ses groupes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fiche utilisateur de Marc Demo dans Odoo 20 en mode développeur : boutons Groupes 40, Droits d'accès 613, Employé 1, Contact, Karma 2 500 ; statut Confirmé ; identifiant demo, courriel et téléphone ; onglet Droits d'accès : Rôles, Rôle Light / User coché / Administrateur, Sociétés FR Company, My Company (Chicago), My Company (San Francisco), société par défaut My Company (San Francisco) ; Données de base : Produits View, Contact Création, Exporter Autorisé ; Ventes : Ventes Utilisateur : mes documents seulement, Point de Vente No" style="max-width:100%; height:auto;"/>
+                    <figcaption>Marc Demo, utilisateur de la démonstration : rôle User, Ventes « mes documents seulement ».</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. CHANGEMENT SILENCIEUX ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le cas à chercher : un utilisateur qui voit plus qu'avant</h2>
+                <p>Marc Demo est réglé sur « Ventes : mes documents seulement ». Plus bas sur sa fiche, il est aussi
+                    utilisateur de Fabrication et d'Inventaire, comme un commercial qui suit ses livraisons.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche de Marc Demo, rubrique Chaîne d'approvisionnement : Fabrication Utilisateur, Achats No, Inventaire Utilisateur, Maintenance No" style="max-width:55%; height:auto;"/>
+                    <figcaption>Les autres privilèges de Marc Demo : Fabrication et Inventaire au niveau Utilisateur.</figcaption>
+                </figure>
+                <p>Connecté avec son compte, ouvrez <strong>Ventes › Commandes › Commandes</strong>, retirez le filtre
+                    proposé et regroupez par Vendeur : Marc Demo voit les 76 commandes de la base, dont les 38 de Mitchell
+                    Admin. La vérification sur la copie montre qu'il peut aussi les modifier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Session de Marc Demo dans Odoo 20 : liste Commandes clients sans filtre, regroupée par Vendeur : Marc Demo 37 enregistrements pour 40 131,85 $, Mitchell Admin 38 enregistrements pour 525 941,28 $, OdooBot 1 enregistrement pour 320 $, total 566 393,13 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Dans la session de Marc Demo : toutes les commandes, y compris celles de Mitchell Admin.</figcaption>
+                </figure>
+                <p>La raison se lit dans la figure 4. Les groupes Inventaire / Utilisateur et Fabrication / Utilisateur
+                    portent chacun une permission <strong>Lire + Mettre à jour</strong> sur la commande client,
+                    <strong>sans domaine</strong>. Les lignes « Account Invoicing Orders » et « Account Readonly Orders »
+                    de la comptabilité ont le même effet pour leurs groupes. Les permissions d'un utilisateur s'additionnent : « ses commandes » OU
+                    « toutes les commandes » donne toutes les commandes. En Odoo 19, ces deux groupes avaient bien un droit
+                    d'accès sur la commande client, mais aucune règle d'enregistrement ; seule la règle « commandes
+                    personnelles » du groupe Ventes s'appliquait, et le même utilisateur ne voyait que ses commandes.</p>
+                <p>Le changement ne produit aucun message. Le script officiel de conversion des modules le signale
+                    seulement dans son journal, par un avertissement qui dit qu'un groupe « sans règle » donne accès à
+                    tous les enregistrements. Pour l'administrateur, la conséquence est simple : un réglage « mes
+                    documents seulement » ne tient que si aucun autre groupe de l'utilisateur ne donne une permission sans
+                    domaine sur le même modèle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. LIGNE SANS GROUPE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le piège de la ligne sans groupe</h2>
+                <p>Pour ramener Marc Demo à ses commandes, le réflexe est d'ajouter une ligne. Sur la copie, l'administrateur
+                    crée par <strong>Nouveau</strong> une ligne « Commandes : chacun les siennes (essai) » : modèle Commande
+                    client, Lire et Mettre à jour cochés, le domaine de Personal Orders, et le champ Groupe laissé vide.
+                    Le champ Groupe vide porte l'indication « Restriction globally applied » et le ruban affiche
+                    <strong>Restriction</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fiche de la ligne d'accès Commandes : chacun les siennes (essai) dans Odoo 20 : ruban orange Restriction, Modèle Commande client, Groupe vide avec le texte indicatif Restriction globally applied, Lire et Mettre à jour cochés, Créer et Supprimer décochés, domaine user_id égal à user.id ou à False" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une ligne sans groupe : Odoo la classe en Restriction, appliquée à tous.</figcaption>
+                </figure>
+                <p>Marc Demo retombe bien à ses 37 commandes. Mais la restriction s'applique à tout le monde, administrateur
+                    compris : dans la session de Mitchell Admin, la même liste ne montre plus que ses 38 commandes. Le
+                    responsable commercial perd la vue d'ensemble, sans message.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Session de Mitchell Admin, administrateur, après l'ajout de la restriction : liste Commandes clients regroupée par Vendeur, une seule ligne Mitchell Admin 38 enregistrements pour 525 941,28 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Avec la restriction d'essai, l'administrateur ne voit plus que ses propres commandes.</figcaption>
+                </figure>
+                <p>Le même réflexe venu des droits d'accès d'Odoo 19 trompe aussi dans l'autre sens. En 19, un droit d'accès
+                    sans groupe était accordé à tous les utilisateurs. En 20, une ligne sans groupe n'accorde rien : elle ne
+                    fait que restreindre, et un modèle qui n'a aucune permission reste fermé, même à l'administrateur. Pour
+                    ouvrir un modèle à tous, la ligne doit porter le groupe <strong>Rôle / Tout le monde</strong>, qui
+                    comprend aussi les utilisateurs du portail et les visiteurs du site ; pour les seuls employés,
+                    choisissez <strong>Rôle / Utilisateur</strong>.</p>
+                <p>Deux corrections ont été vérifiées sur la copie. La plus simple est de se demander si le commercial a
+                    vraiment besoin des privilèges Inventaire et Fabrication. Si oui, la restriction peut tester le groupe
+                    de l'utilisateur dans son domaine : la version ci-dessous ne limite que les utilisateurs qui n'ont pas
+                    le privilège « Ventes : tous les documents » (le responsable des ventes l'a d'office).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Même ligne d'accès en Odoo 20, ruban Restriction, domaine modifié : user_id égal à user.id ou à False if not user.has_group('sales_team.group_sale_salesman_all_leads') else liste vide" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le domaine corrigé ne s'applique qu'aux vendeurs limités à leurs documents.</figcaption>
+                </figure>
+                <p>Avec ce domaine, l'administrateur retrouve les 76 commandes et Marc Demo reste à ses 37, en lecture comme
+                    en modification. La ligne d'essai a ensuite été supprimée : Marc Demo revoit les 76 commandes, comme au
+                    départ. Une telle ligne se teste toujours sur une copie de la base, avec la session d'un utilisateur de
+                    chaque profil.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. MÉTHODE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Méthode de relecture après migration</h2>
+                <p><strong>Lister ce qui est propre à la base.</strong> Dans Technique › Sécurité › Droits d'accès, le
+                    filtre <strong>Personnalisé</strong> ne garde que les lignes qui ne viennent pas d'un module : celles
+                    créées à la main ou importées, et les copies faites par Customize. Les droits des modules spécifiques
+                    de la base n'y sont pas : filtrez la liste sur leurs modèles ou leurs groupes. Le filtre
+                    <strong>Archivé</strong> montre les lignes standard mises de côté. Sur la copie, après l'essai de
+                    Customize et la ligne de la section 5, le filtre Personnalisé affichait ces deux lignes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Liste des droits d'accès d'Odoo 20 avec le filtre Personnalisé : deux lignes sur Commande client, Personal Orders (copie) pour le groupe Ventes / Utilisateur : mes documents, de type Permission, et Commandes : chacun les siennes (essai) sans groupe, avec le domaine conditionnel, de type Restriction" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le filtre Personnalisé : la copie faite par Customize et la restriction d'essai.</figcaption>
+                </figure>
+                <p><strong>Repérer chaque restriction.</strong> Regroupez cette liste par Type : chaque Restriction vaut
+                    pour tous les utilisateurs. Attention, elle n'apparaît pas depuis la fiche d'un utilisateur : le bouton
+                    Droits d'accès ne liste que les lignes de ses groupes. Avec le filtre Personnalisé, celui de Marc Demo
+                    montrait la copie de Personal Orders, mais pas la restriction qui le limitait.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Liste ouverte par le bouton Droits d'accès de la fiche de Marc Demo, filtre Personnalisé : une seule ligne, Personal Orders (copie), Commande client, Ventes / Utilisateur : mes documents seulement, Permission ; la restriction d'essai n'y figure pas" style="max-width:100%; height:auto;"/>
+                    <figcaption>Depuis la fiche de Marc Demo : la restriction qui s'applique à lui n'est pas listée.</figcaption>
+                </figure>
+                <p><strong>Croiser les groupes.</strong> Pour chaque profil limité à « ses documents », filtrez la liste sur
+                    le modèle concerné et cherchez une permission sans domaine d'un autre groupe que l'utilisateur possède,
+                    comme à la section 4.</p>
+                <p><strong>Tester dans une vraie session.</strong> La Community n'a pas de fonction « se connecter en tant
+                    que ». Le test se fait donc avec le compte de l'utilisateur, sur une copie de la base, dans une fenêtre
+                    de navigation privée : listes principales sans filtre, regroupées par vendeur ou par société.</p>
+                <table class="tmc">
+                    <thead><tr><th>Étape</th><th>Où</th><th>À chercher</th></tr></thead>
+                    <tbody>
+                        <tr><td>Lister</td><td>Droits d'accès, filtres Personnalisé puis Archivé ; modèles et groupes des modules spécifiques</td><td>lignes ajoutées à la main, lignes des modules maison, lignes standard désactivées</td></tr>
+                        <tr><td>Repérer</td><td>même liste, regrouper par Type</td><td>toute Restriction : elle s'applique à tous, administrateur compris</td></tr>
+                        <tr><td>Croiser</td><td>liste filtrée sur un modèle sensible (commandes, pistes, factures)</td><td>permission sans domaine d'un groupe que possède un utilisateur limité</td></tr>
+                        <tr><td>Tester</td><td>session de l'utilisateur sur une copie de la base</td><td>nombre de documents visibles par vendeur, par société</td></tr>
+                    </tbody>
+                </table>
+                <p>Le détail technique du modèle, pour l'équipe qui porte des modules spécifiques, est dans
+                    <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une permission sans domaine l'emporte sur « mes documents »</h4>
+                    <p>Un utilisateur réglé sur « mes documents seulement » voit tout dès qu'un autre de ses groupes donne
+                        une permission sans domaine sur le même modèle. Sur la démonstration, les privilèges Inventaire et
+                        Fabrication suffisent à ouvrir toutes les commandes à Marc Demo. Odoo 19 ne les lui montrait pas.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Une ligne sans groupe restreint tout le monde, et n'accorde rien</h4>
+                    <p>Laisser le groupe vide crée une restriction appliquée à tous les utilisateurs, administrateur compris
+                        (figure 11). Elle n'ouvre l'accès à personne : pour accorder un droit aux employés, choisissez le groupe
+                        Rôle / Utilisateur ; Rôle / Tout le monde inclut aussi le portail et les visiteurs du site.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Personnaliser une ligne standard la remplace par une copie</h4>
+                    <p>Customize archive la ligne du module et crée une copie modifiable ; une mise à jour du module laisse
+                        l'original archivé. La copie ne suit donc plus les changements que le module apportera à sa ligne :
+                        notez la raison de la copie dans l'onglet Notes, et relisez-la à chaque montée de version.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> expliquer pourquoi Marc Demo ne voit que ses opportunités dans le CRM,
+                        alors qu'il voit toutes les commandes.</p>
+                    <p><strong>Indication :</strong> en mode développeur, filtrez la liste des droits d'accès sur le modèle
+                        <code>crm.lead</code>, puis comparez les groupes des permissions avec ceux de Marc Demo. Connectez-vous
+                        ensuite avec son compte (identifiant et mot de passe <code>demo</code> sur une base de démonstration)
+                        et ouvrez CRM › Pipeline en liste, sans filtre, regroupé par Vendeur.</p>
+                    <p><strong>Critère de réussite :</strong> aucune permission sans domaine sur ce modèle ne vient d'un des
+                        groupes de Marc Demo, et sa liste ne montre que le groupe « Marc Demo ».</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 n'a plus de règles d'enregistrement à part : une seule liste, Technique › Sécurité › Droits d'accès.</li>
+                    <li>Avec groupe : Permission, les permissions s'additionnent. Sans groupe : Restriction, pour tous, administrateur compris.</li>
+                    <li>Une permission sans domaine d'un autre groupe annule l'effet de « mes documents seulement ».</li>
+                    <li>Les lignes livrées par les modules sont en lecture seule ; Customize crée une copie et archive l'original.</li>
+                    <li>Relire = filtre Personnalisé, chaque Restriction, croisement des groupes, test dans la session de l'utilisateur.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article est la deuxième étape de la série <strong>Passer à Odoo 20</strong>, après les changements
+                    visibles à l'écran. Le prochain article prépare la comptabilité : comptes parents, codes optionnels et
+                    modèles d'amortissement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">Utilisateurs, groupes et droits d'accès (Odoo 19)</a></h5>
+                            <p class="small text-muted mb-0">La référence pour une base encore en Odoo 19.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 : ir.access</a></h5>
+                            <p class="small text-muted mb-0">Le même sujet côté développeur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les nouveautés d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le catalogue des nouveautés, en Community et en Enterprise.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
