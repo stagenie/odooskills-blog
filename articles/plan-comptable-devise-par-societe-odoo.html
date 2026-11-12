@@ -1,0 +1,509 @@
+<!--
+Article — Plan comptable et devise par société dans Odoo 20
+Série « Multi-société avec Odoo 20 » (blog Fonctionnel), vague 3, alternative F7.a (position posée par le script de dépôt)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : plan-comptable-devise-par-societe-odoo (jumeau v19 : post 126)
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f7a (copie neutralisée de vs20_func), aucun module installé à la main ;
+  l10n_ma installé par Odoo à la création de la société (journal du serveur : « Loading module l10n_ma », démo chargée).
+  Démo : My Company (San Francisco) generic_coa USD, FR Company fr_comp EUR (entrées comptables), My Company (Chicago) sans plan.
+  Joué à l'écran (Mitchell Admin) :
+  - Facturation › Configuration › Paramètres, SF puis FR : bloc « Configuration initiale », Localisation fiscale « Plan comptable générique (minimal) »
+    / « France - Plan comptable des sociétés », texte seul + bouton Recharger (account/views/res_config_settings_views.xml:26 bloc invisible si
+    not is_root_company ; :32 chart_template readonly="has_accounting_entries" ; :35-37 Recharger, titre fr.po « Rechargez les données comptables
+    (taxes, comptes,...) si vous constatez des incohérences. Cette action est irréversible. »). Bloc Devises : « Taux de change automatiques » badge
+    Entreprise (:144 module_currency_rate_live widget upgrade_boolean ; dossier odoo/addons/currency_rate_live absent).
+  - Paramètres › Utilisateurs & Sociétés › Sociétés › Nouveau : « Société Maroc », Casablanca, Maroc → Devise MAD proposée avant enregistrement ;
+    Enregistrer : 16 s, l10n_ma installé (base/models/res_company.py:390-393 install_l10n_modules à la création, :301-312 button_immediate_install ;
+    account/models/company.py:1117-1131 try_loading du modèle du pays, branche = modèle de la mère :1124). La démo de l10n_ma ajoute « MA Company »
+    (l10n_ma/demo/demo_company.xml) : liste des sociétés à 5.
+  - Société Maroc active : Localisation fiscale « Maroc » modifiable (aucune écriture) ; Taxes par défaut 20% 80 / 20% 146 ; Pays d'imposition Maroc ;
+    Devise MAD ; Comptabilité de trésorerie cochée (chart_template.py:796). Taxes : 77 lignes (12 actives) ; Journaux : 7 (FAC, FACTURE, BNK1, OD, EXCH,
+    CABA, STJ) ; Devises : EUR, MAD, USD actives, Taux actuel 1,000000 partout, « Dernière mise à jour » vide.
+  - Fiche EUR › Taux › Ajouter une ligne : 11/11/2026, Base/Unité 10,80 → Société « Société Maroc » proposée d'office (base/models/res_currency.py:426-427
+    default env.company.root_id), Devise de base MAD, Unité/Base 0,092592592593. Même fiche vue de SF : seule la ligne 1 janv. 2010 de SF (USD, 0,7791).
+  - Facture client Société Maroc : Azure Interior, EUR, Chaise de bureau noire 1 × 1 000,00, taxe proposée 20% EX 129 (position fiscale
+    Importation/Exportation appliquée d'office au client étranger) → FAC/2026/00001, 1 200,00 €, widget « 1 EUR ⇄ 10.800000 MAD » ; liste : Montant dû
+    12 960,00 DH. Lignes (psql) : 711300 C 10 800, 445510 C 2 160, 342110 D 12 960, amount_currency 1 200 €.
+  - Branche « Société Maroc (Rabat) » créée depuis l'onglet Branches (Devise MAD proposée) ; branche seule active : pas de bloc Configuration initiale,
+    taxes par défaut de la mère, EUR 0,092593 au 11 nov. (taux de la mère, res_currency.py:170-205 _get_rates sur company.root_id), 7 journaux de la mère.
+  Shell (rollback) : comptes Société Maroc 639, branche 0 compte / 0 journal / 0 taxe propres ; aucun compte parent dans les plans fr, ma, generic ;
+    164 articles reçoivent 20% 80 et 170 reçoivent 20% 146 (chart_template.py:771-790 : articles déjà taxés dans une autre société) ;
+    FR Company : 100 $ → 100 € (aucun taux propre, taux de démo rattachés à SF) ; EUR→MAD 100 = 1 080 au 12/11.
+  Changement de devise refusé dès qu'une écriture existe : account/models/company.py:902-904 (non joué).
+  Plan comptable en Community : menu réservé au groupe technique « Afficher les fonctionnalités de comptabilité - Lecture seule »
+    (account/views/account_menuitem.xml:49 ; security/account_security.xml:49-52).
+  19 → 20 : taux daté du jour J appliqué à partir de J+1 (res_currency.py:186 « < », 19.0 « <= », prouvé dans le post 265) ; groupes de comptes
+    supprimés au profit du champ Compte parent (19.0 account/models/account_account.py:1521 account.group, 20.0 :133-140 parent_id). Bloc de
+    localisation masqué pour les branches, valeur par défaut de la société du taux, taxes ajoutées aux articles : identiques en 19.0
+    (res_config_settings_views.xml:26, res_currency.py:373, chart_template.py:738).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Plan comptable et devise par société dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Chaque société d'une base Odoo tient sa propre comptabilité : son plan
+                    comptable, ses taxes, ses journaux, sa devise et sa table de taux de change. Cet article montre dans
+                    Odoo 20 Community comment une nouvelle société reçoit tout cela, et ce que le comptable du groupe doit
+                    encore régler à la main.</p>
+                <p class="small text-light mt-2">~11 minutes de lecture · niveau intermédiaire · série <strong>Multi-société avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (plusieurs applications déjà installées, dont Facturation). Seule
+                        la localisation marocaine a été ajoutée, par Odoo lui-même, à la création de la société.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Une comptabilité par société</h2>
+                <p>Un groupe qui ouvre une filiale dans un autre pays a besoin, dans la même base, d'une seconde
+                    comptabilité : le plan de comptes et les taxes du pays, des journaux numérotés à part, et une tenue des
+                    comptes dans la monnaie locale. Dans Odoo, tout cela s'attache à la <strong>société</strong> : la
+                    <strong>localisation fiscale</strong> apporte le plan comptable, les taxes, les positions fiscales et
+                    les journaux ; la <strong>devise de la société</strong> est celle dans laquelle ses écritures sont
+                    tenues, quelle que soit la devise de chaque facture.</p>
+                <p>La base de démonstration d'Odoo 20 en donne déjà deux exemples : My Company (San Francisco) avec le plan
+                    comptable générique, en dollars, et FR Company avec le plan comptable français, en euros. Cet article y
+                    ajoute une société au Maroc, en dirhams, puis une branche de cette société. La création des sociétés,
+                    le sélecteur et le partage des données sont traités dans le premier article de la série, « Multi-société
+                    dans Odoo 20 : créer, partager, cloisonner » ; la version Odoo 19 du présent sujet reste disponible dans
+                    <a href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable
+                    par société dans Odoo 19 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lire la localisation fiscale et la devise d'une société dans les paramètres de Facturation ;</li>
+                    <li>créer une société dans un autre pays et savoir ce qu'Odoo installe pour elle ;</li>
+                    <li>distinguer la devise de la société de la devise d'une facture ;</li>
+                    <li>saisir les taux de change d'une société, en sachant qu'ils ne servent qu'à elle et à ses branches ;</li>
+                    <li>savoir ce qu'une branche reprend de sa société mère.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du plan comptable et de la devise par société dans Odoo 20 : l'administrateur du groupe crée la société avec son pays ; Odoo installe la localisation du pays ; la société reçoit son plan comptable, ses taxes et ses journaux, et la devise du pays ; les articles déjà taxés dans une autre société reçoivent les taxes par défaut de la nouvelle ; le comptable du groupe saisit les taux à la main, société par société, les taux automatiques relevant de l'Enterprise ; une facture en euros est convertie au taux de la société et la comptabilité est tenue en dirhams ; une branche partage le plan, les taxes, les taux et la devise de sa mère" style="max-width:100%; height:auto;"/>
+                    <figcaption>De la création de la société à la facture en devise étrangère, et ce que la branche partage.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Lire la localisation et la devise d'une société</h2>
+                <p>Ouvrez <strong>Facturation › Configuration › Paramètres</strong>. Le premier bloc, <strong>Configuration
+                    initiale</strong>, affiche la <strong>Localisation fiscale</strong> de la société active : le paquet de
+                    données du pays (plan comptable, taxes, positions fiscales, rapports). Plus bas, le bloc
+                    <strong>Devises</strong> donne sa <strong>Devise principale</strong>. L'icône d'immeuble placée à côté
+                    de ces réglages rappelle qu'ils valent pour la société active seulement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Deux blocs Configuration initiale des paramètres Facturation d'Odoo 20 : en haut, My Company (San Francisco), Localisation fiscale Plan comptable générique (minimal) et bouton Recharger ; en bas, FR Company, Localisation fiscale France - Plan comptable des sociétés, drapeau français, et bouton Recharger" style="max-width:100%; height:auto;"/>
+                    <figcaption>La localisation de My Company (San Francisco), en haut, et celle de FR Company, en bas.</figcaption>
+                </figure>
+                <p>Changez de société avec le sélecteur de la barre du haut, et le même écran affiche une autre
+                    localisation : « Plan comptable générique (minimal) » et le dollar pour My Company (San Francisco),
+                    « France - Plan comptable des sociétés » et l'euro pour FR Company. Pour ces deux sociétés, qui ont déjà
+                    des écritures, la localisation n'est plus qu'un texte suivi d'un bouton <strong>Recharger</strong> :
+                    elle ne se change plus (voir le deuxième point de vigilance).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer une société dans un autre pays</h2>
+                <p>Dans <strong>Paramètres › Utilisateurs &amp; Sociétés › Sociétés</strong>, cliquez sur
+                    <strong>Nouveau</strong>. L'administrateur du groupe saisit le nom, « Société Maroc », la ville,
+                    Casablanca, et surtout le <strong>pays</strong>, Maroc. Dès que le pays est choisi, le champ
+                    <strong>Devise</strong> passe sur MAD, le dirham marocain.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Formulaire de création d'une société dans Odoo 20 : nom Société Maroc, onglets Informations générales et Branches, adresse Casablanca, pays Maroc, champ TVA vide avec un texte indicatif, Devise MAD, Code externe ; à droite Téléphone, E-mail, Site Web, Domaine de messagerie, Couleur" style="max-width:100%; height:auto;"/>
+                    <figcaption>La nouvelle société : le pays choisi, la devise suit.</figcaption>
+                </figure>
+                <p>À l'enregistrement, Odoo installe la localisation du pays, le module de comptabilité marocaine, puis
+                    charge son plan comptable dans la société. L'opération a pris une quinzaine de secondes sur la base
+                    d'essai. Elle se fait sans passer par l'écran Applications : c'est le <strong>pays</strong> de la société
+                    qui décide de la localisation. Quand le module du pays est déjà installé, comme celui de la France sur la
+                    démonstration, Odoo charge seulement le plan comptable.</p>
+                <p>Sur une base avec données de démonstration, l'installation du module ajoute aussi sa société
+                    d'exemple : la liste compte désormais cinq sociétés, dont « MA Company », venue avec la localisation
+                    marocaine. Une base sans données de démonstration ne la reçoit pas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Liste des sociétés dans Odoo 20, 1-5 / 5 : My Company (San Francisco), FR Company, My Company (Chicago), Société Maroc, MA Company ; colonnes Nom de la société, Partenaire, Branches" style="max-width:100%; height:auto;"/>
+                    <figcaption>Société Maroc, et la société d'exemple MA Company ajoutée par la démonstration.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ce que la nouvelle société a reçu</h2>
+                <p>Sélectionnez Société Maroc dans le sélecteur et rouvrez les paramètres de Facturation. La localisation
+                    fiscale est « Maroc », et cette fois le champ reste modifiable : la société n'a encore aucune écriture.
+                    Les taxes par défaut, le pays d'imposition et la devise principale MAD ont été réglés par la
+                    localisation, qui a aussi coché la Comptabilité de trésorerie (TVA sur encaissements, d'où le journal CABA plus
+                    bas).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Paramètres Facturation d'Odoo 20 pour Société Maroc : Localisation fiscale Maroc dans une liste déroulante ; Taxes par défaut 20% 80 en vente et 20% 146 en achat, prix hors taxes ; Méthode d'arrondi par taxe ; Comptabilité de trésorerie cochée ; Pays d'imposition Maroc ; Devise principale MAD ; Taux de change automatiques avec un badge Entreprise" style="max-width:100%; height:auto;"/>
+                    <figcaption>Société Maroc : localisation, taxes par défaut et devise posées par Odoo.</figcaption>
+                </figure>
+                <p>Dans <strong>Facturation › Configuration › Taxes</strong>, la liste ne montre que les taxes de la société
+                    active : 77 taxes marocaines, dont une douzaine actives d'emblée ; les autres s'activent par
+                    l'interrupteur de la colonne Actif quand l'activité les demande. Les taxes de FR Company et de My Company
+                    (San Francisco) n'y figurent pas.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste des taxes d'Odoo 20 avec Société Maroc active, 1-77 / 77, filtre Ventes ou Achats : 20% 80 Opérations de production et de distribution et 20% 81 Prestations de services actives, 20% 82 à 20% 95 inactives, 20% 102 Autres et 20% EX 129 Opérations réalisées avec des contribuables non résidents actives ; colonne Société Société Maroc" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les taxes de la localisation marocaine, propres à Société Maroc.</figcaption>
+                </figure>
+                <p>Même constat dans <strong>Facturation › Configuration › Journaux</strong> : sept journaux (Ventes FAC,
+                    Achats FACTURE, Banque BNK1, Opérations diverses, Différence de change, TVA sur encaissements, Valorisation
+                    d'inventaire), dont les comptes par défaut viennent du plan marocain. Leur numérotation est propre à la
+                    société : la première facture de Société Maroc portera le numéro FAC/2026/00001, même si les autres
+                    sociétés utilisent déjà le préfixe FAC.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Liste des journaux d'Odoo 20 avec Société Maroc active, 1-7 / 7 : Ventes (Ventes, FAC, compte Ventes de marchandises au Maroc), Achats (Achats, FACTURE, Achats de marchandises (Groupe A)), Banque (BNK1, Banque), Opérations diverses OD, Différence de change EXCH, TVA sur encaissements CABA, Valorisation d'inventaire STJ" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les journaux de la nouvelle société et leurs comptes par défaut.</figcaption>
+                </figure>
+                <p>Le plan comptable chargé compte 639 comptes, rattachés à Société Maroc seule. En Community, la liste des
+                    comptes n'a pas de menu pour l'administrateur de la démonstration : elle n'apparaît dans la configuration
+                    qu'avec le groupe technique « Afficher les fonctionnalités de comptabilité - Lecture seule ». Les comptes
+                    se lisent aussi dans les journaux, ci-dessus, et sur la répartition de chaque taxe.</p>
+                <p>Enfin, la localisation a posé des taxes sur les articles existants. Chaque article qui avait déjà une taxe
+                    dans une autre société a reçu les taxes par défaut de Société Maroc (voir le troisième point de
+                    vigilance).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Saisir les taux de change de la société</h2>
+                <p>La devise de la société est la monnaie de sa comptabilité. Une facture peut être établie dans une autre
+                    devise, à condition qu'Odoo connaisse le taux entre les deux. Or les <strong>taux de change sont rangés
+                    par société</strong>. Avec Société Maroc active, la liste <strong>Facturation › Configuration ›
+                    Devises</strong> le montre aussitôt : l'euro, le dirham et le dollar affichent tous un taux actuel de
+                    1,000000, sans date de mise à jour.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste des devises d'Odoo 20 avec Société Maroc active : EUR Euro, MAD Moroccan dirham et USD United States dollar actifs, colonne Dernière mise à jour du taux vide, Taux actuel 1,000000 pour chacune" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une société sans taux : toutes les devises valent 1 dirham.</figcaption>
+                </figure>
+                <p>La case <strong>Taux de change automatiques</strong> du bloc Devises porte le badge Entreprise : le module
+                    de mise à jour automatique des taux n'est pas inclus dans la Community. Il est présenté dans
+                    <a href="/blog/fonctionnel-odoo-1/taux-de-change-automatiques-odoo-301">Taux de change automatiques avec
+                    Odoo 20</a>. En Community, le comptable du groupe saisit les taux à la main.</p>
+                <p>Ouvrez la devise <strong>EUR</strong>, onglet <strong>Taux</strong>, puis <strong>Ajouter une
+                    ligne</strong>. La colonne <strong>Société</strong> se remplit d'office avec la société active, Société
+                    Maroc, et la <strong>Devise de base</strong> est MAD. Saisissez la date et, dans
+                    <strong>Base/Unité</strong>, le nombre de dirhams pour un euro ; Odoo calcule l'autre colonne. La valeur
+                    10,80 utilisée ici est un exemple, pas un cours réel. Le taux est daté de la veille par prudence : dès qu'un taux antérieur existe, Odoo 20 n'applique un
+                    nouveau taux qu'à partir du lendemain de sa date ; la règle est détaillée dans <a
+                    href="/blog/fonctionnel-odoo-1/vendre-acheter-devises-odoo-265">Multi-devise dans Odoo 20 : vendre et
+                    acheter en devises</a>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Onglet Taux de la devise EUR dans Odoo 20, vu de deux sociétés : en haut, avec Société Maroc active, une ligne 11 nov., Société Maroc, devise de base MAD, Unité/Base 0,092592592593, Base/Unité 10,800000000000 ; en bas, avec My Company (San Francisco) active, une seule ligne 1 janv. 2010, My Company (San Francisco), devise de base USD, Unité/Base 0,779100000000, Base/Unité 1,283532280837" style="max-width:100%; height:auto;"/>
+                    <figcaption>La même devise, deux tables de taux : celle de Société Maroc (en haut) et celle de My Company (San Francisco) (en bas).</figcaption>
+                </figure>
+                <p>Rouvrez la même fiche avec My Company (San Francisco) active : le taux de Société Maroc n'apparaît pas, et
+                    seule reste la ligne de la démonstration, datée de 2010 et exprimée en dollars. Chaque société tient donc
+                    sa propre table de taux, dans sa propre devise de base. De retour dans la liste des devises, avec Société Maroc active,
+                    l'euro affiche 0,092593 au 11 novembre ; le dollar, lui, reste à 1 tant qu'aucun taux n'est saisi pour
+                    lui.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Facturer dans une autre devise que celle de la société</h2>
+                <p>Avec Société Maroc active, créez une facture client (<strong>Facturation › Clients › Factures ›
+                    Nouveau</strong>) pour Azure Interior, choisissez la devise <strong>EUR</strong> et ajoutez une ligne :
+                    une Chaise de bureau noire à 1 000,00 €. Le client étant à l'étranger, la position fiscale
+                    « Importation/Exportation » de la localisation marocaine s'applique d'office et propose la taxe
+                    « 20% EX 129 ». Confirmez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Facture client FAC/2026/00001 de Société Maroc dans Odoo 20 : client Azure Interior aux États-Unis, date de facturation et échéance 12 nov., devise EUR avec la ligne 1 EUR ⇄ 10.800000 MAD ; ligne Chaise de bureau noire, 1,00 Unité(s), prix 1 000,00, taxe 20% EX 129, montant 1 000,00 € ; montant hors taxes 1 000,00 €, TVA 20% 200,00 €, total 1 200,00 €, montant dû 1 200,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une facture en euros d'une société qui tient ses comptes en dirhams.</figcaption>
+                </figure>
+                <p>La facture parle au client dans sa devise : tous ses montants sont en euros. Sous la devise, la ligne
+                    « 1 EUR ⇄ 10.800000 MAD » donne le taux appliqué, celui saisi pour Société Maroc ; la double flèche inverse
+                    le sens d'affichage. Le numéro, FAC/2026/00001, confirme que la numérotation repart à zéro dans la
+                    nouvelle société.</p>
+                <p>Côté comptabilité, la pièce est enregistrée en dirhams. La liste des factures l'affiche dans la colonne
+                    <strong>Montant dû</strong> : 12 960,00 DH, soit 1 200 € × 10,80.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Liste des factures clients de Société Maroc dans Odoo 20 : FAC/2026/00001, Azure Interior, 12 nov., échéance Aujourd'hui, hors taxes 1 000,00 €, total 1 200,00 €, montant dû 12 960,00 DH, statut Comptabilisé ; ligne de totaux identique" style="max-width:100%; height:auto;"/>
+                    <figcaption>Montants de la facture en euros, montant dû en devise de la société.</figcaption>
+                </figure>
+                <p>Le paiement de cette facture à un autre taux, et l'écart de change qui en résulte, se traitent comme
+                    dans une société unique : voir <a href="/blog/fonctionnel-odoo-1/vendre-acheter-devises-odoo-265">l'article
+                    multi-devise</a>, dont le présent article ne reprend que ce qui tient au multi-société.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Une branche partage la comptabilité de sa mère</h2>
+                <p>Une branche, créée depuis l'onglet <strong>Branches</strong> de sa société mère, n'a pas de
+                    localisation à elle. Pour l'essai, une branche « Société Maroc (Rabat) » a été ajoutée à Société Maroc :
+                    sa fenêtre de création proposait déjà la devise MAD. Avec la branche seule active, les paramètres de
+                    Facturation commencent directement au bloc Taxes : le bloc Configuration initiale, et donc le choix de la
+                    localisation, n'existe pas pour une branche. Les taxes par défaut sont celles de la mère.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Paramètres Facturation d'Odoo 20 avec la branche Société Maroc (Rabat) active, nom visible dans la barre du haut : la page commence au bloc Taxes, sans bloc Configuration initiale ; Taxes par défaut 20% 80 et 20% 146 ; Pays d'imposition Maroc ; bloc Devises avec la devise principale MAD et Taux de change automatiques marqué Entreprise" style="max-width:100%; height:auto;"/>
+                    <figcaption>Vue de la branche : pas de localisation à choisir, les taxes de la société mère.</figcaption>
+                </figure>
+                <p>Les taux suivent le même chemin. La liste des devises, vue de la branche, affiche pour l'euro le taux de
+                    Société Maroc au 11 novembre : Odoo cherche les taux de la société mère. À sa création, la branche ne reçoit ni compte, ni taxe, ni journal ; elle utilise les sept journaux de sa
+                    mère.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Liste des devises d'Odoo 20 vue de la branche Société Maroc (Rabat) : EUR, dernière mise à jour 11 nov., taux actuel 0,092593 ; MAD et USD à 1,000000" style="max-width:100%; height:auto;"/>
+                    <figcaption>La branche utilise le taux saisi pour sa société mère.</figcaption>
+                </figure>
+                <p>En pratique : une filiale dans un autre pays, ou qui tient une comptabilité distincte, se crée comme
+                    société indépendante, avec son pays ; un établissement du même pays, qui partage la comptabilité, se crée
+                    comme branche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CE QUI A CHANGÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui a changé depuis Odoo 19</h2>
+                <p>Le principe d'une localisation par société, chargée d'après le pays, est le même qu'en Odoo 19. Deux
+                    différences touchent ce sujet :</p>
+                <ul>
+                    <li><strong>Date des taux</strong> : Odoo 19 appliquait un taux dès sa date ; Odoo 20 ne l'applique qu'à
+                        partir du lendemain, si un taux antérieur existe.</li>
+                    <li><strong>Groupes de comptes</strong> : la fiche d'un compte d'Odoo 19 portait un champ Groupe qui
+                        rangeait les comptes par classes ; Odoo 20 supprime ces groupes au profit d'un champ <strong>Compte
+                        parent</strong>. Les plans livrés pour la France et le Maroc, comme le plan générique, ne comportent
+                        aucun compte parent.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Geste</th><th>Qui</th><th>Où</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer une société dans un pays</td><td>L'administrateur du groupe</td><td>Paramètres › Utilisateurs &amp; Sociétés › Sociétés › Nouveau</td><td>Localisation installée, plan comptable, taxes, journaux et devise du pays</td></tr>
+                        <tr><td>Vérifier la localisation et la devise</td><td>Le comptable du groupe</td><td>Facturation › Configuration › Paramètres (société active)</td><td>Localisation modifiable tant qu'aucune écriture n'existe</td></tr>
+                        <tr><td>Saisir un taux de change</td><td>Le comptable du groupe</td><td>Devise › onglet Taux, avec la bonne société active</td><td>Taux valable pour cette société et ses branches</td></tr>
+                        <tr><td>Facturer en devise étrangère</td><td>Le comptable de la société</td><td>Facture › champ Devise</td><td>Montants en devise de la facture, écritures en devise de la société</td></tr>
+                        <tr><td>Ouvrir un établissement</td><td>L'administrateur du groupe</td><td>Société mère › onglet Branches</td><td>Même plan, mêmes taxes, mêmes taux, même devise</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Localisations fiscales, plans comptables, taxes, journaux, devises et taux saisis à la main font partie
+                    d'Odoo 20 Community : tout ce qui est montré ici fonctionne sans abonnement. La mise à jour automatique des
+                    taux de change ne l'est pas : son module n'est pas inclus dans la Community.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Une société sans taux convertit tout à 1</h4>
+                    <p>Une société nouvellement créée n'a aucun taux de change : toutes ses devises valent 1, comme sur la
+                        figure 8. Une facture de 1 000 € y serait donc convertie en 1 000 DH. La démonstration a
+                        le même cas : ses taux appartiennent à My Company (San Francisco), si bien que, pour FR Company, 100 $
+                        valent 100 €. Saisissez les taux de chaque société, avec cette société active, avant sa première
+                        facture en devise.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La localisation se fige à la première écriture</h4>
+                    <p>Tant que la société n'a aucune écriture, la localisation fiscale reste modifiable dans les paramètres.
+                        Dès la première, le champ devient un simple texte, comme pour FR Company sur la figure 2. Le bouton
+                        Recharger, lui, recharge les données de la même localisation, et Odoo prévient que l'action est
+                        irréversible. La devise de la société ne se change pas non plus une fois des écritures passées. Le
+                        pays saisi à la création choisit la localisation et installe son module : vérifiez-le avant
+                        d'enregistrer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Les articles existants reçoivent les taxes de la nouvelle société</h4>
+                    <p>Au chargement du plan marocain, chaque article qui avait déjà une taxe dans une autre société a reçu les
+                        taxes par défaut de Société Maroc : 20% 80 à la vente pour 164 articles de la démonstration, 20% 146 à
+                        l'achat pour 170. Un article vendu avec un autre taux dans la nouvelle société doit être corrigé dans
+                        sa fiche, avec cette société active.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Le pays d'une nouvelle société décide de sa localisation : Odoo l'installe et charge plan comptable,
+                        taxes, journaux et devise à l'enregistrement.</li>
+                    <li>La devise de la société est celle de sa comptabilité ; une facture peut être dans une autre devise,
+                        convertie au taux de la société.</li>
+                    <li>Les taux de change sont propres à chaque société, et partagés avec ses branches ; en Community, ils se
+                        saisissent à la main.</li>
+                    <li>Une branche ne reçoit ni localisation ni journaux à sa création, et n'a pas de taux à elle : elle utilise
+                        ceux de sa mère.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif</strong> : donner un taux du dollar à FR Company, qui n'en a pas sur la base de
+                        démonstration.</p>
+                    <p><strong>Indication</strong> : sélectionnez FR Company seule, ouvrez la devise USD, onglet Taux, et
+                        ajoutez une ligne datée de la veille avec, dans Base/Unité, un nombre d'euros pour un dollar choisi pour
+                        l'exercice.</p>
+                    <p><strong>Critère de réussite</strong> : la liste des devises vue de FR Company affiche pour USD l'inverse de
+                        la valeur saisie (le nombre de dollars pour un euro), à la date saisie, tandis que la même liste vue de My Company (San Francisco) est inchangée.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À lire aussi</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/vendre-acheter-devises-odoo-265">Multi-devise dans Odoo 20 : vendre
+                        et acheter en devises</a> : listes de prix, achats en devise et écarts de change.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/taux-de-change-automatiques-odoo-301">Taux de change automatiques avec
+                        Odoo 20</a> : la mise à jour des taux en Enterprise.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/localisation-algerie-odoo-269">Odoo 20 en Algérie : ce que couvre la
+                        localisation Community</a> : le contenu d'une localisation, pays par pays.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable
+                        par société dans Odoo 19 Community</a> : la version Odoo 19 de ce sujet.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
