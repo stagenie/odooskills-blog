@@ -1,0 +1,514 @@
+<!--
+Article — Lettrage manuel dans Odoo 20 : les cas qui bloquent
+Titre du plan (vague 3, alternative F3.b) : « Lettrage et rapprochement manuel dans Odoo 20 : les cas qui bloquent » (77 car., refusé ≤ 60)
+Série « Clôture et pilotage financier avec Odoo 20 » (blog Fonctionnel), alternative F3.b, sans article suivant annoncé
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : lettrage-rapprochement-manuel-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f3b (copie neutralisée de vs20_func), société My Company (San Francisco), USD.
+  Rien installé, rien préparé en shell : tout joué à l'écran (Playwright) avec Mitchell Admin.
+  Clients › Paiements › Nouveau : OpenWood 3 300 $, mémo « Virement OpenWood », Manual Payment → PBNK1/2026/00012 Payé, aucun bouton Facture.
+  Écriture lue en shell : 101403 « Paiements entrants en suspens » débit / 121000 crédit (compte en suspens posé à la création en Community,
+  account/models/account_payment.py:981-989 : « Outstanding account should be set on the payment in community edition … no reconciliation is possible in community »).
+  FAC/2026/00005 (2 000 $) : bandeau « Vous avez des crédits en circulation listés ci-dessous pour ce client. », bloc Crédits en circulation, bouton Ajouter
+  (account/views/account_move_views.xml:899-913 ; account/static/src/components/account_payment_field/account_payment.xml ; js_assign_outstanding_line
+  account/models/account_move.py:6867-6876) ; Payer secondaire quand un crédit existe (account_move_views.xml:795-815, vu à l'écran).
+  Ajouter sur 00005 (reste 1 300), 00006 (1 000, reste 300), 00007 (275, reste 25) → PAYÉ ×3 ; FAC/2026/00009 OpenWood affiche 25,00 $ en circulation.
+  PBNK1/2026/00012 → « 3 Facture », Rapproché malgré 25 $ non utilisés (_compute_state account_payment.py:496-515 : Rapproché si toutes les factures
+  liées sont payées, compte en suspens non trésorerie). Exercice vérifié en shell (rollback) : Ajouter 25 $ sur FAC/2026/00009 → partiel 1 774 $, paiement repasse à Payé.
+  FAC/2026/00010 Client particulier (153 $) : Payer 63 $ → fenêtre sans option d'écart (Manual Payment sans compte de paiement :
+  account/wizard/account_payment_register.py:331-339 ; champ du compte réservé au groupe comptable en lecture, account_journal_views.xml:134-138) → PARTIEL 90 $ ;
+  icône d'information → « Infos de la pièce comptable » → « Annuler le lettrage » (js_remove_outstanding_partial account_move.py:6878-6885) → 63 $ en circulation
+  sur 00010 et 00011 → Ajouter sur FAC/2026/00011 → PAYÉ. PBNK1/2026/00013 garde « 2 Facture » (00011 payée, 00010 comptabilisée, liste « Factures clients payées »)
+  et reste Payé : invoice_ids conservé (account_payment.py:174, commentaire « contains the invoice even if … not reconciled » ; _compute_stat_buttons_from_reconciliation).
+  Clients › Paiements › Nouveau : Gemini Furniture 750 $ (mémo « Virement LightsUp FAC/2026/00008 ») → PBNK1/2026/00014 ; FAC/2026/00008 LightsUp sans crédit en circulation ;
+  Remettre en brouillon → client LightsUp → Confirmer → « Opération invalide : Vous ne pouvez pas créer un nouveau paiement sans un compte de paiements entrants/sortants
+  en suspens défini … Manual Payment du journal Banque. » (account_payment.py:323-328 ; compte recalculé par le changement, :683-686 ; même paiement reconfirmé sans
+  changement de client : accepté, essai shell rollback) → Annuler → Annulée ; Payer sur FAC/2026/00008 → paiement LightsUp Rapproché, numéroté lui aussi PBNK1/2026/00014.
+  PBNK1/2026/00013 Remettre en brouillon → FAC/2026/00011 reste PAYÉ (button_draft account_move.py ne délettre pas) ; reconfirmé ensuite ; essai shell (rollback) :
+  Annuler depuis le brouillon → pièce supprimée, facture Non payé 63 $.
+  Acme Corporation : crédits en circulation RFAC/2026/00003, RFAC/2026/00004, OD/2026/09/0001 (widget lu en shell sur FAC/2026/00014).
+  Avoir lettré à sa confirmation avec sa facture d'origine : account/models/account_move.py:6271, 6334-6350.
+  Lettrer depuis les lignes d'écriture : aucune action « Lettrer » sur account.move.line dans odoo/addons (seules « Unreconcile », « Move to Account »,
+  « Change Period », groupe account.group_account_user) ; menus de l'admin démo : Clients, Fournisseurs, Analyse, Configuration (vu).
+  Débits en circulation fournisseurs : account_move_views.xml:907-908 ; écart de change au lettrage : account_move_line.py:3133-3193 (_create_exchange_difference_moves).
+  Enterprise : account_accountant et account_reports absents de odoo/addons (ls, 12/11/2026) ; écran de rapprochement vu sur Enterprise : article 298.
+Captures : content/blog/screenshots/lettrage-rapprochement-manuel-odoo/ (scripts docs/blog-odoo20/captures-base-vs20_func/f3b-lettrage/,
+  schéma tools/blog/odoo20_lettrage_manuel_diagram.py)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Lettrage manuel dans Odoo 20 : les cas qui bloquent</h1>
+                <p class="lead mt-3 text-white">Un virement arrive sans référence, couvre trois factures d'un coup, a été
+                    lettré sur la mauvaise facture ou saisi au mauvais client. Odoo 20 Community n'a pas d'écran de
+                    rapprochement : tout se règle depuis la facture et depuis le paiement, à condition de connaître les
+                    bons gestes.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Clôture et pilotage financier avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars),
+                        avec l'application Facturation, sans module ajouté. L'application Facturation existe aussi dans
+                        l'édition Enterprise, où le traitement des paiements diffère (écran de rapprochement bancaire,
+                        compte d'attente) : les comportements décrits ici sont ceux de la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Lettrer quand Odoo ne le fait pas seul</h2>
+                <p><strong>Lettrer</strong>, c'est associer en comptabilité un paiement à la facture qu'il règle : la
+                    facture passe à Payé, le reste dû tombe à zéro. Quand le paiement est enregistré par le bouton
+                    <strong>Payer</strong> de la facture, Odoo lettre tout seul ; c'est le cas courant, décrit dans <a
+                    href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a>.
+                    Le présent article traite tout le reste : le virement saisi sans facture, le paiement qui couvre
+                    plusieurs factures, le montant qui ne tombe pas juste, l'erreur de facture ou de client.</p>
+                <p>En Community, deux outils manquent. L'écran qui confronte le relevé bancaire aux paiements appartient
+                    au module de comptabilité de l'Enterprise (<code>account_accountant</code>), absent de la Community ;
+                    <a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et
+                    rapprochement dans Odoo 20 Community</a> en fait le tour. Et aucune action « Lettrer » n'existe sur
+                    les lignes d'écriture : l'administrateur de la démonstration n'a d'ailleurs, dans Facturation, que
+                    les menus Clients, Fournisseurs, Analyse et Configuration, sans liste des pièces comptables.</p>
+                <p>Le lettrage manuel passe donc par deux endroits : le bloc <strong>Crédits en circulation</strong> de
+                    la facture, avec son bouton Ajouter, et l'icône d'information d'un paiement déjà lettré, avec son
+                    bouton <strong>Annuler le lettrage</strong>. Les montants cités sont ceux de la base de démonstration
+                    consultée le 12 novembre 2026 ; les numéros de pièces de votre base pourront différer.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>lettrer un paiement saisi sans facture, depuis la facture du client ;</li>
+                    <li>répartir un seul paiement sur plusieurs factures et retrouver le solde non utilisé ;</li>
+                    <li>traiter un paiement inférieur ou supérieur au montant dû ;</li>
+                    <li>défaire un lettrage posé sur la mauvaise facture ;</li>
+                    <li>corriger un paiement enregistré au mauvais client sans laisser de trace fausse.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Les cas en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du lettrage manuel dans Odoo 20 Community : en haut, le virement arrive (Payer depuis la facture ou paiement saisi sans facture, écriture sur Paiements entrants en suspens), crédits en circulation (bandeau et bloc sous les totaux des factures du même client, bouton Ajouter), un paiement pour plusieurs factures (Ajouter sur chaque facture, le solde non utilisé reste en circulation) ; en bas, mauvaise facture (Annuler le lettrage), mauvais client (annuler le paiement et en saisir un nouveau), relire l'état (Payé, Rapproché, Annulée) ; encadré : remettre un paiement en brouillon ne délettre pas la facture" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le parcours normal en haut, les corrections et le contrôle en bas.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Cas</th><th>Ce que l'on voit</th><th>Geste en Community</th></tr></thead>
+                    <tbody>
+                        <tr><td>Paiement reçu sans facture liée</td><td>Paiement à l'état Payé, sans bouton Facture</td><td>Sur la facture : Ajouter (section 1)</td></tr>
+                        <tr><td>Un paiement pour plusieurs factures</td><td>Le crédit diminue d'une facture à l'autre</td><td>Ajouter sur chaque facture (section 2)</td></tr>
+                        <tr><td>Montant différent du dû</td><td>Facture Partiel, ou crédit restant</td><td>Garder ouvert, réclamer, ou imputer plus tard (section 3)</td></tr>
+                        <tr><td>Lettré sur la mauvaise facture</td><td>La bonne facture reste due</td><td>Annuler le lettrage, puis Ajouter (section 4)</td></tr>
+                        <tr><td>Saisi au mauvais client</td><td>Aucun crédit chez le bon client</td><td>Annuler le paiement, en saisir un nouveau (section 5)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Un paiement reçu sans facture liée</h2>
+                <p>Le cas le plus fréquent : le relevé montre un virement d'OpenWood de 3 300 $, libellé sans numéro de
+                    facture. Le comptable l'enregistre tel quel, par <strong>Facturation › Clients › Paiements ›
+                    Nouveau</strong> : type Recevoir, client OpenWood, montant 3 300, mémo « Virement OpenWood », journal
+                    Banque, mode de paiement Manual Payment. Cliquez sur <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Paiement PBNK1/2026/00012 à l'état Payé : client OpenWood, montant 3 300,00 dollars, date 12 novembre, mémo Virement OpenWood, journal Banque, mode Manual Payment, boutons Remettre en brouillon et Marquer comme envoyé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le paiement est confirmé (Payé), mais aucune facture n'y est rattachée.</figcaption>
+                </figure>
+                <p>Le paiement PBNK1/2026/00012 est à l'état <strong>Payé</strong> et n'affiche aucun bouton Facture. En
+                    Community, Odoo crée malgré tout son écriture : l'argent est porté sur le compte <em>Paiements
+                    entrants en suspens</em> (101403 dans le plan de la démonstration), en face du compte client. Ce
+                    compte d'attente garde le paiement jusqu'à ce qu'on lui désigne une facture.</p>
+                <p>Ouvrez maintenant une facture ouverte d'OpenWood, FAC/2026/00005 (2 000 $). Un bandeau apparaît
+                    sous les boutons ; le bouton Payer, lui, passe au second plan.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Facture FAC/2026/00005 comptabilisée : boutons Envoyer, Imprimer, Payer en gris, Aperçu, Avoir, Remettre en brouillon ; bandeau Vous avez des crédits en circulation listés ci-dessous pour ce client" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bandeau signale un paiement du même client qui attend une facture.</figcaption>
+                </figure>
+                <p>Sous les totaux, le bloc <strong>Crédits en circulation</strong> liste ce que le client a versé ou
+                    obtenu sans lettrage : paiements, avoirs, autres écritures à son crédit. Chaque ligne porte un bouton
+                    <strong>Ajouter</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Totaux de FAC/2026/00005 : montant hors taxes 2 000,00, taxe 0 %, total 2 000,00, montant dû 2 000,00 ; bloc Crédits en circulation avec la ligne 12/11/2026 PBNK1/2026/00012, bouton Ajouter, 3 300,00 dollars" style="max-width:55%; height:auto;"/>
+                    <figcaption>Le virement de 3 300 $ est proposé sur la facture de 2 000 $.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Ajouter</strong>. La facture prend le bandeau PAYÉ ; sous le total, la ligne « Payé
+                    le 12/11/2026 » remplace le bloc des crédits et le montant dû tombe à zéro.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Totaux de FAC/2026/00005 après Ajouter : total 2 000,00, ligne Payé le 12/11/2026 pour 2 000,00 avec icône d'information, montant dû 0,00" style="max-width:55%; height:auto;"/>
+                    <figcaption>Le lettrage est fait : 2 000 $ des 3 300 $ sont imputés.</figcaption>
+                </figure>
+                <p>Le même bloc existe côté fournisseurs : une facture fournisseur affiche des <em>débits en
+                    circulation</em> quand un paiement ou un avoir du fournisseur attend d'être imputé.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Un paiement pour plusieurs factures</h2>
+                <p>Le virement de 3 300 $ couvrait en fait trois factures d'OpenWood. Ouvrez FAC/2026/00006 (1 000 $) :
+                    le bloc propose le même paiement, réduit à 1 300 $. Ajouter. Puis FAC/2026/00007 (275 $) : il reste
+                    300 $, Ajouter encore. Les trois factures sont payées.</p>
+                <p>Le virement dépassait la somme des trois factures (3 275 $). Les 25 $ restants ne disparaissent pas :
+                    ils restent en circulation et apparaissent sur la facture suivante du client, FAC/2026/00009.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Totaux de FAC/2026/00009 d'OpenWood : bloc Crédits en circulation avec la ligne PBNK1/2026/00012, bouton Ajouter, 25,00 dollars" style="max-width:55%; height:auto;"/>
+                    <figcaption>Le solde du virement, 25 $, attend sur la facture suivante du client.</figcaption>
+                </figure>
+                <p>Le paiement, lui, affiche désormais le bouton <strong>3 Facture</strong> et l'état
+                    <strong>Rapproché</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Paiement PBNK1/2026/00012 : bouton 3 Facture dans le panneau de contrôle, état Rapproché dans la barre d'état, client OpenWood, montant 3 300,00 dollars" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois factures lettrées, état Rapproché, alors que 25 $ restent à imputer.</figcaption>
+                </figure>
+                <p>Quand les factures réglées sont connues dès réception du virement, il est plus simple de les cocher
+                    dans la liste des factures et de cliquer sur Payer avec la case Regrouper les paiements, comme le
+                    montre <a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans
+                    Odoo 20</a>. Le bouton Ajouter sert quand le paiement existe déjà.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Un montant différent du montant dû</h2>
+                <p><strong>Le client a versé plus.</strong> C'est le cas d'OpenWood ci-dessus : l'excédent reste un crédit
+                    en circulation, imputable sur une prochaine facture du même client. Rien n'est perdu, mais le paiement lui-même
+                    ne l'affiche pas : il se lit sur les factures ouvertes du client.</p>
+                <p><strong>Le client a versé moins.</strong> Sur une facture de 153 $, le Client particulier ne règle que
+                    63 $. Dans la fenêtre <strong>Payer</strong>, remplacez le montant proposé par 63.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Payer de FAC/2026/00010 : journal Banque, mode de paiement Manual Payment, compte bancaire destinataire, montant 63,00 USD, date de règlement 12 novembre, mémo FAC/2026/00010, boutons Créer un paiement et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Montant inférieur au dû, et pourtant aucune option d'écart dans la fenêtre.</figcaption>
+                </figure>
+                <p>Avec le mode Manual Payment de la démonstration, la fenêtre ne propose pas de passer l'écart en perte :
+                    cette option n'apparaît que si le mode de paiement porte un compte de paiement, un réglage du
+                    journal réservé aux utilisateurs dotés des fonctions comptables complètes, que l'administrateur de
+                    la démonstration ne voit pas. Créer un paiement laisse
+                    donc la facture <strong>Partiel</strong>, avec 90 $ dus. Le solde se réclame au client ; si la
+                    société renonce à le percevoir à titre commercial, un avoir du montant de l'écart, créé depuis la
+                    facture, s'impute de lui-même à sa confirmation (si la facture porte de la TVA, l'avoir la réduit
+                    d'autant) : voir <a
+                    href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Faire un avoir dans Odoo 20 :
+                    partiel ou sur facture payée</a>.</p>
+                <p>Un paiement en devise étrangère suit le même lettrage ; l'écart de change est alors passé
+                    automatiquement, comme le détaille <a href="/blog/fonctionnel-odoo-1/vendre-acheter-devises-odoo-265">Multi-devise
+                    dans Odoo 20 : vendre et acheter en devises</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Un paiement lettré sur la mauvaise facture</h2>
+                <p>Les 63 $ de la section précédente réglaient en réalité une autre facture du même client,
+                    FAC/2026/00011, d'un montant de 63 $. Sur FAC/2026/00010, cliquez sur l'icône d'information de la
+                    ligne « Payé le 12/11/2026 ». La fenêtre <strong>Infos de la pièce comptable</strong> rappelle le
+                    montant, le mémo, la date et le journal du paiement.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Infos de la pièce comptable ouverte depuis FAC/2026/00010 : montant 63,00, mémo PBNK1/2026/00013 (FAC/2026/00010), date 2026-11-12, journal Banque (Manual Payment), boutons Annuler le lettrage et Vue ; à droite, total 153,00, Payé le 12/11/2026 63,00, montant dû 90,00" style="max-width:70%; height:auto;"/>
+                    <figcaption>Le bouton Annuler le lettrage défait l'association, pas le paiement.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Annuler le lettrage</strong>. La facture FAC/2026/00010 revient à 153 $ dus, et
+                    les 63 $ réapparaissent en crédit en circulation : le paiement existe toujours, il n'est simplement
+                    plus imputé.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Totaux de FAC/2026/00010 après Annuler le lettrage : total 153,00, montant dû 153,00, bloc Crédits en circulation avec PBNK1/2026/00013, bouton Ajouter, 63,00 dollars" style="max-width:55%; height:auto;"/>
+                    <figcaption>Le paiement libéré redevient un crédit, proposé sur toutes les factures ouvertes du client.</figcaption>
+                </figure>
+                <p>Ouvrez FAC/2026/00011 : le même crédit de 63 $ y est proposé. Ajouter : la facture est payée. La
+                    correction est faite en deux clics, sans supprimer ni ressaisir le paiement. Un détail reste à
+                    connaître sur l'état de ce paiement : voir les points de vigilance.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Un paiement saisi au mauvais client</h2>
+                <p>Un virement de LightsUp (750 $, pour FAC/2026/00008) a été enregistré par erreur au nom de Gemini
+                    Furniture, depuis Clients › Paiements. Symptôme : la facture de LightsUp n'affiche aucun crédit en
+                    circulation, puisque le bloc ne propose que les crédits du même client.</p>
+                <p>Le réflexe est d'ouvrir le paiement, de cliquer sur <strong>Remettre en brouillon</strong>, de
+                    remplacer le client par LightsUp, puis de cliquer sur <strong>Confirmer</strong>. Odoo refuse :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Opération invalide : Vous ne pouvez pas créer un nouveau paiement sans un compte de paiements entrants/sortants en suspens défini soit sur l'entreprise soit sur le mode de paiement Manual Payment du journal Banque, bouton Fermer" style="max-width:55%; height:auto;"/>
+                    <figcaption>Changer le client d'un paiement remis en brouillon bute sur le compte en suspens.</figcaption>
+                </figure>
+                <p>En Community, le compte <em>Paiements entrants en suspens</em> est attribué au paiement lors de sa
+                    création ; en changeant de client, Odoo le recalcule à partir du mode de paiement, qui n'en porte
+                    pas dans la démonstration, d'où le message. Le même paiement, reconfirmé sans changer de client,
+                    est accepté.</p>
+                <p>La correction fiable est donc de repartir d'un paiement neuf :</p>
+                <ol>
+                    <li>cliquez sur <strong>Fermer</strong>, puis abandonnez la modification du client ;</li>
+                    <li>sur le paiement resté en brouillon, cliquez sur <strong>Annuler</strong> : il passe à l'état
+                        <strong>Annulée</strong> et son écriture disparaît ;</li>
+                    <li>ouvrez FAC/2026/00008 de LightsUp et cliquez sur <strong>Payer</strong> : 750 $, Créer un
+                        paiement. La facture est payée.</li>
+                </ol>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste des paiements clients : PBNK1/2026/00014 LightsUp 750,00 Rapproché, PBNK1/2026/00014 Gemini Furniture 750,00 Annulée en grisé, PBNK1/2026/00013 Client particulier 63,00 Payé, PBNK1/2026/00012 OpenWood 3 300,00 Rapproché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le paiement annulé garde son numéro, repris par le nouveau paiement.</figcaption>
+                </figure>
+                <p>La liste Clients › Paiements montre les deux lignes : le paiement annulé, en grisé, et le nouveau,
+                    Rapproché. Les deux portent le même numéro PBNK1/2026/00014 : le paiement saisi après
+                    l'annulation a repris le numéro du paiement annulé. Pour un rapprochement avec le relevé, fiez-vous au
+                    client, au montant et à l'état, pas au seul numéro.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lire Payé et Rapproché en Community</h2>
+                <p>La colonne État de Clients › Paiements résume la situation de chaque paiement :</p>
+                <ul>
+                    <li><strong>Payé</strong> : le paiement est enregistré, son argent est sur le compte en suspens, et
+                        au moins une facture qui lui est rattachée n'est pas soldée, ou aucune facture n'y est encore
+                        rattachée ;</li>
+                    <li><strong>Rapproché</strong> : toutes les factures rattachées sont soldées ;</li>
+                    <li><strong>Annulée</strong> : le paiement n'a plus d'écriture.</li>
+                </ul>
+                <p>En Community, Rapproché ne signifie pas que le paiement a été retrouvé sur le relevé de la banque :
+                    ce contrôle se fait à la main, à partir de la liste des paiements, comme l'explique <a
+                    href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et
+                    rapprochement dans Odoo 20 Community</a>. Avant de relancer un client, regardez aussi ses
+                    factures ouvertes : un avoir ou un paiement non imputé y figure dans les crédits en circulation,
+                    comme ceux d'Acme Corporation dans la démonstration.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Paiements avec ou sans facture, crédits et débits en circulation, bouton Ajouter, Annuler le
+                        lettrage, annulation d'un paiement et avoirs imputés sont inclus dans Odoo 20 Community.
+                        L'écran de rapprochement bancaire relève du module de comptabilité de l'Enterprise
+                        (<code>account_accountant</code>), qui n'est pas inclus dans la Community ; son fonctionnement
+                        est présenté dans <a href="/blog/fonctionnel-odoo-1/rapprochement-bancaire-automatique-odoo-298">Rapprochement
+                        bancaire automatique dans Odoo 20</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Remettre un paiement en brouillon ne délettre pas la facture</h4>
+                    <p>Un paiement remis en brouillon affiche l'état Brouillon, et son titre « Brouillon » remplace son
+                        numéro (ici PBNK1/2026/00013) ; la facture FAC/2026/00011 qu'il règle garde pourtant son bandeau
+                        PAYÉ. Pour rouvrir la facture, passez par Annuler le lettrage depuis la facture, ou annulez le
+                        paiement (Annuler, depuis le brouillon).</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_13" alt="En haut, paiement remis en brouillon (titre Brouillon) avec les boutons Confirmer et Annuler, client Client particulier, 63,00 dollars, mémo FAC/2026/00010 ; en bas, en-tête de la facture FAC/2026/00011 avec le bandeau PAYÉ" style="max-width:100%; height:auto;"/>
+                        <figcaption>Paiement en brouillon, facture toujours PAYÉ.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un paiement délettré garde sa première facture</h4>
+                    <p>Après la correction de la section 4, PBNK1/2026/00013 affiche « 2 Facture » et reste à l'état Payé.
+                        Son bouton ouvre la liste « Factures clients payées », qui contient FAC/2026/00011, payée, mais
+                        aussi FAC/2026/00010, toujours due : la facture d'origine, choisie par le bouton Payer, reste
+                        rattachée au paiement. Fiez-vous au montant dû de chaque facture, pas à cette liste.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_14" alt="Liste Factures clients payées ouverte depuis PBNK1/2026/00013 : FAC/2026/00011 montant dû 0,00 statut Payé, FAC/2026/00010 échéance il y a 3 semaines en rouge, montant dû 153,00, statut Comptabilisé" style="max-width:100%; height:auto;"/>
+                        <figcaption>La liste « payées » contient une facture encore due.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Rapproché ne veut pas dire entièrement utilisé</h4>
+                    <p>Le virement d'OpenWood est passé à Rapproché dès que ses trois factures ont été soldées, alors que
+                        25 $ restaient à imputer (figure 7). Le paiement n'affiche pas ce reliquat : il se lit sur les
+                        factures ouvertes du client.
+                        Inversement, dès que ces 25 $ sont imputés sur une facture qu'ils ne soldent pas, le paiement
+                        repasse à Payé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> imputer le reliquat du virement d'OpenWood.</p>
+                    <p><strong>Indication :</strong> après avoir joué les sections 1 et 2, ouvrez FAC/2026/00009
+                        d'OpenWood (1 799 $) et cliquez sur Ajouter en face des 25 $ de PBNK1/2026/00012.</p>
+                    <p><strong>Critère de réussite :</strong> la facture porte le bandeau PARTIEL avec 1 774 $ dus, le
+                        bloc des crédits en circulation a disparu, et PBNK1/2026/00012 est repassé de Rapproché à
+                        Payé, puisque l'une de ses factures n'est pas soldée.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Community, le lettrage manuel se fait sur la facture : bloc Crédits en circulation, bouton Ajouter.</li>
+                    <li>Un paiement saisi sans facture attend sur le compte Paiements entrants en suspens ; son reliquat suit le client.</li>
+                    <li>Annuler le lettrage libère le paiement sans le supprimer ; Remettre en brouillon ne délettre rien.</li>
+                    <li>Mauvais client : annuler le paiement et en saisir un nouveau, plutôt que modifier le client.</li>
+                    <li>Rapproché signifie factures soldées, ni relevé pointé ni paiement entièrement utilisé.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Le lettrage dit quelles factures sont réglées ; le pointage contre le relevé de la banque reste à
+                    faire, comme le montre <a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés
+                    bancaires et rapprochement dans Odoo 20 Community</a>. Pour replacer le paiement dans le cycle
+                    complet d'une vente, voyez <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du
+                    prospect à l'encaissement dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances</a></h5>
+                            <p class="small text-muted mb-0">Paiement total, partiel ou groupé depuis la facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et rapprochement</a></h5>
+                            <p class="small text-muted mb-0">Pointer les encaissements contre le relevé en Community.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Créer un avoir et l'imputer sur la facture.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
