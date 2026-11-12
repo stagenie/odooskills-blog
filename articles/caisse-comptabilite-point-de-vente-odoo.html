@@ -1,0 +1,546 @@
+<!--
+Article — Du ticket de caisse à la comptabilité dans Odoo 20
+Titre du plan (vague 3, alternative F2.a) : « Du ticket de caisse à la comptabilité : le flux Point de vente dans Odoo 20 » (75 car., refusé ≤ 60)
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), alternative F2.a, sans article suivant annoncé
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : caisse-comptabilite-point-de-vente-odoo
+Tags : intermediaire, pos, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f2a (copie neutralisée de vs20_func), société My Company (San Francisco), USD, taxe 15 %,
+  point de vente « Magasin de meubles » (config 1). Rien installé : point_of_sale, pos_stock, pos_sale, l10n_fr_pos_cert déjà présents.
+  Configuration lue : journal des commandes « Point de Vente » (POSS), journal de clôture « Point of Sale Closing » (POSC), client par défaut « Odoo POS »
+  (compte 101300 Accounts Receivable (PoS)) ; modes Espèces (cash, journal Espèces Magasin de meubles, 101501, pertes 642000), Card (bank, journal Banque,
+  compte en suspens 101403 « Paiements entrants en suspens »), Compte client (pay_later) ; société : point_of_sale_update_stock_quantities = real ;
+  articles en valorisation « periodic ».
+  Joué à l'écran : Ouvrir la caisse (prérempli 258,49, gardé) → vente 1 : 2 Lampe de bureau 92,00, Espèces 100, monnaie 8,00 (2615-1-000001) → vente 2 :
+  3 Boîte de rangement 54,51, Card → vente 3 : client Ron Gibson (contact de Wood Corner), Lampe de bureau + Boîte de rangement 64,17, Card, Facture
+  → POSS/2026/00002 (journal Point de Vente, 121000, payée par PBNK1/2026/00012 dès la validation) ; ticket = /pos/receipt/<id> (QR « Besoin d'une facture ? » masqué) ;
+  fermeture : Espèces attendu 350,49 (258,49 + 92,00), compté 348,49, différence −2,00 ; Card 118,68 = 54,51 + 64,17, compté 118,68 ;
+  « Écart de règlement » → Poursuivre → session Magasin de meubles/00003 Fermée & Comptabilisée (Opening 258,49, Closing 348,49), 3 transferts WH/POS/00005-7
+  (WH/Stock → Customers, Terminé, un par vente, faits à la validation) ; POSC/2026/00009 Odoo POS 127,40 + 19,11 = 146,51 payée (54,51 + 92,00) ;
+  CSH1/2026/00006 (101501 / 101300, 92,00) ; PBNK1/2026/00013 (101403 / 101300, 54,51) ; CSH1/2026/00007 « Cash correction » (642000 / 101501, 2,00) ;
+  Clients › Paiements : PBNK1/2026/00012 et 00013 « Rapproché » (is_matched False, solde sur 101403).
+  Code : point_of_sale/models/pos_session.py:941-971 (_validate_session_accounting : ventes non facturées seulement), :977-993 (facture de clôture, journal
+  closing_journal_id, partenaire default_partner_id), :995-1135 (lignes, paiements, lettrage), :889-931 (correction de caisse), :820-887 (écart carte →
+  « Bank difference », compte de perte/profit du journal) ; point_of_sale/models/pos_payment_method.py:432-536 (cash → ligne de relevé, bank → account.payment sur
+  outstanding_account_id) ; point_of_sale/models/pos_order.py:177-187 (facture si to_invoice ou Compte client), :1508-1580 (journal config.journal_id),
+  :1586-1676 (paiements créés et lettrés à la facturation) ; point_of_sale/models/account_journal.py:48,52 (POSS, POSC) ;
+  point_of_sale/views/res_config_settings_views.xml:303-313 (Journaux par défaut : Commandes, Fermeture) ;
+  pos_stock/models/res_company.py:7-11 (Mettre à jour les quantités en stock : En temps réel, défaut / À la fermeture de la session),
+  pos_stock/views/res_config_settings_views.xml:31 (réglage groups base.group_no_one) ; pos_stock/models/pos_session.py:132-148 (lignes de coût seulement
+  pour valuation real_time) ; account/models/account_payment.py:37-45,518-545 (état Rapproché vs is_matched) ; account_accountant absent de odoo/addons.
+Captures : content/blog/screenshots/caisse-comptabilite-point-de-vente-odoo/ (scripts docs/blog-odoo20/captures-base-vs20_func/f2a-caisse-compta/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Du ticket de caisse à la comptabilité dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une journée de caisse laisse trois traces : des tickets pour les clients,
+                    des sorties de stock pour le magasin et des pièces pour le comptable. Cet article suit une session du
+                    Point de Vente d'Odoo 20 Community de l'ouverture à la fermeture, puis remonte chaque vente jusqu'à
+                    l'inventaire, la facture et le compte bancaire.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %), avec Point de Vente, Inventaire et Facturation installés. Ces applications existent
+                        aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La caisse, l'entrepôt et la comptabilité sur un même fil</h2>
+                <p>Le caissier ne voit que l'écran de caisse. Derrière lui, chaque vente validée retire des articles du
+                    stock, et la fermeture de la session transforme la journée en pièces comptables. Le responsable du
+                    magasin, le magasinier et le comptable regardent donc la même journée depuis trois applications :
+                    <strong>Point de Vente</strong>, <strong>Inventaire</strong> et <strong>Facturation</strong>. Comme <a
+                    href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement dans Odoo
+                    20</a> pour les ventes, cet article suit un seul parcours d'un bout à l'autre.</p>
+                <p>Il ne refait pas le tutoriel de la caisse. La prise en main (installation, vente, ticket, libre-service)
+                    est dans <a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et
+                    commande en libre-service dans Odoo 20</a> ; le comptage du fond de caisse, les mouvements d'espèces et
+                    le rapport de session sont détaillés dans <a
+                    href="/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture et fermeture de caisse
+                    dans Odoo 20</a>. Le présent article s'intéresse à ce qui sort de la caisse.</p>
+                <p>Le jeu d'essai tient en une session du point de vente <strong>Magasin de meubles</strong> de la
+                    démonstration : une vente anonyme payée en espèces, une vente anonyme payée par carte, et une vente
+                    facturée à un client et payée par carte. Les numéros de documents cités sont ceux obtenus sur cette
+                    base ; ils varient d'une base à l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>distinguer, dans une session de caisse, ce qui se passe à chaque vente et ce qui attend la fermeture ;</li>
+                    <li>facturer un client depuis la caisse et retrouver sa facture ;</li>
+                    <li>lire le contrôle de caisse et savoir où part un écart ;</li>
+                    <li>retrouver les sorties de stock et les pièces comptables produites par la session ;</li>
+                    <li>savoir où en sont les paiements par carte, et ce que la Community ne rapproche pas.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du flux Point de vente dans Odoo 20 : en haut, Point de Vente, ouverture de session (fond de caisse compté, Ouvrir la caisse), ventes et tickets (espèces, carte, vente facturée à un client, Paiement puis Valider), fermeture (espèces et carte comptées, écart constaté, Fermer la caisse) ; en bas, Inventaire, un transfert par vente WH/POS du stock vers Customers fait à la validation, aucune écriture de coût en valorisation périodique ; Facturation, facture nominative au journal Point de Vente payée dès la vente ; Facturation, facture de clôture au journal Point of Sale Closing, client Odoo POS ; Banque, encaissements, espèces au relevé de caisse, carte en paiement en attente au journal Banque, écart de caisse en perte ou profit ; encadré : le paiement par carte attend sur un compte de paiements en suspens jusqu'au rapprochement avec le relevé, absent de la Community" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois étapes à la caisse, quatre traces derrière elle : stock, facture nominative, facture de clôture, encaissements.</figcaption>
+                </figure>
+                <p>Le schéma sépare deux moments. <strong>À la validation de chaque vente</strong>, Odoo crée le
+                    transfert de stock et, si le client a demandé une facture, la facture et son paiement.
+                    <strong>À la fermeture de la session</strong>, il passe en comptabilité toutes les ventes anonymes en
+                    une seule facture de clôture, avec leurs encaissements, et enregistre l'écart de caisse.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Ouvrir la session</h2>
+                <p>Ouvrez <strong>Point de Vente › Tableau de bord</strong> et cliquez sur <strong>Ouvrir la
+                    caisse</strong> sur la carte Magasin de meubles. La fenêtre <strong>Contrôle à l'ouverture</strong>
+                    propose comme <strong>Espèces à l'ouverture</strong> le solde laissé à la dernière fermeture,
+                    ici 258,49 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Contrôle à l'ouverture du Point de Vente d'Odoo 20 : Espèces à l'ouverture 258,49 avec le bouton de comptage par pièces et billets, champ Note d'ouverture vide, boutons Ouvrir la caisse et Ignorer" style="max-width:60%; height:auto;"/>
+                    <figcaption>Le fond de caisse proposé : le solde de la dernière fermeture.</figcaption>
+                </figure>
+                <p>Le tiroir contenant bien ce montant, il est gardé tel quel : cliquez sur <strong>Ouvrir la
+                    caisse</strong>. Un montant différent serait comptabilisé dès l'ouverture comme écart de caisse ; le
+                    comptage par coupures et ce cas sont détaillés dans l'article sur l'ouverture et la fermeture de caisse.
+                    La session s'appelle désormais <strong>Magasin de meubles/00003</strong> : chaque vente jusqu'à la
+                    fermeture lui est rattachée.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Encaisser en espèces et par carte</h2>
+                <p>Première vente : touchez deux fois <strong>Lampe de bureau</strong>, puis <strong>Paiement</strong>.
+                    Choisissez <strong>Espèces</strong>, effacez le montant proposé et tapez 100 au pavé : le client
+                    donne un billet de 100 $ pour 92,00 $.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran de paiement du Point de Vente d'Odoo 20 : total 92,00 $, ligne Espèces 100,00 $, Monnaie - 8,00 $ en vert ; à gauche les modes Espèces, Card et Compte client, boutons Client et Facture, pavé numérique, Retour et Valider" style="max-width:100%; height:auto;"/>
+                    <figcaption>Paiement en espèces : 100 $ reçus, 8 $ de monnaie à rendre.</figcaption>
+                </figure>
+                <p>Odoo calcule la monnaie, 8,00 $. Les trois modes de paiement de ce point de vente sont
+                    <strong>Espèces</strong>, <strong>Card</strong> (libellé de la démonstration) et <strong>Compte
+                    client</strong>, la vente à crédit, qui exige un client. Cliquez sur <strong>Valider</strong>, puis
+                    sur <strong>Imprimer</strong> pour obtenir le ticket.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Ticket de caisse Odoo 20 intitulé Ticket TVA 2615-1-000001, servi par Mitchell, commande 15001 : 2 Lampe de bureau 92,00 $, sous-total 80,00 $, taxe 15 % 12,00 $, total 92,00 $, lignes Espèces -8,00 $ et 100,00 $, Monnaie 8.0, Total Items 2, zone du QR code de demande de facture masquée, empreinte hexadécimale, coordonnées du magasin" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le ticket de la première vente (QR code de demande de facture masqué).</figcaption>
+                </figure>
+                <p>Le ticket reprend les lignes et la taxe. La monnaie y apparaît deux fois : une ligne Espèces négative
+                    de 8,00 $ et la ligne <strong>Monnaie</strong> ; seuls 92,00 $ entrent réellement dans le tiroir. Le QR
+                    code « Besoin d'une facture ? », masqué ici, permet au client de demander sa facture plus tard sur le
+                    portail. La longue empreinte est celle de la certification française des caisses : dans la base de
+                    démonstration, le pays de la société est réglé sur France malgré son adresse américaine ; une société
+                    située hors de France ne la voit pas. La ligne « Base Tax 15% » rappelle la base taxable, et la monnaie
+                    s'imprime sans format monétaire (8.0).</p>
+                <p>Deuxième vente, de la même façon : trois <strong>Boîte de rangement</strong>, 54,51 $, réglées avec le
+                    mode <strong>Card</strong>. Sans terminal de paiement relié à la caisse, ce mode enregistre seulement le
+                    montant ; le client paie sur le terminal de la banque, à côté.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Facturer un client depuis la caisse</h2>
+                <p>Troisième vente : un client professionnel veut une facture. Ajoutez une Lampe de bureau et une Boîte de
+                    rangement, touchez <strong>Client</strong> et cherchez « Wood Corner ». La liste propose la société et
+                    ses contacts ; ici, c'est le contact <strong>Ron Gibson</strong> qui a été choisi. Passez au
+                    <strong>Paiement</strong>, choisissez <strong>Card</strong>, puis touchez <strong>Facture</strong>,
+                    qui reste en surbrillance.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Écran de paiement du Point de Vente d'Odoo 20 pour la troisième vente : total 64,17 $, ligne Card 64,17 $, client Ron Gibson affiché sur le bouton Client, bouton Facture activé, pavé numérique et bouton Valider" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une vente avec client et facture : 64,17 $ par carte.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Valider</strong>. Odoo crée aussitôt la facture, sans attendre la fermeture de la
+                    session : <strong>POSS/2026/00002</strong>, au nom de « Wood Corner, Ron Gibson ». Elle est déjà
+                    comptabilisée et payée, car le paiement par carte a été enregistré et lettré dans la même
+                    opération. Son contenu est détaillé à l'étape 6.</p>
+                <p>Le bouton Facture n'est pas le seul chemin vers une facture : une vente payée en <strong>Compte
+                    client</strong> est toujours facturée, puisque le client paiera plus tard. Pour un client qui vient
+                    régler au comptoir une facture déjà émise, voir <a
+                    href="/blog/fonctionnel-odoo-1/encaisser-facture-client-caisse-odoo-326">Encaisser une facture client à
+                    la caisse avec Odoo 20</a>, fonction de l'édition Enterprise.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Fermer la caisse et contrôler les montants</h2>
+                <p>En fin de journée, ouvrez le menu ☰ en haut à droite de la caisse et choisissez <strong>Fermer la
+                    caisse</strong>. La fenêtre récapitule la session : 3 commandes pour 210,68 $, puis, pour chaque mode
+                    de paiement, le montant attendu, le montant compté et la différence.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Fenêtre Fermeture de la caisse dans Odoo 20 : 3 commandes 210,68 $ ; Espèces 350,49 $ (Ouverture 258,49 $, Paiement en Espèces 92,00 $, Cash entrant/sortant + 0,00 $), Compté 348,49 $, Différence -2,00 $ en rouge ; Card 118,68 $, Compté 118,68 $, Différence 0,00 $ ; Compte client 0,00 $ ; champs Comptage de caisse 348,49 et Card Nombre 118,68, Note de clôture, boutons Fermer la caisse, Ignorer, Cash entrant/sortant, Ventes du jour" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le contrôle de caisse : 2 $ manquent dans le tiroir, le total carte correspond.</figcaption>
+                </figure>
+                <p>Pour les <strong>espèces</strong>, Odoo attend 350,49 $ : le fond de 258,49 $ plus les 92,00 $ de la
+                    première vente. Le caissier compte le tiroir et saisit 348,49 $ dans <strong>Comptage de
+                    caisse</strong> : la <strong>Différence</strong> passe à −2,00 $, en rouge.</p>
+                <p>Pour la <strong>carte</strong>, Odoo attend 118,68 $ : les deux ventes payées par carte, y compris
+                    celle qui a été facturée (54,51 + 64,17). Le champ <strong>Card Nombre</strong> (libellé tel qu'affiché : c'est un
+                    montant, pas un nombre de transactions), prérempli avec ce montant, se compare au total du terminal de paiement pour la journée. Il est gardé ici ; un montant
+                    différent produirait, à la fermeture, une pièce d'écart sur le compte de perte ou de profit du journal
+                    Banque.</p>
+                <p>Cliquez sur <strong>Fermer la caisse</strong>. L'écart d'espèces déclenche une confirmation.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fenêtre Écart de règlement dans Odoo 20 : L'argent comptabilisé ne correspond pas à ce qui était prévu. Voulez-vous enregistrer la différence dans la comptabilité ? Boutons Poursuivre et Ignorer" style="max-width:55%; height:auto;"/>
+                    <figcaption>L'écart d'espèces : Poursuivre l'enregistre en comptabilité.</figcaption>
+                </figure>
+                <p><strong>Ignorer</strong> ramène au comptage ; <strong>Poursuivre</strong> ferme la session et passe
+                    l'écart en comptabilité. La caisse télécharge alors le ticket Z, le récapitulatif de la session, et
+                    revient à son écran d'accueil.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Le stock : un transfert par vente</h2>
+                <p>Dans <strong>Point de Vente › Commandes › Sessions</strong>, ouvrez Magasin de meubles/00003. Elle
+                    est à l'état <strong>Fermée &amp; Comptabilisée</strong>. Les boutons du haut mènent aux 3 commandes,
+                    aux 3 transferts de stock et aux paiements, 210,68 $ au total.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche de la session Magasin de meubles/00003 dans Odoo 20 : boutons Commandes 3, Transferts 3, Paiements 210,68 ; état Fermée &amp; Comptabilisée ; ouverte par Mitchell Admin, Opening Balance 258,49, Closing Balance 348,49" style="max-width:100%; height:auto;"/>
+                    <figcaption>La session fermée : trois commandes, trois transferts, 210,68 $ de paiements.</figcaption>
+                </figure>
+                <p>Le <strong>Closing Balance</strong> est le montant compté, 348,49 $ : c'est lui que la prochaine session
+                    proposera à l'ouverture. Le bouton <strong>Transferts</strong> liste les sorties de stock.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Liste des transferts de la session Magasin de meubles/00003 dans Odoo 20 : WH/POS/00005, WH/POS/00006 et WH/POS/00007, de WH/Stock vers Customers, documents d'origine Magasin de meubles - 0..., société My Company (San Francisco), statut Terminé ; contact Wood Corner, Ron Gibson sur le troisième" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un transfert terminé par vente, de WH/Stock vers les clients.</figcaption>
+                </figure>
+                <p>Chaque vente a son transfert, de type « PoS Orders », déjà <strong>Terminé</strong> : le stock a
+                    baissé au moment de la validation, pas à la fermeture. Sur la base, la Lampe de bureau est passée de 24
+                    à 21 unités. Seul le transfert de la vente rattachée à un client porte un contact.</p>
+                <p>Ce fonctionnement est le réglage par défaut de la société, <strong>Mettre à jour les quantités en
+                    stock : En temps réel</strong>. L'autre choix, <strong>À la fermeture de la session</strong>, crée à la
+                    fermeture un transfert groupé pour toute la session (un par destination), au lieu d'un par vente. Le réglage se trouve dans <strong>Point de Vente › Configuration ›
+                    Paramètres</strong>, mais n'est affiché qu'en mode développeur.</p>
+                <p>Côté comptabilité, ces transferts ne produisent aucune écriture sur la base de démonstration : ses
+                    articles sont valorisés de façon périodique. Avec des articles valorisés en temps réel, la facture de
+                    clôture porterait en plus des lignes de coût des ventes et de stock ; les deux modes sont présentés
+                    dans <a href="/blog/fonctionnel-odoo-1/valoriser-stock-cout-moyen-fifo-odoo-261">Valorisation du stock
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. La comptabilité : deux factures et des encaissements</h2>
+                <p>Ouvrez <strong>Facturation › Clients › Factures</strong> et cherchez « POS ». La session y a laissé
+                    deux factures, numérotées dans deux journaux propres au point de vente.</p>
+                <h3>La facture de clôture</h3>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Facture client POSC/2026/00009 dans Odoo 20, ruban PAYÉ : client et adresse de livraison Odoo POS, journal Point of Sale Closing en USD, une ligne Product Sales 1,00 × 127,40 taxe 15 %, montant hors taxes 127,40 $, Tax 15 % 19,11 $, total 146,51 $, Payé le 12/11/2026 54,51 $ et 92,00 $, montant dû 0,00 $ ; boutons Paiements, Écritures comptables, Commandes du PdV 2" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture de clôture : les deux ventes anonymes, déjà payées.</figcaption>
+                </figure>
+                <p><strong>POSC/2026/00009</strong> est la facture de clôture, dans le journal <strong>Point of Sale
+                    Closing</strong>, au nom du client par défaut du point de vente, <strong>Odoo POS</strong>. Elle regroupe
+                    les deux ventes anonymes sur une ligne « Product Sales » : 127,40 $ hors taxes, 19,11 $ de taxe,
+                    146,51 $. Elle est déjà payée par deux encaissements : 92,00 $ en espèces et 54,51 $ par carte. Le bouton
+                    <strong>Paiements</strong> n'en compte qu'un : les espèces passent par le relevé de caisse, pas par
+                    un paiement. Le
+                    bouton <strong>Commandes du PdV</strong> ramène aux deux ventes. La troisième vente n'y figure pas : elle
+                    a sa propre facture.</p>
+                <p>Le regroupement sur une seule ligne est un réglage : <strong>Écriture de clôture par produit</strong>,
+                    dans les paramètres du point de vente, détaille les ventes par article.</p>
+                <h3>La facture nominative</h3>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Facture client POSS/2026/00002 dans Odoo 20, ruban PAYÉ : client Wood Corner, Ron Gibson avec son adresse, journal Point de Vente en USD, lignes Lampe de bureau 1,00 × 40,00 et Boîte de rangement 1,00 × 15,80 taxe 15 %, hors taxes 55,80 $, taxe 8,37 $, total 64,17 $, Payé le 12/11/2026 64,17 $, montant dû 0,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>La facture demandée à la caisse : journal Point de Vente, payée.</figcaption>
+                </figure>
+                <p><strong>POSS/2026/00002</strong> détaille les articles, au nom du client ; sa référence, dans le fil
+                    d'Ariane, rappelle la commande de caisse d'origine. Elle est numérotée dans le
+                    journal <strong>Point de Vente</strong>, et non dans le journal des ventes : les deux journaux se
+                    choisissent dans <strong>Point de Vente › Configuration › Paramètres</strong>, section
+                    <strong>Journaux par défaut</strong> (Commandes et Fermeture). Son historique indique « Cette facture a
+                    été créée depuis la session de point de vente ».</p>
+                <h3>Les pièces, compte par compte</h3>
+                <p>Le tableau ci-dessous reprend les pièces de la session, relevées sur la base de démonstration, dont le
+                    plan comptable est le plan générique (libellés de comptes en anglais) ; une société française utilise
+                    ses propres numéros.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Pièce</th><th>Ce qu'elle enregistre</th><th>Débit</th><th>Crédit</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>POSC/2026/00009</td><td>Facture de clôture, ventes anonymes</td>
+                            <td>101300 Accounts Receivable (PoS) : 92,00 + 54,51</td>
+                            <td>400000 Product Sales : 127,40 ; 251000 Tax Received : 19,11</td></tr>
+                        <tr><td>CSH1/2026/00006</td><td>Encaissement espèces, au relevé de caisse de la session</td>
+                            <td>101501 Espèces Magasin de meubles : 92,00</td>
+                            <td>101300 Accounts Receivable (PoS) : 92,00</td></tr>
+                        <tr><td>PBNK1/2026/00013</td><td>Encaissement carte des ventes anonymes, journal Banque</td>
+                            <td>101403 Paiements entrants en suspens : 54,51</td>
+                            <td>101300 Accounts Receivable (PoS) : 54,51</td></tr>
+                        <tr><td>POSS/2026/00002</td><td>Facture nominative</td>
+                            <td>121000 Accounts Receivable : 64,17</td>
+                            <td>400000 Product Sales : 55,80 ; 251000 Tax Received : 8,37</td></tr>
+                        <tr><td>PBNK1/2026/00012</td><td>Paiement carte de la facture nominative, journal Banque</td>
+                            <td>101403 Paiements entrants en suspens : 64,17</td>
+                            <td>121000 Accounts Receivable : 64,17</td></tr>
+                        <tr><td>CSH1/2026/00007</td><td>Correction de caisse, l'écart de 2,00 $</td>
+                            <td>642000 Perte de change (compte de perte par défaut du journal) : 2,00</td>
+                            <td>101501 Espèces Magasin de meubles : 2,00</td></tr>
+                    </tbody>
+                </table>
+                <p>Le compte client du point de vente (101300) sert de pivot : la facture de clôture le débite, les
+                    encaissements le créditent et le soldent. Les espèces arrivent directement sur le compte de caisse ;
+                    l'écart va au compte de perte du journal Espèces (un excédent irait au compte de profit). La carte, elle,
+                    n'arrive pas encore en banque : elle s'arrête sur le compte <strong>Paiements entrants en
+                    suspens</strong>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les paiements par carte, jusqu'à la banque</h2>
+                <p>Ouvrez <strong>Facturation › Clients › Paiements</strong>. Les deux paiements par carte de la session y
+                    figurent, dans le journal <strong>Banque</strong> : PBNK1/2026/00013 pour les ventes anonymes, au nom
+                    d'Odoo POS, et PBNK1/2026/00012 pour la vente facturée.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste Paiements clients dans Odoo 20, filtre Paiements clients : PBNK1/2026/00013, Banque, Odoo POS, 54,51 $, Rapproché ; PBNK1/2026/00012, Banque, Wood Corner, Ron Gibson, 64,17 $, Rapproché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les deux paiements par carte de la session, en tête de la liste (recadrée), à l'état Rapproché.</figcaption>
+                </figure>
+                <p>Tous deux sont à l'état <strong>Rapproché</strong>. Dans Odoo 20 Community, cet état signifie que le
+                    paiement a soldé la facture qu'il règle ; il ne dit pas que l'argent a été vu sur le compte bancaire.
+                    Le montant reste sur le compte de paiements en suspens jusqu'à ce que la ligne du relevé bancaire
+                    correspondante lui soit associée.</p>
+                <p>Cette association, le rapprochement bancaire, ne fait pas partie de l'application Facturation de la
+                    Community : ni relevé ni écran de rapprochement dans la configuration standard. <a
+                    href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et
+                    rapprochement dans Odoo 20 Community</a> montre comment tenir une liste de pointage à partir des
+                    paiements ; l'écran de l'édition Enterprise est présenté dans <a
+                    href="/blog/fonctionnel-odoo-1/rapprochement-bancaire-automatique-odoo-298">Rapprochement bancaire
+                    automatique dans Odoo 20</a>. Pour le pointage des cartes, le total par jour du terminal se compare au
+                    montant Card compté à la fermeture de chaque session.</p>
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Tout le parcours de cet article, de l'ouverture de la caisse aux
+                        pièces de la session, a été joué sur Odoo 20 Community. Le module de comptabilité de l'Enterprise,
+                        qui porte l'écran de rapprochement bancaire, n'est pas inclus dans la Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>« Rapproché » ne veut pas dire « vu sur le relevé »</h4>
+                    <p>Les deux paiements par carte de la session sont passés à Rapproché dès leur création (liste des paiements, étape 7),
+                        alors qu'aucun relevé bancaire n'a été importé. Leur montant reste sur le compte de paiements
+                        entrants en suspens : le pointage contre le relevé de la banque reste à faire.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La facture de la caisse n'est pas dans la numérotation des ventes</h4>
+                    <p>La facture demandée à la caisse porte un numéro POSS, celle de la clôture un numéro POSC : ni
+                        l'une ni l'autre ne suit la série des factures du journal des ventes. Une recherche par numéro ou
+                        par journal qui ne vise que les ventes ne les trouve pas.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'écart de caisse part sur le compte choisi par le journal</h4>
+                    <p>Sur la base de démonstration, les 2 $ manquants ont été passés en « Perte de change », le compte de
+                        perte du journal Espèces. Avant la première session réelle, renseignez dans la configuration du
+                        journal Espèces les comptes d'écart de caisse de la société.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> facturer une vente à crédit depuis la caisse et vérifier qu'elle reste
+                        hors de la facture de clôture.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, ouvrez une session du
+                        Magasin de meubles, vendez une Lampe de bureau au client Wood Corner payée avec le mode
+                        <strong>Compte client</strong>, puis une Boîte de rangement anonyme en espèces, et fermez la caisse
+                        sans écart.</p>
+                    <p><strong>Critère de réussite :</strong> une facture POSS au nom de Wood Corner existe, non payée,
+                        avec un montant dû de 46,00 $ ; la facture de clôture POSC de la session s'élève à 18,17 $, le prix
+                        de la seule Boîte de rangement ; la session compte deux transferts.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Par défaut, chaque vente validée sort du stock aussitôt, avec un transfert WH/POS par vente.</li>
+                    <li>Une vente facturée à un client a sa facture au journal Point de Vente, créée et payée dès la validation.</li>
+                    <li>À la fermeture, les ventes anonymes deviennent une facture de clôture au nom d'Odoo POS, payée par les encaissements de la session.</li>
+                    <li>Les espèces vont au relevé de caisse, l'écart en perte ou en profit ; la carte attend sur le compte de paiements en suspens.</li>
+                    <li>En Community, le pointage des cartes contre le relevé bancaire se fait hors d'Odoo ou avec l'Enterprise.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Pour la journée de caisse elle-même (comptage par coupures, sorties et entrées d'espèces, plafond
+                    d'écart, rapport de session), poursuivez avec <a
+                    href="/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture et fermeture de caisse
+                    dans Odoo 20</a>. Le même fil, côté ventes classiques, est suivi dans <a
+                    href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement dans Odoo
+                    20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et libre-service</a></h5>
+                            <p class="small text-muted mb-0">Installer la caisse, vendre, imprimer le ticket.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/releves-bancaires-rapprochement-odoo-216">Relevés bancaires et rapprochement</a></h5>
+                            <p class="small text-muted mb-0">Ce que la Community fait de la banque.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/valoriser-stock-cout-moyen-fifo-odoo-261">Valorisation du stock</a></h5>
+                            <p class="small text-muted mb-0">Périodique ou en temps réel : ce qui change en comptabilité.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
