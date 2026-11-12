@@ -1,0 +1,544 @@
+<!--
+Article — Le mode hors ligne d'Odoo 20 : travailler sans connexion
+Série « Passer à Odoo 20 » (blog Fonctionnel, série 69), vague 3, ALTERNATIVE F6.a (position posée par le script de dépôt)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : mode-hors-ligne-odoo
+Tags : intermediaire, nouveautes, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community (révision 3538ed82), base vs20_func_f6a (copie neutralisée de vs20_func, recréée une fois
+  après les essais), société My Company (San Francisco). Aucun module installé. Odoo 19 : source 19.0 en lecture seule, aucune base 19.
+  Coupure : relais TCP local (127.0.0.1:9041 -> serveur 127.0.0.1:9040) arrêté puis relancé — vraie coupure, service worker compris
+  (context.set_offline de Playwright laisse passer les requêtes du service worker : journal du serveur, essai écarté).
+Code source 20 :
+  web/static/src/core/offline/offline_plugin.js — contexte sécurisé exigé (:52-58, FakeIndexedDB sinon) ; boutons sans data-available-offline
+    désactivés (:47, :380-389) ; ping /web/webclient/version_info avec délai croissant (:148-156, :168-173) ; disponibilité = action / vue /
+    fiche visitées (:213-223, :234-249) ; file orm-to-sync (:251-262) ; noms des many2one mis en cache chiffré (:273-306) ; synchro dans
+    l'ordre des horodatages, 1 s d'intervalle, erreur conservée (:403-438).
+  web/static/src/webclient/offline_systray/offline_systray.js — statuts Created/Edited/Archived/Unarchived/Deleted (:13-19), ligne
+    cliquable = web_save d'un formulaire (:82-90), libellés Working offline / Sync issues / Syncing (:131-142), confirmation Discard (:144-153).
+    Traductions fr.po : Travail hors ligne, Problèmes de synchronisation, Annuler la modification hors ligne, Non, laissez comme ça.
+  web/static/src/views/fields/field.js:20-38 (types éditables hors ligne : one2many, binary, properties, reference non) et :414-419.
+  web/static/src/model/relational_model/relational_model.js:803-821 (vue marquée disponible si visitée avec des enregistrements ;
+    création rapide = kanban_quick_create) ; record.js:1384-1404 (_offlineSave : seuls les champs modifiés).
+  views/form/form_controller.js:439-445 (Nouveau), :627-650 (Archiver, Désarchiver, Supprimer availableOffline).
+  web/static/src/service_worker.js — copie de /odoo en cache, session gardée en mémoire du service worker (:5, :38-48, :71-98) ; page
+    /odoo/offline sinon ; 19.0 : même mécanisme (service_worker.js:5-16, 43-59).
+  web/controllers/webmanifest.py:42-55 (display standalone, scope /odoo) ; base_setup/views/res_config_settings_views.xml:134-138
+    (bloc Progressive Web App, groups base.group_no_one) ; user_menu_items.js:82-87 (Installer l'application si pwa.isAvailable) ;
+    19.0 : user_menu_items.js:90-91, base_setup res_config_settings_views.xml:137.
+  point_of_sale/static/src/app/plugins/offline_plugin.js:14-21 (mode hors ligne du client web neutralisé dans le PdV) ;
+    point_of_sale/static/src/app/utils/error_handlers.js:36-50 (Connexion perdue) ; 19.0 : error_handlers.js:40-42 identique.
+  industry_fsm : absent de odoo/addons (Field Service).
+  19.0 : core/errors/error_handlers.js:95-107 (« Connection lost. Trying to reconnect... ») ; pas de web/static/src/core/offline.
+Joué à l'écran (Playwright, 1280 x 900 et téléphone 390 x 844) :
+  CRM : pipeline, 5 VP Chairs (liste des contacts ouverte), Office Design and Architecture, carte de création rapide ouverte et fermée ;
+  coupure → badge, cartes non visitées pâles, vues liste/calendrier/pivot/graphe/activités grisées, menu Pistes grisé ; 5 VP Chairs
+  revenu 5 600 → 6 200, probabilité 30 → 60 ; création rapide « Salon professionnel : 12 chaises » 3 000 (carte non affichée) ; Office
+  Design 9 000 → 9 500 ; file PIPELINE (Modifié, Créé, Modifié) et info-bulle ; « Gem » → Gemini Furniture proposé hors ligne.
+  Pendant la coupure, en base : 5 VP Chairs à 5 800, Office Design supprimée. Retour : badge Problèmes de synchronisation, MissingError
+  sur Office Design ; base : 5 VP Chairs 6 200 / 60 %, Salon professionnel 3 000 créée ; corbeille → fenêtre Ignorer / Non, laissez comme ça.
+  Kanban resté sur les anciennes valeurs avant rechargement.
+  Projet (téléphone) : Mes tâches, Room 2: Decoration (32) + onglet Feuilles de temps ouverts en ligne ; hors ligne : état En cours →
+  Approuvé, description ajoutée, Feuilles de temps en lecture ; retour → base : 03_approved + description.
+  Rechargement : onglet ouvert, coupure, F5 → pipeline et badge ; profil persistant fermé puis rouvert coupé → « Vous êtes hors ligne ».
+  Paramètres généraux en mode développeur : bloc Progressive Web App (capture sans barre du haut). Entrée « Installer l'application » non
+  vue dans le Chromium de Playwright (événement beforeinstallprompt absent) : décrite par le source.
+  PdV Magasin de meubles : session ouverte, coupure, vente Boîte de rangement 18,17 espèces → Montant payé + Connexion perdue ; base 9
+  commandes ; retour sans action : 9 ; vente Chaise de bureau en ligne → 11 (000001 18,17 et 000002 80,50 payées).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Le mode hors ligne d'Odoo 20 : travailler sans connexion</h1>
+                <p class="lead mt-3 text-white">Un rendez-vous en sous-sol, un chantier sans réseau, une zone blanche sur
+                    la route : Odoo 20 ne s'arrête plus quand la connexion tombe. Cet article montre, sur la base de
+                    démonstration, ce que le commercial et le technicien peuvent encore consulter et saisir, ce qui reste
+                    bloqué, et comment se passe le retour du réseau.</p>
+                <p class="small text-light mt-2">~14 minutes de lecture · niveau intermédiaire · série <strong>Passer à Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) »), sans module ajouté.
+                        Applications utilisées : CRM, Projet et Point de Vente. La coupure a été simulée en rendant le serveur
+                        injoignable depuis le navigateur ; les écrans de téléphone ont été pris dans un navigateur réglé à la
+                        taille d'un téléphone. Les comparaisons avec Odoo 19 s'appuient sur le code source de la version 19.0.
+                        Le mode hors ligne existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Quand le réseau tombe, que reste-t-il ?</h2>
+                <p>En Odoo 19, une coupure du réseau affichait « Connexion perdue. Tentative de reconnexion… » et plus rien
+                    ne s'enregistrait jusqu'au retour de la connexion. Odoo 20 bascule à la place en <strong>Travail hors
+                    ligne</strong> : l'utilisateur continue de consulter ce qu'il a déjà ouvert et ses modifications attendent
+                    dans une file, envoyée au serveur dès que le réseau revient. Le mode ne demande aucun réglage : il est actif d'office, sur une base servie en HTTPS, pour les vues
+                    liste, kanban et fiche des applications.</p>
+                <p>La liste des nouveautés d'Odoo 20 est déjà publiée :
+                    <a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les nouveautés d'Odoo 20, en
+                    Community et en Enterprise</a>, et en version courte
+                    <a href="/blog/la-bibliotheque-3/nouveautes-odoo-94">Nouveautés Odoo 20 : l'essentiel</a>. Cet article
+                    prend l'angle de l'équipe qui migre : jusqu'où peut-on compter sur ce mode dans le travail réel ? Deux
+                    rôles servent de fil rouge : <strong>le commercial en déplacement</strong>, qui met à jour son pipeline
+                    (voir <a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités du
+                    CRM d'Odoo 20</a>), et <strong>le technicien terrain</strong>, qui suit ses tâches sur téléphone
+                    (voir <a href="/blog/fonctionnel-odoo-1/projets-taches-odoo-225">Projets et tâches dans Odoo 20</a>).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>préparer un poste ou un téléphone avant une intervention sans réseau ;</li>
+                    <li>dire quelles vues, quels champs et quelles actions restent utilisables hors ligne ;</li>
+                    <li>lire la file des changements en attente et traiter un refus à la synchronisation ;</li>
+                    <li>savoir ce qui se passe si la page est rechargée ou le navigateur fermé, et ce qu'apporte l'installation d'Odoo en application ;</li>
+                    <li>distinguer ce mode de celui, plus ancien, du Point de Vente.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN UN COUP D'ŒIL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>En un coup d'œil</h2>
+                <table class="tmc">
+                    <thead><tr><th>Hors ligne, dans Odoo 20 Community</th><th>Ce qui a été constaté</th></tr></thead>
+                    <tbody>
+                        <tr><td>Consulter</td><td>les vues liste, kanban et fiche <strong>déjà ouvertes en ligne</strong> sur ce navigateur ; les vues calendrier, tableau croisé, graphique et activités sont grisées</td></tr>
+                        <tr><td>Modifier une fiche</td><td>oui pour les champs simples (texte, nombre, montant, date, liste de choix, contact, étiquettes, notes) ; non pour les lignes (temps passés, lignes de commande) et les fichiers</td></tr>
+                        <tr><td>Créer</td><td>oui, si le formulaire de création (ou la création rapide du kanban) a été ouvert en ligne avant la coupure</td></tr>
+                        <tr><td>Archiver, supprimer</td><td>oui selon le code source, depuis le menu Actions ⋮ d'une fiche disponible hors ligne</td></tr>
+                        <tr><td>Étapes, boutons d'action, discussion, activités</td><td>grisés : ils demandent le serveur</td></tr>
+                        <tr><td>Retour du réseau</td><td>envoi automatique de la file ; un changement refusé reste dans la file, en rouge</td></tr>
+                        <tr><td>Recharger la page</td><td>lors de l'essai, possible dans l'onglet déjà ouvert peu après la coupure ; navigateur fermé puis rouvert sans réseau : page « Vous êtes hors ligne »</td></tr>
+                        <tr><td>Point de Vente</td><td>mécanisme propre, déjà présent en Odoo 19 : les ventes continuent et partent plus tard</td></tr>
+                    </tbody>
+                </table>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma en cinq étapes : 1 Préparer en ligne (pipeline, tâches, fiches du jour, formulaire Nouveau, listes de contacts, mémorisé par ce navigateur) ; 2 Consulter hors ligne (vues liste, kanban et fiche déjà ouvertes, étapes, discussion et boutons grisés, badge Travail hors ligne) ; 3 Saisir hors ligne (modifier des champs simples, créer si Nouveau a été ouvert, archiver, supprimer ; file Créé, Modifié, Archivé, Supprimé…) ; 4 Synchroniser au retour du réseau (envoi un par un du plus ancien au plus récent, badge disparu) ; 5 Traiter les refus (exemple : fiche supprimée entre-temps par un collègue ; badge rouge, corriger ou ignorer)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le parcours complet, tel qu'il a été joué dans les applications CRM et Projet.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. PRÉPARER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Préparer avant de partir</h2>
+                <p>Hors ligne, Odoo 20 ne va chercher aucune donnée nouvelle : il réaffiche ce que le navigateur a gardé
+                    de la dernière visite. La règle tient en une phrase : <strong>n'est disponible hors ligne que ce qui a
+                    été ouvert en ligne, sur ce navigateur</strong>. Avant une journée sans réseau, il
+                    suffit donc de « passer » par les écrans utiles :</p>
+                <ul>
+                    <li><strong>les vues</strong> : le pipeline en kanban pour le commercial, « Mes tâches » pour le technicien.
+                        La vue liste n'est disponible que si elle a été ouverte, elle aussi. Odoo retient aussi les recherches
+                        et filtres lancés sur ces vues. Selon le code source, une vue n'est retenue que si elle affichait au moins
+                        un enregistrement, et ce qui est ouvert en mode développeur est mémorisé à part de l'usage normal : préparez
+                        la journée sans le mode développeur ;</li>
+                    <li><strong>les fiches</strong> : chaque opportunité ou tâche du jour, ouverte une fois ;</li>
+                    <li><strong>la création</strong> : le bouton <strong>Nouveau</strong> ne fonctionne hors ligne que si le
+                        formulaire de création (ou, dans le pipeline, la petite carte de création rapide) a été ouvert en ligne
+                        auparavant ;</li>
+                    <li><strong>les listes déroulantes</strong> : pour choisir un contact hors ligne, Odoo ne propose que les
+                        noms déjà affichés dans une liste déroulante en ligne. Ces noms sont conservés chiffrés dans le
+                        navigateur.</li>
+                </ul>
+                <p>Une condition technique s'ajoute : la base doit être servie en HTTPS (ou ouverte sur l'adresse locale du
+                    poste). Sans connexion sécurisée, le navigateur ne conserve rien et le badge hors ligne n'a rien à
+                    montrer. Pour un serveur installé par vos soins, voir
+                    <a href="/blog/developpement-odoo-2/nginx-https-odoo-20-243">Mettre Odoo 20 en HTTPS avec Nginx</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. LE COMMERCIAL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le commercial hors ligne : consulter et mettre à jour le pipeline</h2>
+                <p>Le commercial a ouvert en ligne <strong>CRM › Ventes › Mon pipeline</strong>, les opportunités « 5 VP
+                    Chairs » et « Office Design and Architecture », la liste déroulante des contacts et la carte de création
+                    rapide. Le réseau tombe ; au premier clic qui demande le serveur, Odoo affiche le badge orange
+                    <strong>Travail hors ligne</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Pipeline du CRM d'Odoo 20 hors ligne : badge orange Travail hors ligne dans la barre du haut, menu Pistes grisé, boutons des vues liste, calendrier, tableau croisé, graphique et activités grisés ; seules les cartes 5 VP Chairs et Office Design and Architecture sont en noir, les autres opportunités sont pâles ; bouton Nouveau actif ; barres de progression des colonnes vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le pipeline hors ligne : seules les deux opportunités ouvertes avant la coupure restent accessibles. La vue liste et le menu Pistes, jamais ouverts, sont grisés ; calendrier, tableau croisé, graphique et activités ne fonctionnent pas hors ligne. La pastille rouge de la barre est le pointage de l'application Présences.</figcaption>
+                </figure>
+                <p>Trois détails sont à connaître. Les cartes jamais ouvertes restent visibles mais pâles : elles ne
+                    s'ouvrent pas. Les barres de progression en tête de colonne sont vides, car calculées par le serveur.
+                    Enfin, seule la vue kanban, déjà visitée, est disponible : la vue liste, jamais ouverte, est grisée ; les
+                    vues calendrier, tableau croisé, graphique et activités le sont toujours, car Odoo ne mémorise que les vues
+                    liste, kanban et fiche.</p>
+                <h3>Modifier une opportunité</h3>
+                <p>La fiche « 5 VP Chairs » s'ouvre normalement. Le commercial porte le revenu attendu de 5 600 à 6 200 et
+                    la probabilité de 30 à 60 %, puis enregistre (icône du nuage). Tout ce qui demande un calcul ou une
+                    action du serveur reste grisé : le bouton <strong>Nouveau devis</strong>, Gagné, Enrichir, Perdu, la barre des
+                    étapes, les boutons en haut de la fiche (Aucune réunion, Devis, Piste similaire) et toute la discussion (Envoyer message,
+                    Note, Activité). Pour changer d'étape, il faut donc attendre le retour du réseau.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche de l'opportunité 5 VP Chairs hors ligne dans Odoo 20 : revenu attendu 6 200,00 dollars et probabilité 60 % en cours de saisie, icône de nuage pour enregistrer à côté du titre ; boutons Nouveau devis, Gagné, Enrichir, Perdu grisés ; barre des étapes Nouveau, Qualifié, Proposition 54j, Gagné grisée ; bouton intelligent Aucune réunion grisé ; boutons Envoyer message, Note et Activité grisés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Hors ligne, les champs de la fiche restent modifiables ; étapes, boutons d'action et discussion sont grisés. L'estimation de probabilité « ~ 0,00 % » vient des données de démonstration.</figcaption>
+                </figure>
+                <p>Le choix d'un contact fonctionne avec les noms déjà vus en ligne : en tapant « Gem », la liste déroulante a
+                    proposé Gemini Furniture, présent dans la liste ouverte avant la coupure. Un client jamais affiché sur ce
+                    navigateur ne peut pas être choisi.</p>
+                <h3>Créer une opportunité</h3>
+                <p>Comme la carte de création rapide avait été ouverte en ligne, <strong>Nouveau</strong> reste actif dans le
+                    pipeline. Le commercial saisit « Salon professionnel : 12 chaises » et un revenu de 3 000, puis clique
+                    sur <strong>Ajouter</strong>. La carte n'apparaît pas encore dans la colonne : la création attend, elle
+                    aussi, dans la file.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Carte de création rapide du pipeline ouverte hors ligne dans la colonne Nouveau : champ Contact vide, nom de l'opportunité Salon professionnel : 12 chaises, e-mail et téléphone vides, revenu 3000 dollars, boutons Ajouter et Modifier et corbeille" style="max-width:100%; height:auto;"/>
+                    <figcaption>La création rapide fonctionne hors ligne parce qu'elle avait été ouverte une première fois en ligne.</figcaption>
+                </figure>
+                <h3>Lire la file d'attente</h3>
+                <p>Un clic sur le badge déroule la file, rangée par vue d'origine (ici PIPELINE) : chaque fiche avec son
+                    statut, <strong>Créé</strong>, <strong>Modifié</strong>, <strong>Archivé</strong>, <strong>Désarchivé</strong>
+                    ou <strong>Supprimé</strong>, et une corbeille pour abandonner le changement. Le survol du statut donne
+                    l'heure et le détail, avec le nom technique de chaque champ : <code>expected_revenue</code> pour le revenu
+                    attendu, <code>probability</code> pour la probabilité.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Badge Travail hors ligne déroulé : section PIPELINE avec 5 VP Chairs au statut Modifié, Salon professionnel : 12 chaises au statut Créé en gris, Office Design and Architecture au statut Modifié, chacun avec une corbeille" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois changements en attente : deux modifications et une création (en gris, car elle ne se rouvre pas en formulaire).</figcaption>
+                </figure>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Info-bulle sur le statut Modifié de 5 VP Chairs : date et heure de la saisie, expected_revenue 5600 vers 6200, probability 30 vers 60" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le détail d'une modification : heure de la saisie, ancienne et nouvelle valeur de chaque champ.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. LE TECHNICIEN ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le technicien terrain : une tâche sur téléphone, sans réseau</h2>
+                <p>Le technicien suit ses interventions dans <strong>Projet › Tâches › Mes tâches</strong>, sur téléphone. Avant de
+                    descendre sur le chantier, il a ouvert la liste et la tâche « Room 2: Decoration » (projet Office Design),
+                    y compris son onglet Feuilles de temps. Hors ligne, le badge devient une simple icône de lien barré dans
+                    la barre du haut.</p>
+                <p>Sur la fiche, il peut passer l'état de la tâche de <strong>En cours</strong> à <strong>Approuvé</strong>
+                    (le rond en haut à droite ouvre la liste des états) et noter dans la description « Pose terminée, reste la
+                    retouche du mur nord. ». En revanche, l'onglet <strong>Feuilles de temps</strong> reste en lecture : les
+                    temps passés s'affichent, mais aucune ligne ne peut être ajoutée. C'est la limite la plus sensible pour un
+                    technicien : les heures se saisissent au retour du réseau (voir
+                    <a href="/blog/fonctionnel-odoo-1/feuilles-temps-facturation-odoo-226">Feuilles de temps et facturation au
+                    temps passé</a>). La barre des étapes (ici « En cours ») est grisée, comme dans le CRM ; l'état de la tâche, lui, reste modifiable.
+                    Le bouton <strong>Nouveau</strong> reste grisé : le formulaire de création n'avait pas été ouvert en ligne.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Trois écrans de téléphone de la tâche Room 2: Decoration hors ligne dans Odoo 20 : à gauche la fiche avec l'icône de lien barré dans la barre du haut, le bouton Nouveau grisé, la barre d'étapes grisée et les champs encadrés Projet Office Design, Jalon Final Phase, Assignés Mitchell Admin, Client Joel Willis, Date limite 3 oct. ; au centre la liste des états ouverte depuis le bas de l'écran : En cours coché, Changements demandés, Approuvé, Annulé, Terminé ; à droite l'onglet Feuilles de temps avec les lignes de Toni Jimenez, Rachel Perry, Abigail Peterson, Paul Williams, Ronnie Hart, sans bouton d'ajout, et l'icône de nuage pour enregistrer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Sur téléphone, hors ligne : la fiche (à gauche), le choix de l'état (au centre), les temps passés en lecture seule (à droite). Les « 171 % » du temps alloué viennent des données de démonstration.</figcaption>
+                </figure>
+                <p>Au retour du réseau, la base contenait bien l'état « Approuvé » et la note saisie sans connexion.
+                    L'application d'interventions sur site (Field Service) ne fait pas partie de la Community : en Community, le
+                    suivi terrain passe par l'application Projet, comme ici.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. RETOUR DU RÉSEAU ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le retour du réseau : synchronisation et refus</h2>
+                <p>Pendant la coupure, Odoo vérifie régulièrement si le serveur répond ; un clic sur le badge relance aussitôt
+                    cette vérification. Dès que la connexion revient, la file part d'elle-même : selon le code source d'Odoo 20,
+                    les changements sont envoyés un par un, du plus ancien au plus récent, à une seconde d'intervalle. Quand
+                    tout est passé, le badge disparaît.</p>
+                <p>Un changement peut être refusé par le serveur. Pendant la coupure du commercial, un collègue a supprimé
+                    l'opportunité « Office Design and Architecture », modifiée hors ligne. Au retour, la création et la
+                    modification de « 5 VP Chairs » sont passées ; celle d'« Office Design and Architecture » est restée dans la
+                    file, en rouge, et le badge est devenu <strong>Problèmes de synchronisation</strong>. Le survol de la ligne
+                    donne le message du serveur : la fiche n'existe plus.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Badge rouge Problèmes de synchronisation déroulé : section PIPELINE, ligne Office Design and Architecture en rouge avec une icône d'erreur, statut Modifié et corbeille ; info-bulle odoo.exceptions.MissingError - Enregistrement inexistant ou supprimé, suivie de la référence technique de l'enregistrement et de l'utilisateur" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le changement refusé reste dans la file, avec le message renvoyé par le serveur (ici une fiche supprimée entre-temps).</figcaption>
+                </figure>
+                <p>Deux issues sont possibles. Si la fiche existe encore, un clic sur la ligne rouvre, selon le code source, le formulaire avec la
+                    modification en attente, à corriger puis enregistrer. Un changement refusé n'est plus renvoyé de lui-même. Sinon, la corbeille abandonne le changement après
+                    confirmation : <strong>Ignorer</strong> le retire de la file, <strong>Non, laissez comme ça</strong> le
+                    garde.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fenêtre Annuler la modification hors ligne : Êtes-vous sûr de vouloir annuler les modifications effectuées hors ligne ? Boutons Ignorer et Non, laissez comme ça" style="max-width:100%; height:auto;"/>
+                    <figcaption>Abandonner un changement de la file demande une confirmation.</figcaption>
+                </figure>
+                <p>Un dernier réflexe : après la synchronisation, l'écran resté ouvert affiche encore les anciennes valeurs (la
+                    carte « 5 VP Chairs » montrait toujours 5 600). Rechargez la page pour voir l'état réel de la base, où le
+                    revenu valait bien 6 200 et l'opportunité « Salon professionnel : 12 chaises » existait.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. RECHARGER, FERMER, INSTALLER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Recharger, fermer, installer en application</h2>
+                <p><strong>Recharger la page.</strong> Lors de l'essai, dans un onglet ouvert en ligne puis coupé du réseau, la touche F5
+                    a réaffiché le pipeline et le badge hors ligne : Odoo garde une copie de sa page d'accueil dans le navigateur.
+                    Cette copie dépend toutefois d'un composant que le navigateur peut arrêter quand il reste inactif : mieux vaut
+                    ne pas compter sur un rechargement pendant une longue coupure.</p>
+                <p><strong>Fermer le navigateur.</strong> Le même essai, navigateur fermé puis rouvert sans réseau, s'est
+                    arrêté sur la page « Vous êtes hors ligne » : la copie de la page d'accueil ne s'utilise que si Odoo a été
+                    ouvert en ligne depuis le démarrage du navigateur. Selon le code source, les changements en attente sont
+                    envoyés à la prochaine ouverture d'Odoo en ligne sur ce navigateur.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Page Vous êtes hors ligne d'Odoo : Vérifiez votre connexion réseau et revenez ici. Odoo se chargera dès que vous serez de nouveau en ligne. Bouton Revérifier" style="max-width:100%; height:auto;"/>
+                    <figcaption>Navigateur rouvert sans réseau : Odoo ne démarre pas et propose de revérifier la connexion.</figcaption>
+                </figure>
+                <p><strong>Installer Odoo en application.</strong> Odoo se présente au navigateur comme une application web
+                    installable (affichage sans barre d'adresse, page d'accueil <code>/odoo</code>). Selon le code source, le
+                    menu de l'utilisateur affiche une entrée « Installer l'application » quand le navigateur propose
+                    l'installation ; sinon, l'installation passe par le menu du navigateur. L'application installée ouvre le même
+                    client web que l'onglet : elle ne change rien aux règles du mode hors ligne, elle donne seulement une icône
+                    sur l'écran d'accueil du téléphone ou le bureau. Son nom se règle dans <strong>Paramètres › Paramètres
+                    généraux</strong>, bloc <strong>Progressive Web App</strong>, visible en mode développeur. Tout cela existait
+                    déjà en Odoo 19.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Paramètres généraux en mode développeur, bloc Progressive Web App : champ Nom de l'app web, texte d'aide Ce nom sera utilisé pour l'application lorsqu'Odoo est installé par le biais du navigateur, valeur par défaut Odoo" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le nom affiché sous l'icône de l'application installée ; vide, il vaut « Odoo ».</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. POINT DE VENTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Le Point de Vente garde son propre mode hors ligne</h2>
+                <p>La caisse n'utilise pas le badge « Travail hors ligne » : le code source d'Odoo 20 le désactive
+                    expressément dans le Point de Vente, qui conserve son mécanisme à lui, déjà présent en Odoo 19. Sur la
+                    caisse « Magasin de meubles », une vente d'une Boîte de rangement réglée en espèces a été validée réseau
+                    coupé : Odoo a affiché <strong>Montant payé</strong> puis la fenêtre <strong>Connexion perdue</strong>,
+                    « Odoo Point de Vente fonctionnera avec des fonctionnalités limitées ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Écran de fin de vente du Point de Vente d'Odoo 20 : Montant payé 18,17 dollars, boutons Imprimer, Envoyer le reçu et Continuer ; fenêtre Connexion perdue : Jusqu'à ce que la connexion soit rétablie, Odoo Point de Vente fonctionnera avec des fonctionnalités limitées, bouton Continuer avec des fonctionnalités réduites" style="max-width:100%; height:auto;"/>
+                    <figcaption>Vente validée sans réseau : la caisse continue, la vente partira plus tard.</figcaption>
+                </figure>
+                <p>Le réseau rétabli, la vente n'est pas partie seule : elle a rejoint la base avec la vente suivante, validée
+                    en ligne (les deux commandes sont apparues ensemble). Ne fermez donc pas la session de caisse tant que des
+                    ventes faites hors ligne n'ont pas été envoyées. Pour les gestes de caisse, voir
+                    <a href="/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture et fermeture de caisse dans
+                    Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 19 → 20 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui change pour une équipe qui migre</h2>
+                <table class="tmc">
+                    <thead><tr><th>Situation</th><th>Odoo 19</th><th>Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Coupure dans l'interface</td><td>message « Connexion perdue. Tentative de reconnexion… », aucun enregistrement possible</td><td>badge « Travail hors ligne », consultation et saisie mises en file</td></tr>
+                        <tr><td>Retour du réseau</td><td>reprise du travail, rien à envoyer</td><td>envoi de la file ; refus signalés par « Problèmes de synchronisation »</td></tr>
+                        <tr><td>Navigateur rouvert sans réseau</td><td>page « Vous êtes hors ligne »</td><td>identique</td></tr>
+                        <tr><td>Installation en application</td><td>possible</td><td>identique (nom réglable en mode développeur dans les deux versions)</td></tr>
+                        <tr><td>Point de Vente</td><td>vente hors ligne, envoi différé</td><td>identique</td></tr>
+                    </tbody>
+                </table>
+                <p>À la mise en service, il reste à dire aux utilisateurs itinérants ce que le badge signifie, comment préparer
+                    leur journée et quoi faire d'une ligne rouge dans la file.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Au retour du réseau, la saisie hors ligne écrase celle d'un collègue</h4>
+                    <p>Pendant la coupure, un collègue a porté le revenu de « 5 VP Chairs » à 5 800 ; la modification faite hors
+                        ligne (6 200) est arrivée ensuite et l'a remplacée, sans avertissement. Odoo n'envoie que les champs
+                        modifiés hors ligne, mais pour ces champs la dernière valeur reçue l'emporte. Sur les fiches partagées
+                        (opportunités d'équipe, tâches à plusieurs), convenez de qui met à jour quoi pendant une intervention.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Ne rechargez pas et ne fermez pas le navigateur pendant la coupure</h4>
+                    <p>Un navigateur fermé puis rouvert sans réseau affiche seulement « Vous êtes hors ligne », jusqu'au retour de la
+                        connexion ; un rechargement a fonctionné juste après la coupure, sans garantie au bout de plusieurs heures.
+                        Gardez l'onglet (ou l'application Odoo installée) ouvert, sans le recharger, pendant toute l'intervention.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Lignes, étapes et discussion attendent le retour du réseau</h4>
+                    <p>Les temps passés d'une tâche, les lignes d'un devis, les pièces jointes, le changement d'étape, les
+                        messages et les activités ne se saisissent pas hors ligne. Prévoyez de noter ces éléments dans un champ
+                        de texte (description, notes) et de les reporter une fois connecté.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> créer une opportunité sans réseau et la retrouver après la synchronisation.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration servie en HTTPS ou sur l'adresse
+                        locale, ouvrez en ligne <strong>CRM › Ventes › Mon pipeline</strong>, cliquez une fois sur
+                        <strong>Nouveau</strong> puis fermez la carte. Coupez le réseau du poste, cliquez sur une carte pour faire
+                        apparaître le badge, puis créez par <strong>Nouveau</strong> l'opportunité « Démonstration en salle »
+                        avec un revenu de 1 500. Rétablissez le réseau et cliquez sur le badge.</p>
+                    <p><strong>Critère de réussite :</strong> hors ligne, la file du badge affiche « Démonstration en salle » au
+                        statut « Créé » ; après le retour du réseau, le badge disparaît et, la page rechargée, l'opportunité est
+                        dans la colonne Nouveau avec un revenu de 1 500.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Hors ligne, Odoo 20 montre ce qui a été ouvert en ligne sur ce navigateur : vues liste, kanban et fiches, recherches, formulaire de création.</li>
+                    <li>Les champs simples se modifient ; lignes, fichiers, étapes, boutons d'action et discussion attendent le réseau.</li>
+                    <li>La file part seule au retour ; un refus reste en rouge, à corriger ou à ignorer, et la page se recharge pour voir l'état réel.</li>
+                    <li>Pendant la coupure, ne rechargez pas et ne fermez pas Odoo : un navigateur rouvert sans réseau ne l'affiche plus.</li>
+                    <li>Le Point de Vente garde son propre mode hors ligne, déjà présent en Odoo 19.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article fait partie de la série <strong>Passer à Odoo 20</strong>. Pour situer le mode hors ligne parmi
+                    les autres changements de la version, le catalogue complet reste
+                    <a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les nouveautés d'Odoo 20, en Community
+                    et en Enterprise</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/nouveautes-fonctionnelles-odoo-239">Les nouveautés d'Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Le catalogue des nouveautés, en Community et en Enterprise.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/pipeline-opportunites-crm-odoo-208">Le pipeline d'opportunités</a></h5>
+                            <p class="small text-muted mb-0">Étapes, cartes et revenus attendus dans le CRM d'Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/projets-taches-odoo-225">Projets et tâches</a></h5>
+                            <p class="small text-muted mb-0">Organiser les interventions dans l'application Projet.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
