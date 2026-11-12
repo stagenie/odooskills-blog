@@ -1,0 +1,559 @@
+<!--
+Article — Mentions obligatoires d'une facture française dans Odoo 20
+Série « Facturation électronique et TVA avec Odoo 20 » (blog Fonctionnel, série 55), vague 3, alternative F1.b
+Titre du plan (94 car.) : « Mentions obligatoires d'une facture française dans Odoo 20 : numérotation, pénalités, escompte » ;
+  titre raccourci à 58 car., meta title « Mentions obligatoires Odoo 20 : numéro, pénalités, escompte » (59).
+Date : 2026-11-12 (poste, anticipation)
+Slug : mentions-obligatoires-facture-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, copie jetable vs20_func_f1b de vs20_func (neutralisée), société FR Company (id 2),
+  plan fr_comp, admin basculé sur FR Company. Rien installé (l10n_fr_account, l10n_fr_pdp, account_peppol, account_edi_ubl_cii déjà là).
+  Joué à l'écran : fiche société (TVA, SIRET, SIREN, APE, aucun champ forme juridique / capital) ; Configurer la mise en page du document :
+  pied de page prérempli « … FR… / SIRET : … » + ligne « SAS au capital de 10 000 € · Siège social : … » ajoutée ; Facturation › Paramètres,
+  Conditions générales par défaut → Ajouter une note (pénalités 12,40 %, indemnité 40 €) ; condition « 30 jours » (Visible pour tous), note
+  « … Escompte pour paiement anticipé : néant. » ; client fictif « Client professionnel France » (TVA FR12000000000, SIREN 000000000) +
+  contact de livraison « Entrepôt de livraison » (Lyon) créés en shell ; article « Architecture d'intérieur » passé en 20% S (shell) ;
+  facture saisie à l'écran (4 Chaise de bureau noire 20% G + Architecture d'intérieur 20% S, 30 jours, date de livraison 10/11) → brouillon
+  sans numéro → Confirmer → FAC/2026/00010 (après FAC/2026/00009 de la démo). PDF (rendu par _render_qweb_pdf, la route /report renvoyant 403
+  en multi-société) : SIREN + TVA du client, Adresse de livraison, Date de livraison, « Type d'opération : Opération mixte », note de la
+  condition, conditions générales, pied de page + numéro de facture. FAC/2026/00011 (Garantie, service en 20% G) → « Livraison de biens »
+  + « Tax exigibility on debits » (non traduit). FAC/2026/00012 (2/7 Net 30) → « 823,20 € dû si payé avant 19/11/2026 ».
+  XML (account.edi.xml.cii et ubl_21_fr, _export_invoice) : conditions générales + notes d'office PMT (40 €), PMD (« taux annuel de 10 % »),
+  AAB (« Aucune remise pour paiement anticipé. » sans escompte, note de la condition avec escompte).
+  Journal Ventes (normal et ?debug=1) : aucune case de hachage pour l'admin de démo.
+  Code : l10n_fr_account/views/report_invoice.xml:4-75 (SIRET/SIREN client, Adresse du client, Type d'opération selon tax_scope des taxes,
+  « Tax exigibility on debits » si service + taxe on_invoice, msgstr vide dans i18n/fr.po:404) ; l10n_fr_account/models/base_document_layout.py:9-14
+  (SIRET ajouté au pied par défaut) ; l10n_fr_account/data/account_data.xml:4-7 (account.display_name_in_footer, paramètre global) ;
+  l10n_fr_account/models/account_move.py:10-29 (adresse de livraison visible, date de livraison montrée pour les ventes FR) ;
+  account/views/report_invoice.xml:108-150 (dont :138-140 « Référence » = champ ref, Référence client, non joué), :396-482 (dates, échéance, note de condition, escompte, conditions générales) ;
+  account/models/company.py:179-184 (invoice_terms, terms_type) ; l10n_fr_pdp/models/account_move.py:266-277 et account_edi_common.py:10-24
+  (notes PMT/PMD/AAB, [BR-FR-05]) ; account/views/account_journal_views.xml:164 (restrict_mode_hash_table, groupe account.group_account_readonly) ;
+  account/models/account_move.py:2050-2055 (Remettre en brouillon sauf facture hachée).
+  Sources officielles : entreprendre.service-public.gouv.fr/vosdroits/F31808 (« Vérifié le 11 août 2026 », lue le 2026-11-12) ;
+  entreprendre.service-public.gouv.fr/vosdroits/F23211 (« Vérifié le 07 août 2026 », lue le 2026-11-12 : taux ≥ 3 × taux légal,
+  BCE + 10 points recommandé, 12,40 % au 2nd semestre 2026, indemnité 40 € une fois par facture). legifrance et economie.gouv.fr : 403 au poste.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Mentions obligatoires d'une facture française dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Numéro continu, identité de la société, pénalités de retard, indemnité
+                    de 40 €, escompte, et depuis la réforme : SIREN du client, adresse de livraison, nature de
+                    l'opération. Odoo 20 n'a pas d'écran « mentions légales » : il assemble la facture à partir de six
+                    réglages. Cet article montre lesquels, ce qu'Odoo pose seul et ce qu'il faut saisir une fois.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Facturation électronique et TVA avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « FR Company », plan comptable français). Ces modules
+                        existent aussi dans l'édition Enterprise. Les numéros de TVA, de SIRET et le compte bancaire de la
+                        société de démonstration sont floutés ; le client « Client professionnel France » et ses numéros
+                        (SIREN 000000000) sont fictifs, créés pour l'essai. Les règles citées renvoient aux fiches
+                        officielles listées en fin d'article.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Une facture, une vingtaine de mentions</h2>
+                <p>La fiche officielle « Facture : mentions obligatoires » (F31808) en dresse la liste : date et numéro
+                    unique « basé sur une séquence chronologique et continue », identité du vendeur (pour une société :
+                    dénomination, SIREN, siège social, forme juridique et capital) et de l'acheteur, numéro de TVA,
+                    désignation, quantités, prix unitaires hors taxes, taux de TVA, totaux, date de règlement, conditions
+                    d'escompte ou la mention « Escompte pour paiement anticipé : néant », taux des pénalités de retard et
+                    indemnité forfaitaire de 40 € pour frais de recouvrement. La facturation électronique, mise en place depuis
+                    le 1er septembre 2026 pour les grandes entreprises et les ETI et à partir du 1er septembre 2027 pour les PME
+                    et micro-entreprises, ajoute quatre mentions : le SIREN du client, l'adresse
+                    de livraison si elle diffère, la nature des opérations (biens, services ou les deux) et, le cas
+                    échéant, « Option pour le paiement de la taxe d'après les débits ».</p>
+                <p>Odoo 20 ne coche pas cette liste. Il imprime ce que contiennent ses réglages : la fiche de la société,
+                    le pied de page des documents, les conditions générales, les conditions de paiement, la fiche du
+                    client et la facture elle-même. Une mention absente de ces réglages est absente du PDF.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : six sources de réglages alimentent la facture PDF et la facture électronique XML d'Odoo 20" style="max-width:100%; height:auto;"/>
+                    <figcaption>Six réglages, une facture : ce qu'Odoo pose seul et ce qui reste à saisir.</figcaption>
+                </figure>
+                <p>La série a déjà traité la réforme (<a href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation
+                    électronique : ce que couvre Odoo 20</a>), l'émission avec le SIREN du client (<a
+                    href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>) et les mentions propres aux régimes de TVA, franchise et
+                    autoliquidation (<a href="/blog/fonctionnel-odoo-1/regimes-tva-odoo-392">Régimes de TVA dans Odoo 20</a>).
+                    Le présent article couvre le socle commun à toutes les factures.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>retrouver, pour chaque mention obligatoire, le réglage d'Odoo qui l'imprime ;</li>
+                    <li>compléter le pied de page avec la forme juridique et le capital ;</li>
+                    <li>imprimer les pénalités de retard, l'indemnité de 40 € et la mention d'escompte sur chaque facture ;</li>
+                    <li>contrôler sur le PDF les nouvelles mentions : SIREN du client, adresse de livraison, type d'opération ;</li>
+                    <li>savoir ce qu'Odoo 20 Community garantit sur la numérotation, et ce qu'il ne verrouille pas.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== TABLEAU ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Les mentions et leur source dans Odoo</h2>
+                <table class="tmc">
+                    <thead><tr><th>Mention (fiche F31808)</th><th>Où Odoo 20 la prend</th><th>À faire</th></tr></thead>
+                    <tbody>
+                        <tr><td>Date d'émission</td><td>Date de facturation (le jour de la confirmation si vide)</td><td>Rien</td></tr>
+                        <tr><td>Numéro unique, séquence chronologique et continue</td><td>Attribué à la confirmation, par journal</td><td>Rien (format : voir section 6)</td></tr>
+                        <tr><td>Date de la vente ou de la prestation</td><td>Champ Date de livraison de la facture</td><td>À saisir</td></tr>
+                        <tr><td>Dénomination, siège, numéro de TVA</td><td>Fiche de la société (en-tête du PDF)</td><td>Vérifier</td></tr>
+                        <tr><td>SIREN, forme juridique, capital</td><td>Pied de page des documents (SIRET d'office, qui commence par le SIREN)</td><td>Ajouter forme juridique et capital</td></tr>
+                        <tr><td>Identité, adresse et numéro de TVA de l'acheteur</td><td>Fiche du client (une adresse de facturation distincte = un contact de type facturation)</td><td>Vérifier la fiche</td></tr>
+                        <tr><td>Numéro de bon de commande du client</td><td>Champ Référence client, onglet Autres informations (imprimé « Référence » sur le PDF)</td><td>À saisir quand il existe</td></tr>
+                        <tr><td>Désignation, quantité, prix unitaire HT, taux de TVA, totaux, réductions</td><td>Lignes de la facture</td><td>Rien</td></tr>
+                        <tr><td>Date de règlement</td><td>Échéance calculée par la condition de paiement</td><td>Choisir la condition</td></tr>
+                        <tr><td>Conditions d'escompte ou « néant »</td><td>Texte de la condition de paiement</td><td>À rédiger par condition</td></tr>
+                        <tr><td>Taux des pénalités de retard, indemnité de 40 €</td><td>Conditions générales par défaut</td><td>À rédiger une fois</td></tr>
+                        <tr><td>SIREN du client (réforme)</td><td>Fiche du client</td><td>À saisir sur chaque client professionnel</td></tr>
+                        <tr><td>Adresse de livraison si différente (réforme)</td><td>Champ Adresse de livraison de la facture</td><td>Créer l'adresse sur la fiche du client</td></tr>
+                        <tr><td>Nature des opérations (réforme)</td><td>« Type d'opération », déduit des taxes des lignes</td><td>Vérifier les taxes (vigilance 1)</td></tr>
+                        <tr><td>Option pour la TVA d'après les débits (réforme)</td><td>Phrase imprimée selon les taxes des lignes</td><td>Vérifier (vigilance 1)</td></tr>
+                    </tbody>
+                </table>
+                <p>Les mentions propres à certains cas (franchise en base, autoliquidation) viennent des taxes et sont
+                    traitées dans l'article sur les régimes de TVA cité plus haut. La garantie légale de conformité due à
+                    un particulier n'a pas de réglage dédié dans Odoo 20 : elle se rédige dans les conditions générales,
+                    comme les pénalités.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. SOCIÉTÉ ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La société : fiche et pied de page</h2>
+                <p>Ouvrez <strong>Paramètres › Utilisateurs &amp; Sociétés › Sociétés</strong>, puis la société. Avec
+                    la localisation française, l'onglet Informations générales porte l'adresse, le
+                    <strong>TVA</strong>, le <strong>SIRET</strong>, le <strong>SIREN</strong> et le code
+                    <strong>APE</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche de la société FR Company dans Odoo 20 : adresse, TVA, SIRET, SIREN et APE, numéros floutés" style="max-width:70%; height:auto;"/>
+                    <figcaption>La fiche de la société : identifiants français, aucun champ pour la forme juridique ni le capital.</figcaption>
+                </figure>
+                <p>La fiche n'a ni forme juridique ni capital social. Leur place est le <strong>pied de page</strong> des
+                    documents : <strong>Paramètres › Paramètres généraux</strong>, bloc Sociétés, lien
+                    <strong>Configurer la mise en page du document</strong>. Pour une société française, Odoo préremplit
+                    le pied de page avec le téléphone, l'e-mail, le site, le numéro de TVA et une ligne
+                    « SIRET : … » ajoutée par la localisation. Placez le curseur à la fin du texte, passez à la ligne et
+                    saisissez la forme juridique, le capital et l'adresse du siège, puis <strong>Continuer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Pied de page du configurateur de mise en page : SIRET prérempli et ligne forme juridique et capital ajoutée" style="max-width:85%; height:auto;"/>
+                    <figcaption>Pied de page : SIRET ajouté d'office, forme juridique, capital et siège ajoutés à la main.</figcaption>
+                </figure>
+                <p>Ce pied de page est une copie du texte au moment de l'enregistrement : il ne suit plus la fiche de la
+                    société. Un changement de capital ou d'adresse se reporte à la main, comme expliqué dans <a
+                    href="/blog/fonctionnel-odoo-1/personnaliser-devis-factures-pdf-odoo-267">Personnaliser ses devis
+                    et factures PDF dans Odoo 20</a>. Le réglage vaut pour la société courante : en multi-société,
+                    chacune a le sien.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. PÉNALITÉS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Pénalités de retard et indemnité de 40 € : les conditions générales</h2>
+                <p>Odoo 20 n'a pas de champ « taux de pénalités ». Les deux mentions se rédigent dans les conditions
+                    générales imprimées sous chaque facture. Ouvrez <strong>Facturation › Configuration ›
+                    Paramètres</strong>, cochez <strong>Conditions générales par défaut</strong>, choisissez
+                    <strong>Ajouter une note</strong> et saisissez le texte, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Paramètres de Facturation Odoo 20 : conditions générales par défaut en mode note, texte des pénalités de retard et de l'indemnité de 40 euros" style="max-width:60%; height:auto;"/>
+                    <figcaption>Conditions générales par défaut : taux des pénalités et indemnité forfaitaire.</figcaption>
+                </figure>
+                <p>Le taux est le vôtre. Selon la fiche officielle « Délais de paiement et pénalités de retard »
+                    (F23211, lue le 12/11/2026), il ne peut pas être inférieur à trois fois le taux d'intérêt légal ;
+                    le Code de commerce recommande le taux de refinancement de la BCE majoré de 10 points, soit 12,40 %
+                    au second semestre 2026, valeur reprise ici. Ce taux change chaque semestre : le texte d'Odoo, lui,
+                    ne change pas seul. L'indemnité de 40 € ne concerne que les clients professionnels et n'est due
+                    qu'une fois par facture.</p>
+                <p>Le texte est recopié dans chaque nouvelle facture (et chaque nouveau devis), où il reste modifiable
+                    tant que la facture est en brouillon. Les documents créés avant le réglage ne le reçoivent pas.
+                    L'autre choix, <strong>Ajouter un lien vers une page web</strong>, imprime un lien vers une page de
+                    conditions publiée sur le site au lieu du texte ; la mention doit alors figurer sur cette page.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. ESCOMPTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Échéance et escompte : la condition de paiement</h2>
+                <p>La date de règlement vient de la condition de paiement, qui calcule l'<strong>Échéance</strong>
+                    imprimée en tête de facture. La mention d'escompte, elle, se rédige dans le texte de la condition :
+                    <strong>Facturation › Configuration › Conditions de paiement</strong>, ouvrez « 30 jours » et
+                    remplacez le texte sous l'Aperçu.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Condition de paiement 30 jours dans Odoo 20 : texte imprimé avec la mention escompte pour paiement anticipé néant" style="max-width:100%; height:auto;"/>
+                    <figcaption>La condition « 30 jours » sans escompte : la mention « néant » fait partie de son texte.</figcaption>
+                </figure>
+                <p>Le texte est relu à chaque impression : modifié, il apparaît aussi sur la réimpression d'une
+                    ancienne facture. Chaque condition porte ainsi sa propre phrase : « néant » pour celles sans escompte, les conditions
+                    réelles pour les autres. Une condition avec la case <strong>Escompte</strong> cochée imprime en plus,
+                    sous le texte, le montant réduit et la date limite : sur la base de démonstration, la condition
+                    « 2/7 Net 30 » donne « 823,20 € dû si payé avant 19/11/2026 » pour une facture de 840,00 € du
+                    12/11/2026. Le paramétrage de l'escompte et son effet sur la TVA sont détaillés dans <a
+                    href="/blog/fonctionnel-odoo-1/escompte-paiement-anticipe-devis-ttc-odoo-263">Escompte pour paiement
+                    anticipé et devis TTC dans Odoo 20</a>, la création des conditions dans <a
+                    href="/blog/fonctionnel-odoo-1/conditions-paiement-odoo-372">Modifier les conditions de paiement dans
+                    Odoo 20</a>.</p>
+                <p>« Visible pour tous » dans le champ Société signifie que la condition est partagée entre les sociétés
+                    de la base : son texte français s'imprime aussi sur les factures d'une autre société.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. FACTURE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le client et la facture : SIREN, livraison, numéro</h2>
+                <p>Le SIREN du client se saisit sur sa fiche, par le « + » du champ TVA (méthode détaillée dans
+                    l'article sur l'émission). Pour une adresse de livraison distincte, ajoutez à la fiche un contact de
+                    type adresse de livraison : ici, « Entrepôt de livraison », à Lyon, pour un client dont le siège est à
+                    Paris.</p>
+                <p>Créez la facture : <strong>Facturation › Clients › Factures</strong>, <strong>Nouveau</strong>.
+                    Choisissez le client : l'<strong>Adresse de livraison</strong> se remplit avec le contact de
+                    livraison. Ce champ est affiché d'office sur une société française. Choisissez la condition
+                    « 30 jours », saisissez la <strong>Date de livraison</strong> (10/11/2026), puis les lignes : quatre
+                    chaises (taxe « 20% G ») et une prestation « Architecture d'intérieur », dont la taxe a été passée en
+                    « 20% S » sur la fiche de l'article.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Facture client Odoo 20 en brouillon, sans numéro, avec adresse de livraison, condition 30 jours et date de livraison" style="max-width:100%; height:auto;"/>
+                    <figcaption>En brouillon, la facture n'a pas de numéro.</figcaption>
+                </figure>
+                <p>Les conditions générales sont déjà sous les lignes. Cliquez sur <strong>Confirmer</strong> : la facture
+                    reçoit le numéro suivant du journal Ventes, FAC/2026/00010, la démonstration s'arrêtant à
+                    FAC/2026/00009.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Facture confirmée FAC/2026/00010 dans Odoo 20" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le numéro est attribué à la confirmation.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. PDF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Relire le PDF, mention par mention</h2>
+                <p>Bouton <strong>Imprimer</strong>. En tête, à gauche, l'adresse de livraison ; à droite, le client
+                    avec son SIREN et son numéro de TVA, puis la ligne des dates : date de facturation, échéance (calculée
+                    par « 30 jours »), date de livraison et <strong>Type d'opération</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="En-tête du PDF de facture Odoo 20 : adresse de livraison, SIREN et TVA du client, dates et type d'opération mixte" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les nouvelles mentions de la réforme : SIREN du client, adresse de livraison, type d'opération.</figcaption>
+                </figure>
+                <p>« Opération mixte » est déduit des taxes : la chaise porte une taxe de biens (G), la prestation une
+                    taxe de services (S). Le PDF affiche « TVA 20% » pour les deux ; la lettre G ou S se lit sur les lignes
+                    de la facture, à l'écran. Sous les lignes, la condition de paiement imprime sa phrase avec « Escompte
+                    pour paiement anticipé : néant », et les conditions générales ferment la page.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Corps du PDF de facture : lignes avec taux de TVA, totaux, mention d'escompte et conditions générales de pénalités" style="max-width:100%; height:auto;"/>
+                    <figcaption>Taux de TVA par ligne, totaux, escompte « néant », pénalités et indemnité de 40 €.</figcaption>
+                </figure>
+                <p>Le pied de page reprend le texte réglé à la section 1 et, dès que la localisation française est
+                    installée (réglage commun à toute la base), ajoute le numéro de la facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Pied de page du PDF de facture : coordonnées, SIRET, forme juridique et capital, numéro de facture" style="max-width:100%; height:auto;"/>
+                    <figcaption>Pied de page : SIRET, forme juridique, capital, siège, numéro de la facture.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. NUMÉROTATION ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Numérotation continue : ce qu'Odoo garantit, ce qu'il ne verrouille pas</h2>
+                <p>Le numéro n'existe qu'à la confirmation, ce qui évite les trous dus aux brouillons abandonnés.
+                    L'ordre des numéros est celui des confirmations ; un numéro déjà pris ou contraire à l'année de la
+                    facture est refusé, un numéro sauté est accepté mais signalé en rouge dans la liste. Une facture
+                    remise en brouillon garde son numéro, et un utilisateur qui n'est pas administrateur de la
+                    facturation ne peut supprimer que la dernière de la chaîne. Ces règles, le changement de format et
+                    leurs messages exacts sont montrés dans <a
+                    href="/blog/fonctionnel-odoo-1/numerotation-factures-odoo-361">Changer la numérotation des factures
+                    dans Odoo 20</a>.</p>
+                <p>En Community, rien n'empêche en revanche de modifier une facture confirmée et pas encore transmise
+                    par une plateforme : le bouton <strong>Remettre en brouillon</strong> reste disponible. La case de journal qui scelle les écritures
+                    par une empreinte (« Secure Posted Entries with Hash ») est réservée à un groupe comptable que
+                    l'administrateur de démonstration n'a pas : elle n'apparaît pas sur le journal Ventes, même en
+                    mode développeur, et les dates de verrouillage n'ont pas d'écran dans la Community. Une facture
+                    déjà envoyée se corrige donc par un avoir, comme expliqué dans <a
+                    href="/blog/fonctionnel-odoo-1/modifier-facture-validee-odoo-359">Modifier une facture déjà validée
+                    dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. XML ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Dans la facture électronique : trois notes ajoutées d'office</h2>
+                <p>Pour une société française, le fichier XML de la facture électronique (Factur-X ou UBL, voir
+                    l'article sur l'émission) reprend les conditions générales et la phrase de la condition de paiement,
+                    puis ajoute trois notes codées, exigées par les règles françaises de la facture électronique. Relevé
+                    dans le XML de FAC/2026/00010 :</p>
+                <table class="tmc">
+                    <thead><tr><th>Code</th><th>Texte ajouté par Odoo</th></tr></thead>
+                    <tbody>
+                        <tr><td>PMT</td><td>« En cas de retard de paiement, une indemnité forfaitaire de 40 € pour frais de recouvrement sera facturée (articles L.441-10 et D.441-5 du Code de commerce). »</td></tr>
+                        <tr><td>PMD</td><td>« Des pénalités de retard au taux annuel de 10 % sont appliquées si le paiement est effectué après la date d'échéance. »</td></tr>
+                        <tr><td>AAB</td><td>« Aucune remise pour paiement anticipé. » ; avec une condition à escompte, le texte de la condition à la place</td></tr>
+                    </tbody>
+                </table>
+                <p>Ces notes ne s'impriment pas sur le PDF et ne se règlent nulle part dans les paramètres : le taux de
+                    10 % est écrit tel quel, quel que soit le taux de vos conditions générales.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Identifiants de la société et du client, pied de page, conditions générales, conditions de paiement
+                        avec escompte, adresse et date de livraison, type d'opération, numérotation et notes de la facture
+                        électronique : tout ce qui est montré ici vient des modules de facturation et de localisation
+                        française inclus dans Odoo 20 Community.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>1. Le type d'opération suit la taxe, pas l'article</h4>
+                    <p>Odoo déduit la nature de l'opération de la portée des taxes (G = biens, S = services), et imprime
+                        une phrase sur l'option pour les débits dès qu'une prestation porte une taxe exigible à la facture.
+                        Sur la démonstration, les services ont reçu la taxe « 20% G » : une facture d'une seule prestation,
+                        la Garantie, annonce « Livraison de biens » et imprime « Tax exigibility on debits », en anglais,
+                        sur le document envoyé au client. Une taxe sans portée n'imprime aucun type d'opération.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_11" alt="PDF d'une facture de prestation en taxe 20% G : type d'opération Livraison de biens et phrase Tax exigibility on debits en anglais" style="max-width:100%; height:auto;"/>
+                        <figcaption>Une prestation en « 20% G » : « Livraison de biens » et une phrase en anglais.</figcaption>
+                    </figure>
+                    <p>Donnez « 20% S » à vos services, sauf option pour les débits, et relisez une facture de chaque
+                        type avant l'envoi.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>2. Deux taux de pénalités dans la même facture électronique</h4>
+                    <p>Le XML de FAC/2026/00010 contient les conditions générales (12,40 %) et la note PMD d'Odoo
+                        (10 %). Le PDF, lui, n'affiche que 12,40 %. Avec la réforme, c'est ce fichier que la plateforme
+                        transmet au client, et la note à 10 % ne se règle dans aucun paramètre. Faites valider par votre
+                        conseil la rédaction de vos conditions au regard de ce texte ajouté par Odoo.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>3. Pas de date de livraison, pas de mention</h4>
+                    <p>Le champ Date de livraison d'une facture saisie directement est vide par défaut et ne bloque pas
+                        la confirmation : sans lui, le PDF n'imprime aucune date de vente ou de prestation, mention exigée par la fiche
+                        F31808. Remplissez-le sur chaque facture.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir la mention d'escompte d'une condition qui en prévoit un.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, société « FR Company »,
+                        facturez 10 Chaises de bureau (70,00 € HT) à un client professionnel avec la condition
+                        « 2/7 Net 30 », confirmez, puis imprimez.</p>
+                    <p><strong>Critère de réussite :</strong> sous les lignes, le PDF imprime « Conditions de paiement :
+                        30 jours, 2% d'escompte pour paiement anticipé sous 7 jours. » puis « 823,20 € dû si payé avant »
+                        la date de facture plus 7 jours, pour un total de 840,00 €.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 imprime ce que contiennent six réglages ; il ne vérifie pas la liste des mentions.</li>
+                    <li>Forme juridique et capital : dans le pied de page, qui reçoit d'office le SIRET.</li>
+                    <li>Pénalités de retard et indemnité de 40 € : dans les conditions générales par défaut, à mettre à
+                        jour quand le taux change.</li>
+                    <li>Escompte ou « néant » : dans le texte de chaque condition de paiement.</li>
+                    <li>SIREN du client, adresse de livraison et type d'opération s'impriment seuls, si la fiche et les
+                        taxes sont justes.</li>
+                    <li>Le numéro est attribué à la confirmation ; en Community, une facture confirmée se remet en
+                        brouillon : corrigez une facture envoyée par un avoir.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Pour envoyer ces factures par une plateforme agréée, poursuivez avec <a
+                    href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>. Le point de départ de la série reste <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources officielles (consultées le 12 novembre 2026)</h3>
+                <ul class="small">
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F31808" target="_blank" rel="noopener">Facture : mentions obligatoires (F31808)</a></li>
+                    <li><a href="https://entreprendre.service-public.gouv.fr/vosdroits/F23211" target="_blank" rel="noopener">Délais de paiement et pénalités de retard (F23211)</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/numerotation-factures-odoo-361">Changer la numérotation des factures</a></h5>
+                            <p class="small text-muted mb-0">Préfixe, remise à zéro, refus d'Odoo.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/escompte-paiement-anticipe-devis-ttc-odoo-263">Escompte pour paiement anticipé</a></h5>
+                            <p class="small text-muted mb-0">Condition, TVA et paiement dans le délai.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/regimes-tva-odoo-392">Régimes de TVA dans Odoo 20</a></h5>
+                            <p class="small text-muted mb-0">Encaissement, UE, franchise et leurs mentions.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
