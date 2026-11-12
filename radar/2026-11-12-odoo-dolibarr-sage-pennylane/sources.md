@@ -15,3 +15,8 @@ le détail des faits portés et des citations est dans le commentaire d'en-tête
 | https://wiki.dolibarr.org/index.php/Module_PDPConnectFR | wiki, module EInvoicing | 2026-11-12 | 1 (éditeur, sur ses produits) |
 | https://www.odoo.com/fr_FR/pricing | Odoo — Tarifs | 2026-11-12 | 1 |
 | https://www.odoo.com/documentation/20.0/fr/applications/finance/fiscal_localizations/france.html | documentation Odoo 20 — France | 2026-11-12 | 1 |
+| https://www.pennylane.com/fr/expert-comptable | Pennylane — page experts-comptables | 2026-11-12 | 1 (éditeur, sur ses produits) |
+| https://github.com/Dolibarr/dolibarr | Dépôt Dolibarr/dolibarr (licence GPL-3+) | 2026-11-12 | 1 (éditeur, sur ses produits) |
+| https://www.odoo.com/fr_FR/electronic-invoicing/france | Odoo — facturation électronique en France | 2026-11-12 | 1 |
+
+Format Radar (12/11/2026, finitions) : liens ci-dessus ajoutés à la section Sources de l'article (déjà lus, voir l'en-tête).
