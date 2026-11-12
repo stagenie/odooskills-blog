@@ -1,0 +1,519 @@
+<!--
+Article — Odoo 20 pour une parapharmacie : lots, péremption, caisse
+Série « Odoo 20 par métier » (blog Fonctionnel, série 68), vague 3, alternative F5.b (rédaction anticipée)
+Titre du plan : « Odoo 20 pour une pharmacie ou parapharmacie : lots, péremption, caisse » (70 car., refusé ≤ 60) ; recentré sur la parapharmacie.
+Date : 2026-11-12 (poste)
+Slug : parapharmacie-lots-peremption-caisse-odoo
+Tags : intermediaire, stock, cas-pratique, community, pos
+Sources vérifiées le 2026-11-12.
+PÉRIMÈTRE RÉGLEMENTAIRE : aucune affirmation sur la réglementation des médicaments (ordonnance, tiers payant, traçabilité sérialisée, certification des
+  logiciels d'officine) : aucune source officielle lue pour cet article, donc rien n'en est dit. Article cadré sur la parapharmacie (produits hors médicaments).
+  Fait Odoo seul : aucun module d'ordonnance ou de tiers payant dans odoo/addons (grep -rliE "pharma|prescription|ordonnance" sur les __manifest__.py : aucun résultat).
+COMMUNITY : Odoo 20.0 Community (révision 3538ed82), copie neutralisée vs20_func_f5b de vs20_func, société My Company (San Francisco), USD, taxe 15 %.
+  Rien installé : product_expiry, point_of_sale, pos_stock, purchase, sale_stock_product_expiry déjà installés sur vs20_func.
+  Préparé en shell (s1_setup.py) : point de vente « Parapharmacie » (Card + Espèces créées par _create_journal_and_payment_methods), catégorie PdV
+  « Soins et solaires », article « Crème solaire SPF 50 (50 ml) » (15,90 $, coût 7,20 $, suivi par lots, dates 730 / 0 / 30 / 60 jours, fournisseur Ready Mat,
+  responsable Mitchell Admin), 4 lots mis en stock par ajustement : SOL-2511 (exp. 05/11/2026, 2), SOL-2604 (exp. 02/12/2026, 6), SOL-2609 (exp. 30/06/2027, 12),
+  SOL-2610 (exp. 15/10/2028, 24). Dates d'enlèvement / d'alerte calculées par product_expiry/models/production_lot.py:59-80.
+  Joué à l'écran : Inventaire › Configuration › Produits › Catégories › Nouveau « Parapharmacie », Forcer la stratégie d'enlèvement = First Expiry First Out (FEFO) ;
+  catégorie posée sur l'article ; onglet Inventaire (Traçabilité, Dates). FEFO = ordre removal_date, in_date, id (product_expiry/models/stock_quant.py:25-28).
+  Type d'opération PoS Orders (Inventaire › Configuration › Gestion de l'entrepôt › Types d'opérations) : Créer nouveau + Utiliser les existants cochés par défaut ;
+  Créer nouveau décoché à l'écran. Caisse Parapharmacie : ajout de la crème → fenêtre « Numéro(s) de lot/série requis pour » listant SOL-2511, SOL-2604, SOL-2609,
+  SOL-2610 (noms seuls) ; get_existing_lots = quants > 0 de l'emplacement de la caisse, sans filtre de date (pos_stock/models/pos_order_line.py:28-70) ;
+  choix automatique seulement si un seul lot, ou stratégie fifo/lifo (pos_stock/static/src/app/services/pos_store.js:255-279), pas fefo ; notification
+  « Le lot/numéro de série SOL-2511 a expiré » (showNotificationIfLotExpired, pos_store.js:178-183 et :296, date d'expiration seule), vente poursuivie ;
+  avec Créer nouveau coché : « Créer un numéro de lot/série... » ; décoché : « Aucun numéro de lot/série existant trouvé... » (select_lot_popup.js:47-90, refus :100-124) ; aucun lot en stock et création fermée → message « No existing serial/lot number » (pos_store.js:195-200).
+  Vente Parapharmacie - 000001 : 1 crème lot SOL-2609, 18,29 $ espèces → WH/POS/00005 terminé, ligne SOL-2609 × 1 (shell).
+  Planificateur « Approvisionnement : lancer le planificateur » (stock/data/stock_sequence_data.xml:55-66, quotidien) appelle stock.lot._alert_date_exceeded
+  (product_expiry/models/stock_rule.py:6-11, production_lot.py:82-106) : lancé une fois en shell (crons arrêtés sur la copie) → activités « Date d'alerte atteinte »
+  sur SOL-2511 et SOL-2604, Mitchell Admin. Inventaire › Produits › Lots / Numéros de série : colonnes optionnelles Date d'alerte / d'enlèvement / d'expiration ;
+  filtre « Alertes d'expiration » → SOL-2511 et SOL-2604. Fiche lot : badges « Périmé » / « Bientôt périmé » (production_lot_views.xml:20-24).
+  Rebut : modèle stock.scrap supprimé en 20 ; Actions › Rebut de la fiche du lot (stock/views/stock_lot_views.xml:184-193, stock_lot.py:387-409) → mouvement
+  is_scrap, quantité proposée 1,00 à l'écran (pas la quantité du lot), emplacement de rebut « Inventory adjustment » (scrap_location_id de la société de démo) ;
+  quantité 1,00 revue sur les lots neufs SOL-2609 (11) et SOL-2610 (24), fenêtre abandonnée ; premier essai à 1,00 sur chaque lot (SP/00001-2), quantités remises en shell par ajustement, puis rebut de 2 (SOL-2511) et 6 (SOL-2604) saisis à l'écran.
+  Prévision : product_expiry passe with_expiration=today (product_expiry/models/product_product.py:12) → stock/models/product.py:225-270 retire du Prévu et du
+  disponible les quants dont la date d'enlèvement est passée : 44 en stock, Prévu 36 avant rebut (shell). Exercice : date d'enlèvement de SOL-2610 avancée → Prévu 11
+  pour 35 en stock (shell, rollback).
+  Réassort : règle OP/00008 min 40 / max 60 créée en shell → Inventaire › Opérations › Approvisionnement › Réassort : Disponible 35, Prévision 35, À commander 25,
+  route Acheter → Commander → P00034 Ready Mat 25 × 7,20 = 180,00 $ HT (n° fiscal de démo du fournisseur masqué sur la capture).
+Relecture indépendante 87/100, corrigée (chronologie 44/36, case Date d'expiration, chapeau FEFO, rebut 1,00 revérifié, renvois, filtre, étiquette, temps réel, article sans lot).
+LIENS (is_published = t en prod, psql 12/11/2026) : 221, 235, 268, 219, 245, 248, 259. Aucun lien vers 395-453 ni vers les alternatives.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Odoo 20 pour une parapharmacie : lots, péremption, caisse</h1>
+                <p class="lead mt-3 text-white">Une crème solaire se vend par lot et se périme à date. Cet article assemble
+                    ce qu'une parapharmacie règle dans Odoo 20 Community pour faire sortir du stock d'abord ce qui périme
+                    d'abord, faire choisir le bon lot en caisse, retirer les lots périmés et recommander à temps.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 par métier</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur une
+                        copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars, taxe
+                        de vente à 15 %), avec Inventaire, Achats et Point de Vente installés et l'option Dates d'expiration
+                        activée. Toutes les fonctions présentées existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que couvre cet article</h2>
+                <p>Cet article traite des <strong>produits de parapharmacie</strong> : soins, hygiène, solaires, accessoires,
+                    vendus au comptoir et suivis par lot de fabrication. La délivrance de médicaments n'y est pas abordée :
+                    Odoo 20 Community ne contient aucun module pour l'ordonnance ou le tiers payant, et la réglementation qui
+                    s'y applique sort du cadre de cet article.</p>
+                <p>Deux rôles se partagent le travail :</p>
+                <ul>
+                    <li><strong>le pharmacien titulaire</strong>, qui paramètre les articles et la caisse, décide du retrait des
+                        lots et valide les commandes fournisseurs ;</li>
+                    <li><strong>le préparateur</strong>, qui vend au comptoir, range les réceptions et signale les lots à retirer.</li>
+                </ul>
+                <p>Odoo 20 n'a pas d'application « parapharmacie » : le métier s'obtient en assemblant Inventaire, Point de
+                    Vente et Achats. Cet article ne refait pas le tutoriel de chaque application. Les lots et les dates
+                    d'expiration sont détaillés dans <a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots,
+                    numéros de série et dates de péremption dans Odoo 20</a>, la caisse dans <a
+                    href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et commande en
+                    libre-service dans Odoo 20</a> et <a href="/blog/fonctionnel-odoo-1/ouverture-fermeture-caisse-odoo-268">Ouverture
+                    et fermeture de caisse dans Odoo 20</a>. Les numéros de lots et de pièces cités sont ceux de la base d'essai.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>faire sortir les lots dans l'ordre de leurs dates (stratégie FEFO) ;</li>
+                    <li>régler les délais de péremption, de retrait et d'alerte d'un article ;</li>
+                    <li>limiter la caisse aux lots existants et faire choisir le bon lot au préparateur ;</li>
+                    <li>repérer les lots à retirer et les mettre au rebut ;</li>
+                    <li>recommander à temps, sur un stock compté sans les lots à retirer.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du parcours d'une parapharmacie dans Odoo 20 : le pharmacien titulaire règle la catégorie en FEFO et l'article suivi par lots avec ses délais ; la réception enregistre le numéro de lot et la date d'expiration ; le stock est suivi par lot avec dates d'expiration, d'enlèvement et d'alerte ; en caisse, le préparateur choisit un lot existant et le transfert WH/POS sort le lot vendu ; l'alerte quotidienne crée une activité, le lot à retirer part au rebut depuis sa fiche ; le réassort min/max compte le stock sans les lots à enlever et crée une demande de prix au fournisseur, qui apporte de nouveaux lots" style="max-width:70%; height:auto;"/>
+                    <figcaption>Les dates du lot pilotent la sortie en stock, l'alerte, le retrait et le réassort ; en caisse, c'est le préparateur qui choisit.</figcaption>
+                </figure>
+                <p>Le schéma suit un lot de sa réception à sa sortie. Il sort par une vente en caisse (sections 3 et 4) ou
+                    par un rebut une fois périmé (sections 5 et 6). Le réassort (section 7) referme la boucle.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. CATÉGORIE FEFO ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Une catégorie qui sort d'abord ce qui périme d'abord</h2>
+                <p>Le pharmacien titulaire crée une catégorie d'articles pour le rayon : <strong>Inventaire › Configuration ›
+                    Produits › Catégories</strong>, <strong>Nouveau</strong>, nom « Parapharmacie ». Dans l'onglet
+                    <strong>Logistique</strong>, le champ <strong>Forcer la stratégie d'enlèvement</strong> reçoit
+                    <strong>First Expiry First Out (FEFO)</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche de la catégorie d'articles Parapharmacie dans Odoo 20, onglet Logistique : Forcer la stratégie d'enlèvement réglée sur First Expiry First Out (FEFO), Réserver des conditionnements partiels" style="max-width:85%; height:auto;"/>
+                    <figcaption>La catégorie Parapharmacie, en FEFO.</figcaption>
+                </figure>
+                <p>Avec FEFO, Odoo classe les lots par <strong>date d'enlèvement</strong>, puis par date d'entrée en stock :
+                    une livraison ou un transfert réserve d'abord le lot qui doit quitter le rayon le plus tôt. Le réglage
+                    vaut pour tous les articles de la catégorie ; il suffit de rattacher chaque article à « Parapharmacie »
+                    (champ <strong>Catégorie</strong> de l'onglet Informations générales). La caisse suit une autre règle,
+                    présentée en section 4.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. ARTICLE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. L'article : suivi par lots et délais en jours</h2>
+                <p>L'article d'exemple, « Crème solaire SPF 50 (50 ml) », est vendu 15,90 $ hors taxe, case
+                    <strong>Point de Vente</strong> cochée. Son champ <strong>Suivi</strong> vaut <strong>Par lots</strong>.
+                    Après enregistrement, l'onglet <strong>Inventaire</strong> affiche la case <strong>Date d'expiration</strong> ;
+                    cochez-la : le bloc <strong>Dates</strong> apparaît, où chaque délai se compte en jours.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Onglet Inventaire de l'article Crème solaire SPF 50 dans Odoo 20 : Traçabilité avec la case Date d'expiration cochée ; Dates : expiration 730 jours après la réception, date limite d'utilisation optimale 0 jour, date d'enlèvement 30 jours et date d'alerte 60 jours avant la date d'expiration" style="max-width:85%; height:auto;"/>
+                    <figcaption>Expiration à 730 jours, retrait 30 jours avant, alerte 60 jours avant.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead><tr><th>Champ</th><th>Réglage</th><th>Usage en parapharmacie</th></tr></thead>
+                    <tbody>
+                        <tr><td>Date d'expiration</td><td>730 jours après la réception</td><td>Valeur proposée à la réception ; la date imprimée par le fabricant la remplace</td></tr>
+                        <tr><td>Date limite d'utilisation optimale</td><td>0 jour</td><td>Laissée à 0 : elle égale alors la date d'expiration</td></tr>
+                        <tr><td>Date d'enlèvement</td><td>30 jours avant l'expiration</td><td>À partir de cette date, le lot n'est plus réservé ni compté comme disponible</td></tr>
+                        <tr><td>Date d'alerte</td><td>60 jours avant l'expiration</td><td>Une activité prévient le responsable de l'article (section 5)</td></tr>
+                    </tbody>
+                </table>
+                <p>Le délai de retrait se choisit selon ce que la parapharmacie accepte de vendre : selon la politique du magasin, un solaire
+                    qui expire dans trois semaines peut ne plus avoir sa place en rayon. La base d'essai contient quatre lots de la crème, reçus avec
+                    les dates du fabricant :</p>
+                <table class="tmc">
+                    <thead><tr><th>Lot</th><th>Quantité</th><th>Expiration</th><th>Date d'enlèvement</th><th>État au 12 novembre 2026</th></tr></thead>
+                    <tbody>
+                        <tr><td>SOL-2511</td><td>2</td><td>5 nov. 2026</td><td>6 oct. 2026</td><td>Périmé</td></tr>
+                        <tr><td>SOL-2604</td><td>6</td><td>2 déc. 2026</td><td>2 nov. 2026</td><td>Bientôt périmé, à retirer</td></tr>
+                        <tr><td>SOL-2609</td><td>12</td><td>30 juin 2027</td><td>31 mai 2027</td><td>Vendable</td></tr>
+                        <tr><td>SOL-2610</td><td>24</td><td>15 oct. 2028</td><td>15 sept. 2028</td><td>Vendable</td></tr>
+                    </tbody>
+                </table>
+                <p>La saisie du lot et de sa date à la réception est montrée pas à pas dans l'article sur les lots cité plus haut.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CAISSE : LOTS EXISTANTS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Limiter la caisse aux lots existants</h2>
+                <p>La base d'essai a reçu un point de vente « Parapharmacie », avec une catégorie de caisse « Soins et
+                    solaires ». Ses ventes sortent du stock par le type d'opération <strong>PoS Orders</strong> (préfixe
+                    WH/POS/) : <strong>Inventaire › Configuration › Gestion de l'entrepôt › Types d'opérations</strong>.
+                    Le bloc <strong>Lots/numéros de série</strong> y compte deux cases, toutes deux cochées par défaut.
+                    Le pharmacien titulaire décoche <strong>Créer nouveau</strong> et garde <strong>Utiliser les
+                    existants</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Type d'opération PoS Orders dans Odoo 20, bloc Lots/numéros de série : Créer nouveau décoché, Utiliser les existants coché ; emplacement d'origine WH/Stock, destination Customers" style="max-width:85%; height:auto;"/>
+                    <figcaption>La caisse ne peut plus inventer un numéro de lot.</figcaption>
+                </figure>
+                <p>Avec la case Créer nouveau cochée, un numéro mal tapé à la caisse est proposé à la création : la vente
+                    sortirait alors un lot qui n'existe pas en stock. Décochée, la caisse n'accepte que les lots présents
+                    dans l'emplacement d'origine de la caisse, ici WH/Stock. Contrepartie : un article jamais réceptionné, donc
+                    sans lot en stock, ne peut pas être vendu en caisse ; la caisse affiche alors un message et refuse la ligne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. VENTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Vendre au comptoir : le préparateur choisit le lot</h2>
+                <p>Le préparateur ouvre la caisse et touche la crème solaire. Comme l'article est suivi par lots, la fenêtre
+                    <strong>Numéro(s) de lot/série requis pour</strong> s'ouvre et liste les lots en stock dans l'emplacement
+                    de la caisse.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Caisse Odoo 20, fenêtre Numéro(s) de lot/série requis pour Crème solaire SPF 50 (50 ml) : liste des lots SOL-2511, SOL-2604, SOL-2609 et SOL-2610, sans dates" style="max-width:70%; height:auto;"/>
+                    <figcaption>Les quatre lots en stock, désignés par leur seul numéro.</figcaption>
+                </figure>
+                <p>Trois constats, faits sur cette fenêtre :</p>
+                <ul>
+                    <li>la liste montre <strong>tous</strong> les lots en stock, périmé compris, et seulement leur numéro ;</li>
+                    <li>la caisse ne choisit d'elle-même que dans deux cas : un seul lot en stock, ou une catégorie en FIFO ou
+                        en LIFO. Avec FEFO, elle laisse le choix au préparateur ;</li>
+                    <li>un lot dont la date d'expiration est passée reste accepté : la caisse affiche seulement un avertissement.</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Caisse Odoo 20 : ligne Crème solaire SPF 50 (50 ml) avec le lot SOL-2511 à 18,29 dollars, et l'avertissement Le lot/numéro de série SOL-2511 a expiré en haut à droite" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le lot périmé SOL-2511 passe, avec un simple avertissement.</figcaption>
+                </figure>
+                <p>Le lot SOL-2604, dont la date d'enlèvement est passée mais pas la date d'expiration, ne déclenche aucun
+                    message. Après l'avertissement sur SOL-2511, le préparateur supprime la ligne et reprend l'article : il tape le numéro du lot à vendre,
+                    SOL-2609, celui de l'étiquette du produit pris en rayon. Un numéro inconnu n'est pas accepté, puisque la
+                    création de lots est fermée (section 3).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Caisse Odoo 20, fenêtre de choix du lot : saisie SOL-99 et réponse Aucun numéro de lot/série existant trouvé" style="max-width:70%; height:auto;"/>
+                    <figcaption>Un numéro inconnu : la caisse ne propose plus de le créer.</figcaption>
+                </figure>
+                <p>La vente de la crème, lot SOL-2609, est réglée en espèces : 18,29 $ taxe comprise. Le transfert WH/POS/00005,
+                    terminé à la validation de la vente (mise à jour du stock en temps réel, réglage par défaut), sort une unité du lot SOL-2609. La caisse ne remplace donc pas le
+                    rangement du rayon : le lot qui périme le premier doit être devant, et ceux à retirer n'ont plus à y être
+                    (sections 5 et 6).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. SURVEILLER ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Repérer les lots à retirer</h2>
+                <p><strong>Inventaire › Produits › Lots / Numéros de série</strong> liste les lots. Les colonnes
+                    <strong>Date d'alerte</strong>, <strong>Date d'enlèvement</strong> et <strong>Date d'expiration</strong>
+                    s'ajoutent par le sélecteur de colonnes, en bout d'en-tête.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste des lots de la crème solaire dans Odoo 20 avec les colonnes Date d'alerte, Date d'enlèvement, Date d'expiration, Activités et Quantité en stock : SOL-2511 et SOL-2604 en alerte, avec l'activité Date d'alerte atteinte ; SOL-2609 et SOL-2610 à venir" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux lots en alerte, avec leur activité « Date d'alerte atteinte » ; SOL-2609 compte 11 unités après la vente.</figcaption>
+                </figure>
+                <p>Le filtre <strong>Alertes d'expiration</strong> ne garde que les lots dont la date d'alerte est passée :
+                    ici SOL-2511 et SOL-2604. Il ne tient pas compte du stock : un lot déjà vidé y reste. L'alerte prend aussi la forme d'une activité « Date d'alerte atteinte »,
+                    créée pour le <strong>Responsable</strong> de l'article (onglet Inventaire de l'article ; Mitchell Admin
+                    sur la base d'essai), une seule fois par lot, et seulement si le lot est encore en stock. Elle est créée
+                    par l'action planifiée quotidienne « Approvisionnement : lancer le planificateur » ; sur la base d'essai,
+                    elle a été lancée une fois à la main pour l'exemple.</p>
+                <p>La fiche d'un lot reprend ses quatre dates et affiche un badge : <strong>Bientôt périmé</strong> une fois
+                    la date d'alerte passée, <strong>Périmé</strong> une fois la date d'expiration atteinte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Fiche du lot SOL-2604 dans Odoo 20 avec le badge Bientôt périmé : Crème solaire SPF 50 (50 ml), 6 unités en WH/Stock ; expiration 2 déc., alerte à partir du 3 oct., à consommer de préférence avant le 2 déc., date d'enlèvement 2 nov." style="max-width:85%; height:auto;"/>
+                    <figcaption>Le lot SOL-2604 : 6 unités, date d'enlèvement passée.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. REBUT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Retirer un lot : le rebut depuis sa fiche</h2>
+                <p>Le préparateur retire du rayon les six tubes du lot SOL-2604 ; le pharmacien titulaire les sort du stock.
+                    Sur la fiche du lot, le menu <strong>Actions</strong> (roue dentée) propose <strong>Rebut</strong>, qui ouvre
+                    un mouvement de rebut prérempli : article, lot, emplacement d'origine WH/Stock et emplacement de rebut
+                    de la société. La <strong>Quantité</strong> proposée est 1,00, quel que soit le stock du lot (constaté sur trois lots de
+                    la base d'essai) : le pharmacien titulaire saisit 6, puis clique sur <strong>Confirmer</strong>. Une
+                    étiquette, par exemple « Périmé », peut être créée dans le champ <strong>Raison de mise au rebut</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Mouvement de rebut dans Odoo 20 ouvert depuis le lot SOL-2604 : Crème solaire SPF 50 (50 ml), quantité 6, lot SOL-2604, emplacement d'origine WH/Stock, emplacement de rebut Inventory adjustment, case Doit être réapprovisionné décochée, bouton Confirmer" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le rebut du lot SOL-2604, quantité corrigée à 6.</figcaption>
+                </figure>
+                <p>Après confirmation, la fiche du lot affiche 0 en stock. Le lot SOL-2511 (2 unités) suit le même chemin.
+                    Le rebut, son menu propre (<strong>Inventaire › Opérations › Ajustements › Rebut</strong>) et la case
+                    <strong>Doit être réapprovisionné</strong> sont détaillés dans <a
+                    href="/blog/fonctionnel-odoo-1/rebuts-retours-clients-odoo-259">Rebut et retour client dans Odoo 20 :
+                    ce qui change</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 7. RÉASSORT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Recommander sur un stock compté sans les lots à retirer</h2>
+                <p>Avec les dates d'expiration activées, la quantité <strong>prévue</strong> d'un article ne compte pas les
+                    lots dont la date d'enlèvement est passée. Avant la vente et les rebuts, la base d'essai comptait 44 crèmes
+                    en stock, mais 36 prévues : les 8 tubes des lots SOL-2511 et SOL-2604 étaient déjà écartés. Le réassort voit donc
+                    le manque avant même que le rebut soit fait.</p>
+                <p>Le pharmacien titulaire a posé une règle de réapprovisionnement sur la crème : minimum 40, maximum 60,
+                    fournisseur Ready Mat à 7,20 $. Après la vente et les deux rebuts, <strong>Inventaire › Opérations ›
+                    Approvisionnement › Réassort</strong> affiche 35 disponibles, 35 prévus et 25 à commander, pour revenir
+                    au maximum.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Écran Réassort d'Odoo 20 : Crème solaire, emplacement WH/Stock, disponible 35, prévision 35, route Acheter, minimum 40, maximum 60, à commander 25" style="max-width:100%; height:auto;"/>
+                    <figcaption>35 en stock pour un minimum de 40 : 25 à commander.</figcaption>
+                </figure>
+                <p>Le bouton <strong>Commander</strong> de la ligne crée la demande de prix P00034 : 25 crèmes chez Ready Mat,
+                    180,00 $ hors taxe. Le pharmacien titulaire la relit et l'envoie ; à la réception, les nouveaux lots
+                    arrivent avec leurs dates.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Demande de prix P00034 dans Odoo 20 : fournisseur Ready Mat, devise USD, arrivée prévue le 15 nov., une ligne Crème solaire SPF 50 (50 ml), 25 unités à 7,20 dollars, taxe 15 %, montant 180 dollars" style="max-width:85%; height:auto;"/>
+                    <figcaption>La demande de prix issue du réassort.</figcaption>
+                </figure>
+                <p>Le choix des minimums, le déclenchement automatique et les règles qui ne partent pas sont traités dans <a
+                    href="/blog/fonctionnel-odoo-1/reassort-automatique-odoo-219">Réassort automatique dans Odoo 20</a>, <a
+                    href="/blog/fonctionnel-odoo-1/reapprovisionnement-min-max-calcules-odoo-245">Réapprovisionnement Odoo 20 :
+                    des min/max tirés des ventes</a> et <a
+                    href="/blog/fonctionnel-odoo-1/reapprovisionnement-ne-se-declenche-pas-odoo-248">Réapprovisionnement
+                    Odoo 20 : la règle ne se déclenche pas</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== QUI FAIT QUOI ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Geste</th><th>Rôle</th><th>Où dans Odoo 20</th></tr></thead>
+                    <tbody>
+                        <tr><td>Catégorie en FEFO</td><td>Pharmacien titulaire</td><td>Inventaire › Configuration › Produits › Catégories</td></tr>
+                        <tr><td>Suivi par lots et délais</td><td>Pharmacien titulaire</td><td>Fiche article, onglets Informations générales et Inventaire</td></tr>
+                        <tr><td>Fermer la création de lots en caisse</td><td>Pharmacien titulaire</td><td>Inventaire › Configuration › Gestion de l'entrepôt › Types d'opérations › PoS Orders</td></tr>
+                        <tr><td>Saisir le lot et sa date à la réception</td><td>Préparateur</td><td>Réception, lien Détails de la ligne</td></tr>
+                        <tr><td>Choisir le lot vendu</td><td>Préparateur</td><td>Caisse, fenêtre Numéro(s) de lot/série requis pour</td></tr>
+                        <tr><td>Suivre les alertes</td><td>Responsable de l'article</td><td>Inventaire › Produits › Lots / Numéros de série, filtre Alertes d'expiration</td></tr>
+                        <tr><td>Mettre un lot au rebut</td><td>Pharmacien titulaire</td><td>Fiche du lot › Actions › Rebut</td></tr>
+                        <tr><td>Commander</td><td>Pharmacien titulaire</td><td>Inventaire › Opérations › Approvisionnement › Réassort</td></tr>
+                    </tbody>
+                </table>
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Lots, dates d'expiration, stratégie FEFO, choix du lot en caisse, alertes, rebut et réassort font partie
+                        d'Odoo 20 Community (modules Inventaire, Dates d'expiration, Point de Vente et Achats). Ils existent
+                        aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>La caisse n'applique pas FEFO et accepte un lot périmé</h4>
+                    <p>La fenêtre de choix liste tous les lots en stock, sans leurs dates. Un lot périmé passe avec un
+                        avertissement ; un lot dont seule la date d'enlèvement est passée passe sans message. Le rebut des
+                        lots à retirer (section 6) est la seule garde : un lot sorti du stock n'est plus proposé.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>« Créer nouveau » est coché par défaut sur les ventes en caisse</h4>
+                    <p>Tant que la case reste cochée sur le type d'opération PoS Orders, la caisse propose de créer tout numéro
+                        de lot tapé. Une faute de frappe devient un lot fantôme. Décochez-la avant la première vente (section 3).</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le rebut ouvert depuis le lot propose une seule unité</h4>
+                    <p>La quantité proposée est 1,00, pas le stock du lot. Saisissez la quantité retirée avant de confirmer,
+                        puis vérifiez que la fiche du lot affiche 0 en stock.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> constater qu'un lot à retirer ne compte plus dans la quantité prévue.</p>
+                    <p><strong>Indication :</strong> sur un article suivi par lots avec dates d'expiration, ouvrez la fiche d'un
+                        lot en stock, avancez sa <strong>Date d'enlèvement</strong> à hier et enregistrez. Ouvrez ensuite la fiche
+                        de l'article.</p>
+                    <p><strong>Critère de réussite :</strong> la quantité en stock de l'article ne change pas, mais sa quantité
+                        prévue baisse de la quantité du lot (sur la base d'essai, lot SOL-2610 : 35 en stock, 11 prévues). Remettez
+                        ensuite la date d'origine.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une catégorie en FEFO fait réserver d'abord le lot dont la date d'enlèvement est la plus proche, dans les transferts de stock.</li>
+                    <li>Les délais d'expiration, d'enlèvement et d'alerte se règlent en jours sur l'article ; la date du fabricant prime à la réception.</li>
+                    <li>En caisse, le préparateur choisit le lot dans une liste sans dates ; fermez la création de lots sur le type PoS Orders.</li>
+                    <li>Le filtre Alertes d'expiration et l'activité « Date d'alerte atteinte » désignent les lots à retirer ; le rebut part de la fiche du lot.</li>
+                    <li>La quantité prévue, donc le réassort, ne compte pas les lots dont la date d'enlèvement est passée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/lots-series-peremption-odoo-221">Lots, numéros de série et dates de péremption</a></h5>
+                            <p class="small text-muted mb-0">Activer le suivi, saisir un lot à la réception, retrouver son parcours.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/point-de-vente-libre-service-odoo-235">Point de vente et commande en libre-service</a></h5>
+                            <p class="small text-muted mb-0">Installer la caisse, encaisser, laisser le client commander seul.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reapprovisionnement-min-max-calcules-odoo-245">Des min/max tirés des ventes</a></h5>
+                            <p class="small text-muted mb-0">Fixer les minimums et maximums d'après l'historique des ventes.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
