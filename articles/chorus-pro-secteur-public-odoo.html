@@ -1,0 +1,506 @@
+<!--
+Article — Chorus Pro : facturer le secteur public depuis Odoo 20
+Série « Facturation électronique et TVA avec Odoo 20 » (blog Fonctionnel, série 55), vague 3, alternative F1.a
+Titre du plan (54 car.) conservé ; étiquette du plan 🟣 (mixte) → article Community : aucun module Enterprise propre à Chorus Pro
+  (liste ir.module.module de la base edu-odooskills20 lue par RPC le 2026-11-12, en lecture seule : seul l10n_fr_facturx_chorus_pro, LGPL-3,
+  non installé ; rien modifié sur edu, aucun courriel). Pas d'affiliation.
+Date : 2026-11-12 (poste, anticipation)
+Slug : chorus-pro-secteur-public-odoo
+Tags : intermediaire, comptabilite, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, copie jetable vs20_func_f1a de vs20_func (neutralisée, SMTP 127.0.0.1:1, crons arrêtés),
+  société FR Company (id 2), admin basculé dessus, mode démo de la plateforme (account_peppol.edi.mode = demo), aucun appel réseau, aucun courriel.
+  Joué : inscription démo de FR Company (Paramètres › Facturation électronique française › Authentifier › Validate Registration (Demo)) ;
+  client fictif « Collectivité fictive (démonstration) » (TVA FR12000000000, SIRET 00000000000000, SIREN déduit 000000000, Paris) créé en shell,
+  Vérifier → « Le partenaire est dans l'annuaire » ; marque B2G posée en shell (peppol_supported_documents = [CPRO_INVOICE_IDENTIFIER]) car le
+  mock démo de l'annuaire (l10n_fr_pdp/tools/demo_utils.py:57-70) ne renvoie jamais b2g ; FAC/2026/00010 (4 Chaise de bureau noire 150 € HT, 20% G,
+  720 € TTC) comptabilisée ; Envoyer (courriel décoché) AVANT le module → « Opération invalide … This partner is behind Chorus PRO. Please install
+  the module 'France - BIS3 integration for Chorus Pro' » ; Applications, recherche « Chorus » → Activer ; onglet Autres informations, bloc
+  CHORUS PRO : Code de Service SERVICE-DEMO, Numéro de marché MARCHE-DEMO-01, Engagement juridique EJ00000000, saisis sur la facture comptabilisée
+  et enregistrés ; Envoyer → « The invoice has been sent to the Approved Platform » + FAC_2026_00010_ubl_21_fr.xml + PDF.
+  XML UBL : CustomizationID urn:cen.eu:en16931:2017#conformant#urn.cpro.gouv.fr:1p0:extended-ctc-fr, BuyerReference SERVICE-DEMO,
+  OrderReference/ID EJ00000000, PartyLegalEntity/CompanyID schemeID 0009 = SIRET des deux parties ; MARCHE-DEMO-01 absent.
+  factur-x.xml du PDF (pdfdetach) : BuyerReference, BuyerOrderReferencedDocument EJ00000000, ContractReferencedDocument MARCHE-DEMO-01.
+  PDF (pdftotext) : « Référence acheteur : SERVICE-DEMO / Numéro de marché : MARCHE-DEMO-01 / Engagement juridique : EJ00000000 ».
+  Code : l10n_fr_facturx_chorus_pro/__manifest__.py (LGPL-3, dépend de account, account_edi_ubl_cii, l10n_fr_account, non auto_install) ;
+  models/account_move.py:7-9 (buyer_reference « Code de Service », contract_reference « Numéro de marché », purchase_order_reference
+  « Engagement juridique ») ; views/account_move_views.xml:8-14 (groupe Chorus Pro, factures et avoirs clients) ; views/report_invoice.xml
+  (trois lignes sous l'adresse ; i18n/fr.po:57-58, 73-74, 106-107) ; models/account_edi_xml_ubl_bis3.py (Peppol BIS 3 vers l'adresse Peppol de
+  Chorus Pro, non joué) ; account_edi_ubl_cii/models/account_edi_xml_ubl_bis3.py:10,36-37 ; l10n_fr_pdp/models/account_edi_xml_ubl_21_fr.py:7-8,
+  19-31 (B2G = annuaire + module installé), :57-60 (contrainte module manquant), :66-111 (CustomizationID CPRO, BuyerReference, OrderReference),
+  :155-166 (SIRET) ; l10n_fr_pdp/models/res_partner.py:184-195 (annuaire b2g → marque du partenaire) ;
+  account_edi_ubl_cii/models/account_edi_xml_cii_facturx.py:190-195 (Factur-X : code service sinon Référence du client, engagement sinon référence
+  ou numéro de la facture, marché).
+  Sources officielles (lues le 2026-11-12) :
+  - https://www.impots.gouv.fr/actualite/chorus-pro-restera-la-plateforme-de-reference-pour-la-facturation-electronique-du-secteur
+    (« Publié le 18/07/2025, modifié le 09/09/2025 ») : administrations sur Chorus Pro depuis le 1er janvier 2017 ; à compter de septembre 2026,
+    choix plateforme agréée ou Chorus Pro, sauf factures de marché de travaux, mémoires de frais de justice, demandes de remboursement et référentiel
+    des engagements juridiques (modalités propres à Chorus Pro) ; offre Chorus Pro maintenue (saisie ou dépôt sur le portail, EDI, API).
+  - https://www.economie.gouv.fr/espace-fournisseurs/le-ministere-votre-ecoute/je-souhaite-deposer-ma-facture-sur-chorus-pro (sans date, lue via
+    navigateur, curl 403) : fournisseurs de l'État tenus de dématérialiser (ordonnance n° 2014-697 du 26 juin 2014), trois informations au dépôt
+    (SIRET, code service exécutant, n° d'engagement à 10 chiffres) présentes sur le bon de commande ; message « Engagement juridique inexistant ».
+  - https://portail.chorus-pro.gouv.fr/aife_documentation?id=kb_article_view&sysparm_article=KB0011579 « Suivre le traitement d'une facture »
+    (mis à jour « il y a 2 mois ») : statuts Déposée, Mise à disposition (point de départ du délai global de paiement), À recycler (plus apposé par
+    les clients publics depuis septembre 2026), Suspendue, Rejetée (nouvelle facture, nouveau numéro), Mise en paiement (facultatif).
+  - communaute.chorus-pro.gouv.fr : « Service en maintenance » le 2026-11-12, non citée.
+  Aucun SIRET réel (pas même celui de l'État) dans le texte ni les images ; IBAN de démo flouté.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre.xml-extrait { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 0.9rem 1rem; font-size: 0.82em; white-space: pre-wrap; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Chorus Pro : facturer le secteur public depuis Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une facture adressée à l'État, à une collectivité ou à un établissement
+                    public passe par Chorus Pro, et elle doit permettre d'identifier le service destinataire : SIRET, code
+                    service, numéro d'engagement, et numéro de marché le cas échéant. Odoo 20 Community ajoute ces
+                    références à la facture par un module à installer, puis les transmet par la plateforme agréée ou
+                    dans un PDF Factur-X à déposer sur le portail.</p>
+                <p class="small text-light mt-2">~10 minutes de lecture · niveau intermédiaire · série <strong>Facturation électronique et TVA avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « FR Company », plan comptable français), en mode
+                        démonstration de la plateforme agréée : l'envoi est simulé, aucune facture n'est partie vers Chorus
+                        Pro et aucun dépôt n'a été fait sur le portail. Le client « Collectivité fictive (démonstration) »,
+                        son SIRET 00000000000000 et les références de commande sont fictifs ; le compte bancaire de la
+                        société de démonstration est flouté. Ce module existe aussi dans l'édition Enterprise, qui
+                        n'ajoute pas d'autre module consacré à Chorus Pro (liste des modules d'une base Enterprise 20.0
+                        relevée en novembre 2026).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Chorus Pro et la réforme de 2026</h2>
+                <p>Depuis le 1er janvier 2017, les administrations reçoivent leurs factures par Chorus Pro, la plateforme
+                    opérée par l'Agence pour l'informatique financière de l'État (AIFE). Tout fournisseur de l'État, quelle
+                    que soit sa taille, transmet ses factures par voie dématérialisée (ordonnance n° 2014-697 du 26 juin
+                    2014). La réforme de la facturation électronique ne remplace pas ce dispositif : Chorus Pro reste la
+                    plateforme du secteur public.</p>
+                <p>Ce qui change pour le fournisseur, selon l'administration fiscale : à compter de septembre 2026, il peut
+                    transmettre ses factures aux entités publiques <strong>soit par une plateforme agréée</strong>,
+                    <strong>soit par Chorus Pro</strong> lui-même (saisie ou dépôt sur le portail, échange de fichiers,
+                    API). Quatre cas restent propres à Chorus Pro : les factures de marché de travaux, les mémoires de
+                    frais de justice, les demandes de remboursement et la gestion du référentiel des engagements
+                    juridiques.</p>
+                <p>Dans les deux voies, la facture doit trouver son destinataire dans l'administration. Pour les services
+                    de l'État, le ministère de l'Économie demande trois informations au dépôt : le SIRET du destinataire,
+                    le <strong>code service exécutant</strong> et le <strong>numéro d'engagement</strong> (10 chiffres
+                    pour l'État), tous trois présents sur le bon de commande. Odoo 20 les porte sur la facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma : bon de commande public, fiche client, facture avec le bloc Chorus Pro, puis plateforme agréée ou dépôt sur le portail, jusqu'aux statuts Chorus Pro" style="max-width:100%; height:auto;"/>
+                    <figcaption>Du bon de commande public aux statuts Chorus Pro : deux voies au départ d'Odoo.</figcaption>
+                </figure>
+                <p>Cet article part d'une société déjà inscrite à la plateforme agréée, comme décrit dans <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>, et suppose connu l'envoi d'une facture à un client professionnel, traité
+                    dans <a href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>. Il n'en reprend que ce qui diffère pour un client public.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>préparer la fiche d'un client public (SIRET, adresse électronique France) ;</li>
+                    <li>installer le module Chorus Pro d'Odoo 20 et retrouver ses trois champs sur la facture ;</li>
+                    <li>envoyer la facture par la plateforme agréée et lire ce que le fichier transmet ;</li>
+                    <li>obtenir le PDF Factur-X à déposer sur le portail Chorus Pro ;</li>
+                    <li>suivre et corriger une facture renvoyée par l'administration.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 1. FICHE CLIENT ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La fiche du client public</h2>
+                <p>Une entité publique se crée comme tout client société, dans <strong>Contacts</strong> ou
+                    <strong>Facturation › Clients › Clients</strong>. L'identifiant qui compte est le
+                    <strong>SIRET</strong> de l'établissement destinataire, celui qui figure sur le bon de commande :
+                    ajoutez-le par le <strong>+</strong> à droite du champ TVA, comme le SIREN dans l'article sur
+                    l'émission. Odoo en déduit le SIREN et l'<strong>Adresse électronique France</strong> de l'onglet
+                    Facturation ; le bouton <strong>Vérifier</strong> interroge l'annuaire.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fiche du client public fictif dans Odoo 20 : TVA, SIRET et SIREN fictifs, onglet Facturation avec l'adresse électronique France et l'état Le partenaire est dans l'annuaire" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le client public : SIRET saisi, SIREN déduit, adresse électronique vérifiée (numéros fictifs).</figcaption>
+                </figure>
+                <p>Sur une base réelle, l'annuaire indique aussi si le destinataire est une entité publique reliée à
+                    Chorus Pro ; Odoo garde cette indication sur la fiche, sans champ visible, et c'est elle qui déclenche
+                    les règles propres à Chorus Pro au moment de l'envoi. Le mode démonstration ne simule pas cette
+                    réponse : pour cet article, l'indication a été posée directement sur la copie de la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 2. MODULE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Installer le module Chorus Pro</h2>
+                <p>La localisation française installe d'office la plateforme agréée, Peppol et les formats Factur-X et
+                    UBL, mais pas les champs propres au secteur public. Ouvrez <strong>Applications</strong>, retirez le
+                    filtre <em>Applications</em> de la barre de recherche, cherchez « Chorus », puis cliquez sur
+                    <strong>Activer</strong> sur la carte <strong>France - BIS3 integration for Chorus Pro</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Écran Applications d'Odoo 20 : recherche Chorus, carte France - BIS3 integration for Chorus Pro avec le bouton Activer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le module n'est pas une application : il n'apparaît qu'une fois le filtre retiré.</figcaption>
+                </figure>
+                <p>Le nom parle de « BIS3 », le format Peppol, mais le module sert aussi la plateforme agréée et le
+                    Factur-X : sans lui, la facture d'un client marqué « entité publique » ne part pas (voir le premier
+                    point de vigilance).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 3. CHAMPS ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Saisir les références du bon de commande</h2>
+                <p>Sur la facture client, l'onglet <strong>Autres informations</strong> porte désormais un bloc
+                    <strong>CHORUS PRO</strong> à trois champs. Le même bloc existe sur les avoirs clients.</p>
+                <table class="tmc">
+                    <tr><th>Champ dans Odoo</th><th>Terme Chorus Pro</th><th>Où le trouver</th></tr>
+                    <tr><td>Code de Service</td><td>code service (exécutant)</td><td>bon de commande de l'acheteur public</td></tr>
+                    <tr><td>Numéro de marché</td><td>numéro de marché</td><td>marché public ou bon de commande, s'il y en a un</td></tr>
+                    <tr><td>Engagement juridique</td><td>numéro d'engagement juridique</td><td>bon de commande (10 chiffres pour l'État)</td></tr>
+                </table>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Onglet Autres informations d'une facture Odoo 20 : bloc CHORUS PRO avec Code de Service, Numéro de marché et Engagement juridique renseignés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bloc CHORUS PRO, renseigné avec des valeurs fictives. Compte bancaire flouté.</figcaption>
+                </figure>
+                <p>Les trois champs restent modifiables après la confirmation de la facture : sur la copie, ils ont été
+                    saisis sur FAC/2026/00010 déjà comptabilisée (4 chaises de bureau, 720,00 € TTC), puis enregistrés.
+                    Renseignez-les avant l'envoi : c'est à ce moment qu'Odoo fabrique les fichiers.</p>
+                <p>Ils s'impriment aussi sur le PDF, sous l'adresse du client, avec un libellé à connaître : le code
+                    service y apparaît comme <strong>Référence acheteur</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Extrait du PDF de la facture : adresse du client public, SIRET, SIREN, TVA, puis Référence acheteur, Numéro de marché et Engagement juridique" style="max-width:55%; height:auto;"/>
+                    <figcaption>Sur le PDF, sous l'adresse : le code service s'imprime « Référence acheteur ».</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 4. PLATEFORME AGRÉÉE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Voie A : envoyer par la plateforme agréée</h2>
+                <p>Cliquez sur <strong>Envoyer</strong>. Pour un client public inscrit à l'annuaire, la fenêtre propose
+                    la même méthode que pour une entreprise : <strong>Facturation électronique française</strong> (la
+                    mention « Démo » rappelle le mode de la base). Décochez <strong>par e-mail</strong> si le
+                    courriel n'est pas souhaité, puis <strong>Envoyer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Envoyer d'Odoo 20 : par e-mail décoché, Facturation électronique française (Démo) cochée" style="max-width:80%; height:auto;"/>
+                    <figcaption>Envoi par la plateforme agréée seule.</figcaption>
+                </figure>
+                <p>L'historique de la facture garde la trace de l'envoi et des deux pièces transmises, le PDF et le
+                    fichier XML.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Historique de la facture : message The invoice has been sent to the Approved Platform avec le PDF et le fichier XML joints" style="max-width:80%; height:auto;"/>
+                    <figcaption>« The invoice has been sent to the Approved Platform » : le PDF et le XML transmis.</figcaption>
+                </figure>
+                <p>Le fichier XML se télécharge depuis ce message. Pour un client public, Odoo change le profil du
+                    fichier et y place les références de la commande :</p>
+<pre class="xml-extrait">&lt;cbc:CustomizationID&gt;urn:cen.eu:en16931:2017#conformant#urn.cpro.gouv.fr:1p0:extended-ctc-fr&lt;/cbc:CustomizationID&gt;
+&lt;cbc:BuyerReference&gt;SERVICE-DEMO&lt;/cbc:BuyerReference&gt;
+&lt;cac:OrderReference&gt;
+  &lt;cbc:ID&gt;EJ00000000&lt;/cbc:ID&gt;
+&lt;/cac:OrderReference&gt;
+…
+&lt;cac:PartyLegalEntity&gt;
+  &lt;cbc:RegistrationName&gt;Collectivité fictive (démonstration)&lt;/cbc:RegistrationName&gt;
+  &lt;cbc:CompanyID schemeID="0009"&gt;00000000000000&lt;/cbc:CompanyID&gt;
+&lt;/cac:PartyLegalEntity&gt;</pre>
+                <ul>
+                    <li><strong>CustomizationID</strong> : le profil « Chorus Pro » (<code>cpro.gouv.fr</code>) remplace
+                        le profil des factures entre entreprises.</li>
+                    <li><strong>BuyerReference</strong> : le code service.</li>
+                    <li><strong>OrderReference</strong> : le numéro d'engagement juridique.</li>
+                    <li><strong>PartyLegalEntity</strong> : le SIRET (code <code>0009</code>) du fournisseur et du client,
+                        au lieu du seul SIREN.</li>
+                </ul>
+                <p>Le numéro de marché n'y figure pas : voir le deuxième point de vigilance.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 5. PORTAIL ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Voie B : le PDF Factur-X à déposer sur le portail</h2>
+                <p>Sans passer par la plateforme agréée, le fournisseur peut déposer sa facture sur le portail Chorus
+                    Pro. Le document à déposer peut être le PDF Factur-X d'Odoo : celui joint à l'envoi, ou celui qu'obtient le
+                    bouton <strong>Générer</strong> de la fenêtre Envoyer quand aucune méthode n'est cochée, comme montré
+                    dans l'article sur l'émission. Le bouton <strong>Imprimer</strong> ne donne pas de Factur-X.</p>
+                <p>Le fichier XML embarqué dans ce PDF reprend les trois champs : le code service
+                    (<code>BuyerReference</code>), l'engagement (<code>BuyerOrderReferencedDocument</code>) et le
+                    marché (<code>ContractReferencedDocument</code>). Pour un service de l'État, le dépôt demande de saisir le
+                    SIRET du destinataire, le code service et le numéro d'engagement : recopiez les valeurs de la
+                    facture, à l'identique. Pour les services de l'État, un message « Engagement juridique inexistant » sur un bon
+                    de commande reçu le jour même invite à attendre le lendemain.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== 6. APRÈS L'ENVOI ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Après l'envoi : les statuts Chorus Pro</h2>
+                <p>Pour une facture déposée sur le portail (voie B), le suivi se lit dans Chorus Pro, application
+                    <strong>Factures émises</strong>. Par la plateforme agréée (voie A), Odoo enregistre sur la facture les
+                    réponses que la plateforme lui transmet ; le mode démonstration n'en simule aucune, ce retour n'a donc
+                    pas été observé ici. La documentation de Chorus Pro décrit les statuts suivants :</p>
+                <table class="tmc">
+                    <tr><th>Statut</th><th>Sens</th><th>Côté Odoo</th></tr>
+                    <tr><td>Déposée</td><td>envoyée, pas encore reçue par le destinataire</td><td>rien à faire</td></tr>
+                    <tr><td>Mise à disposition</td><td>transmise au destinataire ; point de départ du délai global de paiement</td><td>rien à faire</td></tr>
+                    <tr><td>Suspendue</td><td>pièces justificatives attendues</td><td>ajout des pièces sur le portail (voie B)</td></tr>
+                    <tr><td>Rejetée</td><td>données erronées : une nouvelle facture, avec un nouveau numéro, est attendue</td><td>dans Odoo : avoir sur la facture rejetée, puis nouvelle facture</td></tr>
+                    <tr><td>Mise en paiement</td><td>ordre de virement envoyé (statut facultatif)</td><td>enregistrement du paiement à réception</td></tr>
+                </table>
+                <p>Le statut « À recycler », qui permettait de corriger le SIRET, le code service ou l'engagement sans
+                    changer de numéro, n'est plus apposé par les clients publics depuis septembre 2026, selon la même
+                    documentation. Pour l'avoir et la nouvelle facture, la marche à suivre est celle de <a
+                    href="/blog/fonctionnel-odoo-1/modifier-facture-validee-odoo-359">Modifier une facture déjà
+                    validée dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EN COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Le module Chorus Pro, la plateforme agréée, le Factur-X et l'annuaire sont inclus dans Odoo 20
+                        Community, sous licence libre. Le module adapte aussi le format Peppol BIS 3 quand l'adresse Peppol
+                        du client est celle de Chorus Pro ; ce cas n'a pas été joué ici. Aucun connecteur ne dépose la
+                        facture sur le portail Chorus Pro : la voie B reste un dépôt manuel.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>1. Sans le module, la facture ne part pas</h4>
+                    <p>Le module n'est pas installé par défaut. Pour un client que l'annuaire désigne comme entité
+                        publique, l'envoi par la plateforme agréée s'arrête sur une erreur qui nomme le module à
+                        installer.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Opération invalide : This partner is behind Chorus PRO. Please install the module France - BIS3 integration for Chorus Pro" style="max-width:60%; height:auto;"/>
+                        <figcaption>L'envoi refusé tant que le module Chorus Pro n'est pas installé.</figcaption>
+                    </figure>
+                    <p>Installez le module avant la première facture publique ; la facture refusée, déjà confirmée,
+                        s'envoie ensuite normalement.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>2. Trois champs, mais pas le même contenu selon le fichier</h4>
+                    <p>Le numéro de marché s'imprime sur le PDF et entre dans le Factur-X, mais pas dans le fichier
+                        envoyé par la plateforme agréée. À l'inverse, un champ laissé vide n'est pas vide dans le
+                        Factur-X : Odoo y met la <strong>Référence</strong> de la fiche client à la place du code
+                        service, et la <strong>Référence client</strong> de la facture, sinon son numéro, à la place de
+                        l'engagement. Remplissez
+                        toujours les champs que le bon de commande fournit.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>3. Quatre cas restent réservés à Chorus Pro</h4>
+                    <p>Factures de marché de travaux, mémoires de frais de justice, demandes de remboursement et gestion
+                        du référentiel des engagements juridiques ne passent pas par une plateforme agréée : ils suivent
+                        les modalités propres à Chorus Pro. Aucun module d'Odoo 20 ne traite ces cas ; ils se gèrent
+                        directement dans Chorus Pro.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> voir les références Chorus Pro sur le PDF d'une facture.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, société « FR Company »,
+                        installez le module Chorus Pro, créez une facture pour un client fictif, renseignez les trois
+                        champs du bloc CHORUS PRO avec des valeurs factices, confirmez, puis cliquez sur
+                        <strong>Imprimer</strong>.</p>
+                    <p><strong>Critère de réussite :</strong> sous l'adresse du client, le PDF affiche trois lignes,
+                        « Référence acheteur », « Numéro de marché » et « Engagement juridique », avec vos valeurs.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Chorus Pro reste la plateforme du secteur public ; depuis septembre 2026, le fournisseur transmet
+                        ses factures aux entités publiques par une plateforme agréée ou par Chorus Pro.</li>
+                    <li>Le module « France - BIS3 integration for Chorus Pro » est à installer : il ajoute Code de Service,
+                        Numéro de marché et Engagement juridique à la facture.</li>
+                    <li>Le SIRET du destinataire se saisit sur la fiche client ; les références, sur chaque facture, avant
+                        l'envoi.</li>
+                    <li>Par la plateforme agréée, le fichier porte le profil Chorus Pro, le code service et l'engagement ;
+                        le numéro de marché ne va que dans le PDF et le Factur-X.</li>
+                    <li>Une facture rejetée appelle une nouvelle facture ; dans Odoo, un avoir annule d'abord la facture rejetée.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Pour l'envoi aux clients professionnels et l'e-reporting, voir <a
+                    href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures
+                    électroniques avec Odoo 20</a>. Le point de départ de la série reste <a
+                    href="/blog/fonctionnel-odoo-1/facturation-electronique-france-odoo-346">Facturation électronique :
+                    ce que couvre Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SOURCES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3>Sources officielles (consultées le 12 novembre 2026)</h3>
+                <ul class="small">
+                    <li><a href="https://www.impots.gouv.fr/actualite/chorus-pro-restera-la-plateforme-de-reference-pour-la-facturation-electronique-du-secteur" target="_blank" rel="noopener">Chorus Pro restera la plateforme de référence pour la facturation électronique du secteur public à partir de 2026 (impots.gouv.fr, modifié le 09/09/2025)</a></li>
+                    <li><a href="https://www.economie.gouv.fr/espace-fournisseurs/le-ministere-votre-ecoute/je-souhaite-deposer-ma-facture-sur-chorus-pro" target="_blank" rel="noopener">Je souhaite déposer ma facture sur Chorus Pro (economie.gouv.fr)</a></li>
+                    <li><a href="https://portail.chorus-pro.gouv.fr/aife_documentation?id=kb_article_view&amp;sysparm_article=KB0011579" target="_blank" rel="noopener">Suivre le traitement d'une facture (documentation Chorus Pro)</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/emettre-factures-electroniques-odoo-390">Émettre ses factures électroniques</a></h5>
+                            <p class="small text-muted mb-0">Plateforme agréée, Factur-X et e-reporting.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/modifier-facture-validee-odoo-359">Modifier une facture déjà validée</a></h5>
+                            <p class="small text-muted mb-0">Avoir, annulation et nouvelle facture.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/personnaliser-devis-factures-pdf-odoo-267">Personnaliser ses devis et factures PDF</a></h5>
+                            <p class="small text-muted mb-0">Mise en page, pied de page, champs imprimés.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
