@@ -1,0 +1,522 @@
+<!--
+Article — Employés, contacts et courriels entre sociétés dans Odoo 20
+Série « Multi-société avec Odoo 20 » (blog Fonctionnel), vague 3 F7.4 (position 4, fin du lot F7)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : employes-contacts-courriels-multi-societe-odoo (titre du plan, 68 car. : « Employés, contacts et courriels partagés entre sociétés dans Odoo 20 », raccourci)
+Tags : intermediaire, rh, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f74 (copie neutralisée de vs20_func), aucun module installé (hr déjà installé).
+  Préparation sur la copie : envoi immédiat coupé (ir.config_parameter mail.mail.force.send.limit = 0, mail_thread.py:3744-3746), SMTP neutralisé, crons arrêtés ;
+  entrepôt « Entrepôt FR Company » (FR) créé en shell (sans lui, l'envoi du devis FR lève « Veuillez créer un entrepôt pour la société FR Company. », sale_stock/models/sale_order.py:141) ;
+  devis S00083 (SF) et S00084 (FR, Azure Interior, Bureau personnalisable, 750,00 €, Par défaut, 30 jours) créés en shell.
+  Employés : démo = Mitchell Admin a 2 fiches (SF id 1, FR id 25), même contact (partenaire 3, société vide).
+  À l'écran : FR Company seule, Employés › Nouveau « Marc Demo », Paramètres › Utilisateur Marc Demo (courriel/téléphone repris), Travail › Titre « Responsable du site » ;
+  enregistrer → « Champs obligatoires manquants » (work_location_id required="1", hr/views/hr_employee_views.xml:224-226 ; 19.0 :168-170 sans required) ;
+  défaut = premier lieu de la société active (hr/models/hr_version.py:48-55) ; FR Company sans lieu, liste = 4 lieux de SF ; « Bureau FR Company » créé depuis le champ → fiche 28.
+  Doublon Mitchell Admin dans FR Company → « Un utilisateur ne peut pas être lié à plusieurs employés de la même société. » (hr_employee.py:390-393, idem 19.0 :244-245).
+  Bouton Employé 2 : employee_ids domaine company_id in env.companies (hr/models/res_users.py:77-94) ; employee_id = fiche de la société active (:278-292, shell : Marc SF → SF, FR → FR) ;
+  défauts congés / notes de frais = env.user.employee_id (hr_holidays/models/hr_leave.py:188, hr_expense/models/hr_expense.py:53-57).
+  Contact : employé relié à un utilisateur = contact de l'utilisateur (hr_employee.py:1634-1636) ; sans utilisateur = contact créé avec la société de l'employé (:1043-1051).
+  Contacts : propriétés par société (account/models/partner.py:581-601 receivable/payable/position fiscale/conditions ; product/models/res_partner.py:14-55 liste de prix, grisée = non choisie) ;
+  à l'écran, Azure Interior FR : Par défaut (EUR) + 30 jours ; SF inchangé Grossiste + Fin du mois suivant ; shell : compte client 121000 (SF) / 411100 (FR), visibles avec account.group_account_user seulement
+  (account/views/partner_view.xml:220-221). Sociétés = partenaires 1, 43, 49 sans société ; adresse société = compute/inverse vers le partenaire (base/models/res_company.py:111,195-206).
+  Courriels : Domaine alias company_dependent (mail/views/res_config_settings_views.xml:54-61) ; 1er domaine créé (FR active) → attribué aux 3 sociétés
+  (mail/models/mail_alias_domain.py:153-165, idem 19.0 :148) ; nouvelle société = premier domaine (mail/models/res_company.py:10-15, shell : branche d'essai → frcompany, rollback).
+  SF passé à yourcompany.example.com ; Chicago reste sur frcompany (fiche du domaine). Couleurs : Modèles d'e-mail company_dependent (:178-192), FR couleur de bouton #0b5394.
+  Mise en page : fenêtre « Configurer l'agencement de votre document » au premier envoi FR (base.document.layout, web/models/base_document_layout.py) ; pied de page avec TVA/SIRET de démo NON montré.
+  Modèle sale.email_template_edi_sale sans champ société (aucun champ *company* dans mail.template) ; rendu avec la société du document (mail_template.py:774-812) ; signature = champ utilisateur non company_dependent.
+  Envoi S00084 (FR) et S00083 (SF) à l'écran → mail.mail 349 / 348 « Sortant » : From « Mitchell Admin » <admin@example.com>, Reply-To catchall@frcompany / catchall@yourcompany,
+  record_company_id 2 / 1 ; corps : bouton #0b5394 / #875A7B, pied FR Company / My Company (San Francisco).
+  Texte en anglais pour un client fr_FR : sale/i18n/fr.po:6852-6858 (sujet) et corps, msgstr vide en 20.0 ; 19.0 sale/i18n/fr.po:6402-6407 traduit.
+  Serveur : ir.mail_server sans champ société ; formulaire « Relais FR Company » rempli, jamais enregistré ; shell (rollback) avec 2 serveurs filtrés :
+  _split_by_mail_configuration → 349 par le relais FR, smtp_from notifications@frcompany.example.com ; 348 par le relais SF (mail/models/mail_mail.py:601-635) ;
+  From réécrit = encapsulate_email(From, notifications) (base/models/ir_mail_server.py:671-674).
+  Aucune adresse locale, nom de base ni identifiant fiscal sur les captures.
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Employés, contacts et courriels entre sociétés dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une même personne travaille pour deux sociétés, un même client achète aux
+                    deux, et chaque société écrit sous son propre nom. Cet article montre dans Odoo 20 Community ce qui est
+                    commun au groupe et ce qui se règle société par société : fiches employé, réglages des contacts,
+                    domaine, présentation et serveur des courriels.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · série <strong>Multi-société avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (Ventes, Facturation, Inventaire et Employés déjà installés,
+                        aucune application ajoutée). FR Company n'ayant pas d'entrepôt dans la démonstration, un entrepôt lui a
+                        été créé avant d'envoyer son devis. Aucun courriel n'est réellement parti : la copie n'a pas de serveur
+                        d'envoi, les courriels restent dans la file. Ces fonctions existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qui reste commun, ce qui suit la société</h2>
+                <p>Le premier article de la série a montré la règle de base : un contact ou un article dont le champ
+                    <strong>Société</strong> est vide est commun à toutes les sociétés, et le remplir le réserve à l'une
+                    d'elles. Le quotidien d'un groupe va plus loin. Une même personne a souvent un contrat dans deux sociétés.
+                    Un client commun n'a pas les mêmes conditions chez chacune. Et un devis envoyé par une société doit
+                    répondre à son adresse, porter ses couleurs et son pied de page.</p>
+                <p>La base de démonstration d'Odoo 20 réunit déjà My Company (San Francisco) et FR Company. Cet article suit
+                    l'administrateur du groupe, puis le responsable du site français, sur trois sujets : les employés, les
+                    contacts et les courriels. La version Odoo 19 du multi-société reste disponible dans <a
+                    href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société
+                    dans Odoo 19 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>donner à un même utilisateur une fiche employé dans chaque société ;</li>
+                    <li>régler les conditions d'un client commun société par société ;</li>
+                    <li>donner à chaque société son domaine de messagerie ;</li>
+                    <li>régler les couleurs des courriels et la mise en page des documents d'une société ;</li>
+                    <li>vérifier dans un courriel en file l'adresse de réponse, les couleurs et le pied de page ;</li>
+                    <li>faire partir les courriels de chaque société par son propre serveur d'envoi.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma Odoo 20 : commun à toutes les sociétés, l'utilisateur avec sa signature, la fiche du client et le modèle de courriel ; propre à chaque société, la fiche employé, la liste de prix et les conditions de paiement du contact, le domaine d'alias, les couleurs des courriels et la mise en page des documents ; un devis de chaque société envoyé au même client avec sa propre adresse de réponse, sa couleur de bouton et son pied de page ; parcours en six étapes : employés, contacts, domaines, présentation, vérifier, serveur" style="max-width:100%; height:auto;"/>
+                    <figcaption>Ce qui est commun au groupe, ce qui est propre à chaque société, et les six étapes de l'article.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Une fiche employé par société</h2>
+                <p>Un <strong>utilisateur</strong> est un compte de connexion, commun à toutes ses sociétés. Une
+                    <strong>fiche employé</strong>, elle, appartient toujours à une seule société : son poste, son manager,
+                    son lieu de travail et ses congés y sont rattachés. Une personne qui travaille pour deux sociétés a donc
+                    un seul utilisateur et deux fiches employé.</p>
+                <p>La démonstration en contient déjà un exemple : Mitchell Admin a une fiche dans My Company (San Francisco)
+                    et une autre dans FR Company. Pour en créer une à Marc Demo, qui joue ici le responsable du site
+                    français, cochez seulement FR Company dans le sélecteur de sociétés, puis ouvrez <strong>Employés ›
+                    Nouveau</strong> :</p>
+                <ul>
+                    <li>saisissez le nom « Marc Demo » ;</li>
+                    <li>onglet <strong>Paramètres</strong>, champ <strong>Utilisateur</strong> : choisissez Marc Demo ; Odoo
+                        reprend l'adresse électronique et le téléphone de son contact ;</li>
+                    <li>onglet <strong>Travail</strong> : la Société est déjà FR Company, la société active ; saisissez le
+                        titre du poste « Responsable du site » et un lieu de travail habituel (voir le premier point de
+                        vigilance).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fiche employé de Marc Demo dans Odoo 20, onglet Travail : adresse électronique et téléphone repris de l'utilisateur, Société FR Company, Département et Poste vides, Titre du poste Responsable du site, Manager vide, rubrique Lieu avec Usual Work Location Bureau FR Company" style="max-width:100%; height:auto;"/>
+                    <figcaption>La seconde fiche de Marc Demo, rattachée à FR Company.</figcaption>
+                </figure>
+                <p>Avec les deux sociétés cochées et la colonne optionnelle Société affichée, la liste des employés montre
+                    les deux fiches de la même personne, chacune avec son poste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Liste des employés dans Odoo 20, recherche Demo, 1-2 / 2 : Marc Demo dans My Company (San Francisco), département Gestion / Recherche &amp; Développement, poste Experienced Developer, manager Mitchell Admin ; Marc Demo dans FR Company, titre Responsable du site" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une personne, deux fiches employé, une par société.</figcaption>
+                </figure>
+                <p>Sur la fiche utilisateur (<strong>Paramètres › Utilisateurs &amp; Sociétés › Utilisateurs</strong>), le
+                    bouton <strong>Employé</strong> compte les fiches des sociétés cochées : 2 ici. Quand Marc Demo travaille,
+                    Odoo retient la fiche de sa société active : ses congés ou ses notes de frais saisis depuis FR Company
+                    vont sur la fiche française.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche utilisateur de Marc Demo dans Odoo 20 : boutons Employé 2 et Contact, identifiant demo, adresse électronique et téléphone ; onglet Droits d'accès, rôle User, Sociétés FR Company, My Company (Chicago), My Company (San Francisco), Société par défaut My Company (San Francisco)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Un seul utilisateur, deux fiches employé.</figcaption>
+                </figure>
+                <p>Une seconde fiche dans la <em>même</em> société est refusée. L'essai a été fait avec Mitchell Admin, qui a
+                    déjà sa fiche dans FR Company :</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Erreur de validation dans Odoo 20 : The operation cannot be completed: Un utilisateur ne peut pas être lié à plusieurs employés de la même société ; bouton Fermer" style="max-width:100%; height:auto;"/>
+                    <figcaption>Une fiche employé par utilisateur et par société, pas davantage.</figcaption>
+                </figure>
+                <p>Les deux fiches de Marc Demo partagent le contact de son utilisateur, dont le champ Société est vide :
+                    ce contact reste visible de toutes les sociétés. Un employé sans utilisateur reçoit au contraire un contact
+                    professionnel réservé à sa société. La fiche employé elle-même est présentée dans <a
+                    href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Un client commun, des conditions par société</h2>
+                <p>Le client de démonstration Azure Interior a un champ Société vide : les deux sociétés le voient et lui
+                    vendent. Certaines valeurs de sa fiche, pourtant, n'existent qu'à l'échelle d'une société. Dans l'onglet
+                    <strong>Ventes &amp; Achats</strong>, la liste de prix, les conditions et modes de paiement, le mode de
+                    livraison et la position fiscale prennent la valeur de la <strong>société active</strong>.</p>
+                <p>Avec FR Company active, ouvrez Azure Interior, choisissez la liste de prix « Par défaut » (en euros) et
+                    les conditions « 30 jours », puis enregistrez. Repassez ensuite sur My Company (San Francisco) : la même
+                    fiche affiche toujours la liste « Grossiste » et « Fin du mois suivant ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Deux vues de l'onglet Ventes &amp; Achats du contact Azure Interior dans Odoo 20 : en haut avec FR Company active, Liste de prix Par défaut (EUR), Conditions de paiement 30 jours, Mode de livraison Livraison locale (valeur par défaut de la base) ; en bas avec My Company (San Francisco) active, Liste de prix Grossiste (USD), Conditions de paiement Fin du mois suivant, Mode de livraison Livraison locale" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le même contact vu depuis FR Company (en haut) et depuis My Company (San Francisco) (en bas).</figcaption>
+                </figure>
+                <p>Avant ce réglage, la fiche vue depuis FR Company n'avait pas de conditions de paiement, et sa liste de prix
+                    s'affichait en grisé : c'est celle qu'Odoo applique faute de choix pour cette société. Le mode de livraison et
+                    le mode de paiement se règlent eux aussi société par société ; « Livraison locale » s'affiche des deux
+                    côtés parce que c'est la valeur par défaut de la base. Le compte client suit la même règle : 121000 côté
+                    San Francisco, 411100 côté FR Company (le compte fournisseur aussi). Ces comptes ne s'affichent sur la fiche
+                    qu'avec les fonctions de comptabilité complètes.
+                    Le devis de FR Company créé ensuite pour ce client est en euros, à 30 jours. Les conditions de paiement
+                    elles-mêmes sont détaillées dans <a href="/blog/fonctionnel-odoo-1/conditions-paiement-odoo-372">Modifier
+                    les conditions de paiement dans Odoo 20</a>.</p>
+                <p>Les sociétés elles-mêmes sont aussi des contacts : My Company (San Francisco), FR Company et My Company
+                    (Chicago) figurent dans Contacts, champ Société vide. L'adresse saisie dans la fiche de la société est
+                    celle de ce contact ; c'est elle qui s'imprime en tête des documents.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Un domaine de messagerie par société</h2>
+                <p>Chaque société d'un groupe a en général son propre nom de domaine. Odoo le règle dans <strong>Paramètres ›
+                    Paramètres généraux › E-mails › Domaine alias</strong>. L'icône d'immeuble placée à côté du titre signale
+                    une valeur propre à la société active. Cochez une société, choisissez ou créez son domaine, enregistrez,
+                    puis recommencez avec l'autre. Les exemples utilisent des domaines réservés aux essais :
+                    frcompany.example.com et yourcompany.example.com.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Bloc E-mails des paramètres généraux d'Odoo 20, vu deux fois : case Utiliser les serveurs de messagerie personnalisés décochée ; Domaine alias avec l'icône d'immeuble, yourcompany.example.com en haut (My Company San Francisco active) et frcompany.example.com en bas (FR Company active)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le domaine d'alias de My Company (San Francisco), en haut, et celui de FR Company, en bas.</figcaption>
+                </figure>
+                <p>La flèche à droite du champ ouvre la fiche du domaine. Le domaine fournit trois adresses à la société :
+                    <strong>catchall</strong>, qui reçoit les réponses ; <strong>bounce</strong>, qui reçoit les retours en
+                    erreur ; <strong>notifications</strong>, l'expéditeur utilisé quand l'adresse de l'utilisateur ne peut pas
+                    être envoyée telle quelle. La ligne « Utilisé dans » liste les sociétés rattachées (voir le deuxième point
+                    de vigilance pour My Company (Chicago)).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fiche du domaine d'alias frcompany.example.com dans Odoo 20 : Utilisé dans FR Company et My Company (Chicago) ; Alias de rebond bounce, Alias Catchall catchall, Alias d'envoi par défaut notifications" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les trois adresses que le domaine donne à ses sociétés.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Couleurs des courriels et mise en page des documents</h2>
+                <p>Deux réglages du bloc Sociétés des Paramètres généraux, marqués de l'icône d'immeuble, règlent la
+                    présentation. Le premier,
+                    <strong>Modèles d'e-mail</strong>, règle la couleur du texte et du fond des boutons des courriels
+                    automatiques (« Visualiser le devis », par exemple). Avec FR Company active, la couleur de bouton a été
+                    passée au bleu ; My Company (San Francisco) garde le violet par défaut.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Réglage Modèles d'e-mail des paramètres généraux d'Odoo 20, avec l'icône d'immeuble : Personnaliser la présentation des e-mails automatisés, Texte du bouton blanc, Couleur de bouton bleue, lien Revoir tous les modèles" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les couleurs des courriels de FR Company.</figcaption>
+                </figure>
+                <p>Le second, <strong>Mise en page du document</strong>, règle l'agencement, les polices, le logo, les couleurs,
+                    l'adresse et le pied de page des documents PDF de la société active. Il s'ouvre aussi tout seul au premier
+                    envoi d'un document d'une société qui n'a pas encore de mise en page : c'est ce qui s'est produit au premier envoi d'un
+                    devis de FR Company, avec l'adresse de Rennes de la société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Configurer l'agencement de votre document dans Odoo 20, partie gauche : Agencement Light sélectionné parmi Bubble, Wave, Folder, Center, Dual, Lines, Compact ; Tableaux Clair ; Texte Lato ; Logo Your logo ; deux couleurs ; Adresse Rue Abbé Huet, 35043 Rennes, France" style="max-width:100%; height:auto;"/>
+                    <figcaption>La mise en page des documents de FR Company, ouverte au premier envoi.</figcaption>
+                </figure>
+                <p>La fenêtre affiche plus bas le pied de page et un aperçu du devis. Le pied de page reprend par défaut le
+                    téléphone, l'adresse électronique, le site et les identifiants de la société : à vérifier pour chacune.
+                    Les rapports PDF personnalisés sont traités dans <a
+                    href="/blog/developpement-odoo-2/mise-en-page-et-branding-dun-rapport-pdf-dans-odoo-19-163">Mise en page
+                    et branding d'un rapport PDF dans Odoo 19</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Envoyer un devis et vérifier le courriel</h2>
+                <p>Avec FR Company active, ouvrez le devis S00084 d'Azure Interior et cliquez sur <strong>Envoyer</strong>.
+                    Le modèle de courriel des devis est le même pour tout le groupe : il n'a pas de champ Société. Il lit
+                    pourtant la société du devis : l'objet devient « FR Company Quotation S00084 », le montant est en euros, et
+                    la signature est celle du vendeur du devis, ici Mitchell Admin. La signature est réglée une fois par
+                    utilisateur, pour toutes ses sociétés (voir <a
+                    href="/blog/fonctionnel-odoo-1/signature-email-utilisateurs-odoo-360">Signature e-mail des utilisateurs dans
+                    Odoo 20</a>).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fenêtre Envoyer dans Odoo 20 pour le devis S00084 : Vers Azure Interior, Sujet FR Company Quotation S00084, texte Hello, Your quotation S00084 amounting in 750,00 € is ready for review, Do not hesitate to contact us if you have any questions, signature Mitchell Admin ; pièce jointe Devis - S00084.pdf ; boutons Envoyer et Ignorer (extrait : le haut et le bas de la fenêtre)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le courriel du devis de FR Company, avant l'envoi (haut et bas de la fenêtre).</figcaption>
+                </figure>
+                <p>Le texte est en anglais alors qu'Azure Interior est un client de langue française : voir le troisième point
+                    de vigilance. Après <strong>Envoyer</strong>, le courriel attend dans la file d'envoi. En mode
+                    développeur, <strong>Paramètres › Technique › E-mails</strong> le montre tel qu'il partira :</p>
+                <ul>
+                    <li><strong>De</strong> : l'adresse du vendeur du devis, « Mitchell Admin » &lt;admin@example.com&gt; ;</li>
+                    <li><strong>Répondre à</strong> : l'adresse catchall du domaine de FR Company ;</li>
+                    <li>le corps : le bouton « Visualiser le devis » dans le bleu de FR Company, puis le pied de page de la société
+                        (nom, téléphone, adresse électronique, site).</li>
+                </ul>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Courriel en file dans Odoo 20, Paramètres Technique E-mails : Sujet FR Company Quotation S00084, par Mitchell Admin, De Mitchell Admin admin@example.com, À (partenaires) Azure Interior, Répondre à Mitchell Admin catchall@frcompany.example.com ; onglet Corps : bouton bleu Visualiser le devis, S00084 - Azure Interior 750,00 €, texte du courriel, signature Mitchell Admin, pied de page FR Company avec téléphone, adresse électronique et site de démonstration, Généré par Odoo" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le courriel de FR Company dans la file : réponse vers son domaine, bouton bleu, pied de page FR Company.</figcaption>
+                </figure>
+                <p>Le devis S00083 du même client, envoyé depuis My Company (San Francisco), donne un courriel différent sur
+                    les trois points : réponse vers catchall@yourcompany.example.com, bouton violet, pied de page de San
+                    Francisco.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Corps du courriel du devis S00083 dans Odoo 20 : bouton violet Visualiser le devis, S00083 - Azure Interior $ 776,25, texte en anglais, signature Mitchell Admin, pied de page My Company (San Francisco) avec téléphone, adresse électronique et site de démonstration" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le même client, l'autre société : bouton violet, pied de page de San Francisco.</figcaption>
+                </figure>
+                <p>Pour créer des modèles réutilisables depuis le fil de discussion, voir <a
+                    href="/blog/fonctionnel-odoo-1/modeles-email-chatter-odoo-365">Modèle d'email dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Un serveur d'envoi par société</h2>
+                <p>Un serveur de courriel sortant n'a pas de champ Société. Odoo choisit le serveur d'après l'adresse de
+                    l'expéditeur, grâce au champ <strong>Filtre expéditeur</strong>. Un serveur par domaine revient donc à un
+                    serveur par société. Cochez <strong>Utiliser les serveurs de messagerie personnalisés</strong> dans le bloc
+                    E-mails, puis créez un serveur par relais, avec le domaine de la société dans le filtre.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_14" alt="Formulaire de nouveau serveur de messagerie sortant dans Odoo 20 : Nom Relais FR Company, Filtre expéditeur frcompany.example.com, Priorité 10, S'authentifier avec Nom d'utilisateur ; onglet Connexion, Chiffrement Aucun, Serveur SMTP smtp.frcompany.example.com, Port SMTP 25, Nom d'utilisateur, Mot de passe et Propriétaire vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le relais de FR Company, filtré sur son domaine (formulaire montré sans être enregistré).</figcaption>
+                </figure>
+                <p>Avec deux serveurs ainsi filtrés, le courriel de S00084 part par le relais de FR Company et celui de S00083
+                    par le relais de San Francisco. L'adresse admin@example.com du vendeur ne correspond à aucun filtre :
+                    Odoo envoie alors sous le nom de Mitchell Admin avec l'adresse notifications du domaine de la société du
+                    devis. Sans serveur personnalisé, tous les courriels passent par le serveur unique de la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Geste</th><th>Qui</th><th>Où</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer une fiche employé</td><td>Le responsable RH du groupe</td><td>Employés › Nouveau, société active cochée</td><td>Une fiche par société pour le même utilisateur</td></tr>
+                        <tr><td>Régler un client</td><td>Le responsable du site</td><td>Contact › Ventes &amp; Achats, société active</td><td>Liste de prix, conditions, position fiscale de cette société</td></tr>
+                        <tr><td>Donner un domaine</td><td>L'administrateur du groupe</td><td>Paramètres › Paramètres généraux › E-mails › Domaine alias</td><td>Adresses de réponse, de retour et de notification</td></tr>
+                        <tr><td>Régler la présentation</td><td>L'administrateur du groupe</td><td>Paramètres › Sociétés : Modèles d'e-mail, Mise en page du document</td><td>Boutons des courriels, en-tête et pied des documents</td></tr>
+                        <tr><td>Relier un serveur</td><td>L'administrateur du groupe</td><td>Serveurs de messagerie sortants, Filtre expéditeur</td><td>Chaque courriel part par le relais de son domaine</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Fiches employé par société, réglages des contacts par société, domaines d'alias, présentation des courriels
+                    et des documents, serveurs filtrés : tout ce qui est montré ici fait partie d'Odoo 20 Community, sans
+                    abonnement.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Le lieu de travail est obligatoire, et la société n'en a pas</h4>
+                    <p>Le premier enregistrement de la fiche de Marc Demo a été refusé : « Champs obligatoires manquants ». En
+                        Odoo 20, le lieu de travail habituel (« Usual Work Location ») est obligatoire sur la fiche employé ; il
+                        ne l'était pas en Odoo 19. Odoo le préremplit avec un lieu de la société active, mais FR Company n'en a
+                        aucun : le champ reste vide et la liste ne propose que les lieux de San Francisco. Créez le lieu de la
+                        société depuis le champ (« Bureau FR Company » ici) avant de saisir ses employés.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_15" alt="Onglet Travail d'une nouvelle fiche employé dans Odoo 20, Société FR Company : champ Usual Work Location vide et marqué en rouge, liste déroulante proposant Building 1, Second Floor, Home, Office, Other et Recherche avancée" style="max-width:100%; height:auto;"/>
+                        <figcaption>Pour un employé de FR Company, seuls les lieux de San Francisco sont proposés.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le premier domaine créé va à toutes les sociétés</h4>
+                    <p>Le domaine frcompany.example.com a été créé avec FR Company active. Comme c'était le premier domaine de la
+                        base, Odoo l'a attribué à toutes les sociétés : My Company (San Francisco) l'affichait aussitôt. Une
+                        société créée plus tard reçoit elle aussi le premier domaine de la liste. Donnez son domaine à chaque
+                        société, puis vérifiez la ligne « Utilisé dans » de chaque domaine : My Company (Chicago) y est restée
+                        rattachée à FR Company.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_16" alt="Bloc E-mails des paramètres généraux d'Odoo 20 avec My Company (San Francisco) active : Domaine alias frcompany.example.com" style="max-width:100%; height:auto;"/>
+                        <figcaption>My Company (San Francisco) avec le domaine créé pour FR Company.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le courriel du devis part en anglais</h4>
+                    <p>Azure Interior est un client de langue française, et pourtant l'objet et le texte du courriel sont en
+                        anglais. Le modèle « Ventes : Envoyer le devis » n'a pas de traduction française livrée avec Odoo 20.0
+                        en novembre 2026 ; en Odoo 19, il en avait une. Avant d'envoyer des devis à des clients francophones,
+                        ouvrez le modèle par <strong>Revoir tous les modèles</strong> et rédigez sa version française.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> donner à My Company (Chicago) son propre domaine de messagerie.</p>
+                    <p><strong>Indication :</strong> après avoir créé les domaines de FR Company et de My Company (San
+                        Francisco), cochez seulement My Company (Chicago), ouvrez Paramètres › Paramètres généraux › E-mails › Domaine alias et créez
+                        « chicago.example.com ».</p>
+                    <p><strong>Critère de réussite :</strong> la fiche du domaine frcompany.example.com n'affiche plus que FR
+                        Company dans « Utilisé dans », et celle de chicago.example.com affiche My Company (Chicago).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Un utilisateur a une fiche employé par société, jamais deux dans la même ; Odoo utilise celle de la société active.</li>
+                    <li>Un contact commun garde, pour chaque société, sa liste de prix, ses conditions de paiement et sa position fiscale.</li>
+                    <li>Le domaine d'alias, les couleurs des courriels et la mise en page des documents se règlent société par société.</li>
+                    <li>Le modèle de courriel est commun et la signature est celle du vendeur ; le courriel prend l'adresse de réponse, les couleurs et le pied de page de la société du document.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article clôt la série <strong>Multi-société avec Odoo 20</strong>, après « Un site web et une boutique
+                    par société dans Odoo 20 ». La série couvre désormais la création des sociétés et leur cloisonnement, les
+                    rapports de groupe, un site par société, et les employés, contacts et courriels partagés.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme</a></h5>
+                            <p class="small text-muted mb-0">La fiche employé, les départements et l'organigramme dans Odoo 20.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/signature-email-utilisateurs-odoo-360">Signature e-mail des utilisateurs</a></h5>
+                            <p class="small text-muted mb-0">Régler la signature qui termine les courriels d'un utilisateur.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société dans Odoo 19</a></h5>
+                            <p class="small text-muted mb-0">La version Odoo 19 Community du multi-société.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
