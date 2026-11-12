@@ -1,0 +1,549 @@
+<!--
+Article — Consolidation et rapports de groupe dans Odoo 20
+Série « Multi-société avec Odoo 20 » (blog Fonctionnel), vague 3 F7.2 (position 2)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : consolidation-rapports-groupe-odoo
+Mot-clé cible : odoo multi company consolidation
+Tags : intermediaire, comptabilite, guide, enterprise
+Preuves (12/11/2026, base éducative Odoo Online, Odoo 20.0+e, compte formateur, sociétés 1 My Company (San Francisco) et 5 My US Company, toutes deux en USD ;
+  société 2 Chicago sans plan comptable, non utilisée ; aucune société créée, aucun module installé) :
+  - Pas d'application Consolidation dédiée : ir.module.module (1 615 modules de la base) sans aucun nom « *consolid* » ; seul l10n_my_edi_pos (Malaisie) en parle.
+    Doc officielle 20.0 content/applications/finance/accounting/get_started/consolidation.rst : consolidation = correspondance des comptes, multi-grands livres,
+    sélecteur de sociétés, groupes horizontaux, conversion des devises (CTA), fusion de comptes.
+  - Sélecteur (cookie cids 1-5) : SF active + My US Company cochées. Menu Analyse : Bilan, Compte de résultat. Avec deux sociétés, variantes « Compte de résultat » /
+    « Profit and Loss (US) », ouvert d'office sur la variante US ; en-tête « My Company (San Francisco), My US Company ».
+  - Menu Groupe : Aucun / Grand livre (groupe horizontal natif account_reports.horizontal_group_ledger, règle sur journal_group_id, 17 rapports dont Bilan 4 et CR 7).
+    get_report_information : colonnes = une par société (company_id + journaux sans grand livre) + une par groupe du livre (journal_group_id) + Total.
+    CR 2026 GAAP local : SF 25 639,61 / US 56 654,00 / total 82 293,61 ; bénéfice net -67 616,39 / 56 031,73 / -11 584,66.
+    Bilan au 12/11/2026 : total actif 41 886,36 / 56 236,73 / 98 123,09 ; créances clients US 54 359,00 (dont FAC/2026/00012, 580 $, adressée à SF, article 321).
+  - Option « Consolidation » (menu Pièces comptabilisées) : get_options show_consolidation True seulement avec plusieurs sociétés (False pour [1] ou [5] seule) ;
+    la décocher n'a changé aucun montant ici (une seule devise).
+  - Devises : account/models/res_currency_rate_consolidation_mixin.py:26-29 (taux 1 si une seule devise parmi les sociétés), :59-61 (devise = celle de la société active).
+    account.report.currency_translation = « cta » sur Bilan et Compte de résultat (RPC). Taux historiques / moyens / de clôture : doc 20.0 consolidation.rst.
+  - Multinormes comptables (Comptabilité › Configuration › Comptabilité) : account.journal.group (account/models/account_journal.py:17-34, nom + journaux inclus),
+    journal.journal_group_id « Grand livre » (:258-264, aide « By default, all journals post to the Statutory Ledger (Local GAAP) »), visible si has_ledger
+    (account/views/account_journal_views.xml:57, account/models/company.py:592-595 : au moins un groupe dans la base).
+    v19 : company_id + excluded_journal_ids (odoo19 account/models/account_journal.py:21-26) → v20 : journal rattaché à un grand livre (inversion).
+  - Créé sur edu par RPC puis vu à l'écran : groupe du livre 1 « Consolidation », journal 70 « Retraitements de consolidation » (Divers, CONS, My US Company,
+    Grand livre Consolidation), pièce 278 CONS/2026/10/0001 du 31/10 (Product Sales D 580 / Accounts Receivable C 580, partenaire SF), comptabilisée.
+    Filtre « GAAP local » → menu Multinormes comptables (GAAP local / Consolidation) ; les deux cochés = « Tous les grands livres » : colonne Consolidation -580,00,
+    revenu total 81 713,61, bénéfice net -12 164,66 ; Bilan : créances clients Consolidation -580,00 (total 82 761,74). Tout supprimé ensuite (voir le rapport de poste).
+  - Fiche de compte (Product Sales, My US Company) : onglets Comptabilité / Consolidation (Société, Code) ; account.code.mapping (account/models/account_code_mapping.py:15)
+    « n'est pas accessible directement » (RPC). Plan comptable › Actions : Fusionner les comptes, Dissocier le compte (account/wizard/account_merge_wizard.py:9).
+  - Bouton de grand livre : absent des rapports avant la création du groupe (boutons relevés à l'écran : Imprimer, date, Comparaison, Analytique, Groupe…),
+    présent ensuite (« GAAP local ») ; get_options [1] seule : journal_groups vide (aucun journal rattaché dans la société 1).
+  - Plan de San Francisco : res.company.chart_template = generic_coa (RPC) ; plan US sans code (l10n_us_account/models/template_us.py:12).
+  - Taux de détention / intérêts minoritaires : aucun champ (ir.model.fields : « ownership » seulement sur equity.ubo et equity.cap.table, application Capitaux propres ;
+    rien sur res.company ni account.report). Aucune élimination automatique : les retraitements sont des pièces saisies (doc 20.0).
+  - Community : account_reports absent de odoo/addons (aucun Bilan ni Compte de résultat) ; présents dans account : account.journal.group, account.code.mapping,
+    account.merge.wizard, res.currency.rate.consolidation.mixin.
+  - Aucun courriel : mail.mail max 330 avant et après.
+Captures : content/blog/screenshots/consolidation-rapports-groupe-odoo/ (scripts docs/blog-odoo20/captures-base-edu/f7-2-consolidation/)
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #eff6ff; border-left: 4px solid #3b82f6; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box.ee { background: #f5f3ff; border-left-color: #714b67; }
+  .edition-box p { margin-bottom: 0; }
+
+  .ce-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .ce-box h4 { color: #065f46; margin-top: 0; }
+  .ce-box p:last-child, .ce-box ul { margin-bottom: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Consolidation et rapports de groupe dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Plusieurs sociétés dans une même base, et un seul bilan pour le groupe. Odoo 20
+                    Enterprise n'a pas d'application de consolidation à part : ce sont ses rapports comptables, le sélecteur
+                    de sociétés et un grand livre dédié aux retraitements qui font le travail.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Multi-société avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box ee">
+                    <p><strong>Édition : Enterprise.</strong> Écrit et vérifié sur Odoo 20.0 Enterprise (base hébergée
+                        sur odoo.com), novembre 2026, avec l'application Comptabilité et deux sociétés de la base de
+                        démonstration. Aucun module ajouté.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce que le comptable du groupe attend</h2>
+                <p>Chaque société d'un groupe tient sa propre comptabilité : son plan comptable, ses journaux, ses pièces.
+                    Le comptable du groupe, lui, veut une vue d'ensemble : un compte de résultat et un bilan qui additionnent
+                    les sociétés, la part de chacune, et les retraitements propres au groupe, comme l'annulation des ventes
+                    qu'une société du groupe a faites à une autre.</p>
+                <p>Dans Odoo 20, aucune application ne porte le nom de consolidation : la base de démonstration Enterprise ne
+                    compte aucun module de ce nom. La documentation officielle d'Odoo 20 décrit la consolidation comme
+                    l'assemblage de plusieurs outils de l'application Comptabilité, et c'est ce parcours que cet article suit
+                    de bout en bout, sur deux sociétés de la démonstration : <strong>My Company (San Francisco)</strong> et
+                    <strong>My US Company</strong>, toutes deux en dollars.</p>
+                <p>Les sociétés elles-mêmes, leurs utilisateurs et le sélecteur ont été présentés dans le premier article de
+                    cette série, « Multi-société dans Odoo 20 : créer, partager, cloisonner ».</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>obtenir un compte de résultat et un bilan qui additionnent plusieurs sociétés ;</li>
+                    <li>afficher une colonne par société et le total du groupe ;</li>
+                    <li>isoler les retraitements de consolidation dans un grand livre à part, sans toucher aux comptes de
+                        chaque société ;</li>
+                    <li>savoir ce que deviennent les devises et les plans comptables différents ;</li>
+                    <li>repérer ce qu'Odoo 20 ne fait pas : taux de détention, éliminations automatiques.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la consolidation dans Odoo 20 : My Company (San Francisco) et My US Company tiennent chacune leurs journaux et leurs pièces (GAAP local) ; le sélecteur de sociétés fixe le périmètre (sociétés cochées) et la devise de présentation (société active) ; à part, les retraitements du groupe : groupe du livre Consolidation dans Multinormes comptables, journal Retraitements de consolidation rattaché à ce grand livre, pièce d'élimination ; le Bilan et le Compte de résultat, regroupés par Grand livre et filtrés sur GAAP local ou Consolidation, donnent une colonne par société, une colonne Consolidation et le total du groupe" style="max-width:85%; height:auto;"/>
+                    <figcaption>Les comptes de chaque société, les retraitements du groupe à part, et les rapports qui les assemblent.</figcaption>
+                </figure>
+                <p>Le schéma résume la mécanique. Les pièces de chaque société restent dans ses journaux habituels. Le
+                    sélecteur de sociétés décide du périmètre du rapport. Les retraitements du groupe vivent dans un journal
+                    rattaché à un grand livre distinct, que le rapport ajoute ou retire à la demande. Le résultat est un
+                    tableau à une colonne par société, plus une colonne de retraitements et le total.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Choisir le périmètre dans le sélecteur de sociétés</h2>
+                <p>Le périmètre de la consolidation, ce sont les sociétés cochées dans le sélecteur de la barre du haut. Le
+                    comptable du groupe garde My Company (San Francisco) comme société active et coche My US Company. My
+                    Company (Chicago) reste décochée : elle n'a pas de plan comptable dans la base de démonstration.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Sélecteur de sociétés ouvert dans la barre du haut d'Odoo 20 : société active My Company (San Francisco), en surbrillance et cochée ; My Company (Chicago) non cochée ; My US Company cochée ; champ Rechercher" style="max-width:55%; height:auto;"/>
+                    <figcaption>Deux sociétés cochées : c'est le périmètre des rapports.</figcaption>
+                </figure>
+                <p>La société active compte aussi : quand les sociétés n'ont pas la même devise, les montants sont présentés
+                    dans la devise de la société active (voir plus bas).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ouvrir le compte de résultat du groupe</h2>
+                <p>Ouvrez <strong>Comptabilité › Analyse › Compte de résultat</strong>. Avec deux sociétés cochées, le
+                    bouton <strong>Rapport</strong> propose deux variantes : « Compte de résultat », la variante générique,
+                    et « Profit and Loss (US) », celle du plan comptable américain de My US Company, sur laquelle le rapport
+                    s'est ouvert ici. Choisissez <strong>Compte de résultat</strong>. Le haut du tableau rappelle les sociétés
+                    prises en compte.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Compte de résultat dans Odoo 20 pour My Company (San Francisco) et My US Company, une seule colonne Solde : Revenu 82 293,61, Coûts des ventes 622,27, Bénéfice brut 81 671,34, Charges d'exploitation 93 256,00, Résultat (ou perte) opérationnel(le) -11 584,66, Autres revenus et Autres charges 0,00, Bénéfice net -11 584,66, Affectations et prélèvements 0,00" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le compte de résultat 2026 des deux sociétés, additionnées.</figcaption>
+                </figure>
+                <p>Les montants sont la somme des deux sociétés : 82 293,61 $ de revenu et une perte nette de
+                    11 584,66 $ pour l'exercice 2026. Cette somme ne dit pas encore qui contribue à quoi.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Une colonne par société</h2>
+                <p>Le bouton <strong>Groupe</strong> du rapport propose « Aucun » et « Grand livre ». Choisissez
+                    <strong>Grand livre</strong> : le tableau se découpe en une colonne par société, suivie d'une colonne
+                    Total.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Compte de résultat dans Odoo 20 regroupé par grand livre : colonnes My Company (San Francisco), My US Company et Total ; Revenu 25 639,61, 56 654,00 et 82 293,61 ; Coûts des ventes 0,00, 622,27 et 622,27 ; Charges d'exploitation 93 256,00, 0,00 et 93 256,00 ; Bénéfice net -67 616,39, 56 031,73 et -11 584,66" style="max-width:85%; height:auto;"/>
+                    <figcaption>La contribution de chaque société au résultat du groupe.</figcaption>
+                </figure>
+                <p>Pour reproduire ce rapport sur vos propres sociétés, une base d'essai se crée depuis
+                    <a href="https://www.odoo.com/r/aff-odooskills" rel="sponsored noopener nofollow" target="_blank">le site d'Odoo</a>,
+                    avec l'application Comptabilité et au moins deux sociétés.</p>
+                <p>Ce regroupement est livré avec l'application : il découpe par société les pièces des journaux ordinaires,
+                    et ajoute une colonne pour chaque grand livre de retraitements (étape 5). Le même bouton existe sur le
+                    <strong>Bilan</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Haut du Bilan dans Odoo 20 regroupé par grand livre, colonnes My Company (San Francisco), My US Company et Total : Banque et Espèces 820,50, 5 040,93 et 5 861,43 ; Créances clients 28 982,74, 54 359,00 et 83 341,74 ; Actifs circulants 12 083,12, -3 163,20 et 8 919,92 ; Total IMMOBILISATIONS 41 886,36, 56 236,73 et 98 123,09 ; section PASSIF : Dettes à court terme 5 746,75, 205,00 et 5 951,75, Dettes fournisseurs 103 756,00, 0,00 et 103 756,00, Total Dettes à court terme 109 502,75, 205,00 et 109 707,75" style="max-width:85%; height:auto;"/>
+                    <figcaption>Le haut du bilan, société par société.</figcaption>
+                </figure>
+                <p>Dans la traduction française de ce bilan, le total de l'actif, actifs circulants compris, s'intitule
+                    « Total IMMOBILISATIONS ».</p>
+                <p>Dans les 54 359,00 $ de créances clients de My US Company figure une facture de 580 $ adressée à My
+                    Company (San Francisco) : une vente entre deux sociétés du groupe, saisie dans <a
+                    href="/blog/fonctionnel-odoo-1/ventes-achats-inter-societes-odoo-321">Ventes et achats inter-sociétés
+                    avec Odoo 20</a>. Pour le groupe, ce n'est ni une vente ni une créance : c'est le rôle des retraitements
+                    de consolidation. Le bilan et le compte de résultat d'une seule société, leurs variantes et leurs
+                    exports sont présentés dans <a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan,
+                    compte de résultat et TVA avec Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Préparer un grand livre pour les retraitements</h2>
+                <p>Un retraitement de consolidation ne doit pas modifier les comptes de la société : ses déclarations et son
+                    bilan propre restent ceux de ses journaux habituels. Odoo 20 range donc ces pièces dans un
+                    <strong>grand livre</strong> à part, que les rapports ignorent par défaut. L'administrateur du groupe le
+                    prépare en deux temps.</p>
+                <p>D'abord, <strong>Comptabilité › Configuration › Multinormes comptables</strong>, bouton
+                    <strong>Nouveau</strong> : un groupe du livre nommé « Consolidation ». Le même écran sert à tenir d'autres
+                    normes à côté des comptes locaux, IFRS par exemple.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Liste Multinormes comptables dans Odoo 20 : colonnes Groupe du livre et Journaux inclus ; ligne Consolidation avec l'étiquette My US Company - Retraitements de consolidation (tronquée) ; compteur 1-1 / 1" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le groupe du livre Consolidation et le journal qui lui est rattaché.</figcaption>
+                </figure>
+                <p>Ensuite, un journal pour les pièces de retraitement : <strong>Comptabilité › Configuration ›
+                    Journaux › Nouveau</strong>, avec My US Company active. Nom « Retraitements de consolidation », type
+                    Divers, préfixe CONS, et dans le champ <strong>Grand livre</strong>, « Consolidation ». Un journal laissé
+                    sans grand livre reste dans les comptes locaux de sa société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fiche du journal Retraitements de consolidation dans Odoo 20 : Type Divers, Préfixe de la Séquence CONS, Société My US Company, Grand livre Consolidation ; onglets Pièces comptables et Paramètres avancés" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le journal des retraitements, rattaché au grand livre Consolidation.</figcaption>
+                </figure>
+                <p>Un journal appartient à une société : chaque société qui a des retraitements à passer reçoit le sien,
+                    rattaché au même grand livre. La liste Multinormes comptables les regroupe alors dans sa colonne Journaux
+                    inclus.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Passer l'élimination intersociétés</h2>
+                <p>Le comptable du groupe saisit l'élimination comme toute opération diverse : <strong>Comptabilité ›
+                    Comptabilité › Pièces comptables › Nouveau</strong>, journal « Retraitements de consolidation », date
+                    du 31 octobre. La pièce retire du groupe la vente de 580 $ : débit du compte de ventes Product Sales,
+                    crédit du compte client Accounts Receivable, avec My Company (San Francisco) comme partenaire. Une fois
+                    comptabilisée, elle prend le numéro CONS/2026/10/0001.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Pièce comptable CONS/2026/10/0001 dans Odoo 20 : Référence Élimination de la vente intersociétés FAC/2026/00012, Date comptable 31 oct., Journal Retraitements de consolidation ; onglet Écritures comptables : Product Sales, partenaire My Company (San Francisco), Chiffre d'affaires intersociétés, débit 580,00 $ ; Accounts Receivable, même partenaire, Créance intersociétés, crédit 580,00 $ ; totaux 580,00 $ et 580,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'élimination de la vente entre les deux sociétés, dans le journal des retraitements.</figcaption>
+                </figure>
+                <p>Sur la base de démonstration, la facture fournisseur correspondante est restée en brouillon chez My
+                    Company (San Francisco). En pratique, le comptable du groupe rapproche d'abord les soldes entre
+                    sociétés, en comptabilisant cette facture chez l'acheteur, puis élimine les deux côtés : la vente et la
+                    créance du vendeur, la charge et la dette de l'acheteur. La pièce unique ci-dessus en est l'équivalent
+                    net lorsque l'achat est une charge de la période ; si la marchandise est encore en stock chez
+                    l'acheteur, seule la marge interne s'élimine du résultat.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Lire le compte de résultat consolidé</h2>
+                <p>Dès qu'un grand livre existe, les rapports affichent un nouveau bouton, réglé sur <strong>GAAP
+                    local</strong> : les pièces des journaux ordinaires seulement. Ouvrez-le et cochez aussi
+                    <strong>Consolidation</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Bouton GAAP local ouvert dans un rapport d'Odoo 20 : menu Multinormes comptables avec GAAP local coché et Consolidation" style="max-width:40%; height:auto;"/>
+                    <figcaption>Le choix des grands livres pris en compte par le rapport.</figcaption>
+                </figure>
+                <p>Le bouton affiche alors « Tous les grands livres ». Avec le regroupement par grand livre, le compte de
+                    résultat aligne les deux sociétés, la colonne Consolidation et le total du groupe.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Compte de résultat 2026 dans Odoo 20 avec les boutons Imprimer, 2026, Comparaison, Tous les grands livres, Analytique, Groupe : Grand livre, Pièces comptabilisées Comptabilité d'engagement, Rapport : Compte de résultat, Budget, En .$ ; bandeau Il y a des pièces non comptabilisées avant ou au cours de cette période ; colonnes My Company (San Francisco), My US Company, Consolidation et Total ; Revenu 25 639,61, 56 654,00, -580,00 et 81 713,61 ; Bénéfice brut 25 639,61, 56 031,73, -580,00 et 81 091,34 ; Bénéfice net -67 616,39, 56 031,73, -580,00 et -12 164,66" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le compte de résultat du groupe : deux sociétés, les retraitements, le total.</figcaption>
+                </figure>
+                <p>Le revenu du groupe passe de 82 293,61 $ à 81 713,61 $ : la vente interne a disparu du total, alors que
+                    la colonne de My US Company reste celle de ses propres comptes. Au bilan, la même pièce retire 580 $ des
+                    créances clients dans la colonne Consolidation. Le bandeau bleu signale que la base contient des pièces
+                    en brouillon sur la période ; elles ne comptent pas dans un rapport limité aux pièces comptabilisées.</p>
+                <p>Lorsque plusieurs sociétés sont cochées, le menu <strong>Pièces comptabilisées</strong> du rapport ajoute
+                    aussi une option « Consolidation », cochée d'office. Sur cet exemple, entièrement en dollars, la décocher
+                    ne change aucun montant.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== DEVISES ET COMPTES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Devises et plans comptables différents</h2>
+                <p><strong>Devises.</strong> Les deux sociétés de l'exemple sont en dollars : Odoo n'applique alors aucune
+                    conversion. Quand les sociétés cochées ont des devises différentes, les montants sont présentés dans la
+                    devise de la société active. Selon la documentation d'Odoo 20, les capitaux propres sont convertis au
+                    taux historique, le compte de résultat au taux moyen pondéré et le reste du bilan au taux de clôture,
+                    avec les taux de la société active. Les taux de change de chaque devise doivent donc être tenus à jour
+                    dans la société qui consolide.</p>
+                <p><strong>Plans comptables.</strong> Le compte de résultat et le bilan rangent chaque compte selon son type
+                    (revenu, charge, créance…), ce qui suffit à additionner des sociétés aux plans différents, comme ici le
+                    plan générique de San Francisco et le plan américain de My US Company. Pour aller plus loin, chaque fiche
+                    de compte a un onglet <strong>Consolidation</strong> qui donne au compte un code par société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Fiche du compte Product Sales dans Odoo 20 : champs Code (vide) et Nom du compte ; onglet Consolidation ouvert, colonnes Société et Code, lignes My Company (Chicago), My Company (San Francisco) et My US Company, codes vides" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'onglet Consolidation d'un compte : un code par société.</figcaption>
+                </figure>
+                <p>Le plan américain d'Odoo 20 est livré sans codes, d'où les cases vides. La documentation d'Odoo 20 indique
+                    qu'en donnant le même code à des comptes de sociétés différentes, un rapport personnalisé regroupé par
+                    code de compte les présente sur une même ligne. Le menu <strong>Actions</strong> du plan comptable
+                    propose aussi <strong>Fusionner les comptes</strong>, qui remplace des comptes équivalents de plusieurs
+                    sociétés par un compte partagé, et <strong>Dissocier le compte</strong> pour revenir en arrière.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LIMITES ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Ce qu'Odoo 20 ne fait pas</h2>
+                <ul>
+                    <li><strong>Pas de taux de détention.</strong> Ni la société ni le rapport n'ont de champ de pourcentage
+                        de détention : toutes les sociétés cochées sont additionnées à 100 %. Rien ne calcule une intégration
+                        proportionnelle ni des intérêts minoritaires.</li>
+                    <li><strong>Pas d'élimination automatique.</strong> Les ventes, créances et dettes entre sociétés du
+                        groupe se retirent par des pièces saisies dans les journaux de retraitements.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Geste</th><th>Qui</th><th>Où</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Choisir le périmètre</td><td>Le comptable du groupe</td><td>Sélecteur de sociétés</td><td>Sociétés additionnées, devise de présentation</td></tr>
+                        <tr><td>Une colonne par société</td><td>Le comptable du groupe</td><td>Bilan, Compte de résultat › Groupe : Grand livre</td><td>Contribution de chaque société et total</td></tr>
+                        <tr><td>Créer le grand livre de consolidation</td><td>L'administrateur du groupe</td><td>Configuration › Multinormes comptables</td><td>Retraitements séparés des comptes locaux</td></tr>
+                        <tr><td>Créer un journal de retraitements</td><td>L'administrateur du groupe</td><td>Configuration › Journaux, champ Grand livre</td><td>Un journal par société concernée</td></tr>
+                        <tr><td>Éliminer les opérations internes</td><td>Le comptable du groupe</td><td>Pièces comptables, journal de retraitements</td><td>Colonne Consolidation des rapports</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Et en Community ?</h2>
+                <div class="ce-box">
+                    <h4>Les briques, sans les rapports</h4>
+                    <p>Odoo 20 Community gère plusieurs sociétés dans une même base, avec le même sélecteur, comme le montre
+                        le premier article de cette série. Son module comptable contient même les briques vues plus haut :
+                        groupes du livre, champ Grand livre des journaux, codes par société, fusion de comptes. Mais le module
+                        des rapports comptables (<code>account_reports</code>) n'en fait pas partie : la Community n'a ni
+                        bilan ni compte de résultat, et donc aucun rapport financier qui additionne les sociétés et leurs retraitements.</p>
+                    <p>La version Odoo 19 Community du multi-société reste disponible dans <a
+                        href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société
+                        dans Odoo 19 Community</a>, et le plan comptable propre à chaque société dans <a
+                        href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable par
+                        société dans Odoo 19 Community</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Les retraitements n'apparaissent pas d'office</h4>
+                    <p>À l'ouverture, le rapport ne lit que le grand livre GAAP local. Après l'élimination, le compte de
+                        résultat affiche toujours 82 293,61 $ de revenu tant que Consolidation n'est pas coché dans le
+                        filtre des grands livres ; une fois coché, 81 713,61 $. Vérifiez ce bouton avant de remettre un chiffre de
+                        groupe : « GAAP local » ou « Tous les grands livres ».</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Le champ Grand livre n'existe qu'après le premier groupe du livre</h4>
+                    <p>Tant qu'aucun groupe n'est créé dans Multinormes comptables, la fiche d'un journal n'affiche pas le
+                        champ Grand livre, et le filtre des grands livres est absent des rapports. Créez d'abord le groupe,
+                        ensuite le journal de retraitements.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La logique a changé depuis Odoo 19</h4>
+                    <p>En Odoo 19, un multi-grand livre pouvait être réservé à une société et listait les journaux à
+                        <em>exclure</em>. En Odoo 20, c'est le journal qui porte son grand livre, et le groupe liste les
+                        journaux <em>inclus</em>. Une procédure de consolidation écrite pour Odoo 19 est à relire avant de
+                        la suivre en Odoo 20.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> retrouver l'élimination dans le bilan du groupe.</p>
+                    <p><strong>Indication :</strong> après l'étape 5, cochez les deux sociétés, ouvrez le Bilan (variante
+                        Bilan), choisissez Groupe : Grand livre, puis cochez GAAP local et Consolidation dans le filtre des
+                        grands livres.</p>
+                    <p><strong>Critère de réussite :</strong> la ligne Créances clients affiche -580,00 dans la colonne
+                        Consolidation et 82 761,74 dans la colonne Total, contre 83 341,74 avec GAAP local seul.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Odoo 20 n'a pas d'application de consolidation : le bilan et le compte de résultat de l'Enterprise
+                        additionnent les sociétés cochées dans le sélecteur.</li>
+                    <li>Groupe : Grand livre donne une colonne par société et le total du groupe.</li>
+                    <li>Les retraitements vivent dans un journal rattaché à un grand livre de consolidation, sans toucher aux
+                        comptes locaux.</li>
+                    <li>Le filtre des grands livres décide si ces retraitements comptent : GAAP local par défaut.</li>
+                    <li>Taux de détention et éliminations automatiques n'existent pas : ce sont des pièces de retraitement.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article est le deuxième de la série <strong>Multi-société avec Odoo 20</strong>. Le précédent,
+                    « Multi-société dans Odoo 20 : créer, partager, cloisonner », présente les sociétés, les branches et le
+                    sélecteur. Le suivant, « Un site
+                    web et une boutique par société dans Odoo 20 », revient à la Community pour donner à chaque société sa
+                    vitrine en ligne.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/bilan-compte-resultat-tva-odoo-303">Bilan, compte de résultat et TVA</a></h5>
+                            <p class="small text-muted mb-0">Les états d'une société, leurs variantes et leurs exports.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/ventes-achats-inter-societes-odoo-321">Ventes et achats inter-sociétés</a></h5>
+                            <p class="small text-muted mb-0">Les opérations entre sociétés du groupe, avant leur élimination.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable par société</a></h5>
+                            <p class="small text-muted mb-0">Un plan comptable et une devise pour chaque société.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
