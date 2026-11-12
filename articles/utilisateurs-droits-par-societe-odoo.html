@@ -1,0 +1,558 @@
+<!--
+Article — Utilisateurs et droits par société dans Odoo 20 (titre du plan : « Utilisateurs et droits par société dans Odoo 20 : qui voit quoi »)
+Série « Multi-société avec Odoo 20 » (blog Fonctionnel), vague 3, alternative F7.b (position posée par le script de dépôt)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : utilisateurs-droits-par-societe-odoo
+Tags : intermediaire, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community (source 3538ed82), base vs20_func_f7b (copie neutralisée de vs20_func), aucun module installé.
+  Préparation en shell : 3 utilisateurs sans e-mail (no_reset_password), rôle User : Commercial FR Company (FR seule, Ventes « mes documents »,
+    uid 8), Comptable du groupe (SF + FR, défaut SF, Comptabilité : Facturation, uid 9), Responsable du groupe (3 sociétés, défaut SF, Ventes
+    Administrateur, Facturation, Employés Gestionnaire, uid 10). 3 devis FR Company (liste « Par défaut » EUR) : S00085 / S00086 (commercial),
+    S00087 (Mitchell Admin), 909 € au total. Invitation seulement si e-mail : auth_signup/models/res_users.py:304-314.
+  Joué à l'écran (chaque profil dans une session neuve) :
+  - Commercial : bouton du sélecteur désactivé en mono-société (web/static/src/webclient/switch_company_menu/switch_company_menu.xml:15) ;
+    Devis 2 / 2 ; Contacts 76 (112 pour SF) ; Produits 175 (176) ; applications : pas de Facturation ; Employés › Annuaire (hr/views/hr_views.xml:26-30,
+    action hr_employee_public_action) regroupé par société : FR Company 1, My Company (San Francisco) 24 ; lien /odoo/action-sale.action_orders/1 →
+    « Erreur d'accès … This seems to be a multi-company issue, but you do not have access to the proper company… » (base/models/ir_access.py:474-477).
+    Fiche contact sans champ Société (base/views/res_partner_views.xml:301 groups="base.group_multi_company" ; groupe ajouté/retiré selon le
+    nombre de sociétés : base/models/res_users.py:1368-1397). Contact « Prospect salon professionnel » créé → company_id vide.
+  - Comptable : 1re connexion cids = 1 (web/static/src/core/user.js:58-78, société par défaut si pas de cookie), Factures 29 ; sélecteur SF cochée,
+    FR non ; lien facture FAC/2026/00002 (FR) → cids 1-2, facture affichée (web/static/src/views/form/form_controller.js:233-244,
+    ir_access.py:463-472 suggested_company) ; Factures regroupées par Société : FR 13 (47 574,00 €), SF 29 (96 260,68 $), total converti en devise
+    de la société active avec « ? » (web/static/src/views/list/list_renderer.js:889-911) ; applications : pas de Ventes ; Ventes › Analyse par URL →
+    Erreur d'accès (sale.report) ; Contacts « Prospect » avec SF seule : 1, onglet Ventes & Achats, Société vide « Visible pour tous ».
+  - Responsable : Employés 24 (SF seule) → 25 (3 sociétés), sélecteur coché + Confirmer (cids 1-2-3) ; Analyse des ventes, tableau croisé par
+    Société, Nombre + Total : 204 lignes 565 997,83 $ ; FR 3 lignes 1 166,73 $ ; SF 201 lignes 564 831,10 $ (conversion en devise de
+    env.company : sale/report/sale_report.py:138-139, 182).
+  - Admin, mode développeur, Droits d'accès : « Employee multi company rule » Restriction sur hr.employee [('company_id','in',company_ids+[False])] ;
+    hr.employee.public : une Permission Role / User, lecture, sans restriction (hr/security/ir.access.csv:6-7).
+  Shell (rollback) : Monica Light (light_user) refusée sur sale.order et account.move ; restrictions sale.order / account.move / stock.picking /
+    sale.report / account.invoice.report = company_id in company_ids ; hr.employee / hr.department / crm.lead / project.* = + [False] ;
+    res.partner / product.template = parent_of ou vide ; account.journal = parent_of. Exercice : contact réservé à FR par le responsable →
+    comptable SF seule 0, FR seule 1, commercial 1.
+  19 → 20 : 19.0 hr/security/hr_security.xml:45-53 règle « Employee multi company rule » sur hr.employee.public (company_ids + [False], manager,
+    soi-même) ; 20.0 aucune ligne ir.access sans groupe sur hr.employee.public (grep sur odoo/addons/*/security), aucun _access_domain dans
+    hr/models/hr_employee_public.py → annuaire non cloisonné (commercial FR : 25 profils).
+  Rôle : base/models/res_users.py:264 (Light / User / Administrateur), res_groups.py:451-460 (groupes « light »).
+  Tableau « Qui voit quoi » (shell with_user + allowed_company_ids, mêmes chiffres qu'à l'écran quand relevés) : commercial [2] sale.order 2,
+    sale.report 2 lignes, res.partner 76, product.template 175, hr.employee.public 25 ; comptable [1] / [1,2] partner 112, template 176, public 25,
+    factures 29 / 42 ; responsable [1,2,3] sale.order 79, partner 112, template 176, hr.employee 25 ([1] : 24).
+  « Se connecter en tant que » : absent de odoo/addons (grep impersonat : docstring res_users.py:348, lunch).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Utilisateurs et droits par société dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Dans une base à plusieurs sociétés, deux utilisateurs qui ouvrent le même
+                    menu ne voient pas la même liste. Cet article prend trois profils de test dans Odoo 20 Community, un
+                    commercial d'une société, un comptable de deux sociétés et un responsable du groupe, et montre ce que
+                    chacun voit, ce qui lui échappe et pourquoi.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · série <strong>Multi-société avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (Ventes, Facturation, Employés et Contacts déjà installés, aucune
+                        application ajoutée). Les sociétés, les utilisateurs et les droits présentés ici existent aussi dans
+                        l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui voit quoi : trois réglages qui se combinent</h2>
+                <p>Ce qu'un utilisateur voit dans une base multi-société ne dépend pas d'un seul réglage. Trois éléments
+                    se combinent :</p>
+                <ul>
+                    <li>les <strong>sociétés autorisées</strong>, posées sur sa fiche par l'administrateur : ce sont les
+                        sociétés que son sélecteur propose ;</li>
+                    <li>les <strong>sociétés cochées</strong> dans ce sélecteur au moment où il travaille : les listes ne
+                        montrent que leurs données ;</li>
+                    <li>ses <strong>privilèges</strong> par application (Ventes, Comptabilité, Employés…) : ils décident des
+                        menus ouverts et, parfois, limitent un utilisateur à « ses » documents.</li>
+                </ul>
+                <p>Sous ces trois réglages, des lignes de droits d'accès livrées par chaque application filtrent les
+                    enregistrements selon leur champ <strong>Société</strong>. La création des sociétés, des branches et le
+                    fonctionnement du sélecteur sont traités dans le premier article de la série, « Multi-société dans Odoo 20 :
+                    créer, partager, cloisonner » ; la lecture de la liste des droits d'accès après une migration fait l'objet
+                    de « Droits d'accès simplifiés Odoo 20 : relire après migration ». Le présent article adopte un autre point
+                    de vue : celui de chaque utilisateur, preuve à l'écran. Pour une base en Odoo 19, les mêmes notions sont
+                    présentées dans <a href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société
+                    dans Odoo 19 Community</a> et <a href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">Utilisateurs,
+                    groupes et droits d'accès dans Odoo 19 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>préparer des profils de test aux sociétés et aux privilèges différents ;</li>
+                    <li>prévoir ce que chaque profil voit dans les commandes, les factures, les contacts, les articles,
+                        l'annuaire des employés et les analyses ;</li>
+                    <li>reconnaître ce qui arrive quand un utilisateur ouvre le lien d'un document d'une autre société ;</li>
+                    <li>repérer les enregistrements sans société, visibles de toutes les sociétés ;</li>
+                    <li>retrouver, côté administrateur, la restriction qui filtre chaque type de document.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma de la visibilité par société dans Odoo 20 : l'administrateur du groupe règle sur la fiche utilisateur le rôle, les privilèges, les sociétés et la société par défaut ; les sociétés autorisées sont celles que le sélecteur propose ; à la première connexion, seule la société par défaut est cochée ; les privilèges disent quelles applications et quels documents ; les restrictions multi-société de la liste des droits d'accès s'appliquent à tous ; un enregistrement à société remplie n'est visible que depuis cette société, un enregistrement à société vide est visible de toutes, et l'annuaire des employés n'a pas de restriction multi-société en Odoo 20" style="max-width:100%; height:auto;"/>
+                    <figcaption>De la fiche utilisateur à ce qui s'affiche : sociétés, privilèges, restrictions.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Préparer trois profils de test</h2>
+                <p>Pour savoir ce que voit un utilisateur, le plus sûr est de se connecter avec un compte qui a exactement
+                    ses réglages. Dans <strong>Paramètres › Utilisateurs &amp; Sociétés › Utilisateurs</strong>,
+                    l'administrateur du groupe a créé, sur une copie de la base, trois utilisateurs nommés d'après leur rôle.
+                    L'onglet <strong>Droits d'accès</strong> de chaque fiche porte le rôle, les sociétés et la société par
+                    défaut, puis les privilèges, application par application.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Haut de l'onglet Droits d'accès de trois fiches utilisateur Odoo 20 : Commercial FR Company, rôle User, Sociétés FR Company, Société par défaut FR Company ; Comptable du groupe, rôle User, Sociétés FR Company et My Company (San Francisco), Société par défaut My Company (San Francisco) ; Responsable du groupe, rôle User, Sociétés FR Company, My Company (Chicago) et My Company (San Francisco), Société par défaut My Company (San Francisco)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les trois profils de test : une, deux ou trois sociétés autorisées.</figcaption>
+                </figure>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Profil</th><th>Sociétés</th><th>Société par défaut</th><th>Privilèges</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Commercial FR Company</td><td>FR Company</td><td>FR Company</td><td>Ventes : mes documents seulement</td></tr>
+                        <tr><td>Comptable du groupe</td><td>My Company (San Francisco), FR Company</td><td>My Company (San Francisco)</td><td>Comptabilité : Facturation</td></tr>
+                        <tr><td>Responsable du groupe</td><td>les trois sociétés</td><td>My Company (San Francisco)</td><td>Ventes : Administrateur ; Comptabilité : Facturation ; Employés : Gestionnaire</td></tr>
+                    </tbody>
+                </table>
+                <p>Les trois comptes ont le rôle <strong>User</strong>. Le rôle (Light, User ou Administrateur) fixe
+                    l'étendue des privilèges possibles : un utilisateur Light ne garde que des privilèges réduits, et
+                    l'utilisateur de démonstration Monica Light, par exemple, n'ouvre ni les commandes ni les factures. Le rôle
+                    ne choisit aucune société : ce sont les deux champs <strong>Sociétés</strong> et
+                    <strong>Société par défaut</strong> qui le font.</p>
+                <p>Les comptes de test ont été créés sans adresse e-mail, avec un mot de passe fixé par l'administrateur :
+                    Odoo n'envoie une invitation qu'aux nouveaux utilisateurs qui ont une adresse. Ces profils servent ensuite
+                    à se connecter dans une fenêtre de navigation privée, un profil à la fois.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Ce que voit le commercial d'une seule société</h2>
+                <p>Connecté avec son compte, le commercial de FR Company ne dispose pas de sélecteur : la barre du haut affiche
+                    le nom de sa seule société, sans menu. Dans <strong>Ventes › Commandes › Devis</strong>, filtre retiré, il
+                    voit deux devis, les siens. Les compteurs du haut et l'encart des 7 derniers jours restent
+                    à zéro pour lui. Un troisième devis de FR Company, dont le vendeur est Mitchell Admin, ne lui
+                    apparaît pas, à cause de son privilège « mes documents seulement » ; les 76 commandes de My Company (San
+                    Francisco) non plus, à cause de sa société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Liste des devis Odoo 20 vue par le commercial de FR Company : barre du haut avec FR Company seule, compteurs À confirmer, To Deliver et À facturer à zéro, deux devis S00086 Wood Corner 147,00 € et S00085 Azure Interior 482,00 €, au statut Devis, total 629,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les devis du commercial : ses deux devis de FR Company, en euros.</figcaption>
+                </figure>
+                <p>Les données communes, elles, restent visibles. Les contacts sans société, ceux de FR Company et les
+                    utilisateurs internes forment sa liste de <strong>Contacts</strong> : 76 fiches, contre 112 pour un utilisateur qui a coché My
+                    Company (San Francisco). Les 36 contacts de démonstration réservés à My Company (San Francisco) ne lui
+                    apparaissent pas. Côté articles, il en voit 175 sur 176 : le seul article réservé à My Company (San
+                    Francisco) lui échappe.</p>
+                <p>Un détail de son écran compte pour la suite : sur la fiche d'un contact, onglet
+                    <strong>Ventes &amp; Achats</strong>, il n'a pas de champ <strong>Société</strong>. Ce champ n'est
+                    affiché qu'aux utilisateurs qui ont accès à plusieurs sociétés ; Odoo leur ajoute ce droit d'office quand
+                    on leur ouvre une deuxième société, et le retire quand il ne leur en reste qu'une.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. L'annuaire des employés n'est pas cloisonné</h2>
+                <p>Tout utilisateur interne ouvre l'application <strong>Employés</strong>, réduite pour lui au menu
+                    <strong>Annuaire</strong> : les profils publics des collègues, sans les informations personnelles. Pour le
+                    commercial de FR Company, cet annuaire regroupé par société affiche les 25 employés de la base : 1 dans FR
+                    Company, 24 dans My Company (San Francisco), avec leur téléphone et leur adresse e-mail professionnels,
+                    leur département, leur poste, leur manager et leur mentor.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Annuaire des employés Odoo 20 vu par le commercial de FR Company, regroupé par Société : FR Company 1 record, My Company (San Francisco) 24 records déplié, avec nom, téléphone professionnel, adresse e-mail professionnelle, département, poste, manager et mentor des employés de démonstration ; panneau de gauche Société avec FR Company 1 et My Company (San Francisco) 24" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'annuaire vu depuis FR Company : les employés de San Francisco y figurent.</figcaption>
+                </figure>
+                <p>Les fiches employé complètes, elles, suivent les sociétés cochées. Le responsable du groupe, gestionnaire
+                    dans l'application Employés, voit 24 fiches avec My Company (San Francisco) seule cochée, et 25 avec
+                    les trois sociétés. La différence tient aux droits d'accès : la fiche employé a une restriction
+                    multi-société, le profil public de l'annuaire n'en a pas (section 7). En Odoo 19, une règle limitait aussi
+                    l'annuaire aux sociétés cochées, l'utilisateur gardant la vue sur lui-même, son manager et ses subordonnés
+                    directs ; elle n'a pas d'équivalent dans Odoo 20.0. L'application
+                    elle-même est présentée dans <a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et
+                    organigramme dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Le lien vers un document d'une autre société</h2>
+                <p>Un lien vers une commande ou une facture circule souvent par messagerie. Ce qui se passe à l'ouverture
+                    dépend des sociétés autorisées du destinataire. Le commercial de FR Company ouvre le lien d'une commande
+                    de My Company (San Francisco) : Odoo affiche une <strong>Erreur d'accès</strong> qui dit, en anglais
+                    pour sa dernière phrase, que le problème vient de la société et qu'il n'a pas accès à la bonne
+                    société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Erreur d'accès d'Odoo 20 : Oups ! On dirait que vous êtes tombé sur des enregistrements top secrets. Désolé, Commercial FR Company (id=8) n'a pas d'accès lire à Commande client (sale.order). This seems to be a multi-company issue, but you do not have access to the proper company to access the record anyhow. Bouton Fermer" style="max-width:60%; height:auto;"/>
+                    <figcaption>Commande d'une société non autorisée : refus, sans aucune information sur la commande.</figcaption>
+                </figure>
+                <p>Le comptable du groupe, lui, a FR Company parmi ses sociétés autorisées, mais seule My Company (San
+                    Francisco) est cochée. Il ouvre le lien d'une facture de FR Company : Odoo coche de lui-même FR Company
+                    dans le sélecteur et affiche la facture. La société active reste My Company (San Francisco). Ouvert directement, le
+                    lien laisse dans la barre du haut l'application d'arrivée de l'utilisateur, ici Discussion ; le bandeau bleu
+                    des crédits en circulation est propre au client de cette facture.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Facture client FAC/2026/00002 de FR Company ouverte par le comptable du groupe dans Odoo 20 : sélecteur de sociétés ouvert, My Company (San Francisco) et FR Company toutes deux cochées, société active My Company (San Francisco) dans la barre du haut ; boutons Envoyer, Imprimer, Payer, Aperçu, Avoir, Remettre en brouillon ; bandeau Vous avez des crédits en circulation listés ci-dessous pour ce client" style="max-width:100%; height:auto;"/>
+                    <figcaption>Facture d'une société autorisée mais non cochée : Odoo coche la société et ouvre la facture.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce que voit le comptable de deux sociétés</h2>
+                <p>Dans une session neuve, à sa première connexion sur le navigateur, le comptable ouvre
+                    <strong>Facturation › Clients › Factures</strong> : 29 factures et avoirs, tous de My Company (San
+                    Francisco). Son sélecteur montre pourquoi : sa société par défaut est
+                    cochée, FR Company ne l'est pas. Sans lien, ni réglage, les factures de FR Company ne s'affichent pas
+                    tant qu'il ne la coche pas lui-même.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Sélecteur de sociétés ouvert dans Odoo 20 pour le comptable du groupe à sa première connexion : My Company (San Francisco) cochée, FR Company non cochée, case générale à moitié cochée en haut" style="max-width:40%; height:auto;"/>
+                    <figcaption>Première connexion : seule la société par défaut est cochée.</figcaption>
+                </figure>
+                <p>Une fois FR Company cochée, la liste des factures regroupée par <strong>Société</strong> donne 13 factures
+                    et avoirs de FR Company, en euros, et 29 de My Company (San Francisco), en dollars. Chaque groupe garde sa
+                    devise. La ligne de total, elle, additionne des euros et des dollars : Odoo convertit les montants dans la
+                    devise de la société active, d'après les taux de change, et signale cette conversion par un point
+                    d'interrogation à côté de chaque total.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Liste des factures Odoo 20 du comptable du groupe, regroupée par Société : FR Company 13 records, Hors taxes, Total et Montant dû 47 574,00 € ; My Company (San Francisco) 29 records, 84 548,17 $, 96 260,68 $, 95 271,41 $ ; ligne de total en dollars avec un point d'interrogation à côté de chaque montant" style="max-width:100%; height:auto;"/>
+                    <figcaption>Deux sociétés cochées : chaque groupe dans sa devise, le total converti en dollars.</figcaption>
+                </figure>
+                <p>Le privilège Comptabilité : Facturation ne lui donne pas l'application Ventes : elle n'apparaît pas parmi
+                    ses applications, et l'analyse des ventes, ouverte par son adresse, répond par une erreur d'accès qui cite
+                    les groupes Ventes nécessaires.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Ce que voit le responsable du groupe</h2>
+                <p>Le responsable du groupe a les trois sociétés, mais arrive lui aussi sur sa seule société par défaut.
+                    Pour une vue de groupe, il ouvre le sélecteur, coche FR Company et My Company (Chicago), puis clique sur
+                    <strong>Confirmer</strong>. Le navigateur retient ce choix pour ses connexions suivantes.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Sélecteur de sociétés Odoo 20 du responsable du groupe : My Company (San Francisco), FR Company et My Company (Chicago) cochées, boutons Confirmer et Ignorer" style="max-width:40%; height:auto;"/>
+                    <figcaption>Trois sociétés cochées, à confirmer.</figcaption>
+                </figure>
+                <p>Avec son privilège Ventes : Administrateur, il voit les 76 commandes de My Company (San Francisco) et les
+                    trois devis de FR Company, y compris celui de Mitchell Admin. Dans <strong>Ventes › Analyse</strong>, vue
+                    tableau croisé, regroupée par Société, l'analyse affiche le nombre de lignes de commande et le total de
+                    chaque société.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Analyse des ventes Odoo 20 en tableau croisé, regroupée par Société, mesures Nombre et Total : Total 204 lignes, 565 997,83 $ ; FR Company 3 lignes, 1 166,73 $ ; My Company (San Francisco) 201 lignes, 564 831,10 $" style="max-width:70%; height:auto;"/>
+                    <figcaption>L'analyse des ventes du groupe : les montants de FR Company convertis en dollars.</figcaption>
+                </figure>
+                <p>Les trois devis de FR Company totalisent 909 € ; l'analyse les affiche pour 1 166,73 $. L'analyse des
+                    ventes convertit chaque montant dans la devise de la société <strong>active</strong>, ici My Company
+                    (San Francisco), aux taux de change de la base. My Company (Chicago) n'apparaît pas : elle n'a aucune commande.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Les enregistrements sans société</h2>
+                <p>Un enregistrement dont le champ Société est vide est visible de toutes les sociétés. Le commercial de FR
+                    Company crée le contact « Prospect salon professionnel » depuis <strong>Contacts › Nouveau</strong>.
+                    Comme il n'a pas le champ Société (section 2), le contact est créé sans société. Le comptable du groupe,
+                    avec My Company (San Francisco) seule cochée, le retrouve par une simple recherche ; sur la fiche, onglet
+                    Ventes &amp; Achats, le champ Société est vide et affiche « Visible pour tous ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="En haut, liste Contacts d'Odoo 20 du comptable du groupe avec My Company (San Francisco) active et la recherche Nom Prospect : une ligne Prospect salon professionnel ; en bas, bloc Divers de l'onglet Ventes et Achats du contact : Référence vide, Société vide avec le texte indicatif Visible pour tous, Site Web, Secteur d'activité, Code-barres" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le contact créé par le commercial de FR Company, vu depuis San Francisco.</figcaption>
+                </figure>
+                <p>C'est le comportement voulu pour les données communes : un client que plusieurs sociétés du groupe
+                    servent n'a pas besoin d'être saisi deux fois. Pour réserver un contact ou un article à une société, il faut
+                    qu'un utilisateur multi-société remplisse ce champ : le responsable du groupe peut le faire (voir
+                    l'exercice).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 8 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>8. Côté administrateur : la restriction de chaque document</h2>
+                <p>Chaque filtre par société est une ligne de type <strong>Restriction</strong> dans la liste des droits
+                    d'accès : sans groupe, elle s'applique à tous les utilisateurs, administrateur compris. En mode
+                    développeur, ouvrez <strong>Paramètres › Technique › Sécurité › Droits d'accès</strong> et cherchez
+                    un modèle. Pour les employés, la recherche montre la différence de la section 3 : la fiche
+                    <strong>Employé</strong> porte la restriction « Employee multi company rule » (une variante du même nom
+                    filtre les présences) ; le
+                    <strong>Employé public</strong> de l'annuaire n'a qu'une permission de lecture pour le groupe des
+                    utilisateurs internes, sans restriction.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Deux recherches dans la liste des droits d'accès d'Odoo 20 : en haut, Access Right Employee multi company, deux lignes de type Restriction, sur Employé avec le domaine société dans les sociétés cochées ou vide, et sur Présences ; en bas, Modèle hr.employee.public, une seule ligne hr.employee_public, modèle Employé public, groupe Role / User, Lire coché, type Permission" style="max-width:100%; height:auto;"/>
+                    <figcaption>La fiche employé est filtrée par société ; le profil public de l'annuaire ne l'est pas.</figcaption>
+                </figure>
+                <p>Les domaines de ces restrictions suivent trois formes, à lire en clair :</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Forme</th><th>Effet</th><th>Exemples sur la démonstration</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Société parmi les sociétés cochées</td><td>Le document n'existe que pour sa société</td><td>Commandes, factures, transferts de stock, analyses des ventes et des factures</td></tr>
+                        <tr><td>Société parmi les sociétés cochées, ou vide</td><td>Sans société, visible de toutes</td><td>Fiches employé, départements, pistes CRM, projets et tâches</td></tr>
+                        <tr><td>Société cochée ou société mère d'une société cochée (ou vide, pour les contacts et les articles)</td><td>Ce qui appartient à une mère est aussi visible depuis ses branches</td><td>Contacts (les utilisateurs internes toujours visibles), articles, journaux</td></tr>
+                    </tbody>
+                </table>
+                <p>Le détail de ces lignes, côté développeur, est dans <a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les
+                    droits d'accès en Odoo 20 : ir.access</a>. Pour vérifier un profil, la Community ne propose pas de
+                    fonction « se connecter en tant que » : le test se fait avec le compte de l'utilisateur, ou un compte de
+                    test aux mêmes réglages, sur une copie de la base.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== TABLEAU ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui voit quoi, profil par profil</h2>
+                <p>Relevé sur la copie de la base de démonstration, chaque profil connecté avec son compte, sociétés cochées
+                    indiquées.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Données</th><th>Commercial FR Company (FR Company)</th><th>Comptable du groupe (San Francisco seule, puis + FR Company)</th><th>Responsable du groupe (les trois sociétés)</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Devis et commandes</td><td>ses 2 devis de FR Company</td><td>pas d'application Ventes</td><td>les 76 de San Francisco et les 3 de FR Company</td></tr>
+                        <tr><td>Factures et avoirs clients</td><td>pas d'application Facturation</td><td>29, puis 29 + 13</td><td>29 + 13</td></tr>
+                        <tr><td>Contacts</td><td>76 (sans les 36 réservés à San Francisco)</td><td>112</td><td>112</td></tr>
+                        <tr><td>Articles</td><td>175</td><td>176</td><td>176</td></tr>
+                        <tr><td>Annuaire des employés</td><td>25 (toutes sociétés)</td><td>25</td><td>25</td></tr>
+                        <tr><td>Fiches employé complètes</td><td>non</td><td>non</td><td>25 (24 avec San Francisco seule)</td></tr>
+                        <tr><td>Analyse des ventes</td><td>les 2 lignes de ses devis</td><td>non (erreur d'accès)</td><td>toutes sociétés, en devise de la société active</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== COMMUNITY ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <h4>En Community</h4>
+                    <p>Sociétés autorisées, sélecteur, privilèges, restrictions multi-société et annuaire des employés font
+                        partie d'Odoo 20 Community : tout ce qui est montré ici fonctionne sans abonnement. Le rôle Light a une
+                        incidence sur le tarif de l'édition Enterprise, présentée dans
+                        <a href="/blog/fonctionnel-odoo-1/utilisateur-leger-tarifs-odoo-enterprise-292">Odoo 20 Enterprise :
+                        Utilisateur Léger et nouveaux tarifs</a>.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>À la première connexion, seule la société par défaut est cochée</h4>
+                    <p>À leur première connexion sur un navigateur, le comptable et le responsable du groupe sont arrivés sur leur
+                        seule société par défaut : 29 factures et avoirs au lieu de 42 pour le comptable. Avant de conclure qu'un
+                        document manque, regardez les sociétés cochées. Le choix fait ensuite dans le sélecteur est retenu par le
+                        navigateur, pas par la fiche de l'utilisateur : sur un autre poste, tout recommence.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>L'annuaire montre les employés de toutes les sociétés</h4>
+                    <p>Dans Odoo 20.0, le commercial de FR Company voit dans l'annuaire les 24 employés de My Company (San
+                        Francisco), avec leurs coordonnées professionnelles. Si des sociétés du groupe ne doivent pas se voir,
+                        tenez-en compte avant d'ouvrir l'application Employés et de remplir ces coordonnées : la seule restriction
+                        multi-société porte sur les fiches complètes.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un contact créé sans société est visible de toutes</h4>
+                    <p>Le commercial d'une seule société ne voit pas le champ Société : les contacts qu'il crée sont communs à
+                        tout le groupe, comme « Prospect salon professionnel », retrouvé depuis San Francisco. Pour un fichier
+                        clients propre à une société, un utilisateur multi-société remplit ce champ.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Les sociétés autorisées décident de ce que le sélecteur propose ; les sociétés cochées, de ce qui
+                        s'affiche ; les privilèges, des écrans et des documents ouverts.</li>
+                    <li>À la première connexion sur un navigateur, seule la société par défaut est cochée ; un lien vers une société autorisée la coche
+                        d'office, un lien vers une société non autorisée est refusé.</li>
+                    <li>Un enregistrement sans société est visible de toutes ; seuls les utilisateurs multi-société voient le
+                        champ Société.</li>
+                    <li>Les analyses additionnent les sociétés cochées dans la devise de la société active.</li>
+                    <li>L'annuaire des employés n'est pas filtré par société dans Odoo 20.0 ; les fiches complètes le sont.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif</strong> : réserver le contact « Prospect salon professionnel » à FR Company et
+                        vérifier qui le voit encore.</p>
+                    <p><strong>Indication</strong> : connecté comme responsable du groupe, les trois sociétés cochées, ouvrez le
+                        contact, onglet Ventes &amp; Achats, et choisissez FR Company dans le champ Société. Connectez-vous
+                        ensuite comme comptable du groupe et cherchez « Prospect », d'abord avec My Company (San Francisco)
+                        seule, puis avec FR Company seule.</p>
+                    <p><strong>Critère de réussite</strong> : la recherche ne renvoie rien avec My Company (San Francisco)
+                        seule, et une ligne avec FR Company seule ; le commercial de FR Company retrouve toujours le contact.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_text_block pt32 pb48">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À lire aussi</h2>
+                <ul>
+                    <li><a href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société
+                        dans Odoo 19 Community</a> : créer, configurer et basculer entre sociétés en Odoo 19.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">Utilisateurs,
+                        groupes et droits d'accès dans Odoo 19 Community</a> : la référence pour une base en Odoo 19.</li>
+                    <li><a href="/blog/developpement-odoo-2/droits-acces-odoo-20-186">Les droits d'accès en Odoo 20 :
+                        ir.access</a> : le même sujet côté développeur.</li>
+                    <li><a href="/blog/fonctionnel-odoo-1/employes-organigramme-odoo-228">Employés et organigramme dans Odoo
+                        20</a> : l'application Employés et son annuaire.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
