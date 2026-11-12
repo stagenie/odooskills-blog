@@ -1,0 +1,507 @@
+<!--
+Article — Multi-société dans Odoo 20 : créer, partager, cloisonner
+Série « Multi-société avec Odoo 20 » (blog Fonctionnel), vague 3 F7.1 (position 1, lot F7 lancé)
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : multi-societe-odoo (jumeau v19 : post 122)
+Tags : intermediaire, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f71 (copie neutralisée de vs20_func), rien installé.
+  Sociétés de la démo : My Company (San Francisco) (generic_coa, USD), FR Company (fr_comp, EUR), My Company (Chicago) (sans plan comptable), aucune hiérarchie.
+  Joué à l'écran : Paramètres généraux, bloc Sociétés (« 3 Sociétés », « Gérer des sociétés », icône business = « Values set here are company-specific. »
+  web/static/src/views/form/setting/setting.xml:22 ; « Opérations intersociétés » badge Entreprise, base_setup/views/res_config_settings_views.xml:93).
+  Sélecteur : clic sur le nom = switchCompany("loginto") (switch_company_item.js:37-39), remplace la sélection seulement en mode société unique (switch_company_menu.js:144).
+  Devise d'un article sans société = devise de la société principale (product/models/product_template.py:396-399).
+  FR Company › onglet Branches › Ajouter une ligne → « Créer Branches », FR Company (Lyon), Lyon, France, Devise EUR en lecture seule → Enregistrer & Fermer → Enregistrer :
+  bouton Branches, liste Sociétés (domaine parent_id = False, base/views/res_company_views.xml:114) avec la colonne Branches.
+  Le créateur reçoit la société : base/models/res_company.py:380-386 (env.user | SUPERUSER, company_ids link) ; sélecteur : branche en retrait.
+  Marc Demo : Sociétés FR Company + FR Company (Lyon), Société par défaut FR Company (Lyon) → sa session : sélecteur à 2 sociétés, Lyon active.
+  Tarte aux pommes (id 121) Société = FR Company (Lyon), enregistrée avec My Company (San Francisco) active → « Erreur d'accès … multi-company issue … switching to the company: FR Company (Lyon) » (enregistrement fait).
+  Recherche « Tarte » : SF seule 2 articles, Lyon seule 3. Journaux vus depuis Lyon seule : 7 journaux de FR Company (colonne Société).
+  Droits d'accès (mode développeur), recherche « multi-company » : 82 lignes Restriction ; v19 = ir.rule (sale/security/ir_rules.xml:6) ; v20 = sale/security/ir.access.csv:35 ;
+  res.partner : base/security/ir.access.csv:59 (partner_share = False | company_id parent_of company_ids | company_id = False).
+  Lyon en mode développeur, Société parente → My Company (SF) → « Opération invalide : Il n'est pas possible de modifier la hiérarchie de la société. » (res_company.py:399-400, 19.0 :343).
+  Boîte de rangement (E-COM08) Société = FR Company → « La société de ce produit ne peut pas être modifiée tant qu'il y a des mouvements de stock de ce produit appartenant à une autre société. »
+  Shell (Mitchell Admin, essais annulés par rollback ; les changements faits à l'écran restent sur la copie) : branche sans journal, compte ni taxe propres ; depuis Lyon seule : 7 journaux, 649 comptes, 22 taxes de FR Company ; FR seule ne voit pas l'article réservé à Lyon,
+  Lyon voit un article réservé à FR (Bagel) ; SF seule ne voit ni l'un ni l'autre ; contact d'employé Enrique Jones (société SF) invisible depuis FR et Lyon ; devis créé depuis Lyon = société FR Company (Lyon).
+  Délégués à la racine : currency_id (base/models/res_company.py:163-171) + fiscalyear_last_day/month, account_storno, tax_exigibility (account/models/company.py:401-407), contrainte :464-471.
+  Sélecteur : cocher une société coche ses branches (web/static/src/webclient/switch_company_menu/switch_company_menu.js:126 ; 19.0 :124).
+  Absents de odoo/addons : sale_purchase_inter_company_rules, account_inter_company_rules, *consolid* (présent en CE : account_payment_interco, compensation de paiements, non traité).
+  Exercice joué à l'écran : Bagel (129) réservé à FR Company (FR + Lyon cochées, aucun message) → SF seule « Bagel » : aucun article ; Lyon seule : 1 (1,25 €).
+  Société indépendante de pays France : installe la localisation et charge le plan comptable (skill odoo-v20, « Localisation France », prouvé 30/09/2026 sur copie vs20_e2_l10n).
+-->
+<style>
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Multi-société dans Odoo 20 : créer, partager, cloisonner</h1>
+                <p class="lead mt-3 text-white">Une seule base Odoo peut tenir plusieurs sociétés, et des branches sous une
+                    société mère. Cet article montre dans Odoo 20 Community comment en créer une, qui y accède, ce qui reste
+                    commun à toutes et comment réserver un enregistrement à une seule.</p>
+                <p class="small text-light mt-2">~12 minutes de lecture · niveau intermédiaire · série <strong>Multi-société avec Odoo 20</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (Ventes, Facturation et Inventaire déjà installés, aucune
+                        application ajoutée). La gestion de plusieurs sociétés existe aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Une base, plusieurs sociétés</h2>
+                <p>Dans Odoo, une <strong>société</strong> est une entité juridique : elle a sa devise, son plan comptable,
+                    ses taxes, ses journaux et ses documents numérotés. Une <strong>branche</strong> est une société rattachée
+                    à une société mère : elle a ses propres documents, mais reprend la devise et la comptabilité de sa mère.
+                    Les deux cohabitent dans une même base, sans abonnement particulier en Community.</p>
+                <p>La base de démonstration d'Odoo 20 contient déjà trois sociétés indépendantes : My Company (San
+                    Francisco) en dollars, FR Company en euros avec le plan comptable français, et My Company (Chicago).
+                    Cet article y ajoute une branche, FR Company (Lyon), et suit l'administrateur du groupe, puis le
+                    responsable du site, d'un bout à l'autre. La version Odoo 19 de ce sujet reste disponible dans <a
+                    href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société
+                    dans Odoo 19 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>créer une société ou une branche, et savoir ce que la branche hérite de sa mère ;</li>
+                    <li>ouvrir une ou plusieurs sociétés à un utilisateur et choisir sa société par défaut ;</li>
+                    <li>lire le sélecteur de sociétés : sociétés cochées et société active ;</li>
+                    <li>distinguer ce qui est commun à toutes les sociétés de ce qui est propre à chacune ;</li>
+                    <li>réserver un contact ou un article à une société, et vérifier le résultat.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du multi-société dans Odoo 20 : les sociétés de la base, My Company (San Francisco) en USD, FR Company en EUR avec sa branche FR Company (Lyon), My Company (Chicago) ; contacts et articles partagés tant que le champ Société est vide ; plan comptable, taxes, journaux, devis, commandes et factures propres à une société ; la branche utilise la comptabilité de sa mère et voit ce qui lui est réservé, la mère seule ne voit pas ce qui est réservé à la branche ; parcours en cinq étapes : créer, ouvrir l'accès, choisir, réserver, vérifier" style="max-width:100%; height:auto;"/>
+                    <figcaption>Ce qui est partagé, ce qui est cloisonné, et les cinq gestes de l'administrateur.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. Repérer les sociétés de la base</h2>
+                <p>Ouvrez <strong>Paramètres › Paramètres généraux</strong> et descendez jusqu'au bloc
+                    <strong>Sociétés</strong>. À gauche figure la société active, avec son adresse ; à droite, le nombre de
+                    sociétés de la base et le lien <strong>Gérer des sociétés</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Bloc Sociétés des paramètres généraux d'Odoo 20 : société active My Company (San Francisco) et son adresse de démonstration, lien Mettre à jour les informations ; 3 Sociétés et lien Gérer des sociétés ; Mise en page du document et Modèles d'e-mail marqués d'une icône d'immeuble ; case Opérations intersociétés avec un badge Entreprise" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le bloc Sociétés : trois sociétés dans la base de démonstration.</figcaption>
+                </figure>
+                <p>L'icône d'immeuble placée à côté d'un réglage, comme « Mise en page du document » ou « Modèles
+                    d'e-mail », signale une valeur propre à chaque société : la modifier ne change que la société active. La
+                    case <strong>Opérations intersociétés</strong>, marquée « Entreprise », crée la commande ou la facture
+                    correspondante dans l'autre société du groupe ; ce module n'est pas inclus dans la Community, il est
+                    présenté dans <a href="/blog/fonctionnel-odoo-1/ventes-achats-inter-societes-odoo-321">Ventes et achats
+                    inter-sociétés avec Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Créer une société ou une branche</h2>
+                <p><strong>Gérer des sociétés</strong> ouvre la liste des sociétés. Pour une société indépendante, cliquez
+                    sur <strong>Nouveau</strong> et renseignez le nom, l'adresse et le pays : le pays détermine la
+                    localisation comptable qu'Odoo installe et le plan comptable qu'il charge pour cette société.</p>
+                <p>Une branche, elle, se crée depuis sa société mère. Ouvrez <strong>FR Company</strong>, onglet
+                    <strong>Branches</strong>, puis <strong>Ajouter une ligne</strong>. La fenêtre « Créer Branches » est le
+                    formulaire d'une société : saisissez le nom « FR Company (Lyon) », la ville et le pays. Le champ
+                    <strong>Devise</strong> est déjà réglé sur EUR et grisé : une branche prend la devise de sa société
+                    mère.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fenêtre Créer Branches dans Odoo 20 ouverte depuis FR Company : nom de la société FR Company (Lyon), onglets Informations générales et Branches, adresse Lyon, France, champ TVA vide (texte indicatif masqué), APE, Devise EUR grisée ; téléphone, e-mail, site web, domaine de messagerie, couleur" style="max-width:100%; height:auto;"/>
+                    <figcaption>La branche en cours de création : la devise vient de la société mère.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Enregistrer &amp; Fermer</strong>, puis enregistrez FR Company. La fiche de la mère
+                    affiche désormais un bouton <strong>Branches</strong>, et la branche figure dans l'onglet du même nom.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Fiche de la société FR Company dans Odoo 20 : bouton intelligent Branches, onglet Branches ouvert avec la ligne FR Company (Lyon), partenaire FR Company (Lyon), lien Ajouter une ligne" style="max-width:100%; height:auto;"/>
+                    <figcaption>FR Company et sa branche.</figcaption>
+                </figure>
+                <p>La liste des sociétés ne montre que les sociétés de premier niveau ; les branches apparaissent dans la
+                    colonne <strong>Branches</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Liste des sociétés dans Odoo 20 : My Company (San Francisco), FR Company avec l'étiquette FR Company (Lyon) dans la colonne Branches, My Company (Chicago) ; compteur 1-3 / 3" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois sociétés de premier niveau, dont une avec sa branche.</figcaption>
+                </figure>
+                <p>La société créée est aussitôt ajoutée aux sociétés de l'utilisateur qui l'a créée. Le sélecteur de la
+                    barre du haut la propose donc tout de suite, en retrait sous FR Company.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Sélecteur de sociétés ouvert dans la barre du haut d'Odoo 20 : My Company (San Francisco) cochée et en surbrillance, FR Company, FR Company (Lyon) en retrait sous FR Company, My Company (Chicago) ; case générale et champ Rechercher" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le sélecteur de l'administrateur : la branche s'affiche sous sa mère.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Ouvrir une société à un utilisateur</h2>
+                <p>Les autres utilisateurs ne voient que les sociétés qui leur sont ouvertes. Dans <strong>Paramètres ›
+                    Utilisateurs &amp; Sociétés › Utilisateurs</strong>, ouvrez la fiche de l'utilisateur de démonstration
+                    Marc Demo, qui joue ici le responsable du site de Lyon. L'onglet <strong>Droits d'accès</strong> porte
+                    deux champs :</p>
+                <ul>
+                    <li><strong>Sociétés</strong> : la liste des sociétés auxquelles l'utilisateur a accès ;</li>
+                    <li><strong>Société par défaut</strong> : celle qui est active à sa connexion.</li>
+                </ul>
+                <p>Retirez My Company (Chicago) et My Company (San Francisco), ajoutez FR Company (Lyon) et choisissez-la
+                    comme société par défaut, puis enregistrez.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Fiche utilisateur de Marc Demo dans Odoo 20, onglet Droits d'accès : rôle User, Sociétés FR Company et FR Company (Lyon), Société par défaut FR Company (Lyon)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le responsable du site a accès à FR Company et à sa branche, et arrive sur la branche.</figcaption>
+                </figure>
+                <p>À sa connexion suivante, son sélecteur ne propose plus que ces deux sociétés, et FR Company (Lyon) est
+                    la société active. Ses droits sur chaque application (Ventes, Inventaire…) restent ceux de son rôle et de
+                    ses groupes : les sociétés décident seulement des données qu'il voit.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Sélecteur de sociétés de Marc Demo dans Odoo 20 : barre du haut sur FR Company (Lyon) ; FR Company non cochée, FR Company (Lyon) cochée et en surbrillance" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le sélecteur vu par le responsable du site.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Travailler avec le sélecteur de sociétés</h2>
+                <p>Le sélecteur distingue deux choses :</p>
+                <ul>
+                    <li>les <strong>sociétés cochées</strong> : leurs données s'affichent ensemble dans les listes et les
+                        recherches ;</li>
+                    <li>la <strong>société active</strong>, en surbrillance et affichée dans la barre du haut : c'est elle
+                        qui reçoit les documents créés. Un devis créé avec FR Company (Lyon) active est un devis de la
+                        branche.</li>
+                </ul>
+                <p>Cliquer sur le nom d'une société en fait la société active ; si une seule société était cochée, elle
+                    la remplace. Cocher sa case l'ajoute aux sociétés affichées. Cocher une société mère, ou cliquer sur son
+                    nom, coche aussi ses branches : pour ne voir que la mère, décochez ensuite la branche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. Ce qui est partagé, ce qui ne l'est pas</h2>
+                <p>Le partage dépend du champ <strong>Société</strong> de chaque enregistrement. Vide, l'enregistrement est
+                    commun à toutes les sociétés ; rempli, il est réservé à cette société.</p>
+                <table class="tmc">
+                    <thead><tr><th>Données</th><th>Par défaut</th><th>Constaté sur la base de démonstration</th></tr></thead>
+                    <tbody>
+                        <tr><td>Contacts (clients, fournisseurs)</td><td>Partagés (Société vide)</td><td>Les contacts de plusieurs employés de la démonstration sont réservés à My Company (San Francisco) : ils n'apparaissent pas depuis FR Company. Les utilisateurs internes restent visibles de toutes les sociétés.</td></tr>
+                        <tr><td>Articles</td><td>Partagés (Société vide)</td><td>Le catalogue de démonstration est commun ; un seul article est réservé à My Company (San Francisco).</td></tr>
+                        <tr><td>Plan comptable, taxes, journaux</td><td>Propres à chaque société</td><td>FR Company a 7 journaux, My Company (San Francisco) 16, My Company (Chicago) aucun : elle n'a pas de plan comptable.</td></tr>
+                        <tr><td>Devis, commandes, factures</td><td>Toujours rattachés à une société</td><td>Les 76 commandes de la démonstration appartiennent à My Company (San Francisco).</td></tr>
+                    </tbody>
+                </table>
+                <p>La branche n'a ni journal, ni compte, ni taxe à elle : elle utilise ceux de sa mère. Avec seulement FR
+                    Company (Lyon) cochée, la liste <strong>Facturation › Configuration › Journaux</strong> affiche les sept
+                    journaux de FR Company (colonne Société ajoutée par le bouton des colonnes optionnelles).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Liste des journaux dans Odoo 20 avec FR Company (Lyon) active : Ventes FAC, Achats FACTURE, Banque BNK1, Opérations diverses OD, Différence de change EXCH, TVA sur encaissements CABA, Valorisation d'inventaire STJ, tous de la société FR Company ; compteur 1-7 / 7" style="max-width:100%; height:auto;"/>
+                    <figcaption>Vus depuis la branche : les journaux de la société mère.</figcaption>
+                </figure>
+                <p>La gestion d'un plan comptable par société, en Odoo 19, est détaillée dans <a
+                    href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable par
+                    société dans Odoo 19 Community</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Réserver un enregistrement à une société</h2>
+                <p>Le site de Lyon vend un article que les autres sociétés ne proposent pas. Ouvrez l'article de
+                    démonstration « Tarte aux pommes » dans <strong>Ventes › Produits › Produits</strong> et choisissez
+                    FR Company (Lyon) dans le champ <strong>Société</strong> de l'onglet Informations générales. Cochez la
+                    branche dans le sélecteur avant d'enregistrer (voir le premier point de vigilance).</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fiche de l'article Tarte aux pommes dans Odoo 20, partie droite de l'onglet Informations générales : Catégorie Alimentation, Référence, Code-barres et Étiquettes vides, Société FR Company (Lyon)" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le champ Société réserve l'article à la branche.</figcaption>
+                </figure>
+                <p>Le résultat se vérifie par une simple recherche. Avec My Company (San Francisco) seule, « Tarte » ne
+                    trouve plus que deux articles ; avec FR Company (Lyon) seule, la tarte aux pommes revient. Un article commun
+                    affiche son prix dans la devise de la société principale de la base (le dollar ici) ; l'article réservé
+                    à la branche prend la devise de la branche, l'euro.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Deux recherches Tarte dans la liste des produits d'Odoo 20 : en haut avec My Company (San Francisco) active, 1-2 / 2, Tarte aux cerises 14,00 $ et Tarte aux noix de pécan 15,00 $ ; en bas avec FR Company (Lyon) active, 1-3 / 3, les mêmes plus Tarte aux pommes 12,00 €" style="max-width:100%; height:auto;"/>
+                    <figcaption>La même recherche depuis deux sociétés : l'article réservé n'apparaît que pour la branche.</figcaption>
+                </figure>
+                <p>Pour les articles et les contacts, le cloisonnement suit la hiérarchie dans un seul sens. La branche
+                    voit ce qui est réservé à sa mère ; la mère seule (branche décochée) ne voit pas ce qui est réservé à la
+                    branche ; une autre société ne voit ni l'un ni l'autre. Les devis, commandes et factures, eux, ne sont
+                    visibles que depuis leur propre société. Les contacts se réservent comme les articles, par le champ
+                    Société de leur fiche.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Côté administrateur : où vit le cloisonnement</h2>
+                <p>Ces filtres ne sont pas des réglages à cocher : ce sont des lignes de droits d'accès livrées par chaque
+                    application. En mode développeur, ouvrez <strong>Paramètres › Technique › Sécurité › Droits
+                    d'accès</strong> et recherchez « multi-company » : la base de démonstration en compte 82, toutes de type
+                    <strong>Restriction</strong>, sans groupe, donc appliquées à tous les utilisateurs.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Liste des droits d'accès dans Odoo 20 en mode développeur, recherche multi-company, 1-80 / 82 : lignes de transferts groupés, Purchase Order multi-company, catégorie de produits, Sales Order multi-company, Account multi-company, coûts logistiques, demande d'achat (noms tronqués à l'écran) ; colonnes Créer, Lire, Mettre à jour, Supprimer cochées, domaines sur company_id ou company_ids, type Restriction en rouge" style="max-width:100%; height:auto;"/>
+                    <figcaption>Les restrictions multi-société, une par modèle.</figcaption>
+                </figure>
+                <p>La ligne « Sales Order multi-company », par exemple, limite les commandes aux sociétés cochées ; celle des
+                    comptes, « Account multi-company », ouvre aussi les comptes des sociétés mères. En Odoo 19, ces mêmes filtres
+                    étaient des règles d'enregistrement globales ; Odoo 20 les range dans la liste unique des droits
+                    d'accès. Les groupes et les droits côté Odoo 19 sont présentés dans <a
+                    href="/blog/fonctionnel-odoo-1/utilisateurs-groupes-et-droits-dacces-dans-odoo-19-community-124">Utilisateurs,
+                    groupes et droits d'accès dans Odoo 19 Community</a> ; pour un module maison, <a
+                    href="/blog/developpement-odoo-2/developper-un-module-multi-societe-en-odoo-19-177">Développer un module
+                    multi-société en Odoo 19</a> décrit les champs à prévoir.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== RÉCAPITULATIF ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Qui fait quoi, où</h2>
+                <table class="tmc">
+                    <thead><tr><th>Geste</th><th>Qui</th><th>Où</th><th>Effet</th></tr></thead>
+                    <tbody>
+                        <tr><td>Créer une société</td><td>L'administrateur du groupe</td><td>Paramètres › Gérer des sociétés › Nouveau</td><td>Société avec sa localisation et son plan comptable</td></tr>
+                        <tr><td>Créer une branche</td><td>L'administrateur du groupe</td><td>Fiche de la société mère › onglet Branches</td><td>Branche à la devise et à la comptabilité de la mère</td></tr>
+                        <tr><td>Ouvrir l'accès</td><td>L'administrateur du groupe</td><td>Fiche utilisateur › Sociétés, Société par défaut</td><td>Sociétés proposées dans le sélecteur</td></tr>
+                        <tr><td>Choisir sa société</td><td>Chaque utilisateur</td><td>Sélecteur de la barre du haut</td><td>Données affichées, société des nouveaux documents</td></tr>
+                        <tr><td>Réserver un enregistrement</td><td>Le responsable du site</td><td>Champ Société du contact ou de l'article</td><td>Invisible depuis les autres sociétés</td></tr>
+                    </tbody>
+                </table>
+                <h3>En Community</h3>
+                <p>Plusieurs sociétés, branches, sélecteur et cloisonnement font partie d'Odoo 20 Community : tout ce qui
+                    est montré ici fonctionne sans abonnement. Le module Opérations intersociétés (commandes et factures
+                    créées automatiquement dans l'autre société) et la consolidation comptable du groupe ne sont pas inclus
+                    dans la Community.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>Réserver à une société non cochée affiche une erreur d'accès</h4>
+                    <p>La tarte aux pommes a d'abord été réservée à FR Company (Lyon) alors que seule My Company (San
+                        Francisco) était cochée. À l'enregistrement, Odoo a affiché une « Erreur d'accès » : la fiche, devenue
+                        invisible pour les sociétés cochées, ne peut plus être relue. La modification est pourtant enregistrée,
+                        et le message indique la société à cocher pour retrouver la fiche.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_13" alt="Fenêtre Erreur d'accès dans Odoo 20 : Mitchell Admin n'a pas d'accès lire au Produit (product.template) ; message This seems to be a multi-company issue, you might be able to access the record by switching to the company: FR Company (Lyon) ; bouton Fermer" style="max-width:100%; height:auto;"/>
+                        <figcaption>L'article enregistré pour une société qui n'est pas cochée.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>La société mère se choisit une fois pour toutes</h4>
+                    <p>Le champ « Société parente » de la fiche d'une société n'apparaît qu'en mode développeur. Le changer
+                        sur une branche existante est refusé : « Il n'est pas possible de modifier la hiérarchie de la
+                        société. » Une société créée indépendante ne peut pas non plus devenir branche ensuite : décidez de
+                        la structure avant de créer.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_14" alt="Fenêtre Opération invalide dans Odoo 20 : Il n'est pas possible de modifier la hiérarchie de la société ; bouton Fermer" style="max-width:100%; height:auto;"/>
+                        <figcaption>Changer la société mère de FR Company (Lyon) : refusé.</figcaption>
+                    </figure>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un article déjà mouvementé ne se réserve pas à une autre société</h4>
+                    <p>Réserver l'article « Boîte de rangement » à FR Company a été refusé : il a déjà des mouvements de
+                        stock dans My Company (San Francisco). Réservez les articles propres à une société dès leur création.</p>
+                    <figure class="preview-figure">
+                        <img src="/web/image/PLACEHOLDER_15" alt="Fenêtre Opération invalide dans Odoo 20 : La société de ce produit ne peut pas être modifiée tant qu'il y a des mouvements de stock de ce produit appartenant à une autre société ; bouton Fermer" style="max-width:100%; height:auto;"/>
+                        <figcaption>Un article avec du stock dans une société reste lié à cette société.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> réserver un article à une société mère et vérifier ce qu'en voit chaque
+                        société.</p>
+                    <p><strong>Indication :</strong> après avoir créé la branche FR Company (Lyon), cochez FR Company dans le
+                        sélecteur, puis réservez l'article de démonstration « Bagel » à FR Company par son champ Société.</p>
+                    <p><strong>Critère de réussite :</strong> avec My Company (San Francisco) seule, la recherche « Bagel »
+                        ne renvoie aucun article ; avec FR Company (Lyon) seule, elle trouve le Bagel.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>Une branche se crée depuis l'onglet Branches de sa société mère ; elle en prend la devise et la comptabilité, et la mère ne se change plus ensuite.</li>
+                    <li>Les champs Sociétés et Société par défaut de la fiche utilisateur décident des sociétés qu'il peut choisir.</li>
+                    <li>Les sociétés cochées décident de ce qui s'affiche ; la société active reçoit les nouveaux documents.</li>
+                    <li>Contacts et articles sont communs tant que leur champ Société est vide ; comptabilité et documents sont toujours propres à une société.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Cet article ouvre la série <strong>Multi-société avec Odoo 20</strong>. Le prochain article, «
+                    Consolidation et rapports de groupe dans Odoo 20 », passe à l'édition Enterprise pour additionner les
+                    comptes des sociétés d'un groupe.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/multi-societe-dans-odoo-19-community-creer-configurer-basculer-122">Multi-société dans Odoo 19</a></h5>
+                            <p class="small text-muted mb-0">La version Odoo 19 Community du même sujet.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/plan-comptable-par-societe-dans-odoo-19-community-126">Plan comptable par société</a></h5>
+                            <p class="small text-muted mb-0">Un plan comptable et une devise pour chaque société.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/ventes-achats-inter-societes-odoo-321">Ventes et achats inter-sociétés</a></h5>
+                            <p class="small text-muted mb-0">Les opérations entre sociétés du groupe, en Enterprise.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
