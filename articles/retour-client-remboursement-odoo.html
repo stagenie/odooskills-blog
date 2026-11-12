@@ -1,0 +1,558 @@
+<!--
+Article — Du retour client au remboursement dans Odoo 20
+Titre du plan (vague 3, alternative F2.b) : « Du retour client au remboursement : retours, avoirs et SAV dans Odoo 20 » (78 car., refusé ≤ 60)
+Série « Odoo 20 de bout en bout » (blog Fonctionnel), alternative F2.b, sans article suivant annoncé
+Date : 2026-11-12 (poste, rédaction anticipée)
+Slug : retour-client-remboursement-odoo
+Tags : intermediaire, ventes, guide, community
+Sources vérifiées le 2026-11-12 : Odoo 20.0 Community, base vs20_func_f2b (copie neutralisée de vs20_func), société My Company (San Francisco), USD,
+  taxe 15 %, entrepôt WH en réception two_steps / livraison pick_pack_ship (réglage de vs20_func). Rien installé (sale_stock, repair, website_sale déjà présents).
+  Préparé en shell (comme F2.1) : S00095 Joel Willis 2 × [E-COM11] Armoire avec portes 140 $ → WH/PICK/00031, WH/PACK/00013, WH/OUT/00098 → FAC/2026/00015 322 $
+  payée PBNK1/2026/00012 ; company.allow_spontaneous_returns = True ; S00096 Lumber Inc 1 armoire → WH/OUT/00099 → FAC/2026/00016 payée.
+  Joué à l'écran : portail (portal/portal, Joel Willis) Return → Request a return 1, Item arrived damaged or defective → Continuer → Download Return Label
+  (PDF « Retour de WH/OUT/00098 ») → message OdooBot sur S00095 ; activité To-Do « Réceptionner et contrôler l'armoire retournée » pour Marc Demo (5 jours) ;
+  WH/OUT/00098 Retour → WH/IN/00038 brouillon 0 → Tout renvoyer → 1 → Return Reason → Valider → WH/Entrée + WH/STOR/00016 (Prêt) ; Actions › Rebut depuis
+  WH/IN/00038 → SP/00002 WH/Entrée → Inventory adjustment (aucune alerte de quantité) → WH/STOR/00016 En attente, Pas disponible → Annuler → Annulé ;
+  S00095 Délivré 1 / Facturé 2, « Créer une facture » principal, Entièrement livré, Livraison 5 ; FAC/2026/00015 Avoir (motif, journal Ventes) → Extourner →
+  brouillon 2 → 1 → RFAC/2026/00006 161 $ dû 161 (facture d'origine reste payée) → Payer (Banque, Recipient Account vide) → PBNK1/2026/00013 outbound,
+  avoir PAYÉ, liste Paiements clients −161,00 Rapproché ; S00095 Facturé 1, plus de Créer une facture, Factures clients 2 ; activité Terminé avec commentaire ;
+  S00096 : WH/OUT/00099 Retour → WH/IN/00039 → Échange → WH/OUT/00100 Prêt depuis WH/Entrée (réserve l'armoire retournée), WH/STOR/00017 En attente ;
+  origine passée à WH/Stock à l'écran → réservée en stock, validée ; WH/STOR/00017 Réserver → Valider ; S00096 Délivré 1 / Facturé 1, Livraison 6.
+  Shell (lecture) : lignes FAC/RFAC/PBNK1 (121000, 400000, 251000, 101403, 101404) ; payment PBNK1/2026/00013 state reconciled, is_matched False ;
+  armoire 33 → 31 (livraison), WH/Entrée 0 après rebut ; valorisation periodic (aucune écriture de stock).
+  Code : stock/models/stock_picking.py:812-821 (action_return), :823-836 (Tout renvoyer), :843-860 (action_exchange : confirme et réserve), :959-974
+  (_prepare_return_picking_default_values : retour vers default_location_dest_id du type de retour ; échange depuis location_dest_id du retour),
+  :1717-1745 (action_scrap, origine = destination si fait) ; stock/models/stock_move.py:2957-2995 (rebut) ; sale_stock/views/stock_picking_views.xml:26-40
+  (Return Reason si allow_spontaneous_returns + retour entrant ; bouton Retour), :65-100 (menu Analyse › Returns) ; sale_stock/models/res_company.py:10-11 ;
+  sale_stock/models/sale_order.py:77-89 (delivery_status = état des transferts), :265-275 (retour portail) ; sale_stock/controllers/return_order.py (étiquette
+  PDF + message_post, aucun transfert) ; repair/views/stock_picking_views.xml:133-140 + repair/models/stock_picking.py:171-187 (Créer une réparation depuis un
+  transfert) ; account/wizard/account_move_reversal.py (Extourner) ; account/wizard/account_payment_register.py:96-97, 194 (outbound sur avoir).
+  Enterprise : aucun dossier helpdesk* ni rma* dans odoo/addons (ls, 12/11/2026).
+Captures : content/blog/screenshots/retour-client-remboursement-odoo/ (scripts docs/blog-odoo20/captures-base-vs20_func/f2b-retours-sav/)
+-->
+  .o_wblog_post_page_cover h1,
+  .o_wblog_header_cover_container h1,
+  #o_wblog_post_main .o_record_cover_container h1,
+  .o_record_cover_container h1,
+  .o_wblog_post_title h1,
+  .o_wblog_post_page_cover .o_wblog_post_title,
+  .o_wblog_post_page_cover * { color: #ffffff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+
+  #o_wblog_post_main .container,
+  .o_wblog_post .container { max-width: 1140px; }
+
+  :not(pre) > code { background: #f5f2f0; color: #c7254e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+
+  table.tmc { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  table.tmc th, table.tmc td { border: 1px solid #dee2e6; padding: 0.5rem 0.75rem; font-size: 0.9em; vertical-align: top; }
+  table.tmc th { background: #f6f8fa; }
+
+  .preview-figure { margin: 1.5rem 0; text-align: center; }
+  .preview-figure img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .preview-figure figcaption { font-size: 0.88em; color: #6c757d; margin-top: 0.5rem; font-style: italic; }
+
+  .pitfall-box { background: #fff8e1; border-left: 4px solid #f59e0b; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .pitfall-box h4 { color: #92400e; margin-top: 0; }
+  .pitfall-box p:last-child, .pitfall-box ul { margin-bottom: 0; }
+
+  .edition-box { background: #ecfdf5; border-left: 4px solid #059669; padding: 0.9rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .edition-box p { margin-bottom: 0; }
+  .edition-box h4 { color: #065f46; margin-top: 0; }
+
+  .exercise-box { background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 1rem 1.25rem; border-radius: 4px; margin: 1.5rem 0; }
+  .exercise-box h4 { color: #5b21b6; margin-top: 0; }
+  .exercise-box p:last-child { margin-bottom: 0; }
+</style>
+<!-- ===== BANNIÈRE ===== -->
+<!-- ===== BANNIÈRE ===== -->
+<section class="s_banner pt64 pb64 bg-dark text-white">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto text-center">
+                <h1 class="text-white">Du retour client au remboursement dans Odoo 20</h1>
+                <p class="lead mt-3 text-white">Une armoire arrive abîmée chez le client. Il faut l'entendre, la reprendre,
+                    décider de son sort, puis le rembourser ou la remplacer. Cet article suit ce dossier d'après-vente
+                    d'un bout à l'autre dans Odoo 20 Community : portail, Ventes, Inventaire et Facturation, avec le
+                    stock et les pièces comptables à chaque étape.</p>
+                <p class="small text-light mt-2">~13 minutes de lecture · niveau intermédiaire · série <strong>Odoo 20 de bout en bout</strong></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTIQUETTE D'ÉDITION ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="edition-box">
+                    <p><strong>Édition : Community.</strong> Écrit et vérifié sur Odoo 20.0 Community, novembre 2026, sur
+                        une copie de la base de démonstration (société « My Company (San Francisco) », montants en dollars,
+                        taxe de 15 %), avec Ventes, Inventaire, Facturation et Site Web installés. L'entrepôt de cette base
+                        reçoit en deux étapes (entrée, puis rangement) et livre en trois ; le réglage par défaut d'Odoo est
+                        d'une étape dans les deux sens. Ces applications existent aussi dans l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== CONTEXTE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Un dossier d'après-vente sans application dédiée</h2>
+                <p>La Community d'Odoo 20 n'a pas d'application de service après-vente : le module Assistance (tickets)
+                    n'est pas inclus dans son dépôt, pas plus qu'un module d'autorisation de retour. Le dossier se tient
+                    donc sur ce qui existe déjà : la <strong>commande de vente</strong>, qui reçoit la demande du client et
+                    garde l'historique ; le <strong>bouton Retour</strong> des livraisons ; le <strong>bouton Avoir</strong>
+                    des factures ; le <strong>paiement sortant</strong> pour rembourser. Le commercial, le magasinier et le
+                    comptable y travaillent chacun dans son application, sur le même fil.</p>
+                <p>Cet article assemble ces pièces sans refaire leurs tutoriels. Le bouton Retour, les motifs et le rebut
+                    sont détaillés dans <a href="/blog/fonctionnel-odoo-1/rebuts-retours-clients-odoo-259">Rebut et
+                    retour client dans Odoo 20</a> ; les cas d'avoir (total, partiel, sur facture payée) dans <a
+                    href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Faire un avoir dans Odoo 20</a>.
+                    La vente qui précède, du devis à l'encaissement, est celle de <a
+                    href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du prospect à l'encaissement dans
+                    Odoo 20</a>.</p>
+                <p>Le point de départ : la commande <strong>S00095</strong> du client de démonstration Joel Willis, deux
+                    « Armoire avec portes » à 140 $, soit 322 $ taxes comprises, livrée, facturée (FAC/2026/00015) et payée.
+                    Une des deux armoires est arrivée endommagée. Les numéros de documents cités sont ceux obtenus sur
+                    cette base ; ils varient d'une base à l'autre.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== OBJECTIFS ===== -->
+<section class="s_text_block pt16 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Objectifs</h2>
+                <p>À la fin de cet article, vous saurez :</p>
+                <ul>
+                    <li>recevoir la demande de retour d'un client et la suivre sur la commande ;</li>
+                    <li>reprendre la marchandise, puis la ranger ou la mettre au rebut ;</li>
+                    <li>émettre l'avoir de la quantité retournée et rembourser le client ;</li>
+                    <li>remplacer l'article au lieu de le rembourser ;</li>
+                    <li>lire les quantités de la commande, le stock et les pièces comptables à chaque étape.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== SCHÉMA ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Le parcours en un coup d'œil</h2>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_01" alt="Schéma du parcours de retour client dans Odoo 20 : en haut, Portail et Ventes, réclamation (le client demande le retour depuis son portail, quantités, motif, étiquette ; message sur la commande, activité au magasinier), Inventaire, retour de marchandise (bouton Retour sur la livraison, motif, arrivée en zone d'entrée ; Délivré baisse sur la commande), Inventaire, tri (article sain rangé vers le stock, article abîmé au rebut ; rangement à annuler si tout part au rebut) ; ensuite, au choix, Facturation, avoir (bouton Avoir sur la facture, motif, quantité retournée ; Facturé rejoint Délivré), Banque, remboursement (Payer sur l'avoir, paiement sortant au journal Banque), ou Inventaire, échange (bouton Échange sur le retour, nouvelle livraison, rien à facturer ni à rembourser) ; encadré : le suivi se fait dans le fil de discussion de la commande, le module Assistance n'est pas dans la Community" style="max-width:100%; height:auto;"/>
+                    <figcaption>Trois étapes communes, puis deux issues : rembourser ou remplacer.</figcaption>
+                </figure>
+                <p>Le schéma se lit en deux temps. La <strong>réclamation</strong>, le <strong>retour</strong> et le
+                    <strong>tri</strong> sont toujours les mêmes. Ensuite, le dossier se ferme soit par un
+                    <strong>avoir</strong> suivi d'un <strong>remboursement</strong>, soit par un <strong>échange</strong>,
+                    qui renvoie un article sans toucher à la facture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 1 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>1. La réclamation : le client demande le retour</h2>
+                <p>Odoo 20 permet au client de déclarer lui-même son retour depuis son portail. Le réglage se trouve dans
+                    <strong>Inventaire › Configuration › Paramètres</strong>, rubrique Opérations : cochez
+                    <strong>Allow Spontaneous Returns</strong> (libellés non traduits) et gardez le délai proposé, 14 jours
+                    après la livraison. Il n'est pas coché sur la base de démonstration ; il l'a été pour cet article.</p>
+                <p>Le client ouvre alors sa commande dans son espace (<strong>Commandes clients</strong>) et clique sur
+                    <strong>Return</strong>. La fenêtre <strong>Request a return</strong> liste ce qui a été livré, bon de
+                    livraison par bon de livraison. Il choisit la quantité, ici 1, et un motif dans la liste.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_02" alt="Fenêtre Request a return du portail client d'Odoo 20 : Armoire avec portes, Delivery WH/OUT/00098, 140,00 $, quantité 1 avec boutons moins et plus, Return reason Item arrived damaged or defective, bouton Continuer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Côté client : une armoire sur deux, motif « arrivée endommagée ».</figcaption>
+                </figure>
+                <p><strong>Continuer</strong> affiche l'adresse de l'entrepôt et le bouton <strong>Download Return
+                    Label</strong>. L'étiquette PDF, « Retour de WH/OUT/00098 », reprend le motif et l'article ; le client la
+                    colle sur le colis. Au même moment, Odoo poste sur la commande un message qui détaille la demande. Il
+                    ne crée aucun transfert : la marchandise n'est pas encore là.</p>
+                <p>Côté entreprise, le commercial voit ce message dans le fil de discussion de S00095. Pour que le
+                    magasinier s'en charge, il clique sur <strong>Activité</strong> au-dessus du fil, garde le type
+                    <strong>To-Do</strong>, saisit un résumé (« Réceptionner et contrôler l'armoire retournée ») et choisit
+                    l'utilisateur chargé de l'activité, ici Marc Demo, utilisateur de démonstration dans le rôle du
+                    magasinier. L'échéance proposée est de cinq jours.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_03" alt="Fil de discussion de la commande S00095 dans Odoo 20 : en haut, Activités planifiées, Dû dans 5 jours : Réceptionner et contrôler l'armoire retournée pour Marc Demo, liens Terminé et Modifier ; en dessous, message d'OdooBot : A return label has been downloaded for the following products, WH/OUT/00098, 1 x Armoire avec portes, Return reason Item arrived damaged or defective" style="max-width:100%; height:auto;"/>
+                    <figcaption>La réclamation sur la commande : la demande du client et l'activité confiée au magasinier.</figcaption>
+                </figure>
+                <p>Le message est signé OdooBot et rédigé en anglais : c'est le texte standard d'Odoo, pas celui du client.
+                    Une réclamation reçue par courriel ou par téléphone se consigne de la même façon, par une
+                    <strong>Note</strong> dans le fil de la commande, avant de planifier l'activité. Les activités et leur
+                    suivi sont présentés dans <a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités
+                    et relances commerciales dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 2 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>2. Le retour de marchandise</h2>
+                <p>Le colis arrive. Le magasinier ouvre la livraison d'origine, WH/OUT/00098 (bouton
+                    <strong>Livraison</strong> de la commande), et clique sur <strong>Retour</strong>. Odoo crée aussitôt le
+                    transfert de retour <strong>WH/IN/00038</strong>, en brouillon, avec une demande à 0. Il clique sur
+                    <strong>Tout renvoyer</strong>, ramène la demande à 1, choisit dans <strong>Return Reason</strong> le
+                    motif annoncé par le client, enregistre, puis clique sur <strong>Valider</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_04" alt="Transfert de retour WH/IN/00038 dans Odoo 20 au statut Terminé : boutons Imprimer, Échange, Déverrouiller ; boutons intelligents Allocation, Mouvements, Transfert suivant ; Recevoir de Joel Willis, Type d'opération YourCompany: Réceptions, Emplacement de destination WH/Entrée, Document d'origine Retour de WH/OUT/00098, Return Reason Item arrived damaged or defective ; ligne Armoire avec portes, demande 1,00, quantité 1,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le retour validé : l'armoire est rentrée dans la zone d'entrée de l'entrepôt.</figcaption>
+                </figure>
+                <p>Le retour prend le type des réceptions (« YourCompany: Réceptions », YourCompany étant le nom de
+                    l'entrepôt de démonstration), et donc leur destination. Sur cette base, qui reçoit en deux
+                    étapes, c'est <strong>WH/Entrée</strong>, pas le stock. Odoo a préparé dans la foulée un rangement,
+                    <strong>WH/STOR/00016</strong>, de WH/Entrée vers WH/Stock, que le bouton <strong>Transfert
+                    suivant</strong> ouvre. Dans un entrepôt réglé en une étape, le retour arrive directement dans WH/Stock,
+                    sans rangement ; les deux réglages sont comparés dans <a
+                    href="/blog/fonctionnel-odoo-1/receptions-livraisons-plusieurs-etapes-odoo-220">Réceptions et
+                    livraisons en plusieurs étapes</a>.</p>
+                <p>Le motif saisi alimente le rapport <strong>Inventaire › Analyse › Retours</strong>, un graphique des
+                    retours clients par semaine et par motif. Sur la commande, la quantité <strong>Délivré</strong> passe
+                    déjà de 2 à 1 (étape 4).</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 3 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>3. Le tri : remettre en stock ou mettre au rebut</h2>
+                <p>Le magasinier contrôle l'armoire. Si elle est saine, il valide le rangement WH/STOR/00016 : elle rejoint
+                    le stock vendable. Ici, elle est irréparable. Sur le retour WH/IN/00038, il ouvre le menu d'actions
+                    (icône ⋮ à côté du nom) et choisit <strong>Rebut</strong>. Dans la fenêtre <strong>Produits de
+                    rebut</strong>, il choisit l'article (seuls ceux du transfert sont proposés), saisit 1, crée le motif
+                    « Arrivé endommagé chez le client », puis clique sur <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_05" alt="Fenêtre Produits de rebut ouverte depuis le retour dans Odoo 20 : Produit [E-COM11] Armoire avec portes, Quantité 1,00 Unité(s), Raison de mise au rebut Arrivé endommagé chez le client, Emplacement d'origine WH/Entrée, Emplacement de rebut Inventory adjustment, Transfert WH/IN/00038, Société My Company (San Francisco), case Doit être réapprovisionné décochée, bouton Confirmer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le rebut lancé depuis le retour part de WH/Entrée et garde le lien avec WH/IN/00038.</figcaption>
+                </figure>
+                <p>Le rebut devient le mouvement <strong>SP/00002</strong>, de WH/Entrée vers l'emplacement de perte
+                    Inventory adjustment, et un bouton <strong>Rebuts</strong> apparaît sur le retour. Le même menu
+                    d'actions propose aussi <strong>Créer une réparation</strong>, qui ouvre un ordre de réparation lié au
+                    retour : c'est la voie d'un article à réparer plutôt qu'à détruire, décrite dans <a
+                    href="/blog/fonctionnel-odoo-1/reparations-maintenance-odoo-227">Réparations et maintenance dans
+                    Odoo 20</a>.</p>
+                <p>Reste le rangement préparé à l'étape 2. L'armoire qu'il devait déplacer n'est plus dans la zone
+                    d'entrée : il est passé de Prêt à <strong>En attente</strong>, avec un article « Pas disponible ».</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_06" alt="Rangement WH/STOR/00016 dans Odoo 20 au statut En attente : boutons Réserver, Valider, Retour, Annuler ; Contact Joel Willis, Type d'opération YourCompany: Stockage, Emplacement d'origine WH/Entrée, Emplacement de destination WH/Stock, Disponibilité des produits Pas disponible, Document d'origine S00095 ; ligne Armoire avec portes, étiquette Pas disponible, demande 1,00, quantité 0,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le rangement resté en attente après le rebut : il n'a plus rien à ranger.</figcaption>
+                </figure>
+                <p>Cliquez sur <strong>Annuler</strong>, puis sur <strong>Ok</strong> dans la confirmation : le rangement
+                    passe à Annulé et ne traîne plus dans les opérations à faire. Bilan du stock : les deux armoires sorties
+                    à la livraison avaient fait passer le disponible de 33 à 31 ; le retour en a remis une en zone
+                    d'entrée, le rebut l'en a sortie. Le stock vendable reste à 31. Sur la base de démonstration, valorisée
+                    de façon périodique, ni le retour ni le rebut ne passent d'écriture comptable ; les deux modes de
+                    valorisation sont présentés dans <a
+                    href="/blog/fonctionnel-odoo-1/valoriser-stock-cout-moyen-fifo-odoo-261">Valorisation du stock Odoo
+                    20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 4 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>4. Ce que la commande montre après le retour</h2>
+                <p>Revenez sur S00095. La ligne affiche maintenant <strong>Délivré 1</strong> et <strong>Facturé 2</strong> :
+                    une armoire a été facturée et payée sans être gardée par le client.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_07" alt="Commande S00095 dans Odoo 20 après le retour : bouton Créer une facture en violet, boutons intelligents Livraison 5 et Factures clients 1, statut Commande client, étiquette Entièrement livré ; ligne [E-COM11] Armoire avec portes, quantité 2,00, délivré 1,00, facturé 2,00, prix unitaire 140,00, taxe 15 %, montant 280,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>Après le retour : 1 livrée, 2 facturées, et Créer une facture redevient le bouton principal.</figcaption>
+                </figure>
+                <p>Trois détails comptent. Le bouton <strong>Livraison</strong> compte 5 transferts (préparation,
+                    colisage, livraison, retour, rangement). L'étiquette reste <strong>Entièrement livré</strong> :
+                    elle suit l'état des transferts, tous terminés ou annulés, et non la quantité gardée par le client (tant que le rangement
+                    WH/STOR/00016 était en cours, elle affichait Partiellement livré). Enfin,
+                    <strong>Créer une facture</strong> redevient le bouton principal, car la commande a une quantité
+                    négative à facturer ; ce bouton produirait ici un avoir non relié à la facture d'origine. L'étape
+                    suivante passe par la facture.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 5 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>5. L'avoir de l'armoire retournée</h2>
+                <p>Le comptable ouvre FAC/2026/00015 (bouton <strong>Factures clients</strong> de la commande) et clique
+                    sur <strong>Avoir</strong>. Il saisit le motif, qui sera lu par le client, garde le journal Ventes et la
+                    date du jour, puis clique sur <strong>Extourner</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_08" alt="Fenêtre Avoir dans Odoo 20 : Motif affiché sur l'avoir Armoire arrivée endommagée, retournée ; Journal Ventes ; Date d'extourne 12 nov. ; boutons Extourner, Extourner et créer une facture, Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>L'assistant d'avoir : le motif complète la référence de l'avoir.</figcaption>
+                </figure>
+                <p>Odoo ouvre un avoir brouillon qui reprend toute la facture : 2 armoires. Ramenez la quantité à 1, puis
+                    cliquez sur <strong>Confirmer</strong>.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_09" alt="Avoir client RFAC/2026/00006 dans Odoo 20, statut Comptabilisé, référence Extourne de : FAC/2026/00015, Armoire… ; boutons Envoyer, Imprimer, Payer, Aperçu, Remettre en brouillon ; boutons intelligents Écritures comptables, Invoice, Commandes clients 1 ; client Joel Willis, journal Ventes en USD ; ligne Armoire avec portes 1,00 × 140,00, taxe 15 % ; montant hors taxes 140,00 $, Tax 15 % 21,00 $, total 161,00 $, montant dû 161,00 $" style="max-width:100%; height:auto;"/>
+                    <figcaption>L'avoir confirmé : 161 $ restent dus au client.</figcaption>
+                </figure>
+                <p><strong>RFAC/2026/00006</strong> vaut 161 $ : 140 $ hors taxes et 21 $ de taxe. Il est rattaché à la
+                    facture (bouton <strong>Invoice</strong>, libellé tel qu'affiché) et à la commande. La facture d'origine
+                    étant déjà payée, il n'y a rien à lettrer avec elle : l'avoir reste ouvert, avec un montant dû de 161 $,
+                    que l'entreprise doit cette fois au client. Sur la commande, <strong>Facturé</strong> redescend à 1 et
+                    rejoint Délivré : le bouton Créer une facture disparaît.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 6 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>6. Rembourser le client</h2>
+                <p>Sur l'avoir, cliquez sur <strong>Payer</strong>. La fenêtre est celle des encaissements, dans l'autre
+                    sens : le journal Banque, le montant de 161 $, la date du jour, et un mémo qui reprend la référence de
+                    l'avoir.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_10" alt="Fenêtre Payer ouverte depuis l'avoir dans Odoo 20 : Journal Banque, Recipient Account vide avec le texte indicatif Numéro de compte bancaire, Montant 161,00 $ USD, Date de règlement 12 nov., Mémo Extourne de : FAC/2026/00015, Armoire arrivée end…, boutons Créer un paiement et Ignorer" style="max-width:80%; height:auto;"/>
+                    <figcaption>Le remboursement : un paiement sortant de 161 $.</figcaption>
+                </figure>
+                <p><strong>Recipient Account</strong> est vide, Joel Willis n'ayant pas de compte bancaire sur sa fiche ;
+                    cette fenêtre est détaillée dans l'article sur les avoirs cité plus haut. <strong>Créer un
+                    paiement</strong> crée <strong>PBNK1/2026/00013</strong> et l'avoir passe à <strong>PAYÉ</strong>. Le
+                    virement lui-même se fait depuis la banque.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_11" alt="Liste Paiements clients dans Odoo 20, filtre Paiements clients : PBNK1/2026/00013, 12 nov., Banque, Joel Willis, -161,00 $, Rapproché ; PBNK1/2026/00012, 12 nov., Banque, Joel Willis, 322,00 $, Rapproché" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le remboursement figure parmi les paiements clients, en négatif (liste recadrée).</figcaption>
+                </figure>
+                <p>Dans <strong>Facturation › Clients › Paiements</strong>, le remboursement apparaît à côté de
+                    l'encaissement d'origine, avec un montant négatif. Tous deux sont à l'état
+                    <strong>Rapproché</strong> : en Community, cet état dit que le paiement a soldé la pièce qu'il règle, pas
+                    que la banque l'a vu passer. Ce point est développé dans <a
+                    href="/blog/fonctionnel-odoo-1/paiements-relances-odoo-215">Paiements et relances dans Odoo 20</a>.</p>
+                <h3>Les pièces, compte par compte</h3>
+                <p>Le tableau reprend les pièces du dossier, relevées sur la base de démonstration, dont le plan
+                    comptable est le plan générique (libellés de comptes tels qu'affichés sur cette base, en partie en anglais) ; une société française utilise ses
+                    propres numéros.</p>
+                <table class="tmc">
+                    <thead>
+                        <tr><th>Pièce</th><th>Ce qu'elle enregistre</th><th>Débit</th><th>Crédit</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>FAC/2026/00015</td><td>Facture des 2 armoires</td>
+                            <td>121000 Accounts Receivable : 322,00</td>
+                            <td>400000 Product Sales : 280,00 ; 251000 Tax Received : 42,00</td></tr>
+                        <tr><td>PBNK1/2026/00012</td><td>Encaissement de la facture</td>
+                            <td>101403 Paiements entrants en suspens : 322,00</td>
+                            <td>121000 Accounts Receivable : 322,00</td></tr>
+                        <tr><td>RFAC/2026/00006</td><td>Avoir de l'armoire retournée</td>
+                            <td>400000 Product Sales : 140,00 ; 251000 Tax Received : 21,00</td>
+                            <td>121000 Accounts Receivable : 161,00</td></tr>
+                        <tr><td>PBNK1/2026/00013</td><td>Remboursement au client</td>
+                            <td>121000 Accounts Receivable : 161,00</td>
+                            <td>101404 Paiements sortants en suspens : 161,00</td></tr>
+                    </tbody>
+                </table>
+                <p>L'avoir est l'image inverse de la facture, pour une armoire : il annule la vente et la taxe et crédite
+                    le compte client. Le remboursement solde ce crédit. Comme l'encaissement attendait sur le compte des
+                    paiements entrants en suspens, le remboursement attend sur celui des <strong>paiements sortants en
+                    suspens</strong>, jusqu'à son pointage avec le relevé bancaire, qui ne fait pas partie de la
+                    Community.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== ÉTAPE 7 ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>7. Clore le dossier</h2>
+                <p>Le magasinier marque l'activité comme faite : <strong>Terminé</strong> sous l'activité, un commentaire,
+                    puis <strong>Terminé</strong>. Le fil de discussion de la commande résume alors tout le dossier.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_12" alt="Fil de discussion de la commande S00095 dans Odoo 20 en fin de dossier : Mitchell Admin, activité Réceptionner et contrôler l'armoire retournée (initialement attribué à Marc Demo) cochée, commentaire Armoire reçue endommagée, mise au rebut (SP/00002). Avoir RFAC/2026/00006 remboursé ; Mitchell Admin, Facture RFAC/2026/00006 payée ; OdooBot, A return label has been downloaded… Return reason Item arrived damaged or defective ; OdooBot, Facture FAC/2026/00015 payée ; OdooBot, Commande client créé" style="max-width:100%; height:auto;"/>
+                    <figcaption>Le dossier complet, lu de bas en haut : vente, paiement, demande de retour, avoir payé, activité close.</figcaption>
+                </figure>
+                <p>L'activité a été close ici par l'administrateur, d'où la mention « initialement attribué à Marc Demo ».
+                    Le commentaire saisi à la clôture reste dans le fil : c'est l'endroit où noter la décision prise (rebut,
+                    réparation, remplacement) et les références des pièces.</p>
+                <div class="edition-box">
+                    <p><strong>En Community.</strong> Demande de retour par le portail, retour, rebut, avoir, remboursement et
+                        échange ont été joués sur Odoo 20 Community. Le module Assistance (tickets d'assistance) n'est pas
+                        inclus dans la Community ; il est présenté dans <a
+                        href="/blog/fonctionnel-odoo-1/service-assistance-tickets-odoo-319">Helpdesk Odoo 20 : tickets, SLA
+                        et évaluations</a>, article consacré à l'édition Enterprise.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== VARIANTE ÉCHANGE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Variante : remplacer au lieu de rembourser</h2>
+                <p>Si le client préfère recevoir une autre armoire, le dossier se ferme sans avoir. L'exemple porte sur une
+                    seconde commande, S00096 : une armoire vendue à Lumber Inc, livrée, facturée et payée. Le retour
+                    WH/IN/00039 est créé et validé comme à l'étape 2. Sur ce retour, cliquez sur <strong>Échange</strong> :
+                    Odoo crée une nouvelle livraison, <strong>WH/OUT/00100</strong>, déjà prête.</p>
+                <figure class="preview-figure">
+                    <img src="/web/image/PLACEHOLDER_13" alt="Livraison d'échange WH/OUT/00100 dans Odoo 20 au statut Prêt : boutons Valider, Imprimer, Retour, Annuler ; Adresse de livraison Lumber Inc, Type d'opération YourCompany: Bons de livraison, Emplacement d'origine WH/Entrée, Disponibilité des produits Disponible, Document d'origine Retour de WH/IN/00039 ; ligne Armoire avec portes, Disponible, demande 1,00, quantité 1,00" style="max-width:100%; height:auto;"/>
+                    <figcaption>La livraison d'échange part de WH/Entrée : elle a réservé l'armoire qui vient de revenir.</figcaption>
+                </figure>
+                <p>Lisez l'<strong>Emplacement d'origine</strong> : WH/Entrée, là où le retour a déposé l'armoire. Odoo
+                    s'apprête donc à renvoyer au client l'article qu'il vient de retourner, sans passer par la préparation
+                    ni le colisage, et le rangement de cet article est repassé En attente. Pour envoyer une armoire neuve,
+                    remplacez l'emplacement d'origine par <strong>WH/Stock</strong> et enregistrez : la réservation se fait
+                    alors dans le stock. Dans les deux cas, cette livraison d'échange est un bon de
+                    livraison direct, sans préparation ni colisage, alors que l'entrepôt livre normalement en trois étapes.
+                    Validez la livraison. Sur le rangement, <strong>Réserver</strong> remet l'armoire
+                    retournée en face : validez-le si elle est saine, ou mettez-la au rebut comme à l'étape 3.</p>
+                <p>Sur la commande S00096, <strong>Délivré</strong> repasse à 1 et rejoint <strong>Facturé</strong> : rien
+                    n'est à facturer ni à rembourser, et le bouton Livraison compte 6 transferts.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== POINTS DE VIGILANCE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>Points de vigilance</h2>
+                <div class="pitfall-box">
+                    <h4>L'échange renvoie l'article retourné</h4>
+                    <p>Dans un entrepôt qui reçoit en deux étapes, la livraison d'échange part de la zone d'entrée et réserve
+                        l'article qui vient de revenir, abîmé ou non. Vérifiez l'emplacement d'origine avant de valider et
+                        remplacez-le par le stock si l'article retourné n'est pas à renvoyer.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Un rebut en zone d'entrée laisse un rangement en attente</h4>
+                    <p>Le rangement préparé après le retour passe En attente dès que l'article part au rebut. Annulez-le, sinon
+                        il reste dans les opérations à faire de l'entrepôt.</p>
+                </div>
+                <div class="pitfall-box">
+                    <h4>Après un retour, la commande propose Créer une facture</h4>
+                    <p>Le bouton redevient principal parce que la quantité livrée est passée sous la quantité facturée. Il
+                        produirait un avoir que la base de démonstration ne relie pas à la facture d'origine. Choisissez un seul chemin, le bouton Avoir de la facture
+                        ou ce bouton, jamais les deux : la commande montre Facturé égal à Délivré quand c'est réglé.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== EXERCICE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <div class="exercise-box">
+                    <h4>Exercice</h4>
+                    <p><strong>Objectif :</strong> reprendre un article sain et rembourser le client.</p>
+                    <p><strong>Indication :</strong> sur une copie de la base de démonstration, prenez une commande livrée,
+                        facturée et payée de deux armoires avec portes. Créez le retour d'une armoire depuis la livraison,
+                        validez-le, puis validez le rangement proposé par Transfert suivant. Faites l'avoir d'une armoire
+                        depuis la facture et payez-le.</p>
+                    <p><strong>Critère de réussite :</strong> le disponible de l'armoire dans WH/Stock remonte d'une unité ;
+                        l'avoir de 161 $ est PAYÉ ; la liste des paiements clients montre un paiement de −161 $ ; sur la
+                        commande, Délivré et Facturé valent 1.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À RETENIR ===== -->
+<section class="s_text_block pt32 pb32 bg-light">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>À retenir</h2>
+                <ul>
+                    <li>En Community, le dossier d'après-vente vit sur la commande : demande du client, activité, historique.</li>
+                    <li>Le bouton Retour de la livraison reprend la marchandise ; elle arrive là où arrivent les réceptions.</li>
+                    <li>L'article abîmé part au rebut depuis le retour ; un rangement devenu inutile s'annule.</li>
+                    <li>L'avoir se fait depuis la facture ; sur une facture payée, il reste dû jusqu'au remboursement par Payer.</li>
+                    <li>L'échange remplace l'article sans avoir : vérifiez l'emplacement d'où il part.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== LA SUITE ===== -->
+<section class="s_text_block pt32 pb16">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h2>La suite</h2>
+                <p>Pour les autres gestes de stock (rebut sans retour, retour fournisseur, réglage des motifs), poursuivez
+                    avec <a href="/blog/fonctionnel-odoo-1/rebuts-retours-clients-odoo-259">Rebut et retour client dans
+                    Odoo 20</a> ; pour les autres cas d'avoir (partiel sur un prix, imputation sur une autre facture), avec <a
+                    href="/blog/fonctionnel-odoo-1/avoir-partiel-facture-payee-odoo-251">Faire un avoir dans Odoo 20</a>.
+                    La vente elle-même est suivie dans <a href="/blog/fonctionnel-odoo-1/prospect-encaissement-odoo-405">Du
+                    prospect à l'encaissement dans Odoo 20</a>.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== À LIRE AUSSI ===== -->
+<section class="s_features_grid pt32 pb32">
+    <div class="container">
+        <div class="row">
+            <div class="col-lg-10 mx-auto">
+                <h3 class="text-center mb-4">À lire aussi</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/factures-clients-avoirs-odoo-213">Factures clients et avoirs</a></h5>
+                            <p class="small text-muted mb-0">Le cycle de la facture et le premier avoir.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/reparations-maintenance-odoo-227">Réparations et maintenance</a></h5>
+                            <p class="small text-muted mb-0">Réparer l'article retourné au lieu de le remplacer.</p>
+                        </div></div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="card h-100"><div class="card-body">
+                            <h5><a href="/blog/fonctionnel-odoo-1/activites-relances-crm-odoo-210">Activités et relances</a></h5>
+                            <p class="small text-muted mb-0">Planifier et suivre les tâches de chacun.</p>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
