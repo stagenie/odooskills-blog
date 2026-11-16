@@ -1,8 +1,8 @@
 {
     'name': 'OdooSkills - Bandes CTA Ebook sur Blog',
-    'version': '19.0.2.0.0',
+    'version': '19.0.2.1.0',
     'category': 'Website/Marketing',
-    'summary': "Bande CTA contextuelle vers les ebooks en fin d'article de blog (édition 20 par défaut, 19 pour les articles Odoo 19)",
+    'summary': "Bande CTA contextuelle vers les ebooks en fin d'article de blog (édition 20 par défaut, 19 pour les articles Odoo 19) et encart vers le store de modules",
     'author': 'ADICOPS',
     'website': 'https://odooskills.com',
     'license': 'LGPL-3',
